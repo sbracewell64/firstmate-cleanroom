@@ -1,0 +1,3 @@
+$ bin/fm-doc-audience-check.sh --inventory /tmp/base-inventory.json  (inventory as of base 41d0ab3, doc present)
+fm-doc-audience-check: unclassified: docs/verification/cleanroom-nm-prereq-2026-09-03.md
+exit=1

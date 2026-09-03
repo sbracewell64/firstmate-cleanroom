@@ -1,0 +1,12 @@
+$ constraint checks on 41d0ab3..740ef67
+# co-author / agent trailers in commits:
+(none)
+# files changed:
+docs/documentation-audiences.json
+docs/verification/cleanroom-nm-prereq-2026-09-03.md
+# secret/token/absolute-path/legacy-root patterns in new doc:
+(none)
+# main of cleanroom repo unchanged from seed:
+41d0ab3910ece4e90db0194f756437b3abe8ab8f
+# merge-base of target vs base:
+41d0ab3910ece4e90db0194f756437b3abe8ab8f

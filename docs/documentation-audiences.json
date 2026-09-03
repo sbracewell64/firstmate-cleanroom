@@ -413,6 +413,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/verification/cleanroom-nm-prereq-2026-09-03.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },

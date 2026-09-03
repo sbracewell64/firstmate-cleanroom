@@ -1,0 +1,16 @@
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=89 local_links=300
+exit=0
+
+$ # CI step 'Compatibility pointers must stay intact' (.github/workflows/ci.yml:415) run locally
+pointer check OK
+exit=0
+
+$ git diff --stat 41d0ab39..60395817
+ AGENTS.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+$ git log -1 --format='%H%n%B' 60395817 | grep -ci co-authored-by
+0
+
+$ base AGENTS.md occurrences: 0  target: 1

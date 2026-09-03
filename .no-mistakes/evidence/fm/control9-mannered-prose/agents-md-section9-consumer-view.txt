@@ -1,0 +1,16 @@
+$ cat CLAUDE.md
+<!-- Points Claude at AGENTS.md via import; edit AGENTS.md, not this file. -->
+@AGENTS.md
+
+$ # CLAUDE.md imports: AGENTS.md -> resolving and printing section 9 opening lines with line numbers
+$ grep -n -A3 '^## 9\. Escalation and captain etiquette' AGENTS.md
+448:## 9. Escalation and captain etiquette
+449-
+450-**Talk in outcomes, not mechanics.**
+451-Remove all mannered prose.
+
+$ grep -n 'Remove all mannered prose\.' AGENTS.md   # exactly one hit expected
+451:Remove all mannered prose.
+
+$ git grep -n 'mannered prose' 60395817e85f487add0c594b29389b250933c840 -- . ':!AGENTS.md'   # nothing else touched
+(no other file contains it)

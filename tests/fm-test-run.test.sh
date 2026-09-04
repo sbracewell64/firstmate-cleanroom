@@ -1093,6 +1093,97 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+# Print one job's `timeout-minutes` from ci.yml parsed as YAML, with ruby (the
+# parser CI's ubuntu-latest image carries and the Herdr timeout test already
+# uses) or python3's yaml module, so a nested key cannot masquerade as the job
+# contract. Fails when neither parser is present.
+workflow_job_timeout_minutes() {  # <job-id>
+  local job=$1 file="$ROOT/.github/workflows/ci.yml"
+  if command -v ruby >/dev/null 2>&1; then
+    ruby -ryaml -e 'puts YAML.load_file(ARGV[0]).fetch("jobs").fetch(ARGV[1]).fetch("timeout-minutes")' "$file" "$job"
+  elif python3 -c 'import yaml' 2>/dev/null; then
+    python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["timeout-minutes"])' "$file" "$job"
+  else
+    fail "ruby or python3 with the yaml module is required to parse .github/workflows/ci.yml as YAML"
+  fi
+}
+
+test_portable_serial_shard_hints_stay_inside_the_job_cap_budget() {
+  # The coverage guard budgets every serial shard's summed duration hints at a
+  # stated fraction of the job cap, so a grown test is caught here rather than
+  # by a runner cancelled at the cap.
+  local tmp out loads count budget max lane n load rc bad leftover
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-shard-budget.XXXXXX")
+  out=$("$RUNNER" --check-coverage) || { rm -rf "$tmp"; fail "coverage guard failed: $out"; }
+  budget=$(printf '%s\n' "$out" | sed -n 's/.* serial_shard_budget_ms=\([0-9]*\).*/\1/p')
+  max=$(printf '%s\n' "$out" | sed -n 's/.* serial_shard_max_hint_ms=\([0-9]*\).*/\1/p')
+  [ -n "$budget" ] && [ -n "$max" ] \
+    || { rm -rf "$tmp"; fail "coverage guard did not report the shard budget and max hint: $out"; }
+  [ "$max" -le "$budget" ] \
+    || { rm -rf "$tmp"; fail "coverage guard passed with a shard hint total $max over its budget $budget"; }
+
+  # --serial-shard-loads is the table the refresh procedure records; its max
+  # is the number the guard compared, and every shard lane appears once.
+  loads=$("$RUNNER" --serial-shard-loads)
+  count=$("$RUNNER" --list-lanes | grep -c '^portable-serial-[0-9]*of[0-9]*$')
+  [ "$(printf '%s\n' "$loads" | wc -l | tr -d ' ')" -eq "$count" ] \
+    || { rm -rf "$tmp"; fail "--serial-shard-loads must list every serial shard once: $loads"; }
+  while IFS=$'\t' read -r lane n load; do
+    [ "$("$RUNNER" --list --lane "$lane" | wc -l | tr -d ' ')" -eq "$n" ] \
+      || { rm -rf "$tmp"; fail "$lane script count $n disagrees with --list"; }
+    [ "$load" -le "$max" ] \
+      || { rm -rf "$tmp"; fail "$lane load $load exceeds the reported max $max"; }
+  done <<EOF
+$loads
+EOF
+  printf '%s\n' "$loads" | grep -q "	$max\$" \
+    || { rm -rf "$tmp"; fail "no shard carries the reported max hint $max: $loads"; }
+
+  # A cap the current hints cannot fit under fails the guard and names the
+  # shard, proving the budget is enforced rather than only reported.
+  set +e
+  FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=1 "$RUNNER" --check-coverage >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 1 ] || { rm -rf "$tmp"; fail "a 1-minute what-if cap must fail the guard (exit 1), got $rc"; }
+  grep -Fq 'shard hint total exceeds' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "budget refusal must say the hint total exceeds the cap: $(cat "$tmp/err")"; }
+  grep -Eq 'portable-serial-1of[0-9]+=[0-9]+ms' "$tmp/err" \
+    || { rm -rf "$tmp"; fail "budget refusal must name the offending shard: $(cat "$tmp/err")"; }
+  grep -q 'FM_TEST_COVERAGE ok' "$tmp/out" && { rm -rf "$tmp"; fail "budget refusal must not print the ok marker"; }
+
+  # A refused what-if cap must leave no scratch directory behind, so each
+  # refusal runs under a private TMPDIR that must still be empty afterwards.
+  mkdir "$tmp/scratch"
+  for bad in soon 08 0 '' 361; do
+    set +e
+    TMPDIR="$tmp/scratch" FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=$bad "$RUNNER" --check-coverage >"$tmp/out2" 2>"$tmp/err2"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "what-if cap '$bad' must refuse (exit 2), got $rc"; }
+    grep -Fq 'FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be' "$tmp/err2" \
+      || { rm -rf "$tmp"; fail "what-if cap '$bad' refusal must name the variable: $(cat "$tmp/err2")"; }
+    leftover=$(ls -A "$tmp/scratch")
+    [ -z "$leftover" ] \
+      || { rm -rf "$tmp"; fail "what-if cap '$bad' refusal must leave no temp directory: $leftover"; }
+  done
+  rm -rf "$tmp"
+  pass "portable serial shard hints are budgeted against the job cap and the guard fails on drift"
+}
+
+test_portable_serial_ci_job_cap_matches_the_runner_budget() {
+  # ci.yml's tests-portable-serial timeout is the cap the runner budgets shard
+  # hints against; parse the workflow as YAML so the two cannot drift apart.
+  local cap ci_cap
+  ci_cap=$(workflow_job_timeout_minutes tests-portable-serial) \
+    || fail "could not parse the tests-portable-serial job timeout from ci.yml"
+  cap=$("$RUNNER" --check-coverage | sed -n 's/.* serial_cap_min=\([0-9]*\).*/\1/p')
+  [ -n "$cap" ] || fail "coverage guard did not report serial_cap_min"
+  [ "$cap" = "$ci_cap" ] \
+    || fail "bin/fm-test-run.sh budgets serial shards against a $cap-minute cap but ci.yml caps the job at $ci_cap minutes"
+  pass "portable serial CI job cap ($ci_cap min) matches the runner's shard budget cap"
+}
+
 test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
@@ -1192,5 +1283,7 @@ test_concurrent_runs_are_ordered_longest_first
 test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
+test_portable_serial_shard_hints_stay_inside_the_job_cap_budget
+test_portable_serial_ci_job_cap_matches_the_runner_budget
 test_herdr_ci_family_run_has_a_step_timeout
 test_aggregate_json

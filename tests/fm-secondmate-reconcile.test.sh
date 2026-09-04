@@ -201,6 +201,22 @@ hold_lock_until_released() {  # <lock> <ready> <release>
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$1" "$2" "$3" &
 }
 
+# Succeeds once <pid> has exited on its own, failing when it is still alive
+# after a bounded poll (5 s). The caller keeps the busy lock held for the whole
+# poll, so a process that waits on that lock cannot exit and is reported as
+# blocked, while one that only try-locks exits as soon as its own startup and
+# fork cost allow. That cost is 76-100 ms on an idle 32-CPU machine and
+# 196-264 ms on a loaded 2-vCPU runner, so a fixed short deadline would flip on
+# runner speed rather than on the property under test.
+exits_while_lock_held() {  # <pid>
+  local pid=$1 waited=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 500 ]; do
+    sleep 0.01
+    waited=$((waited + 1))
+  done
+  ! kill -0 "$pid" 2>/dev/null
+}
+
 
 test_an_inventory_mismatch_asks_the_mate_once_per_window() {
   local home mate fakebin snap out
@@ -432,8 +448,7 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
-    if kill -0 "$notify" 2>/dev/null; then
+    if ! exits_while_lock_held "$notify"; then
       : > "$release"
       wait "$notify" 2>/dev/null || true
       wait "$holder" 2>/dev/null || true
@@ -449,6 +464,36 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
       "a skipped $label-lock nudge started the cooldown"
   done
   pass "busy reconcile lifecycle locks never block the digest or start cooldown"
+}
+
+# Disconfirming probe for the busy-lock assertion above: a process that DOES
+# wait on the held lock must still be reported as blocked, so widening the
+# deadline from a fixed 200 ms to a bounded poll did not blind the test to a
+# genuinely blocking implementation.
+test_busy_lock_assertion_still_catches_a_blocking_waiter() {
+  local home lock ready release holder waiter
+  { read -r home; read -r _; read -r _; } < <(make_main_home busy-probe mate)
+  lock="$home/state/.control-mate.lock"
+  ready="$home/lock-ready"
+  release="$home/lock-release"
+  hold_lock_until_released "$lock" "$ready" "$release"
+  holder=$!
+  while [ ! -f "$ready" ]; do sleep 0.01; done
+  bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" &
+  waiter=$!
+  if exits_while_lock_held "$waiter"; then
+    : > "$release"
+    wait "$holder" 2>/dev/null || true
+    fail "a waiter blocked on the busy control lock was reported as non-blocking"
+  fi
+  : > "$release"
+  wait "$waiter" || fail "the blocking waiter failed after the lock was released"
+  wait "$holder" || fail "the probe lock holder failed"
+  pass "the busy-lock assertion still reports a waiter that blocks on the held lock"
 }
 
 test_concurrent_recaps_send_one_instruction() {
@@ -722,6 +767,7 @@ test_a_readable_home_without_a_mismatch_is_never_asked
 test_the_parent_never_changes_the_mates_own_files
 test_a_failed_send_is_retried_on_the_next_run
 test_busy_lifecycle_locks_never_hold_up_the_digest
+test_busy_lock_assertion_still_catches_a_blocking_waiter
 test_concurrent_recaps_send_one_instruction
 test_a_delayed_snapshot_never_prescribes_a_stale_repair
 test_a_stale_snapshot_never_targets_a_replacement_mate

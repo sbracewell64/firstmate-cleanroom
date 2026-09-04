@@ -871,13 +871,27 @@ trap spawn_abort_cleanup EXIT
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# <attempts> bounds the wait in 0.1 s polls and defaults to the short fresh-spawn
+# bound. A fresh projected spawn only waits "a moment for ordering" and degrades
+# to the flat layout when the bound expires, so it keeps the short bound. A
+# recovery of an exact husk cannot degrade: a flat fallback would leave the
+# husk behind under a duplicate identity, so its only outcomes are "reclaimed
+# under the lock" or "refused". A sibling spawn or recovery holds this lock
+# for its whole reclaim + worktree + launch window, which measures 5-12 s
+# depending on the machine, so the recovery caller passes the larger bound
+# below, sized to a full sibling launch (the winner's own treehouse get has a
+# 60 s ceiling). Do not widen the fresh bound: its flat fallback and the
+# bounded-contention coverage in tests/fm-backend-herdr-presentation-e2e.test.sh
+# depend on it staying short.
+HERDR_PRESENTATION_ORDER_LOCK_ATTEMPTS=50
+HERDR_PRESENTATION_RECOVERY_LOCK_ATTEMPTS=600
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempts=${2:-$HERDR_PRESENTATION_ORDER_LOCK_ATTEMPTS} attempt lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$attempts" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
@@ -2115,7 +2129,7 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
         }
-        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
+        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" "$HERDR_PRESENTATION_RECOVERY_LOCK_ATTEMPTS" || {
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }

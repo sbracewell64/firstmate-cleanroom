@@ -1271,6 +1271,106 @@ teardown_task "$CROSS_RESTART_ID" "$SECOND_HOME_A" > "$TMP_ROOT/cross-restart-te
 "$REAL_TREEHOUSE" return --force "$CROSS_NEW_WT" >/dev/null 2>&1 || true
 pass "real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent"
 
+# A recovery of an exact husk waits out a sibling's whole critical section on
+# the session lock instead of refusing at the short fresh-spawn bound. The
+# holder below keeps the lock for a fixed 12 s, deterministically longer than
+# the fresh bound of 50 polls at 0.1 s, so the recovery either waits and
+# reclaims or is refused by the bound; runner speed cannot flip the outcome.
+hold_session_lock_for_seconds() {  # <ready> <seconds>
+  ROOT="$ROOT" READY="$1" HOLD_SECS="$2" LOCK="$(session_presentation_lock_path)" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    [ -n "$LOCK" ] || exit 1
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    sleep "$HOLD_SECS"
+    fm_lock_release "$LOCK"
+  ' &
+  HOLD_PID=$!
+  while [ ! -e "$1" ] && kill -0 "$HOLD_PID" 2>/dev/null; do sleep 0.01; done
+  [ -e "$1" ] || fail "could not hold the session presentation lock for ${2}s"
+}
+LONG_HOLD_ID=resume-long-hold
+LONG_HOLD_SECS=12
+mkdir -p "$HOME_DIR/data/$LONG_HOLD_ID"
+printf 'Long-held session lock recovery fixture.\n' > "$HOME_DIR/data/$LONG_HOLD_ID/brief.md"
+spawn_task "$LONG_HOLD_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/long-hold-first.out" 2> "$TMP_ROOT/long-hold-first.err" \
+  || fail "long-hold recovery fixture failed: $(cat "$TMP_ROOT/long-hold-first.err")"
+LONG_HOLD_META="$HOME_DIR/state/$LONG_HOLD_ID.meta"
+LONG_HOLD_OLD_WT=$(remember_meta_worktree "$LONG_HOLD_META")
+LONG_HOLD_WSID=$(grep '^herdr_workspace_id=' "$LONG_HOLD_META" | cut -d= -f2-)
+LONG_HOLD_OLD_PANE=$(grep '^herdr_pane_id=' "$LONG_HOLD_META" | cut -d= -f2-)
+PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null \
+  || fail "could not stop the isolated session for long-hold recovery"
+PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
+  || fail "could not reprovision the isolated session for long-hold recovery"
+LONG_HOLD_FOCUS=$(focus_snapshot)
+hold_session_lock_for_seconds "$TMP_ROOT/long-hold-ready" "$LONG_HOLD_SECS"
+LONG_HOLD_START=$(date +%s)
+if spawn_task "$LONG_HOLD_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/long-hold-resume.out" 2> "$TMP_ROOT/long-hold-resume.err"; then
+  LONG_HOLD_STATUS=0
+else
+  LONG_HOLD_STATUS=$?
+fi
+LONG_HOLD_ELAPSED=$(( $(date +%s) - LONG_HOLD_START ))
+wait "$HOLD_PID" || fail "long-hold session lock owner failed"
+[ "$LONG_HOLD_STATUS" -eq 0 ] \
+  || fail "recovery under a session lock held ${LONG_HOLD_SECS}s was refused after ${LONG_HOLD_ELAPSED}s: $(cat "$TMP_ROOT/long-hold-resume.err")"
+if grep -F "refusing a concurrent resume" "$TMP_ROOT/long-hold-resume.err" >/dev/null 2>&1; then
+  fail "recovery under a long-held session lock reported the concurrent-resume refusal"
+fi
+# The lock was held for LONG_HOLD_SECS before the recovery could reclaim, so a
+# recovery that finished sooner did not serialize on it.
+[ "$LONG_HOLD_ELAPSED" -ge $((LONG_HOLD_SECS - 1)) ] \
+  || fail "recovery finished after ${LONG_HOLD_ELAPSED}s without waiting for the ${LONG_HOLD_SECS}s session lock hold"
+LONG_HOLD_NEW_WT=$(remember_meta_worktree "$LONG_HOLD_META")
+LONG_HOLD_NEW_PANE=$(grep '^herdr_pane_id=' "$LONG_HOLD_META" | cut -d= -f2-)
+[ "$(grep '^herdr_workspace_id=' "$LONG_HOLD_META" | cut -d= -f2-)" = "$LONG_HOLD_WSID" ] \
+  || fail "long-hold recovery flattened the task into a different workspace"
+[ "$LONG_HOLD_NEW_PANE" != "$LONG_HOLD_OLD_PANE" ] \
+  || fail "long-hold recovery reused the old husk pane"
+if lab pane get "$LONG_HOLD_OLD_PANE" >/dev/null 2>&1; then
+  fail "long-hold recovery left the old husk pane behind"
+fi
+assert_focus_is "$LONG_HOLD_FOCUS" "long-hold recovery"
+teardown_task "$LONG_HOLD_ID" "$HOME_DIR" > "$TMP_ROOT/long-hold-teardown.out" 2> "$TMP_ROOT/long-hold-teardown.err" \
+  || fail "long-hold recovery teardown failed"
+"$REAL_TREEHOUSE" return --force "$LONG_HOLD_OLD_WT" >/dev/null 2>&1 || true
+"$REAL_TREEHOUSE" return --force "$LONG_HOLD_NEW_WT" >/dev/null 2>&1 || true
+pass "real Herdr lab: recovery waits out a session lock held longer than the fresh-spawn bound instead of refusing"
+
+# The fresh projected path keeps its short bound: under a fixed hold it gives
+# up long before the holder releases and falls back flat with the warning. A
+# widened fresh bound would acquire the lock at release and project, which
+# this case refuses. The hold is 25 s, about four times the fresh bound's
+# measured wall, so only a runner whose single try-lock costs well over 100 ms
+# could let a short-bound spawn outlast it; the failure message carries the
+# elapsed time so that case is told apart from a widened bound.
+FRESH_HOLD_ID=fresh-long-hold
+FRESH_HOLD_SECS=25
+mkdir -p "$HOME_DIR/data/$FRESH_HOLD_ID"
+printf 'Fresh spawn under a long-held session lock.\n' > "$HOME_DIR/data/$FRESH_HOLD_ID/brief.md"
+FRESH_HOLD_FOCUS=$(focus_snapshot)
+hold_session_lock_for_seconds "$TMP_ROOT/fresh-hold-ready" "$FRESH_HOLD_SECS"
+FRESH_HOLD_START=$(date +%s)
+if spawn_task "$FRESH_HOLD_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/fresh-hold.out" 2> "$TMP_ROOT/fresh-hold.err"; then
+  FRESH_HOLD_STATUS=0
+else
+  FRESH_HOLD_STATUS=$?
+fi
+FRESH_HOLD_ELAPSED=$(( $(date +%s) - FRESH_HOLD_START ))
+wait "$HOLD_PID" || fail "fresh-spawn session lock owner failed"
+[ "$FRESH_HOLD_STATUS" -eq 0 ] \
+  || fail "fresh spawn under a session lock held ${FRESH_HOLD_SECS}s did not fall back flat after ${FRESH_HOLD_ELAPSED}s: $(cat "$TMP_ROOT/fresh-hold.err")"
+grep -F "presentation focus lock unavailable; using the ordinary flat layout without projection" "$TMP_ROOT/fresh-hold.err" >/dev/null 2>&1 \
+  || fail "fresh spawn under a session lock held ${FRESH_HOLD_SECS}s projected instead of falling back flat after ${FRESH_HOLD_ELAPSED}s (a widened fresh bound, or a runner whose 50 lock polls outlasted the hold): $(cat "$TMP_ROOT/fresh-hold.err")"
+remember_meta_worktree "$HOME_DIR/state/$FRESH_HOLD_ID.meta" >/dev/null
+[ ! -e "$HOME_DIR/state/$FRESH_HOLD_ID.herdr-presentation" ] \
+  || fail "fresh spawn under a long-held session lock published a projection journal"
+assert_focus_is "$FRESH_HOLD_FOCUS" "fresh spawn under a long-held session lock"
+teardown_task "$FRESH_HOLD_ID" "$HOME_DIR" > "$TMP_ROOT/fresh-hold-teardown.out" 2> "$TMP_ROOT/fresh-hold-teardown.err" \
+  || fail "fresh long-hold fixture teardown failed"
+pass "real Herdr lab: a fresh spawn under the same long-held session lock keeps its short bound and falls back flat"
+
 # Two homes recovering concurrently serialize on the named session lock and
 # each replace only their own exact husk.
 PRIMARY_WAVE_ID=resume-wave-primary

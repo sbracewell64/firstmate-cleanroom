@@ -1,0 +1,47 @@
+## CPU starvation: test pinned to one CPU shared with 12 busy loops (taskset -c 3), 3 rounds each
+### round 1: base (41d0ab3) test: fixed 'sleep 0.2; kill -0' deadline
+not ok - a busy reconcile lock blocked the reconcile path
+
+real	0m21.917s
+user	0m0.881s
+sys	0m0.344s
+exit=1
+### round 1: target (6981a3a) test: bounded poll exits_while_lock_held (<= 5 s)
+ok - busy reconcile lifecycle locks never block the digest or start cooldown
+ok - the busy-lock assertion still reports a waiter that blocks on the held lock
+
+real	0m48.023s
+user	0m4.076s
+sys	0m1.257s
+exit=0
+### round 2: base (41d0ab3) test: fixed 'sleep 0.2; kill -0' deadline
+not ok - a busy reconcile lock blocked the reconcile path
+
+real	0m22.396s
+user	0m0.892s
+sys	0m0.304s
+exit=1
+### round 2: target (6981a3a) test: bounded poll exits_while_lock_held (<= 5 s)
+ok - busy reconcile lifecycle locks never block the digest or start cooldown
+ok - the busy-lock assertion still reports a waiter that blocks on the held lock
+
+real	0m48.343s
+user	0m4.030s
+sys	0m1.279s
+exit=0
+### round 3: base (41d0ab3) test: fixed 'sleep 0.2; kill -0' deadline
+not ok - a busy reconcile lock blocked the reconcile path
+
+real	0m22.032s
+user	0m0.885s
+sys	0m0.305s
+exit=1
+### round 3: target (6981a3a) test: bounded poll exits_while_lock_held (<= 5 s)
+ok - busy reconcile lifecycle locks never block the digest or start cooldown
+ok - the busy-lock assertion still reports a waiter that blocks on the held lock
+
+real	0m48.173s
+user	0m4.025s
+sys	0m1.302s
+exit=0
+done

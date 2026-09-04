@@ -1,0 +1,46 @@
+$ bin/fm-test-run.sh --serial-shard-loads
+portable-serial-1of4	35	972561
+portable-serial-2of4	34	972552
+portable-serial-3of4	34	972556
+portable-serial-4of4	36	972550
+
+$ bin/fm-test-run.sh --check-coverage
+FM_TEST_COVERAGE ok total=175 parallel=24 serial=139 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=972561
+exit=0
+
+$ FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=20 bin/fm-test-run.sh --check-coverage   # old cap: what-if
+fm-test-run: coverage guard: portable serial shard hint total exceeds 66% of the 20-minute job cap (792000ms): portable-serial-1of4=972561ms/35scripts portable-serial-2of4=972552ms/34scripts portable-serial-3of4=972556ms/34scripts portable-serial-4of4=972550ms/36scripts
+fm-test-run: refresh the hints and rebalance per docs/fm-test-portable-shards.md before a runner is cancelled at the cap
+exit=1
+
+$ FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=25 bin/fm-test-run.sh --check-coverage
+FM_TEST_COVERAGE ok total=175 parallel=24 serial=139 serial_shards=4 herdr=12 serial_cap_min=25 serial_shard_budget_ms=990000 serial_shard_max_hint_ms=972561
+exit=0
+
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='soon' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='08' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='0' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='361' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+$ TMPDIR=$S FM_PORTABLE_SERIAL_JOB_CAP_MINUTES='1000' bin/fm-test-run.sh --check-coverage
+fm-test-run: FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be a whole number of minutes from 1 to 360 with no leading zero
+exit=2
+leftover temp dirs under $S: 0
+
+$ python3: ci.yml jobs.tests-portable-serial.timeout-minutes
+30

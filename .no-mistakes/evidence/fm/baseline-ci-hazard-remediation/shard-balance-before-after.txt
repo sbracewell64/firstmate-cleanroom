@@ -1,0 +1,12 @@
+# Baseline (41d0ab3) shard assignment, weighed with the measured durations from CI run 33747352811 (the hints the fix adopts).
+# Base ci.yml cap: 20 min
+base portable-serial-1of4	34 scripts	705820 ms (~11.8 min)
+base portable-serial-2of4	36 scripts	938892 ms (~15.6 min)
+base portable-serial-3of4	35 scripts	1161853 ms (~19.4 min)
+base portable-serial-4of4	34 scripts	1083654 ms (~18.1 min)
+
+# Target (6981a3a) rebalanced assignment (bin/fm-test-run.sh --serial-shard-loads), cap 30 min, budget 66% = 19.8 min:
+portable-serial-1of4	35 scripts	972561 ms (~16.2 min)
+portable-serial-2of4	34 scripts	972552 ms (~16.2 min)
+portable-serial-3of4	34 scripts	972556 ms (~16.2 min)
+portable-serial-4of4	36 scripts	972550 ms (~16.2 min)

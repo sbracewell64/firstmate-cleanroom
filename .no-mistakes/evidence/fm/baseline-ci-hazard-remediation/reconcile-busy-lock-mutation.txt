@@ -1,0 +1,20 @@
+## target (6981a3a) busy-lock tests, unloaded
+ok - busy reconcile lifecycle locks never block the digest or start cooldown
+ok - the busy-lock assertion still reports a waiter that blocks on the held lock
+
+real	0m7.409s
+user	0m2.272s
+sys	0m2.096s
+exit=0
+
+## mutant: bin/fm-secondmate-reconcile.sh line 272 uses fm_lock_acquire_wait (genuinely blocks on the held control lock); new bounded poll must report it
+272c272
+<     if ! fm_lock_try_acquire "$control_lock"; then
+---
+>     if ! fm_lock_acquire_wait "$control_lock"; then
+not ok - a busy control lock blocked the reconcile path
+
+real	0m8.309s
+user	0m2.544s
+sys	0m2.051s
+exit=1

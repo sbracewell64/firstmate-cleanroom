@@ -833,6 +833,8 @@ select_lane() {
 run_coverage_guard() {
   local tmp missing extra a b shard budget cap max_load over lane count load
   local -a saved_scripts=()
+  cap=$(portable_serial_job_cap_minutes)
+  budget=$((cap * 60 * 1000 * PORTABLE_SERIAL_SHARD_BUDGET_PERCENT / 100))
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-coverage.XXXXXX")
 
   all_repo_tests | LC_ALL=C sort -u >"$tmp/all"
@@ -907,8 +909,6 @@ run_coverage_guard() {
   # test that grew or a newly added script is caught here rather than by a
   # runner cancelled at the cap. Hints are balance estimates, so this is a
   # drift tripwire against the recorded measurements, not a wall-clock bound.
-  cap=$(portable_serial_job_cap_minutes)
-  budget=$((cap * 60 * 1000 * PORTABLE_SERIAL_SHARD_BUDGET_PERCENT / 100))
   max_load=0
   over=
   while IFS=$'\t' read -r lane count load; do

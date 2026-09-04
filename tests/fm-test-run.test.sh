@@ -1112,7 +1112,7 @@ test_portable_serial_shard_hints_stay_inside_the_job_cap_budget() {
   # The coverage guard budgets every serial shard's summed duration hints at a
   # stated fraction of the job cap, so a grown test is caught here rather than
   # by a runner cancelled at the cap.
-  local tmp out loads count budget max lane n load rc bad
+  local tmp out loads count budget max lane n load rc bad leftover
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-shard-budget.XXXXXX")
   out=$("$RUNNER" --check-coverage) || { rm -rf "$tmp"; fail "coverage guard failed: $out"; }
   budget=$(printf '%s\n' "$out" | sed -n 's/.* serial_shard_budget_ms=\([0-9]*\).*/\1/p')
@@ -1152,14 +1152,20 @@ EOF
     || { rm -rf "$tmp"; fail "budget refusal must name the offending shard: $(cat "$tmp/err")"; }
   grep -q 'FM_TEST_COVERAGE ok' "$tmp/out" && { rm -rf "$tmp"; fail "budget refusal must not print the ok marker"; }
 
+  # A refused what-if cap must leave no scratch directory behind, so each
+  # refusal runs under a private TMPDIR that must still be empty afterwards.
+  mkdir "$tmp/scratch"
   for bad in soon 08 0 '' 361; do
     set +e
-    FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=$bad "$RUNNER" --check-coverage >"$tmp/out2" 2>"$tmp/err2"
+    TMPDIR="$tmp/scratch" FM_PORTABLE_SERIAL_JOB_CAP_MINUTES=$bad "$RUNNER" --check-coverage >"$tmp/out2" 2>"$tmp/err2"
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "what-if cap '$bad' must refuse (exit 2), got $rc"; }
     grep -Fq 'FM_PORTABLE_SERIAL_JOB_CAP_MINUTES must be' "$tmp/err2" \
       || { rm -rf "$tmp"; fail "what-if cap '$bad' refusal must name the variable: $(cat "$tmp/err2")"; }
+    leftover=$(ls -A "$tmp/scratch")
+    [ -z "$leftover" ] \
+      || { rm -rf "$tmp"; fail "what-if cap '$bad' refusal must leave no temp directory: $leftover"; }
   done
   rm -rf "$tmp"
   pass "portable serial shard hints are budgeted against the job cap and the guard fails on drift"

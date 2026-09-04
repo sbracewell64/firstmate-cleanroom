@@ -67,7 +67,7 @@ Assignment is longest-processing-time bin packing over per-script duration hints
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of CI run [33747352811](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/33747352811) on 2026-09-03, where the lane ran 139 scripts in 3890219 ms of serial work.
 That run was the first on this repository whose four shard artifacts covered every serial script; the earlier hints from 2026-08-21 had left the scripts that grew since then, such as `tests/fm-public-followup.test.sh` at 244 s against a 36 s hint, piled onto one shard that reached the job cap.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
-Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
+Hints affect balance and the shard budget guard below, never coverage: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard or a budget refusal rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured or grown scripts let one shard carry far more than another shard's real work and reach the job cap while another runner sits idle.
 Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
 
@@ -121,4 +121,4 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
-`.github/workflows/ci.yml` owns the exact numbers.
+`.github/workflows/ci.yml` owns the exact numbers, except the portable serial cap, which `bin/fm-test-run.sh` states and the workflow must match.

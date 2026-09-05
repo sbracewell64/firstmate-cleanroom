@@ -208,7 +208,8 @@ The config `root=` line never pairs with a programme located through the flag or
 The programme file is a data input, never executable authority; the resolver's header owns its exact schema and the result contract.
 Absent, every consumer of the resolver (the session-start digest, the fleet snapshot and its bearings and view projections, and the away-mode digest) stays silent about programme authority rather than inventing a state.
 The file is a home-local pin and is not inherited by secondmate homes.
-[`programme-continuation.md`](programme-continuation.md) owns the mechanism, the invariant, and the consumer census.
+`bin/fm-programme-projection.sh` reads the same pin through the resolver and composes its result into a stateless projection tuple; its header owns the optional `phase`, `task_id`, and `delegation` programme-file fields only that layer reads.
+[`programme-continuation.md`](programme-continuation.md) owns the mechanism, the invariant, the consumer census, and the projection substrate's boundary.
 
 ## Gate defaults (.no-mistakes.yaml)
 

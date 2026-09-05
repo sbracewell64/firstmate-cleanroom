@@ -59,6 +59,11 @@
 #     home also carries reconcile_inventory independently of projection trust.
 #     Actionable captain holds
 #     appear in decisions_open; blocked captain holds remain queued with metadata.
+#   programme_continuation: {configured:false}, or the typed
+#     fm-continuation-resolution/v1 object from bin/fm-continuation-resolve.sh
+#     plus configured:true, or {configured:true,error,exit_code} when the
+#     resolver failed. It is the only programme-authority field: projections
+#     read it and never re-derive proceed/wait/captain from rows or prose.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes are partial, not unreadable, when an unavailable child state
@@ -1397,6 +1402,20 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
     | .records |= sort_by([(.completion.date // ""), .id]) | .records |= reverse'
 }
 
+# The typed programme-continuation resolution (bin/fm-continuation-resolve.sh,
+# schema fm-continuation-resolution/v1) when this home pins a programme, else
+# {configured:false}. A resolver failure is reported, never replaced by a guess,
+# so no projection over this snapshot can derive programme authority itself.
+programme_continuation_json() {
+  local out rc=0
+  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>&1) || rc=$?
+  case "$rc" in
+    0) printf '%s' "$out" | jq -c '. + {configured:true}' ;;
+    3) jq -n '{configured:false}' ;;
+    *) jq -n --arg err "$out" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
+  esac
+}
+
 scout_report_lines() {
   local report id
   if [ ! -d "$DATA" ]; then
@@ -1422,6 +1441,7 @@ if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
 fi
 
 SCOUT_REPORTS_JSON=$(scout_report_lines)
+PROGRAMME_JSON=$(programme_continuation_json)
 MAIN_INVENTORY_JSON=$(main_inventory_json "$BACKLOG_JSON" "$TASKS_JSON") \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 SECONDMATE_CURRENT_JSON=$(secondmate_current_json "$TASKS_JSON") \
@@ -1443,6 +1463,7 @@ jq -n \
   --argjson scout_reports "$SCOUT_REPORTS_JSON" \
   --argjson secondmate_current "$SECONDMATE_CURRENT_JSON" \
   --argjson secondmate_landed "$SECONDMATE_LANDED_JSON" \
+  --argjson programme_continuation "$PROGRAMME_JSON" \
   'def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
    def task_by_id($id): ($tasks[]? | select(.id == $id) | .) // null;
    def report_kind($id): (task_by_id($id).kind // backlog_by_id($id).kind // "scout");
@@ -1457,6 +1478,7 @@ jq -n \
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),
      secondmate_current:$secondmate_current,
      secondmate_landed:$secondmate_landed,
+     programme_continuation:$programme_continuation,
      secondmate_guidance:{
        note:"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
      }

@@ -91,6 +91,12 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     (.backlog.records[] | select(.state == "done") | backlog_row(.))
    end),
   "",
+  "## Programme continuation",
+  (if (.programme_continuation.configured // false) | not then "No programme is configured for this home."
+   elif .programme_continuation.error then "Resolver failed (exit \(.programme_continuation.exit_code)); continuation authority is unproven, not captain-gated."
+   else "\(.programme_continuation.programme.id): next action \(.programme_continuation.next_action // "none (complete)") - \(.programme_continuation.classification) / \(.programme_continuation.authority_state) [\(.programme_continuation.reason_code)]. Owner: bin/fm-continuation-resolve.sh."
+   end),
+  "",
   "## Secondmates",
   .secondmate_guidance.note
 '

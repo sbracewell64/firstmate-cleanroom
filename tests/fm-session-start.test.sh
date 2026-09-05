@@ -2250,6 +2250,52 @@ EOF
 
 # --- fleet-state digest: no in-flight tasks ----------------------------------
 
+# The typed programme-continuation owner reaches the digest verbatim when a
+# programme is pinned, and stays silent when none is.
+test_fleet_digest_programme_continuation() {
+  local rec root home fakebin out
+  rec=$(new_world programme)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # The toolchain's silent node stub would shadow the real node tasks-axi runs
+  # on, making the hold store read as unreadable; this case needs the real one.
+  rm -f "$fakebin/node"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "Programme continuation" "an unpinned home must print no programme subsection"
+
+  mkdir -p "$home/cleanroom/artifacts/proofs/proof-a/attempt-1"
+  printf '{"outcome":"PROVED"}\n' > "$home/cleanroom/artifacts/proofs/proof-a/attempt-1/disposition.json"
+  cat > "$home/cleanroom/programme.json" <<'JSON'
+{"schema":"p/v1","programme_id":"fixture","authorization_basis":{"kind":"standing_sequence_grant","refs":["grant ref"]},
+ "reserved_axes":["new_paid_spend"],
+ "steps":[{"id":"proof-a","artifact_root":"artifacts/proofs/proof-a","terminal_predicate":{"kind":"latest_attempt_disposition_outcome_in","accept":["PROVED"]}},
+          {"id":"proof-b","artifact_root":"artifacts/proofs/proof-b","terminal_predicate":{"kind":"latest_attempt_disposition_outcome_in","accept":["PROVED"]}}]}
+JSON
+  printf 'programme=%s\nroot=%s\n' "$home/cleanroom/programme.json" "$home/cleanroom" > "$home/config/programme"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+  printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  # The suite's BASE_PATH is the bare system path; when a real tasks-axi is
+  # installed, expose its directory so the resolver can read the hold store.
+  local path="$fakebin:$BASE_PATH"
+  if command -v tasks-axi >/dev/null 2>&1; then path="$fakebin:$(dirname "$(command -v tasks-axi)"):$BASE_PATH"; fi
+  out=$(run_session_start "$home" "$root" "$path")
+  assert_contains "$out" "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)" "a pinned programme must print the typed subsection"
+  assert_contains "$out" "next action proof-b" "the digest names the resolver's next action"
+  assert_contains "$out" "Consume this typed result" "the digest states the consumption rule"
+  if command -v tasks-axi >/dev/null 2>&1; then
+    assert_contains "$out" "Typed result: SELF_HANDLE / AUTHORIZED [STANDING_GRANT]" "with a readable hold store the digest carries the authorized result"
+  else
+    assert_contains "$out" "Typed result: BROWSER_SOL / CNO [HOLD_STORE_UNREADABLE]" "without tasks-axi the digest carries CNO, never AUTHORIZED"
+  fi
+  printf '%s' "$out" | grep -qiE 'needs your word|without your word|captain required' && fail "the digest must not assert a captain gate"
+
+  pass "the fleet-state digest embeds the typed programme continuation when pinned and stays silent otherwise"
+}
+
 test_fleet_digest_empty_fleet() {
   local rec root home fakebin out
   rec=$(new_world empty-fleet)
@@ -2493,6 +2539,7 @@ test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
 test_fleet_digest_empty_fleet
+test_fleet_digest_programme_continuation
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
 test_supervision_block_exactly_one_and_pi_diagnostic

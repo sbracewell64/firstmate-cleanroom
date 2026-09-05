@@ -689,6 +689,18 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+# The typed programme-continuation token for a digest, or nothing. Owned by
+# bin/fm-continuation-resolve.sh; this daemon embeds and never interprets it.
+programme_digest_token() {
+  local out rc=0
+  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
+  case "$rc" in
+    0) printf ' | %s' "$(_collapse_newlines "$out")" ;;
+    3) : ;;
+    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
+  esac
+}
+
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
@@ -702,6 +714,11 @@ escalate_flush() {  # <state>
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
+  # Away continuation reads programme authority from the typed owner, never from
+  # the digest's event prose: append the one-line typed resolution when this
+  # home pins a programme (exit 3 = none configured, stay silent; a failure is
+  # named rather than guessed).
+  msg="$msg$(programme_digest_token)"
   if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
   return 1
 }

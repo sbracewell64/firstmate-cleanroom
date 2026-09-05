@@ -13,6 +13,12 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand places an existing task under an active captain hold, or creates the task when nothing exists to hold, then verifies the hold through `tasks-axi hold <id> --reason <reason> --kind captain`.
 Repeats are idempotent, a closed task is refused rather than reopened, and `--until` stores the captain's own deferral date through tasks-axi's date gate.
 
+A hold gates a pinned programme step only through the one typed `Continuation-binding:` body line whose format `bin/fm-continuation-lib.sh` owns.
+`hold --action <step> [--axis <axis>] [--programme <id>]` records that line with the captain hold, and `bind-action` records or replaces it on any open task whatever its hold kind, so a Browser Sol ruling wait or an external wait is an external-kind hold whose binding carries `--wait ruling` or `--wait external`.
+The script validates and stores the tokens; whether an axis is reserved, and every proceed, wait, or captain conclusion drawn from a binding, belongs to `bin/fm-continuation-resolve.sh`, which reads the line back through tasks-axi and treats an unbound, lifted, closed, or differently scoped hold as gating nothing.
+Replacing an existing, different binding archives the previous body through tasks-axi `--archive-body`.
+[`programme-continuation.md`](programme-continuation.md) owns that resolver's contract.
+
 The `answer` subcommand records the captain's exact words and closes the call in the same act.
 It requires a non-empty captain decision file of at most 8192 bytes, writes a resolution block carrying the decision digest and a `Resolution mode:` at the top of the task body (the previous body is preserved below the block and archived through tasks-axi `--archive-body`), then runs `tasks-axi done` - or `tasks-axi unhold` under `--release`, so a captain-gated work item resumes instead of closing.
 An exact retry is idempotent only when the requested close mode matches the newest record; a drifted answer or mode mismatch is rejected, while a re-held task accepts a new answer as a new record on top.

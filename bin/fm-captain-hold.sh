@@ -20,7 +20,10 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--action <step-id> [--axis <axis>] [--programme <programme-id>]]
+#   fm-captain-hold.sh bind-action <task-id> --action <step-id> \
+#     [--axis <axis>] [--programme <programme-id>] [--wait ruling|external]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -38,6 +41,21 @@
 # idempotent; a task already closed is refused rather than reopened. `--until`
 # records the captain's own deferral date through `tasks-axi hold --until`, so
 # a "revisit later" answer is stored as a date instead of a live card.
+#
+# TYPED ACTION BINDING. A hold gates a programme step only when it says so in
+# typed form: the one `Continuation-binding:` body line whose format
+# bin/fm-continuation-lib.sh owns (action, optional programme, axis, wait).
+# `hold --action <step> [--axis <axis>] [--programme <id>]` records that line
+# together with the captain hold, and `bind-action` records or replaces it on
+# any open task whatever its hold kind - a Browser Sol ruling wait or an
+# external wait is a `tasks-axi hold --kind external` whose binding carries
+# `--wait ruling` or `--wait external`. This script validates the tokens as
+# slugs and stores them; it never judges whether an axis is reserved. That
+# judgment, and every proceed/wait/captain conclusion drawn from a binding,
+# belongs to bin/fm-continuation-resolve.sh, which reads the line back through
+# tasks-axi. A hold without a binding, on another action, or lifted (task
+# unheld or closed) gates nothing there. Replacing an existing, different
+# binding archives the previous body through tasks-axi --archive-body.
 #
 # `answer` records the captain's exact words and closes the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes,
@@ -140,6 +158,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-continuation-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-continuation-lib.sh"
 
 CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
@@ -299,42 +320,10 @@ origin_open_decisions() {  # <origin-id>
   printf '%s' "$open"
 }
 
-# A resolution record written by this script or by the retired
-# fm-decision-hold.sh. Both carry the same leader-then-captain-decision shape.
-body_has_resolution_record() {  # <task-body>
-  case "$1" in
-    *"Resolution recorded by fm-captain-hold."*"Captain decision:"*) return 0 ;;
-    *"Resolution recorded by fm-decision-hold."*"Captain decision:"*) return 0 ;;
-  esac
-  return 1
-}
-
-# The recorded decision digest of either record format, from the show-escaped
-# body (multi-line bodies print as one quoted line with \n escapes). Records
-# are prepended, so the first match is the newest record.
-recorded_decision_digest() {  # <task-body>
-  local rest=$1
-  case "$rest" in
-    *"Decision digest: "*) rest=${rest#*"Decision digest: "} ;;
-    *) return 1 ;;
-  esac
-  rest=${rest%%\\n*}
-  rest=${rest%%$'\n'*}
-  printf '%s' "$rest"
-}
-
-# The newest record's `Resolution mode:` value; empty for a record predating it.
-recorded_resolution_mode() {  # <task-body>
-  local rest=$1
-  case "$rest" in
-    *"Resolution mode: "*) rest=${rest#*"Resolution mode: "} ;;
-    *) return 1 ;;
-  esac
-  rest=${rest%%\\n*}
-  rest=${rest%%$'\n'*}
-  printf '%s' "$rest"
-}
-
+# The resolution record's shape and its readers (fm_continuation_answer_recorded,
+# fm_continuation_answer_digest, fm_continuation_answer_mode) are owned by
+# bin/fm-continuation-lib.sh so the resolver reads the same contract this
+# script writes.
 resolution_block() {  # <mode>
   printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n' \
     "$DECISION_DIGEST" "$1" "$DECISION_TEXT"
@@ -348,7 +337,7 @@ verify_hold_durable() {  # <task-id>
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
-  if body_has_resolution_record "$body"; then
+  if fm_continuation_answer_recorded "$body"; then
     return 0
   fi
   if [ "$state" != "done" ] && [ "$hold_kind" = captain ]; then
@@ -378,6 +367,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind
+  local action='' axis='' programme=''
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -387,6 +377,9 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --action) shift; action=${1:-} ;;
+      --axis) shift; axis=${1:-} ;;
+      --programme) shift; programme=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -397,6 +390,7 @@ command_hold() {
   if [ -n "$origin" ]; then
     validate_slug origin-id "$origin"
   fi
+  validate_binding_tokens "$action" "$axis" "$programme" ''
   if [ -n "$until" ]; then
     case "$until" in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
@@ -423,6 +417,9 @@ command_hold() {
     [ -n "$repo" ] || repo=firstmate
     validate_one_line repo "$repo"
     [ -z "$origin" ] || body=$(printf 'Origin: %s' "$origin")
+    if [ -n "$action" ]; then
+      body=$(printf '%s%s%s' "$body" "${body:+$'\n'}" "$(fm_continuation_binding_line "$action" "$programme" "$axis" '')")
+    fi
     if [ -n "$body" ]; then
       tasks_axi add "$id" "$title" --repo "$repo" --body "$body" >/dev/null \
         || fail "could not create task $id"
@@ -441,6 +438,66 @@ command_hold() {
   show=$(task_show "$id") || fail "task $id disappeared while holding it"
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  [ -z "$action" ] || write_binding "$id" "$action" "$programme" "$axis" ''
+  printf '%s\n' "$id"
+}
+
+validate_binding_tokens() {  # <action> <axis> <programme> <wait>
+  local action=$1 axis=$2 programme=$3 wait=$4
+  if [ -z "$action" ]; then
+    [ -z "$axis" ] && [ -z "$programme" ] && [ -z "$wait" ] \
+      || fail "--axis, --programme, and --wait require --action"
+    return 0
+  fi
+  validate_slug action "$action"
+  [ -z "$axis" ] || validate_slug axis "$axis"
+  [ -z "$programme" ] || validate_slug programme "$programme"
+  [ -z "$wait" ] || fm_continuation_is_wait "$wait" || fail "--wait must be one of: $FM_CONTINUATION_HOLD_WAITS"
+}
+
+# Record the one typed binding line in the task body. Idempotent when the line
+# is already present verbatim; a different existing binding is replaced and the
+# previous body archived.
+write_binding() {  # <task-id> <action> <programme> <axis> <wait>
+  local id=$1 show body line existing rest new_body archive=0
+  line=$(fm_continuation_binding_line "$2" "$3" "$4" "$5")
+  show=$(task_show "$id") || fail "task $id is absent from $FM_HOME/data/backlog.md"
+  [ "$(show_field "$show" state)" != "done" ] || fail "task $id is already closed; a binding needs an open task"
+  body=$(show_field_value "$show" body)
+  existing=$(fm_continuation_binding_from_body "$body")
+  [ "$existing" != "$line" ] || return 0
+  rest=$(printf '%s\n' "$body" | grep -v "^$FM_CONTINUATION_BINDING_KEY " | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' || true)
+  [ -z "$existing" ] || archive=1
+  if [ -n "$rest" ]; then new_body=$(printf '%s\n%s' "$rest" "$line"); else new_body=$line; fi
+  if [ "$archive" = 1 ]; then
+    tasks_axi update "$id" --body "$new_body" --archive-body >/dev/null || fail "could not record the binding on task $id"
+  else
+    tasks_axi update "$id" --body "$new_body" >/dev/null || fail "could not record the binding on task $id"
+  fi
+  show=$(task_show "$id") || fail "task $id disappeared while binding it"
+  [ "$(fm_continuation_binding_from_body "$(show_field_value "$show" body)")" = "$line" ] \
+    || fail "task $id did not retain its binding line"
+}
+
+command_bind_action() {
+  local id=${1:-} action='' axis='' programme='' wait=''
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --action) shift; action=${1:-} ;;
+      --axis) shift; axis=${1:-} ;;
+      --programme) shift; programme=${1:-} ;;
+      --wait) shift; wait=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ -n "$action" ] || fail "--action is required"
+  validate_binding_tokens "$action" "$axis" "$programme" "$wait"
+  require_tasks_axi
+  write_binding "$id" "$action" "$programme" "$axis" "$wait"
   printf '%s\n' "$id"
 }
 
@@ -497,11 +554,11 @@ command_answer() {
   if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
 
   if [ "$state" = "done" ]; then
-    if body_has_resolution_record "$body"; then
+    if fm_continuation_answer_recorded "$body"; then
       # An exact compatible retry is an idempotent no-op; drift is rejected.
-      [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+      [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ] \
         || fail "captain-held task $id records a different captain decision"
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
+      recorded_mode=$(fm_continuation_answer_mode "$body" || true)
       [ "$recorded_mode" != released ] \
         || fail "task $id records this answer with mode released; a closed task cannot replay that release"
       [ "$release" = 0 ] \
@@ -518,7 +575,7 @@ command_answer() {
     write_resolution_record "$id" repaired "$body"
     show=$(task_show "$id") || fail "task $id disappeared while recording the answer"
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
-    body_has_resolution_record "$(show_field "$show" body)" \
+    fm_continuation_answer_recorded "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     printf 'repaired: %s\n' "$id"
     return 0
@@ -531,9 +588,9 @@ command_answer() {
     # its own record on top. Either way the close mode is the caller's flag,
     # checked against an interrupted close's recorded mode so a retry cannot
     # silently flip a release into a close.
-    if body_has_resolution_record "$body" \
-      && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
+    if fm_continuation_answer_recorded "$body" \
+      && [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+      recorded_mode=$(fm_continuation_answer_mode "$body" || true)
       case "$recorded_mode" in
         released) [ "$release" = 1 ] || fail "task $id records this answer as a release; retry with --release" ;;
         answered) [ "$release" = 0 ] || fail "task $id records this answer as a close; retry without --release" ;;
@@ -545,16 +602,16 @@ command_answer() {
     write_resolution_record "$id" "$outcome" "$body"
     close_answered "$id" "$release"
     show=$(task_show "$id") || fail "task $id disappeared after closing"
-    body_has_resolution_record "$(show_field "$show" body)" \
+    fm_continuation_answer_recorded "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
 
   # Not held and not closed: only an already-recorded release replays cleanly.
-  if body_has_resolution_record "$body"; then
-    recorded_mode=$(recorded_resolution_mode "$body" || true)
-    [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+  if fm_continuation_answer_recorded "$body"; then
+    recorded_mode=$(fm_continuation_answer_mode "$body" || true)
+    [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ] \
       || fail "task $id records a different captain decision with mode ${recorded_mode:-unknown}"
     [ "$recorded_mode" = released ] && [ "$release" = 1 ] \
       || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
@@ -727,9 +784,9 @@ command_answers() {
     state=$(show_field "$show" state)
     hold_kind=$(show_field_value "$show" hold_kind)
     body=$(show_field "$show" body)
-    recorded_digest=$(recorded_decision_digest "$body" || true)
-    recorded_mode=$(recorded_resolution_mode "$body" || true)
-    if body_has_resolution_record "$body" \
+    recorded_digest=$(fm_continuation_answer_digest "$body" || true)
+    recorded_mode=$(fm_continuation_answer_mode "$body" || true)
+    if fm_continuation_answer_recorded "$body" \
       && { [ "$recorded_digest" = "$digest" ] \
         || { case "$body" in *"Resolution recorded by fm-decision-hold."*) true ;; *) false ;; esac \
           && [ -n "$legacy_digest" ] && [ "$recorded_digest" = "$legacy_digest" ]; }; }; then
@@ -988,6 +1045,7 @@ EOF
 
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
+  bind-action) shift; command_bind_action "$@" ;;
   answer) shift; command_answer "$@" ;;
   answers) shift; command_answers "$@" ;;
   bind) shift; command_bind "$@" ;;

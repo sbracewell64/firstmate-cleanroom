@@ -407,12 +407,29 @@ SH
   out=$(PATH="$fakebin:$PATH" run_resolve "$home" resolve) || fail "silent hold store resolve failed"
   expect_typed "$out" proof-b BROWSER_SOL CNO HOLD_STORE_UNREADABLE "silent hold store"
   pass "a silent hold store (exit 0, no listing) is unreadable, not empty"
+
+  # A store that lists a held task but cannot show it is partially unreadable:
+  # the hold it names might be a bound captain hold, so the task is never
+  # skipped and the result is CNO naming that task, never AUTHORIZED.
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list)
+    printf 'count: 1\ntasks[1]{id,state,kind,repo,title,hold_kind}:\n  ghost-hold,queued,task,"-",fixture ghost-hold,captain\n'
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  out=$(PATH="$fakebin:$PATH" run_resolve "$home" resolve) || fail "partially unreadable hold store resolve failed"
+  expect_typed "$out" proof-b BROWSER_SOL CNO HOLD_STORE_UNREADABLE "partially unreadable hold store"
+  assert_contains "$(field "$out" '.cno.detail')" "ghost-hold" "the CNO detail names the task that could not be shown"
+  pass "a listed held task whose record cannot be shown is an unreadable store, not a skipped hold"
 }
 
 # --- programme completion and configuration ----------------------------------------
 
 test_completion_and_configuration() {
-  local home out rc
+  local home other out rc
   home=$(make_home complete)
   disposition "$home" proof-a 1 PROVED
   disposition "$home" proof-b 1 PROVED
@@ -422,6 +439,29 @@ test_completion_and_configuration() {
   [ "$(field "$out" '.reason_code')" = PROGRAMME_COMPLETE ] || fail "complete: reason"
   [ "$(field "$out" '.completed | length')" = 3 ] || fail "complete: three terminal steps"
   pass "every step terminal-good resolves to PROGRAMME_COMPLETE with no next action"
+
+  # The artifact root pairs with the source that located the programme: with
+  # config/programme still pinning the fully-proved tree, an environment- or
+  # flag-located programme in another tree must read that tree's dispositions.
+  other=$(make_home config-other-tree)
+  disposition "$other" proof-a 1 PROVED
+  out=$(FM_PROGRAMME="$other/cleanroom/programme.json" FM_PROGRAMME_ROOT="$other/cleanroom" run_resolve "$home" resolve) || fail "env-overridden programme failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "env programme with env root over config root"
+  [ "$(field "$out" '.applicability.predecessor.disposition')" = "$other/cleanroom/artifacts/proofs/proof-a/attempt-1/disposition.json" ] \
+    || fail "env programme read its predecessor from the config root tree"
+  pass "FM_PROGRAMME pairs with FM_PROGRAMME_ROOT, never with the config root= line"
+
+  out=$(FM_PROGRAMME="$other/cleanroom/programme.json" run_resolve "$home" resolve) || fail "env programme without root failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "env programme falls back to its own directory"
+  pass "FM_PROGRAMME without FM_PROGRAMME_ROOT resolves against its own directory, not the config root"
+
+  out=$(run_resolve "$home" resolve --programme "$other/cleanroom/programme.json") || fail "flag programme failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "flag programme falls back to its own directory"
+  pass "--programme pairs with --root or FM_PROGRAMME_ROOT, then its own directory"
+
+  out=$(FM_PROGRAMME="$other/cleanroom/programme.json" run_resolve "$home" resolve --root "$home/cleanroom") || fail "flag root failed"
+  [ "$(field "$out" '.reason_code')" = PROGRAMME_COMPLETE ] || fail "--root must override the paired root"
+  pass "--root overrides every paired root"
 
   rm "$home/config/programme"
   out=$(run_resolve "$home" resolve 2>&1); rc=$?

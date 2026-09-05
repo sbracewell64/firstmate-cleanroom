@@ -29,8 +29,12 @@
 #      Legacy `optional_captain_enhancements[]` entries count as captain_axes
 #      only when `required_to_proceed` is true. Located by --programme, then
 #      FM_PROGRAMME, then the `programme=` line of $FM_HOME/config/programme.
-#      Relative artifact roots resolve against --root, then the config file's
-#      `root=` line, then FM_PROGRAMME_ROOT, then the programme file's directory.
+#      Relative artifact roots resolve against a root paired with the source
+#      that located the programme: --root always wins; a --programme or
+#      FM_PROGRAMME programme then uses FM_PROGRAMME_ROOT; a config-located
+#      programme then uses the config file's `root=` line; the fallback is the
+#      programme file's own directory. The config `root=` never pairs with a
+#      programme located elsewhere.
 #   2. Proof dispositions: <root>/<artifact_root>/attempt-<n>/disposition.json,
 #      read for `.outcome` only; the highest-numbered attempt is the current one
 #      (predicate kind latest_attempt_disposition_outcome_in).
@@ -161,14 +165,21 @@ config_value() {  # <key>
 PROGRAMME=''
 ROOT=''
 locate_programme() {
-  PROGRAMME=${PROGRAMME_OPT:-${FM_PROGRAMME:-$(config_value programme)}}
+  local root_default=''
+  if [ -n "$PROGRAMME_OPT" ]; then
+    PROGRAMME=$PROGRAMME_OPT; root_default=${FM_PROGRAMME_ROOT:-}
+  elif [ -n "${FM_PROGRAMME:-}" ]; then
+    PROGRAMME=$FM_PROGRAMME; root_default=${FM_PROGRAMME_ROOT:-}
+  else
+    PROGRAMME=$(config_value programme); root_default=$(config_value root)
+  fi
   if [ -z "$PROGRAMME" ]; then
     printf 'fm-continuation-resolve: no programme configured (set %s/programme with a programme= line, or pass --programme)\n' "$CONFIG" >&2
     exit 3
   fi
   [ -f "$PROGRAMME" ] || fail "programme file does not exist: $PROGRAMME"
-  ROOT=${ROOT_OPT:-$(config_value root)}
-  [ -n "$ROOT" ] || ROOT=${FM_PROGRAMME_ROOT:-$(cd "$(dirname "$PROGRAMME")" && pwd)}
+  ROOT=${ROOT_OPT:-$root_default}
+  [ -n "$ROOT" ] || ROOT=$(cd "$(dirname "$PROGRAMME")" && pwd)
   [ -d "$ROOT" ] || fail "programme root does not exist: $ROOT"
   jq -e '.programme_id and .schema and (.steps | type == "array" and length > 0)' "$PROGRAMME" >/dev/null 2>&1 \
     || fail "programme file is not a valid programme (programme_id, schema, steps[] required): $PROGRAMME"
@@ -207,13 +218,14 @@ tasks_axi() {
   (cd "$FM_HOME" && tasks-axi "$@")
 }
 
-# Open tasks that carry a hold annotation, as "<id>\t<hold_kind>" lines, from
-# ONE listing. hold_kind is requested as the last column so a quoted comma in a
-# title cannot shift it; an expired captain deferral still carries its kind here
-# even though tasks-axi no longer reports it held. tasks-axi costs about a
-# second per call, so only these tasks are shown in full afterwards.
-held_task_ids() {
-  tasks_axi list --fields hold_kind 2>/dev/null | awk -F, '
+# Open tasks that carry a hold annotation, as "<id>\t<hold_kind>" lines, parsed
+# from ONE captured listing. hold_kind is requested as the last column so a
+# quoted comma in a title cannot shift it; an expired captain deferral still
+# carries its kind here even though tasks-axi no longer reports it held.
+# tasks-axi costs about a second per call, so only these tasks are shown in
+# full afterwards.
+held_task_ids() {  # <listing>
+  printf '%s\n' "$1" | awk -F, '
     /^  [A-Za-z0-9._-]+,/ {
       id = $1
       sub(/^ +/, "", id)
@@ -246,20 +258,24 @@ shown_value() {  # <show-output> <field>
 # Every open task carrying a hold, as JSON rows:
 #   {task, hold_kind, hold_until, action, programme, axis, wait}
 # with binding fields empty when the task has no typed binding line. Returns 1
-# when the store cannot be read (the caller records CNO).
+# when the store cannot be read, printing the detail instead of rows so the
+# caller records CNO naming what failed; a listed held task whose own record
+# cannot be shown is such a failure, never a task to skip, because skipping it
+# could authorize past a live bound hold.
 hold_rows_json() {
-  local ids id show kind until body binding action programme axis wait rows='[]' row
+  local listing ids id show kind until body binding action programme axis wait rows='[]' row
   # A read-only listing, so like the captain-hold owner's own read paths it skips
   # the mutation-oriented compatibility probe; a listing this parser cannot read
   # is an unreadable store (the caller records CNO), never an empty one.
-  command -v tasks-axi >/dev/null 2>&1 || return 1
+  command -v tasks-axi >/dev/null 2>&1 || { printf 'tasks-axi not found on PATH'; return 1; }
   # tasks-axi always leads a listing with its count line; a stub or a broken
   # install that prints nothing is an unreadable store, never an empty one.
-  tasks_axi list --fields hold_kind 2>/dev/null | grep -q '^count: ' || return 1
-  ids=$(held_task_ids) || return 1
+  listing=$(tasks_axi list --fields hold_kind 2>/dev/null) || { printf 'tasks-axi list failed in %s' "$FM_HOME"; return 1; }
+  printf '%s\n' "$listing" | grep -q '^count: ' || { printf 'tasks-axi list printed no count: header in %s' "$FM_HOME"; return 1; }
+  ids=$(held_task_ids "$listing")
   while IFS=$'\t' read -r id kind; do
     [ -n "$id" ] || continue
-    show=$(tasks_axi show "$id" --full 2>/dev/null) || continue
+    show=$(tasks_axi show "$id" --full 2>/dev/null) || { printf 'tasks-axi show %s failed in %s' "$id" "$FM_HOME"; return 1; }
     [ "$(show_field "$show" state)" != "done" ] || continue
     kind=$(shown_value "$show" hold_kind)
     [ -n "$kind" ] || continue
@@ -418,7 +434,7 @@ resolve_json() {
         '$c + [{source:"hold", rank:$rank, classification:$cls, reason_code:$reason, task:$r.task, axis:$r.axis, wait:$r.wait, hold_kind:$r.hold_kind, detail:("task " + $r.task + (if $r.axis != "" then ", axis " + $r.axis else "" end))}]')
     done
   else
-    [ -n "$cno_reason" ] || { cno_reason=HOLD_STORE_UNREADABLE; cno_detail="tasks-axi unavailable or incompatible in $FM_HOME"; }
+    [ -n "$cno_reason" ] || { cno_reason=HOLD_STORE_UNREADABLE; cno_detail=${holds_json:-tasks-axi unavailable or incompatible in $FM_HOME}; }
   fi
 
   # Typed step facts: a reserved axis the action itself declares fires CAPTAIN

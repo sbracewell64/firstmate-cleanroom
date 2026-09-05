@@ -201,8 +201,10 @@ The flag is a home-local supervision-noise preference and is not inherited by se
 ## Programme continuation (config/programme)
 
 The optional local, gitignored `config/programme` file pins the programme whose continuation authority `bin/fm-continuation-resolve.sh` owns.
-It holds `key=value` lines: `programme=` names the pinned programme JSON file and the optional `root=` names the directory relative artifact roots resolve against, defaulting to the programme file's own directory.
-`FM_PROGRAMME` and `FM_PROGRAMME_ROOT` override both for one invocation, and `--programme` / `--root` override everything.
+It holds `key=value` lines: `programme=` names the pinned programme JSON file and the optional `root=` names the directory relative artifact roots resolve against.
+The programme is located by `--programme`, then `FM_PROGRAMME`, then the config `programme=` line.
+The artifact root is paired with whichever source located the programme: `--root` always wins; a `--programme` or `FM_PROGRAMME` programme then uses `FM_PROGRAMME_ROOT`; a config-located programme then uses the config `root=` line; the fallback is the programme file's own directory.
+The config `root=` line never pairs with a programme located through the flag or the environment, so an override never reads dispositions from the pinned tree.
 The programme file is a data input, never executable authority; the resolver's header owns its exact schema and the result contract.
 Absent, every consumer of the resolver (the session-start digest, the fleet snapshot and its bearings and view projections, and the away-mode digest) stays silent about programme authority rather than inventing a state.
 The file is a home-local pin and is not inherited by secondmate homes.

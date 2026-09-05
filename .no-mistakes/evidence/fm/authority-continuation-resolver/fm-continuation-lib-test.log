@@ -1,0 +1,10 @@
+ok - the four classifications map one-to-one onto their authority states and nothing else maps
+ok - dominance is CAPTAIN > BROWSER_SOL > EXTERNAL_DEPENDENCY > SELF_HANDLE
+ok - reserved-axis membership is exact-token, never substring or empty
+ok - the hold-effect table yields CAPTAIN only for a captain hold on a reserved axis and refuses every other captain claim
+ok - a step may claim SELF_HANDLE or BROWSER_SOL; any other claim is refused to BROWSER_SOL
+ok - the binding line round-trips through build, body extraction, and field access with slug-only values
+ok - no non-captain reason code renders captain-gate phrasing
+ok - captain reason codes render the captain's answer as the wait
+ok - the captain-gate phrase pattern matches gate assertions and not ordinary captain mentions
+# fm-continuation-lib.test.sh: all assertions passed

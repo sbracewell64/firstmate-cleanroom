@@ -1,0 +1,75 @@
+ok - F1 Proof A PROVED under the standing grant resolves Proof B as SELF_HANDLE/AUTHORIZED with the exact predecessor disposition as basis
+ok - F1 replay over unchanged canonical state converges on the same applicability digest
+ok - F1 a later attempt changes action_generation and the applicability digest, so a stale resolution cannot be reused
+ok - F2 before the lift, the bound reserved-axis captain hold gates Proof A as CAPTAIN
+ok - F2 after the explicit lift the old hold is non-authoritative and Proof A proceeds under the standing grant
+ok - F6 a closed (superseded) hold is not read as a live gate
+ok - F3 a bound ruling wait resolves Proof B as BROWSER_SOL/REQUIRES_RULING, never CAPTAIN
+ok - F4 a bound external wait resolves Proof B as EXTERNAL_DEPENDENCY/WAITING_EXTERNAL, never CAPTAIN
+ok - F3+F4 with both waits bound, the ruling wait dominates and both holds remain in the basis
+ok - a bound date gate is an external wait while live and non-authoritative once its date has passed
+ok - F5 a typed reserved axis on the next action fires CAPTAIN/REQUIRES_CAPTAIN with no pre-existing hold
+ok - F5 a plain resolve is read-only
+ok - F9 non-vacuity: --materialize creates the canonical captain hold through fm-captain-hold.sh and the result then rests on that durable hold
+ok - F9 materialize is idempotent and converges on one stable binding across replays
+ok - F9 a captain answer recorded in release mode retires the typed fact: SELF_HANDLE/AUTHORIZED with no programme-file edit
+ok - F9 an answered fact stays retired under a later external hold, which gates as EXTERNAL_DEPENDENCY and survives materialize
+ok - F9 an answered fact stays retired under an unrelated non-captain hold
+ok - F9 a captain answer recorded in close mode retires the typed fact
+ok - F9 an answer bound to another programme does not retire this programme's fact
+ok - F9 an answer bound to proof-b does not retire a later action's fact even on that action's own decision task
+ok - F9 a recorded answer without a typed binding does not retire the fact
+ok - F9 a decision task closed without a recorded answer does not retire the typed fact
+ok - a foreign captain hold sharing the axis gates on its own while the fact still materializes its own task
+ok - answering the foreign hold alone leaves the fact outstanding
+ok - answering the fact's own task retires it
+ok - materialize refuses to rebind a live captain hold bound to another programme and leaves its binding untouched
+ok - the old programme's replay still sees its own hold unchanged
+ok - materialize refuses to rebind a live captain hold bound to another action
+ok - a same-action same-programme binding missing the axis converges to one binding
+ok - F7 a reserved-axis hold bound to Proof A does not gate Proof B
+ok - F7 a hold bound to another programme's action of the same name does not gate this programme
+ok - F7 an unbound captain hold (generic caution) cannot gate a programme action
+ok - F8 a bound captain hold with no reserved axis is refused to BROWSER_SOL
+ok - F8 a captain hold naming an axis outside the reserved set is refused to BROWSER_SOL
+ok - F8 a programme step claiming CAPTAIN without a typed reserved axis is refused to BROWSER_SOL
+ok - F8 a typed step fact on a non-reserved axis is refused and materializes no hold
+ok - a superseded grant cannot authorize: CNO with BROWSER_SOL, never AUTHORIZED and never CAPTAIN
+ok - a grant pinned to another programme generation cannot authorize: CNO
+ok - a grant pinned to the current programme generation authorizes
+ok - a bound reserved-axis captain hold dominates a CNO grant
+tests/fm-continuation-resolve.test.sh: line 583: /tmp/fm-continuation.j9qSWp/cno/cleanroom/artifacts/proofs/proof-b/attempt-1/disposition.json: No such file or directory
+ok - an unreadable current disposition makes the continuation CNO rather than authorized
+ok - a newer attempt without a terminal disposition is CNO, never an older-PROVED fallback
+ok - an unreadable hold store cannot prove the absence of a captain hold: CNO, never AUTHORIZED
+ok - a silent hold store (exit 0, no listing) is unreadable, not empty
+ok - a listed held task whose record cannot be shown is an unreadable store, not a skipped hold
+ok - parked and load holds are read from the listing alone, never shown, and stay counted and ignored
+ok - every step terminal-good resolves to PROGRAMME_COMPLETE with no next action
+ok - FM_PROGRAMME pairs with FM_PROGRAMME_ROOT, never with the config root= line
+ok - FM_PROGRAMME without FM_PROGRAMME_ROOT resolves against its own directory, not the config root
+ok - --programme pairs with --root or FM_PROGRAMME_ROOT, then its own directory
+ok - --root overrides every paired root
+ok - a home without config/programme exits 3 so every consumer stays silent
+ok - FM_PROGRAMME and FM_PROGRAMME_ROOT locate a programme without the config file
+ok - a decision_key shared by two required facts, across steps or in one step, is refused at load; distinct keys resolve
+ok - the identity rule runs over the task materialize would hold: keyless aliases are refused, distinct identities materialize their own holds
+ok - a non-required enhancement reusing a key cannot overwrite, alias, or retire the required fact's binding
+ok - an unpinned home exits 3 even without jq on PATH, so consumers stay silent
+ok - render is derived from the typed fields and asserts no captain gate for an authorized continuation
+ok - summary prints the one-line typed token
+ok - check-prose refuses report prose that manufactures a captain gate for an authorized continuation
+ok - check-prose accepts prose that makes no captain-gate claim
+ok - check-prose accepts captain-gate phrasing exactly when the typed resolution is CAPTAIN
+ok - the binding writer validates its tokens and refuses malformed input
+ok - bind-action appends the one binding line after the existing body
+ok - bind-action is idempotent for an identical binding
+ok - bind-action replaces a different binding with exactly one current line
+ok - bind-action refuses a closed task
+ok - the canonical fleet snapshot embeds the typed resolution verbatim under programme_continuation
+ok - bearings projects the typed row from the snapshot and asserts no captain gate
+ok - the fleet view renders the typed programme line
+ok - the away-mode digest embeds the typed summary token from the same owner
+ok - with no programme configured every consumer stays silent rather than inventing a state
+# fm-continuation-resolve.test.sh: all assertions passed
+exit=0

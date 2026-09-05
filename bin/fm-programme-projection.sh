@@ -73,7 +73,11 @@
 #      and tree are read with `git rev-parse`. Absent meta, absent fields, and
 #      a worktree path that is not a directory are null; a worktree directory
 #      whose head or tree git cannot read is refused (exit 1) rather than
-#      nulled, so a moved head can never hide behind an unchanged tuple.
+#      nulled, so a moved head can never hide behind an unchanged tuple. The
+#      directory must itself BE the repository work tree: its physical path
+#      (pwd -P) must equal git's --show-toplevel resolved the same way, so a
+#      plain directory nested inside another repository is refused (exit 1,
+#      naming both paths) instead of binding the enclosing repo's head.
 #   Step ids must be unique: the resolver names the next action by id, and an
 #   id naming two steps cannot be composed back to one phase, task, or
 #   delegation override, so such a programme is refused (exit 1).
@@ -336,7 +340,7 @@ meta_value() {  # <meta-file> <key>
 }
 
 candidate_json() {
-  local meta spawn_gen='' pr_head='' worktree='' head='' tree='' revs
+  local meta spawn_gen='' pr_head='' worktree='' head='' tree='' revs physical toplevel
   [ -n "$NEXT_ID" ] || { printf 'null'; return 0; }
   meta="$STATE/$TASK_ID.meta"
   if [ -f "$meta" ]; then
@@ -344,6 +348,13 @@ candidate_json() {
     pr_head=$(meta_value "$meta" pr_head)
     worktree=$(meta_value "$meta" worktree)
     if [ -n "$worktree" ] && [ -d "$worktree" ]; then
+      physical=$(cd "$worktree" 2>/dev/null && pwd -P) \
+        || fail "cannot enter the candidate worktree $worktree (task $TASK_ID)"
+      toplevel=$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null) \
+        || fail "cannot read the candidate head and tree of worktree $worktree (task $TASK_ID)"
+      toplevel=$(cd "$toplevel" 2>/dev/null && pwd -P) || toplevel=''
+      [ "$toplevel" = "$physical" ] \
+        || fail "candidate worktree $worktree (task $TASK_ID) is not a repository work tree: its physical path $physical differs from the enclosing work tree ${toplevel:-<none>}"
       revs=$(git -C "$worktree" rev-parse HEAD 'HEAD^{tree}' 2>/dev/null) \
         || fail "cannot read the candidate head and tree of worktree $worktree (task $TASK_ID)"
       head=$(printf '%s\n' "$revs" | sed -n 1p)

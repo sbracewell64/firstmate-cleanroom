@@ -308,6 +308,26 @@ test_uncomposable_records_refused() {
   [ "$(field "$out" '.applicability.candidate_identity.head')" = "$(git -C "$wt" rev-parse HEAD)" ] || fail "a readable worktree binds its head"
   pass "the same directory, once readable, binds its head and tree"
 
+  # A plain directory nested inside that repository is discoverable by git but
+  # is not a work tree: it must be refused, never bound to the parent's head.
+  mkdir -p "$wt/nested/plain"
+  fm_write_meta "$home/state/proof-b.meta" "spawn_gen=1" "worktree=$wt/nested/plain"
+  err=$(run_project "$home" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "a plain directory inside a repository is refused"
+  assert_contains "$err" "$wt/nested/plain" "the refusal names the recorded worktree"
+  assert_contains "$err" "$(cd "$wt" && pwd -P)" "the refusal names the enclosing work tree"
+  pass "a plain directory nested inside a repository is refused rather than binding the enclosing head"
+
+  # A linked git worktree is its own work tree and still resolves to its own head.
+  git -C "$wt" worktree add --quiet -b linked "$TMP_ROOT/refuse-linked-wt" >/dev/null 2>&1 || fail "could not add a linked worktree"
+  printf 'linked\n' >> "$TMP_ROOT/refuse-linked-wt/README.md"
+  git -C "$TMP_ROOT/refuse-linked-wt" -c user.name=t -c user.email=t@example.invalid commit -qam linked
+  fm_write_meta "$home/state/proof-b.meta" "spawn_gen=1" "worktree=$TMP_ROOT/refuse-linked-wt"
+  out=$(run_project "$home" project) || fail "linked worktree project failed: $out"
+  [ "$(field "$out" '.applicability.candidate_identity.head')" = "$(git -C "$TMP_ROOT/refuse-linked-wt" rev-parse HEAD)" ] || fail "a linked worktree binds its own head"
+  [ "$(field "$out" '.applicability.candidate_identity.head')" != "$(git -C "$wt" rev-parse HEAD)" ] || fail "a linked worktree must not bind the main worktree's head"
+  pass "a linked git worktree resolves to its own head and tree"
+
   # A duplicated step id is not an injective fact identity; the programme is
   # refused even though the resolver walks it positionally.
   write_programme "$home" '.steps[1].id = "proof-a"'

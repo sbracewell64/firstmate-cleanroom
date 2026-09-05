@@ -619,12 +619,38 @@ test_completion_and_configuration() {
                                                      {"axis":"privacy_exposure","decision_key":"shared-runner","effect":"y"}]'
   out=$(run_resolve "$home" resolve 2>&1); rc=$?
   [ "$rc" = 1 ] || fail "two required facts in one step sharing a key must exit 1, got $rc: $out"
-  assert_contains "$out" "shared-runner (steps proof-b, proof-b)" "the refusal names the key and the step for each fact"
+  assert_contains "$out" "shared-runner (facts proof-b/new_paid_spend, proof-b/privacy_exposure)" "the refusal names the key and each fact's step and axis"
   write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"x"}]
     | .steps[2].optional_captain_enhancements = [{"axis":"new_paid_spend","decision_key":"runner-c","effect":"x","required_to_proceed":true}]'
   out=$(run_resolve "$home" resolve) || fail "distinct decision keys must resolve"
   expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "distinct decision keys"
   pass "a decision_key shared by two required facts, across steps or in one step, is refused at load; distinct keys resolve"
+
+  # The identity is the task materialize would hold, so two keyless required
+  # facts on one reserved axis alias one derived task and are refused, as is a
+  # key equal to another fact's derived identity; distinct identities, keyed
+  # or keyless, materialize their own holds.
+  other=$(make_home identity)
+  disposition "$other" proof-a 1 PROVED
+  write_programme "$other" '.steps[1].captain_axes = [{"axis":"new_paid_spend","effect":"a paid runner"},
+                                                      {"axis":"new_paid_spend","effect":"paid storage"}]'
+  out=$(run_resolve "$other" resolve 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "two keyless facts on one axis must exit 1, got $rc: $out"
+  assert_contains "$out" "cleanroom-requalification-proof-b-new-paid-spend (facts proof-b/new_paid_spend, proof-b/new_paid_spend)" "the refusal names the derived identity and both facts"
+  write_programme "$other" '.steps[1].captain_axes = [{"axis":"new_paid_spend","effect":"a paid runner"}]
+    | .steps[2].captain_axes = [{"axis":"privacy_exposure","decision_key":"cleanroom-requalification-proof-b-new-paid-spend","effect":"y"}]'
+  out=$(run_resolve "$other" resolve 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "a key equal to another fact's derived identity must exit 1, got $rc: $out"
+  assert_contains "$out" "cleanroom-requalification-proof-b-new-paid-spend (facts proof-b/new_paid_spend, architecture-re-review/privacy_exposure)" "the refusal names the aliased identity across steps"
+  write_programme "$other" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid runner"},
+                                                      {"axis":"privacy_exposure","effect":"telemetry export"}]'
+  out=$(run_resolve "$other" resolve --materialize) || fail "distinct identities must resolve and materialize: $out"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "distinct identities"
+  [ "$(field "$out" '.materialized | length')" = 2 ] || fail "distinct identities: two holds are materialized"
+  [ "$(field "$out" '[.materialized[].task] | sort | join(" ")')" = "cleanroom-requalification-proof-b-privacy-exposure runner-b" ] || fail "distinct identities: keyed and derived tasks"
+  [ "$(tasks_in "$other" list 2>/dev/null | grep -c '^  [A-Za-z]')" = 2 ] || fail "distinct identities: exactly two tasks exist"
+  [ "$(field "$out" '.materialize | length')" = 0 ] || fail "distinct identities: both holds are durable after one materialize"
+  pass "the identity rule runs over the task materialize would hold: keyless aliases are refused, distinct identities materialize their own holds"
 
   # A non-required enhancement reusing a required fact's key is not load-bearing:
   # it loads, never fires, never retires the required fact, and cannot move

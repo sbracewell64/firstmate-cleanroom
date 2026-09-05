@@ -92,7 +92,8 @@ pass "the binding line round-trips through build, body extraction, and field acc
 
 for code in STANDING_GRANT FIRST_STEP_STANDING_GRANT PROGRAMME_COMPLETE CAPTAIN_CLAIM_WITHOUT_RESERVED_AXIS \
             STEP_CLASSIFICATION_REFUSED STEP_REQUIRES_RULING HOLD_RULING_WAIT HOLD_EXTERNAL_WAIT HOLD_DATE_GATE \
-            GRANT_SUPERSEDED GRANT_GENERATION_MISMATCH GRANT_KIND_UNKNOWN HOLD_STORE_UNREADABLE PREDECESSOR_DISPOSITION_UNREADABLE; do
+            GRANT_SUPERSEDED GRANT_GENERATION_MISMATCH GRANT_KIND_UNKNOWN HOLD_STORE_UNREADABLE PREDECESSOR_DISPOSITION_UNREADABLE \
+            NEWER_ATTEMPT_WITHOUT_DISPOSITION; do
   text=$(fm_continuation_render_reason "$code" proof-b 'proof-a attempt 3 PROVED' 'detail')
   [ -n "$text" ] || fail "$code renders a sentence"
   printf '%s' "$text" | grep -qiE "$FM_CONTINUATION_GATE_PHRASE_RE" && fail "$code rendered a captain-gate phrase: $text"

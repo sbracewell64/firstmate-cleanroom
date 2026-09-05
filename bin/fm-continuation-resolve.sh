@@ -10,6 +10,9 @@
 # canonical owner); none re-derives programme authority from prose.
 # bin/fm-continuation-lib.sh owns the vocabulary and every classification table;
 # this script only reads canonical state and applies them.
+# Owner map: resolver = bin/fm-continuation-lib.sh + this script; hold
+# durability and effect = bin/fm-captain-hold.sh; backend agent-status -> wake
+# transitions = bin/fm-transition-lib.sh; distinct owners with no coupling.
 #
 # Usage:
 #   fm-continuation-resolve.sh resolve [--programme <file>] [--root <dir>] [--materialize]
@@ -27,9 +30,11 @@
 #      `steps[]` {id, title, artifact_root, terminal_predicate{kind, accept[]},
 #      classification_when_next, captain_axes[]{axis, decision_key, effect}}.
 #      Legacy `optional_captain_enhancements[]` entries count as captain_axes
-#      only when `required_to_proceed` is true. A decision_key binds exactly
-#      one step: a key declared by more than one step is refused at load,
-#      since one durable task cannot carry two actions' captain calls.
+#      only when `required_to_proceed` is true. Identity rule: decision_key
+#      is injective over those required facts - one required fact, one key,
+#      one durable binding - so a key declared by two required facts, in one
+#      step or across steps, is refused at load; a non-required enhancement
+#      never becomes a fact or a task, so its key reuse is not load-bearing.
 #      Located by --programme, then
 #      FM_PROGRAMME, then the `programme=` line of $FM_HOME/config/programme.
 #      Relative artifact roots resolve against a root paired with the source
@@ -39,8 +44,10 @@
 #      programme file's own directory. The config `root=` never pairs with a
 #      programme located elsewhere.
 #   2. Proof dispositions: <root>/<artifact_root>/attempt-<n>/disposition.json,
-#      read for `.outcome` only; the highest-numbered attempt is the current one
-#      (predicate kind latest_attempt_disposition_outcome_in).
+#      read for `.outcome` only; the highest-numbered attempt directory is the
+#      current one (predicate kind latest_attempt_disposition_outcome_in), and
+#      when it has no readable disposition the step is not terminal: it is the
+#      next action with CNO, never an older attempt's authorization.
 #   3. Durable hold state through tasks-axi in FM_HOME, the same backlog the
 #      captain-hold owner (bin/fm-captain-hold.sh) writes. A hold binds to an
 #      action only through the typed `Continuation-binding:` body line that
@@ -49,7 +56,7 @@
 #      store also carries the captain's recorded answer to a typed step fact:
 #      the fact's decision task (its decision_key, else programme-action-axis)
 #      retires the fact when it is closed with a resolution record, or open,
-#      unheld, and newest-recorded as released, and only when that task's own
+#      newest-recorded as released, and not under a live captain hold, and only when that task's own
 #      Continuation-binding names this action and this programme (or no
 #      programme); an answer bound to another action or programme, an unbound
 #      record, and a plain closure without a record are not answers for this
@@ -92,6 +99,10 @@
 # once the captain's answer is recorded on that fact's decision task the fact
 # is retired (listed in basis_refs as answered, fires nothing, and is never
 # materialized again), so an answered call cannot re-manufacture the gate;
+# retirement survives later non-captain holds on that task (an external wait
+# or a parked hold gates through the hold path, never re-fires the fact), and
+# only a live captain hold bound to that exact fact keeps it outstanding;
+# `--materialize` never replaces a live non-captain hold on a decision task;
 # a superseded or wrong-generation grant, an unreadable disposition, or an
 # unreadable hold store cannot authorize, so the result is CNO with
 # BROWSER_SOL (uncertainty is never CAPTAIN) unless a reserved-axis fact
@@ -198,20 +209,23 @@ locate_programme() {
     || fail "programme file is not a valid programme (programme_id, schema, steps[] required): $PROGRAMME"
   shared=$(jq -r '
     [.steps[] | select(type == "object") | (.id // "?") as $step
-      | ((.captain_axes // []) + (.optional_captain_enhancements // []))[]
-      | select(type == "object" and (.decision_key | type) == "string" and .decision_key != "")
+      | ((.captain_axes // [] | map(select(type == "object")))
+         + (.optional_captain_enhancements // [] | map(select(type == "object" and .required_to_proceed == true))))[]
+      | select((.decision_key | type) == "string" and .decision_key != "")
       | {key: .decision_key, step: $step}]
-    | group_by(.key) | map({key: .[0].key, steps: (map(.step) | unique)})
+    | group_by(.key) | map({key: .[0].key, steps: map(.step)})
     | map(select(.steps | length > 1))[]
     | .key + " (steps " + (.steps | join(", ")) + ")"' "$PROGRAMME" 2>/dev/null | paste -sd ';' -)
-  [ -z "$shared" ] || fail "a decision_key must bind exactly one step; shared in $PROGRAMME: $shared"
+  [ -z "$shared" ] || fail "a decision_key must bind exactly one required fact; shared in $PROGRAMME: $shared"
 }
 
 # --- proof dispositions -------------------------------------------------------
 
 # Prints "<attempt>\t<outcome>\t<path>\t<sha256>" for the highest-numbered
-# attempt with a disposition, "" when none, and returns 1 when the newest
-# disposition exists but cannot be read as JSON with an outcome.
+# attempt directory, "" when none, and returns 1 with an empty outcome when
+# that newest attempt has no disposition or one that cannot be read as JSON
+# with an outcome: an in-flight or broken newest attempt is never terminal,
+# and an older attempt's disposition never stands in for it.
 latest_disposition() {  # <artifact-root>
   local rel=$1 dir best=-1 best_dir='' n d disp outcome
   case "$rel" in
@@ -220,7 +234,7 @@ latest_disposition() {  # <artifact-root>
   esac
   [ -d "$dir" ] || return 0
   for d in "$dir"/attempt-*; do
-    [ -f "$d/disposition.json" ] || continue
+    [ -d "$d" ] || continue
     n=${d##*/attempt-}
     case "$n" in
       ''|*[!0-9]*) continue ;;
@@ -229,6 +243,7 @@ latest_disposition() {  # <artifact-root>
   done
   [ "$best" -ge 0 ] || return 0
   disp="$best_dir/disposition.json"
+  [ -f "$disp" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
   outcome=$(jq -r 'if (.outcome | type) == "string" then .outcome else empty end' "$disp" 2>/dev/null) || outcome=''
   [ -n "$outcome" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
   printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$(sha256_file "$disp")"
@@ -338,12 +353,13 @@ fact_task_id() {  # <decision-key> <programme-id> <action> <axis>
 }
 
 # Whether the captain has already answered a step fact for THIS action on its
-# task: closed with a recorded answer, or open, unheld, and newest-recorded as
-# released, and bound by its own Continuation-binding to this action and this
-# programme (or none). Prints the recorded mode and returns 0 when answered.
-# Returns 1 otherwise, printing the reason when a record exists but is bound
-# elsewhere or unbound; a missing task, a live hold, or a closure without a
-# record prints nothing.
+# task: closed with a recorded answer, or open, newest-recorded as released,
+# and not under a live captain hold (a later external or parked hold gates
+# through the hold path and leaves the answer standing), and bound by its own
+# Continuation-binding to this action and this programme (or none). Prints
+# the recorded mode and returns 0 when answered. Returns 1 otherwise, printing
+# the reason when a record exists but is bound elsewhere or unbound; a missing
+# task, a live captain hold, or a closure without a record prints nothing.
 fact_answered() {  # <task-id> <action> <programme-id>
   local show state kind body mode binding action programme
   show=$(tasks_axi show "$1" --full 2>/dev/null) || return 1
@@ -353,7 +369,7 @@ fact_answered() {  # <task-id> <action> <programme-id>
   fm_continuation_answer_recorded "$body" || return 1
   mode=$(fm_continuation_answer_mode "$body") || mode=''
   if [ "$state" = "done" ]; then mode=${mode:-answered}
-  elif [ -z "$kind" ] && [ "$mode" = released ]; then :
+  elif [ "$kind" != captain ] && [ "$mode" = released ]; then :
   else return 1; fi
   binding=$(fm_continuation_binding_from_body "$body")
   action=$(fm_continuation_binding_field "$binding" action)
@@ -416,12 +432,16 @@ resolve_json() {
       pred_path=$(printf '%s' "$pred_line" | cut -f3)
       pred_sha=$(printf '%s' "$pred_line" | cut -f4)
     else
-      # The newest disposition exists but is unreadable: this step is the next
+      # The newest attempt has no readable disposition: this step is the next
       # action and its state could not be observed.
       pred_path=$(printf '%s' "$pred_line" | cut -f3)
       next_id=$sid; next_title=$title; next_index=$i
       cur_attempt=$(printf '%s' "$pred_line" | cut -f1); cur_outcome=''; cur_path=$pred_path; cur_sha=''
-      [ -n "$cno_reason" ] || { cno_reason=PREDECESSOR_DISPOSITION_UNREADABLE; cno_detail=$pred_path; }
+      if [ -z "$cno_reason" ]; then
+        if [ -f "$pred_path" ]; then cno_reason=PREDECESSOR_DISPOSITION_UNREADABLE
+        else cno_reason=NEWER_ATTEMPT_WITHOUT_DISPOSITION; fi
+        cno_detail=$pred_path
+      fi
       break
     fi
     accept=$(jq -c ".steps[$i].terminal_predicate.accept // []" "$PROGRAMME")
@@ -525,7 +545,8 @@ resolve_json() {
     if fm_continuation_axis_reserved "$fact_axis" "$reserved"; then
       fact_task=$(fact_task_id "$fact_key" "$prog_id" "$next_id" "$fact_axis")
       answered=''
-      if [ "$holds_ok" = 1 ] && [ "$(printf '%s' "$holds_json" | jq --arg t "$fact_task" '[.[] | select(.task == $t and .hold_kind == "captain")] | length')" = 0 ]; then
+      if [ "$holds_ok" = 1 ] && [ "$(printf '%s' "$holds_json" | jq --arg t "$fact_task" --arg a "$next_id" --arg p "$prog_id" --arg x "$fact_axis" \
+          '[.[] | select(.task == $t and .hold_kind == "captain" and .action == $a and (.programme == "" or .programme == $p) and .axis == $x)] | length')" = 0 ]; then
         if answered=$(fact_answered "$fact_task" "$next_id" "$prog_id"); then
           retired=$(jq -n --argjson r "$retired" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg mode "$answered" \
             '$r + [{axis:$axis, decision_key:$key, task:$task, mode:$mode}]')
@@ -620,9 +641,10 @@ resolve_json() {
 
 # Create the durable captain hold a CAPTAIN result from a typed step fact
 # requires, through the captain-hold owner only. Idempotent: an existing bound
-# hold is left as it is.
+# hold is left as it is, and a decision task under a live non-captain hold is
+# never re-held (that hold and its binding belong to another wait).
 materialize_holds() {
-  local n i item axis key effect task title reason created='[]'
+  local n i item axis key effect task title reason created='[]' show kind
   n=$(printf '%s' "$RESULT" | jq '.materialize | length')
   [ "$n" -gt 0 ] || { RESULT=$(printf '%s' "$RESULT" | jq '.materialized = []'); return 0; }
   i=0
@@ -635,6 +657,11 @@ materialize_holds() {
     task=$(fact_task_id "$key" "$(printf '%s' "$RESULT" | jq -r '.programme.id')" "$(printf '%s' "$RESULT" | jq -r '.next_action')" "$axis")
     title=$(printf 'Captain decision for %s: %s' "$(printf '%s' "$RESULT" | jq -r '.next_action')" "${effect:-reserved axis $axis}" | tr '()' '[]')
     reason=$(printf 'reserved axis %s on programme step %s' "$axis" "$(printf '%s' "$RESULT" | jq -r '.next_action')")
+    if show=$(tasks_axi show "$task" --full 2>/dev/null); then
+      kind=$(shown_value "$show" hold_kind)
+      [ -z "$kind" ] || [ "$kind" = captain ] \
+        || fail "cannot materialize captain hold $task: it carries a live $kind hold that must not be replaced"
+    fi
     "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --title "$title" --reason "$reason" \
       --action "$(printf '%s' "$RESULT" | jq -r '.next_action')" --axis "$axis" \
       --programme "$(printf '%s' "$RESULT" | jq -r '.programme.id')" >/dev/null \

@@ -273,6 +273,8 @@ fm_continuation_render_reason() {  # <reason-code> <next-action> <predecessor-su
       printf 'The durable hold store could not be read (%s), so the absence of a captain hold on %s cannot be proven; the continuation is unproven and goes to Browser Sol.' "$detail" "$action" ;;
     PREDECESSOR_DISPOSITION_UNREADABLE)
       printf 'The predecessor disposition for %s could not be read (%s); the continuation is unproven and goes to Browser Sol.' "$action" "$detail" ;;
+    NEWER_ATTEMPT_WITHOUT_DISPOSITION)
+      printf 'The newest attempt of %s has no terminal disposition yet (%s), so no older attempt can stand for it; the continuation is unproven and goes to Browser Sol.' "$action" "$detail" ;;
     *)
       printf '%s: %s (%s).' "$code" "$action" "$detail" ;;
   esac

@@ -236,7 +236,7 @@ test_f3_f4_ruling_and_external_waits() {
 # --- F5 / F9: a reserved axis with NO pre-existing hold -> CAPTAIN, then materialized
 
 test_f5_f9_reserved_axis_without_hold_materializes() {
-  local home out show body
+  local home out out2 show body
   home=$(make_home f5)
   disposition "$home" proof-a 1 PROVED
   # The programme's typed action fact: Proof B requires a new paid service.
@@ -263,12 +263,22 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
     || fail "F9: the materialized hold carries the typed binding: $body"
   expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "F9 (after materialize)"
   [ "$(field "$out" '.materialize | length')" = 0 ] || fail "F9: once durable, nothing remains to materialize"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = false ] || fail "F9: a live captain hold on the exact fact keeps it outstanding, not answered"
+  [ "$(field "$out" '.materialized | length')" = 1 ] || fail "F9: exactly one canonical hold was materialized"
   pass "F9 non-vacuity: --materialize creates the canonical captain hold through fm-captain-hold.sh and the result then rests on that durable hold"
 
-  # Idempotent: a second materialize creates nothing new.
+  # Idempotent and convergent: a second and third materialize create nothing
+  # new, return the identical typed result, and leave one stable binding.
   out=$(run_resolve "$home" resolve --materialize) || fail "F9 second materialize failed"
   [ "$(tasks_in "$home" list 2>/dev/null | grep -c '^  [A-Za-z]')" = 1 ] || fail "F9: materialize must be idempotent"
-  pass "F9 materialize is idempotent"
+  out2=$(run_resolve "$home" resolve --materialize) || fail "F9 third materialize failed"
+  [ "$out" = "$out2" ] || fail "F9: the second and third materialize must return the identical result"
+  [ "$(field "$out" '.applicability_digest')" = "$(field "$out2" '.applicability_digest')" ] || fail "F9: the applicability digest must be stable across replays"
+  body=$(tasks_in "$home" show proof-b-paid-runner --full | sed -n 's/^  body: //p' | jq -r '.')
+  [ "$(printf '%s\n' "$body" | grep -c '^Continuation-binding: ')" = 1 ] || fail "F9: replay must leave exactly one binding line"
+  printf '%s\n' "$body" | grep -qx 'Continuation-binding: action=proof-b programme=cleanroom-requalification axis=new_paid_spend' \
+    || fail "F9: replay must not move the binding: $body"
+  pass "F9 materialize is idempotent and converges on one stable binding across replays"
 
   # The captain's recorded answer (release mode: the task stays open, unheld)
   # retires the typed fact through the same store, with no programme-file edit.
@@ -287,6 +297,31 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   out=$(run_resolve "$home" render) || fail "F9 post-answer render failed"
   assert_contains "$out" "step fact axis new_paid_spend (reserved), answered by proof-b-paid-runner (released)" "render marks the answered fact"
   pass "F9 a captain answer recorded in release mode retires the typed fact: SELF_HANDLE/AUTHORIZED with no programme-file edit"
+
+  # The released task is a resumed work item: a later external wait on it gates
+  # through the hold path and never re-fires the answered fact, and materialize
+  # leaves that hold and its binding untouched.
+  tasks_in "$home" hold proof-b-paid-runner --reason "waiting on the runner quota" --kind external >/dev/null || fail "F9: could not re-hold externally"
+  out=$(run_resolve "$home" resolve) || fail "F9 external re-hold resolve failed"
+  expect_typed "$out" proof-b EXTERNAL_DEPENDENCY WAITING_EXTERNAL HOLD_EXTERNAL_WAIT "F9 (external wait after the answer)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = true ] || fail "F9: the answer stands across a later external hold"
+  [ "$(field "$out" '.materialize | length')" = 0 ] || fail "F9: nothing to materialize while the answer stands"
+  out=$(run_resolve "$home" resolve --materialize) || fail "F9 materialize over external hold failed"
+  [ "$(field "$out" '.materialized | length')" = 0 ] || fail "F9: materialize must not touch the external hold"
+  show=$(tasks_in "$home" show proof-b-paid-runner --full) || fail "F9: the task disappeared"
+  printf '%s\n' "$show" | grep -q '^  hold_kind: external$' || fail "F9: the external hold must stay intact after materialize"
+  body=$(printf '%s\n' "$show" | sed -n 's/^  body: //p' | jq -r '.')
+  printf '%s\n' "$body" | grep -qx 'Continuation-binding: action=proof-b programme=cleanroom-requalification axis=new_paid_spend' \
+    || fail "F9: the external hold keeps its binding after materialize: $body"
+  pass "F9 an answered fact stays retired under a later external hold, which gates as EXTERNAL_DEPENDENCY and survives materialize"
+
+  # An unrelated non-authority hold on the same task leaves the fact retired too.
+  tasks_in "$home" unhold proof-b-paid-runner >/dev/null || fail "F9: could not lift the external hold"
+  tasks_in "$home" hold proof-b-paid-runner --reason "parked for later" --kind parked >/dev/null || fail "F9: could not park"
+  out=$(run_resolve "$home" resolve) || fail "F9 parked re-hold resolve failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "F9 (parked after the answer)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = true ] || fail "F9: the answer stands across a parked hold"
+  pass "F9 an answered fact stays retired under an unrelated non-captain hold"
 
   # Close mode: the answered task is done and carries the record.
   home=$(make_home f9-close)
@@ -451,7 +486,19 @@ test_unreadable_inputs_are_cno() {
   expect_typed "$out" proof-b BROWSER_SOL CNO PREDECESSOR_DISPOSITION_UNREADABLE "unreadable disposition"
   pass "an unreadable current disposition makes the continuation CNO rather than authorized"
 
+  # A newer attempt directory without a terminal disposition means the proof is
+  # in flight: the step is the next action with CNO, never authorized from an
+  # older PROVED attempt.
   rm -rf "$home/cleanroom/artifacts/proofs/proof-b"
+  mkdir -p "$home/cleanroom/artifacts/proofs/proof-a/attempt-2"
+  out=$(run_resolve "$home" resolve) || fail "in-flight attempt resolve failed"
+  expect_typed "$out" proof-a BROWSER_SOL CNO NEWER_ATTEMPT_WITHOUT_DISPOSITION "in-flight newest attempt"
+  [ "$(field "$out" '.applicability.current.attempt')" = 2 ] || fail "in-flight: the newest attempt is the current one"
+  [ "$(field "$out" '.completed | length')" = 0 ] || fail "in-flight: attempt 1 PROVED must not count as terminal"
+  assert_contains "$(field "$out" '.cno.detail')" "attempt-2" "the CNO detail names the missing disposition"
+  pass "a newer attempt without a terminal disposition is CNO, never an older-PROVED fallback"
+  rm -rf "$home/cleanroom/artifacts/proofs/proof-a/attempt-2"
+
   fakebin=$(fm_fakebin "$home")
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
@@ -556,9 +603,9 @@ test_completion_and_configuration() {
   assert_contains "$out" "programme cleanroom-requalification@fm-requal-programme/v1: complete" "summary renders the completion token"
   pass "FM_PROGRAMME and FM_PROGRAMME_ROOT locate a programme without the config file"
 
-  # A decision_key binds exactly one step: a programme sharing one key across
-  # two steps is refused at load, naming the key and both steps, before any
-  # resolution runs; distinct keys resolve normally.
+  # Identity rule: a decision_key is injective over required facts. A key
+  # shared by two required facts across steps, or by two in one step, is
+  # refused at load naming the key and the steps; distinct keys resolve.
   home=$(make_home shared-key)
   disposition "$home" proof-a 1 PROVED
   write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"shared-runner","effect":"x"}]
@@ -568,11 +615,36 @@ test_completion_and_configuration() {
   assert_contains "$out" "shared-runner" "the refusal names the shared key"
   assert_contains "$out" "proof-b" "the refusal names the first step"
   assert_contains "$out" "architecture-re-review" "the refusal names the second step"
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"shared-runner","effect":"x"},
+                                                     {"axis":"privacy_exposure","decision_key":"shared-runner","effect":"y"}]'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "two required facts in one step sharing a key must exit 1, got $rc: $out"
+  assert_contains "$out" "shared-runner (steps proof-b, proof-b)" "the refusal names the key and the step for each fact"
   write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"x"}]
     | .steps[2].optional_captain_enhancements = [{"axis":"new_paid_spend","decision_key":"runner-c","effect":"x","required_to_proceed":true}]'
   out=$(run_resolve "$home" resolve) || fail "distinct decision keys must resolve"
   expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "distinct decision keys"
-  pass "a decision_key shared by two steps is refused at load, naming the key and both steps; distinct keys resolve"
+  pass "a decision_key shared by two required facts, across steps or in one step, is refused at load; distinct keys resolve"
+
+  # A non-required enhancement reusing a required fact's key is not load-bearing:
+  # it loads, never fires, never retires the required fact, and cannot move
+  # the durable binding the required fact materialized.
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier"}]
+    | .steps[2].optional_captain_enhancements = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier","required_to_proceed":false}]'
+  out=$(run_resolve "$home" resolve --materialize) || fail "optional key reuse must load and materialize: $out"
+  [ "$(field "$out" '.materialized[0].task')" = runner-b ] || fail "optional key reuse: the required fact materialized its task"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "optional key reuse (required fact outstanding)"
+  printf 'Approved.\n' > "$home/ok.txt"
+  run_hold "$home" answer runner-b --decision-file "$home/ok.txt" >/dev/null || fail "optional key reuse: could not answer"
+  disposition "$home" proof-b 1 PROVED
+  out=$(run_resolve "$home" resolve --materialize) || fail "optional key reuse: later step resolve failed"
+  expect_typed "$out" architecture-re-review SELF_HANDLE AUTHORIZED STANDING_GRANT "optional key reuse (later step)"
+  [ "$(field "$out" '.basis_refs | map(select(.kind == "step_fact")) | length')" = 0 ] || fail "optional key reuse: a non-required enhancement is not a fact"
+  [ "$(field "$out" '.materialized | length')" = 0 ] || fail "optional key reuse: nothing is materialized for a non-required enhancement"
+  body=$(tasks_in "$home" show runner-b --full | sed -n 's/^  body: //p' | jq -r '.')
+  printf '%s\n' "$body" | grep -qx 'Continuation-binding: action=proof-b programme=cleanroom-requalification axis=new_paid_spend' \
+    || fail "optional key reuse: the required fact's binding must stay bound to proof-b: $body"
+  pass "a non-required enhancement reusing a key cannot overwrite, alias, or retire the required fact's binding"
 
   # Without jq on PATH a pinned home fails loudly, but an unpinned home still
   # exits 3 so every consumer stays silent regardless of the toolchain.

@@ -19,6 +19,10 @@
 # explicitly (the prs: line and the omitted[] surfaces) what was not requested, so an
 # absence is never ambiguous.
 #
+# programme[] is the typed programme-continuation row projected verbatim from
+# the canonical snapshot's programme_continuation (bin/fm-continuation-resolve.sh
+# owns it); empty when no programme is configured. Bearings never derives
+# proceed/wait/captain for a programme step from any other row.
 # This wrapper consumes canonical status decisions plus canonically normalized
 # backlog roles, unresolved blockers, and captain actionability. It never infers
 # decisions from report or visual-review prose or reimplements snapshot semantics.
@@ -114,7 +118,9 @@ Default is LOCAL-ONLY (no network); --include-prs is the only path that fetches.
 Default fields: schema, home, generated, prs, in_flight{id,kind,state,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
-  decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
+  decisions_open{id,key,verb,summary,owner},
+  programme{programme,next_action,classification,authority_state,reason_code,applicability} (typed, one row when configured),
+  landed{id,what,artifact,owner},
   gates{id,title,blocked_by,reason,owner}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
@@ -456,6 +462,11 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         | select(.reconcile_inventory != null)
         | {id, spawn_gen:(.spawn_gen // null), host:(.host // null), kind:(.reconcile_inventory.kind // null), ids:((.reconcile_inventory.ids // []) | map(select(type == "string")) | sort)} ],
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
+      programme: (if ($snap.programme_continuation.configured // false) then
+                    [ $snap.programme_continuation
+                      | if .error then {programme:"(resolver failed)", next_action:"-", classification:"-", authority_state:"CNO", reason_code:("resolver exit " + (.exit_code | tostring)), applicability:"-"}
+                        else {programme:.programme.id, next_action:(.next_action // "complete"), classification, authority_state, reason_code, applicability:(.applicability_digest[0:12])} end ]
+                  else [] end),
       landed: ($done | map({id, what:(.title | trunc(70)),
                             artifact:(.pr_url // .report_path // .local_note // "-"),owner:.home_id})),
       gates: (if $all_queued == 1 then $gates_all else $gates_all[:$gates_n] end),

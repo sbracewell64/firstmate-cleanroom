@@ -73,11 +73,13 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 35 | 972561 ms (~972.6 s) |
-| `portable-serial-2of4` | 34 | 972552 ms (~972.6 s) |
-| `portable-serial-3of4` | 34 | 972556 ms (~972.6 s) |
-| `portable-serial-4of4` | 36 | 972550 ms (~972.5 s) |
+| `portable-serial-1of4` | 35 | 1021584 ms (~1021.6 s) |
+| `portable-serial-2of4` | 36 | 1021592 ms (~1021.6 s) |
+| `portable-serial-3of4` | 35 | 1021582 ms (~1021.6 s) |
+| `portable-serial-4of4` | 35 | 1021581 ms (~1021.6 s) |
 | imbalance | | 11 ms |
+
+`tests/fm-continuation-resolve.test.sh` (196000 ms) and `tests/fm-continuation-lib.test.sh` (120 ms) joined the serial lane on 2026-09-04 with locally measured hints, pending the next CI artifact refresh.
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 282379 ms, is the floor for any shard count.
 

@@ -518,6 +518,25 @@ print_backlog_compact() {
   fi
 }
 
+# The typed programme-continuation resolution, when this home pins a programme
+# (config/programme). bin/fm-continuation-resolve.sh is the single owner of the
+# next action and its authority; this digest embeds its result so the session
+# reads continuation authority from typed state rather than inferring it from
+# the held rows above or from prose. Exit 3 means no programme is configured
+# and the subsection stays silent; any other failure is shown, never guessed.
+print_programme_continuation() {
+  local out rc=0
+  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
+  [ "$rc" -ne 3 ] || return 0
+  subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$out"
+    printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
+  else
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"
+  fi
+}
+
 print_status_tail() {
   local status=$1 line
   printf 'status tail (last %s line(s), each capped at %s characters, wake-EVENT history, not current state; full log: %s):\n' \
@@ -808,6 +827,7 @@ EOF
 stage fleet-state
 section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
+print_programme_continuation
 
 subsection "Work under way (state/*.meta)"
 META_FOUND=0

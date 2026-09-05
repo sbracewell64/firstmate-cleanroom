@@ -198,6 +198,16 @@ The bound is required rather than cosmetic because churn and pane staleness read
 The flag is a home-local supervision-noise preference and is not inherited by secondmate homes, which run their own crew mix.
 [`architecture.md`](architecture.md) owns the triage contract and `bin/fm-watch.sh`'s `signal_turnend_panes_churned` owns the exact evidence and fail-closed boundaries.
 
+## Programme continuation (config/programme)
+
+The optional local, gitignored `config/programme` file pins the programme whose continuation authority `bin/fm-continuation-resolve.sh` owns.
+It holds `key=value` lines: `programme=` names the pinned programme JSON file and the optional `root=` names the directory relative artifact roots resolve against, defaulting to the programme file's own directory.
+`FM_PROGRAMME` and `FM_PROGRAMME_ROOT` override both for one invocation, and `--programme` / `--root` override everything.
+The programme file is a data input, never executable authority; the resolver's header owns its exact schema and the result contract.
+Absent, every consumer of the resolver (the session-start digest, the fleet snapshot and its bearings and view projections, and the away-mode digest) stays silent about programme authority rather than inventing a state.
+The file is a home-local pin and is not inherited by secondmate homes.
+[`programme-continuation.md`](programme-continuation.md) owns the mechanism, the invariant, and the consumer census.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true` and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.

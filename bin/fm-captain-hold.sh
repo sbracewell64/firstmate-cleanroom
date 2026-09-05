@@ -20,7 +20,10 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--action <step-id> [--axis <axis>] [--programme <programme-id>]]
+#   fm-captain-hold.sh bind-action <task-id> --action <step-id> \
+#     [--axis <axis>] [--programme <programme-id>] [--wait ruling|external]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -38,6 +41,21 @@
 # idempotent; a task already closed is refused rather than reopened. `--until`
 # records the captain's own deferral date through `tasks-axi hold --until`, so
 # a "revisit later" answer is stored as a date instead of a live card.
+#
+# TYPED ACTION BINDING. A hold gates a programme step only when it says so in
+# typed form: the one `Continuation-binding:` body line whose format
+# bin/fm-continuation-lib.sh owns (action, optional programme, axis, wait).
+# `hold --action <step> [--axis <axis>] [--programme <id>]` records that line
+# together with the captain hold, and `bind-action` records or replaces it on
+# any open task whatever its hold kind - a Browser Sol ruling wait or an
+# external wait is a `tasks-axi hold --kind external` whose binding carries
+# `--wait ruling` or `--wait external`. This script validates the tokens as
+# slugs and stores them; it never judges whether an axis is reserved. That
+# judgment, and every proceed/wait/captain conclusion drawn from a binding,
+# belongs to bin/fm-continuation-resolve.sh, which reads the line back through
+# tasks-axi. A hold without a binding, on another action, or lifted (task
+# unheld or closed) gates nothing there. Replacing an existing, different
+# binding archives the previous body through tasks-axi --archive-body.
 #
 # `answer` records the captain's exact words and closes the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes,
@@ -140,6 +158,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-continuation-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-continuation-lib.sh"
 
 CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
@@ -378,6 +399,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind
+  local action='' axis='' programme=''
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -387,6 +409,9 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --action) shift; action=${1:-} ;;
+      --axis) shift; axis=${1:-} ;;
+      --programme) shift; programme=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -397,6 +422,7 @@ command_hold() {
   if [ -n "$origin" ]; then
     validate_slug origin-id "$origin"
   fi
+  validate_binding_tokens "$action" "$axis" "$programme" ''
   if [ -n "$until" ]; then
     case "$until" in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
@@ -423,6 +449,9 @@ command_hold() {
     [ -n "$repo" ] || repo=firstmate
     validate_one_line repo "$repo"
     [ -z "$origin" ] || body=$(printf 'Origin: %s' "$origin")
+    if [ -n "$action" ]; then
+      body=$(printf '%s%s%s' "$body" "${body:+$'\n'}" "$(fm_continuation_binding_line "$action" "$programme" "$axis" '')")
+    fi
     if [ -n "$body" ]; then
       tasks_axi add "$id" "$title" --repo "$repo" --body "$body" >/dev/null \
         || fail "could not create task $id"
@@ -441,6 +470,66 @@ command_hold() {
   show=$(task_show "$id") || fail "task $id disappeared while holding it"
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  [ -z "$action" ] || write_binding "$id" "$action" "$programme" "$axis" ''
+  printf '%s\n' "$id"
+}
+
+validate_binding_tokens() {  # <action> <axis> <programme> <wait>
+  local action=$1 axis=$2 programme=$3 wait=$4
+  if [ -z "$action" ]; then
+    [ -z "$axis" ] && [ -z "$programme" ] && [ -z "$wait" ] \
+      || fail "--axis, --programme, and --wait require --action"
+    return 0
+  fi
+  validate_slug action "$action"
+  [ -z "$axis" ] || validate_slug axis "$axis"
+  [ -z "$programme" ] || validate_slug programme "$programme"
+  [ -z "$wait" ] || fm_continuation_is_wait "$wait" || fail "--wait must be one of: $FM_CONTINUATION_HOLD_WAITS"
+}
+
+# Record the one typed binding line in the task body. Idempotent when the line
+# is already present verbatim; a different existing binding is replaced and the
+# previous body archived.
+write_binding() {  # <task-id> <action> <programme> <axis> <wait>
+  local id=$1 show body line existing rest new_body archive=0
+  line=$(fm_continuation_binding_line "$2" "$3" "$4" "$5")
+  show=$(task_show "$id") || fail "task $id is absent from $FM_HOME/data/backlog.md"
+  [ "$(show_field "$show" state)" != "done" ] || fail "task $id is already closed; a binding needs an open task"
+  body=$(show_field_value "$show" body)
+  existing=$(fm_continuation_binding_from_body "$body")
+  [ "$existing" != "$line" ] || return 0
+  rest=$(printf '%s\n' "$body" | grep -v "^$FM_CONTINUATION_BINDING_KEY " | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' || true)
+  [ -z "$existing" ] || archive=1
+  if [ -n "$rest" ]; then new_body=$(printf '%s\n%s' "$rest" "$line"); else new_body=$line; fi
+  if [ "$archive" = 1 ]; then
+    tasks_axi update "$id" --body "$new_body" --archive-body >/dev/null || fail "could not record the binding on task $id"
+  else
+    tasks_axi update "$id" --body "$new_body" >/dev/null || fail "could not record the binding on task $id"
+  fi
+  show=$(task_show "$id") || fail "task $id disappeared while binding it"
+  [ "$(fm_continuation_binding_from_body "$(show_field_value "$show" body)")" = "$line" ] \
+    || fail "task $id did not retain its binding line"
+}
+
+command_bind_action() {
+  local id=${1:-} action='' axis='' programme='' wait=''
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --action) shift; action=${1:-} ;;
+      --axis) shift; axis=${1:-} ;;
+      --programme) shift; programme=${1:-} ;;
+      --wait) shift; wait=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ -n "$action" ] || fail "--action is required"
+  validate_binding_tokens "$action" "$axis" "$programme" "$wait"
+  require_tasks_axi
+  write_binding "$id" "$action" "$programme" "$axis" "$wait"
   printf '%s\n' "$id"
 }
 
@@ -988,6 +1077,7 @@ EOF
 
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
+  bind-action) shift; command_bind_action "$@" ;;
   answer) shift; command_answer "$@" ;;
   answers) shift; command_answers "$@" ;;
   bind) shift; command_bind "$@" ;;

@@ -238,7 +238,7 @@ family_for_basename() {
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
-    fm-transition-lib.test.sh|\
+    fm-transition-lib.test.sh|fm-continuation-lib.test.sh|\
     fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
@@ -555,6 +555,8 @@ tests/fm-claude-stop-autoarm.test.sh 60524
 tests/fm-cmux-claude-composer-live-e2e.test.sh 21
 tests/fm-codex-continuity-live-e2e.test.sh 13
 tests/fm-composer-matrix-live-e2e.test.sh 21
+tests/fm-continuation-lib.test.sh 120
+tests/fm-continuation-resolve.test.sh 196000
 tests/fm-control-relaunch.test.sh 47656
 tests/fm-control.test.sh 38218
 tests/fm-cursor-harness.test.sh 30108

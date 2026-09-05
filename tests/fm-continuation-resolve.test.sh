@@ -270,18 +270,44 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   [ "$(tasks_in "$home" list 2>/dev/null | grep -c '^  [A-Za-z]')" = 1 ] || fail "F9: materialize must be idempotent"
   pass "F9 materialize is idempotent"
 
-  # The captain's answer releases the hold; the typed fact is then ... still a
-  # typed fact. A step fact that the captain has answered must be retired from
-  # the programme (a programme-file change), so the released hold alone does
-  # not authorize: this is the ruled asymmetry between a hold and a fact.
+  # The captain's recorded answer (release mode: the task stays open, unheld)
+  # retires the typed fact through the same store, with no programme-file edit.
   printf 'Approved: use the paid runner tier.\n' > "$home/ok.txt"
   run_hold "$home" answer proof-b-paid-runner --decision-file "$home/ok.txt" --release >/dev/null || fail "F9: could not answer"
   out=$(run_resolve "$home" resolve) || fail "F9 post-answer resolve failed"
-  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (fact still pinned)"
-  write_programme "$home" '.steps[1].captain_axes = []'
-  out=$(run_resolve "$home" resolve) || fail "F9 post-retire resolve failed"
-  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "F9 (fact retired)"
-  pass "F9 a released hold does not authorize while the programme still pins the reserved axis; retiring the typed fact does"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "F9 (answered by release)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = true ] || fail "F9: the answered fact is listed in the basis"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered_task')" = proof-b-paid-runner ] || fail "F9: the basis names the answering task"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered_mode')" = released ] || fail "F9: the basis carries the recorded mode"
+  [ "$(field "$out" '.applicability.answered_facts[0]')" = proof-b-paid-runner ] || fail "F9: applicability binds to the answered task"
+  [ "$(field "$out" '.materialize | length')" = 0 ] || fail "F9: an answered fact is not materialized again"
+  out=$(run_resolve "$home" resolve --materialize) || fail "F9 post-answer materialize failed"
+  [ "$(field "$out" '.materialized | length')" = 0 ] || fail "F9: materialize skips an answered fact"
+  [ "$(tasks_in "$home" list 2>/dev/null | grep -c '^  [A-Za-z]')" = 1 ] || fail "F9: materialize after the answer must create nothing"
+  pass "F9 a captain answer recorded in release mode retires the typed fact: SELF_HANDLE/AUTHORIZED with no programme-file edit"
+
+  # Close mode: the answered task is done and carries the record.
+  home=$(make_home f9-close)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  run_resolve "$home" resolve --materialize >/dev/null || fail "F9 close: materialize failed"
+  printf 'Approved: use the paid runner tier.\n' > "$home/ok.txt"
+  run_hold "$home" answer proof-b-paid-runner --decision-file "$home/ok.txt" >/dev/null || fail "F9 close: could not answer"
+  out=$(run_resolve "$home" resolve) || fail "F9 close: post-answer resolve failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "F9 (answered by close)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered_mode')" = answered ] || fail "F9 close: the basis carries the recorded mode"
+  pass "F9 a captain answer recorded in close mode retires the typed fact"
+
+  # A plain closure without a recorded answer is not an answer: the fact still fires.
+  home=$(make_home f9-plain)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  run_resolve "$home" resolve --materialize >/dev/null || fail "F9 plain: materialize failed"
+  tasks_in "$home" "done" proof-b-paid-runner >/dev/null || fail "F9 plain: could not close the task"
+  out=$(run_resolve "$home" resolve) || fail "F9 plain: post-close resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (plain closure)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = false ] || fail "F9 plain: a closure without a record is not an answer"
+  pass "F9 a decision task closed without a recorded answer does not retire the typed fact"
 }
 
 # --- F7: a hold scoped to one action does not gate another ---------------------
@@ -424,12 +450,31 @@ SH
   expect_typed "$out" proof-b BROWSER_SOL CNO HOLD_STORE_UNREADABLE "partially unreadable hold store"
   assert_contains "$(field "$out" '.cno.detail')" "ghost-hold" "the CNO detail names the task that could not be shown"
   pass "a listed held task whose record cannot be shown is an unreadable store, not a skipped hold"
+
+  # A kind that can never gate (parked, load) is read from the listing alone:
+  # the same store that cannot show it still resolves, with the hold counted
+  # and listed as ignored.
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list)
+    printf 'count: 2\ntasks[2]{id,state,kind,repo,title,hold_kind}:\n  parked-item,queued,task,"-",fixture parked-item,parked\n  load-item,queued,task,"-",fixture load-item,load\n'
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  out=$(PATH="$fakebin:$PATH" run_resolve "$home" resolve) || fail "listing-only non-authority holds resolve failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "listing-only non-authority holds"
+  [ "$(field "$out" '.holds.considered')" = 2 ] || fail "non-authority holds are still counted"
+  [ "$(field "$out" '.holds.ignored[] | select(.task == "parked-item") | .reason')" = HOLD_NOT_AUTHORITY ] || fail "the parked hold is listed as not authority"
+  [ "$(field "$out" '.holds.ignored[] | select(.task == "load-item") | .reason')" = HOLD_NOT_AUTHORITY ] || fail "the load hold is listed as not authority"
+  pass "parked and load holds are read from the listing alone, never shown, and stay counted and ignored"
 }
 
 # --- programme completion and configuration ----------------------------------------
 
 test_completion_and_configuration() {
-  local home other out rc
+  local home other out rc fakebin tool
   home=$(make_home complete)
   disposition "$home" proof-a 1 PROVED
   disposition "$home" proof-b 1 PROVED
@@ -472,6 +517,23 @@ test_completion_and_configuration() {
   out=$(FM_PROGRAMME="$home/cleanroom/programme.json" FM_PROGRAMME_ROOT="$home/cleanroom" run_resolve "$home" summary) || fail "env-located programme failed"
   assert_contains "$out" "programme cleanroom-requalification@fm-requal-programme/v1: complete" "summary renders the completion token"
   pass "FM_PROGRAMME and FM_PROGRAMME_ROOT locate a programme without the config file"
+
+  # Without jq on PATH a pinned home fails loudly, but an unpinned home still
+  # exits 3 so every consumer stays silent regardless of the toolchain.
+  home=$(make_home nojq)
+  fakebin=$(fm_fakebin "$home")
+  for tool in bash dirname grep tail cut; do
+    ln -s "$(command -v "$tool")" "$fakebin/$tool"
+  done
+  out=$(PATH="$fakebin" run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "a pinned home without jq must exit 1, got $rc: $out"
+  assert_contains "$out" "jq is required" "a pinned home without jq names the missing tool"
+  rm "$home/config/programme"
+  out=$(PATH="$fakebin" run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 3 ] || fail "an unpinned home without jq must exit 3, got $rc: $out"
+  out=$(PATH="$fakebin" run_resolve "$home" summary 2>&1); rc=$?
+  [ "$rc" = 3 ] || fail "an unpinned home without jq must exit 3 for summary, got $rc: $out"
+  pass "an unpinned home exits 3 even without jq on PATH, so consumers stay silent"
 }
 
 # --- presentation cannot override or contradict the typed result ------------------

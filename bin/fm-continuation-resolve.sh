@@ -42,7 +42,12 @@
 #      captain-hold owner (bin/fm-captain-hold.sh) writes. A hold binds to an
 #      action only through the typed `Continuation-binding:` body line that
 #      owner records; an unbound hold, a hold on another action or programme, a
-#      lifted hold (task unheld), and a closed task gate nothing.
+#      lifted hold (task unheld), and a closed task gate nothing. The same
+#      store also carries the captain's recorded answer to a typed step fact:
+#      the fact's decision task (its decision_key, else programme-action-axis)
+#      retires the fact when it is closed with a resolution record, or open,
+#      unheld, and newest-recorded as released; a plain closure without a
+#      record is not an answer.
 #   Control rulings reach this resolver through those stores: a ruling that
 #   changes the sequence or grant is a programme-file change, and a ruling that
 #   opens or closes a wait is a bound hold written through the captain-hold owner.
@@ -78,6 +83,9 @@
 # predecessor's terminal-good disposition; a reserved axis the step's own typed
 # facts declare fires CAPTAIN with no pre-existing hold, and `--materialize`
 # then creates the durable hold through the captain-hold owner (idempotent);
+# once the captain's answer is recorded on that fact's decision task the fact
+# is retired (listed in basis_refs as answered, fires nothing, and is never
+# materialized again), so an answered call cannot re-manufacture the gate;
 # a superseded or wrong-generation grant, an unreadable disposition, or an
 # unreadable hold store cannot authorize, so the result is CNO with
 # BROWSER_SOL (uncertainty is never CAPTAIN) unless a reserved-axis fact
@@ -133,8 +141,6 @@ sha256_text() {  # <text>
   fi
 }
 
-command -v jq >/dev/null 2>&1 || fail "jq is required"
-
 # --- locating the programme ---------------------------------------------------
 
 PROGRAMME_OPT=''
@@ -177,6 +183,7 @@ locate_programme() {
     printf 'fm-continuation-resolve: no programme configured (set %s/programme with a programme= line, or pass --programme)\n' "$CONFIG" >&2
     exit 3
   fi
+  command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -f "$PROGRAMME" ] || fail "programme file does not exist: $PROGRAMME"
   ROOT=${ROOT_OPT:-$root_default}
   [ -n "$ROOT" ] || ROOT=$(cd "$(dirname "$PROGRAMME")" && pwd)
@@ -257,7 +264,9 @@ shown_value() {  # <show-output> <field>
 
 # Every open task carrying a hold, as JSON rows:
 #   {task, hold_kind, hold_until, action, programme, axis, wait}
-# with binding fields empty when the task has no typed binding line. Returns 1
+# with binding fields empty when the task has no typed binding line. A kind
+# that can never gate (load, parked, unknown) is emitted from the listing alone
+# without a show, since its binding cannot change its effect. Returns 1
 # when the store cannot be read, printing the detail instead of rows so the
 # caller records CNO naming what failed; a listed held task whose own record
 # cannot be shown is such a failure, never a task to skip, because skipping it
@@ -275,6 +284,12 @@ hold_rows_json() {
   ids=$(held_task_ids "$listing")
   while IFS=$'\t' read -r id kind; do
     [ -n "$id" ] || continue
+    if ! fm_continuation_hold_kind_gates "$kind"; then
+      row=$(jq -n --arg task "$id" --arg kind "$kind" \
+        '{task:$task, hold_kind:$kind, hold_until:"", action:"", programme:"", axis:"", wait:""}')
+      rows=$(jq -n --argjson a "$rows" --argjson r "$row" '$a + [$r]')
+      continue
+    fi
     show=$(tasks_axi show "$id" --full 2>/dev/null) || { printf 'tasks-axi show %s failed in %s' "$id" "$FM_HOME"; return 1; }
     [ "$(show_field "$show" state)" != "done" ] || continue
     kind=$(shown_value "$show" hold_kind)
@@ -300,6 +315,30 @@ EOF
   printf '%s' "$rows"
 }
 
+# The durable task a typed step fact's captain call lives on: its decision_key
+# when that is a slug, else programme-action-axis.
+fact_task_id() {  # <decision-key> <programme-id> <action> <axis>
+  if fm_continuation_is_slug "$1"; then printf '%s' "$1"
+  else printf '%s-%s-%s' "$2" "$3" "$4" | tr '_' '-'; fi
+}
+
+# Whether the captain has already answered a step fact on its task: closed with
+# a recorded answer, or open, unheld, and newest-recorded as released. Prints
+# the recorded mode and returns 0 when answered; a missing task, a live hold,
+# or a closure without a record is not an answer.
+fact_answered() {  # <task-id>
+  local show state kind body mode
+  show=$(tasks_axi show "$1" --full 2>/dev/null) || return 1
+  state=$(show_field "$show" state)
+  kind=$(shown_value "$show" hold_kind)
+  body=$(shown_value "$show" body)
+  fm_continuation_answer_recorded "$body" || return 1
+  mode=$(fm_continuation_answer_mode "$body")
+  if [ "$state" = "done" ]; then printf '%s' "${mode:-answered}"; return 0; fi
+  [ -z "$kind" ] && [ "$mode" = released ] || return 1
+  printf '%s' released
+}
+
 # --- resolution ---------------------------------------------------------------
 
 RESULT=''
@@ -309,9 +348,9 @@ resolve_json() {
   local cno_reason='' cno_detail='' completed='[]' next_id='' next_title='' next_index=-1
   local steps_n i sid title root pred_line pred_attempt pred_outcome pred_path pred_sha accept good
   local cur_attempt=0 cur_outcome='' cur_path='' cur_sha=''
-  local reserved candidates='[]' holds_json='' gating='[]' ignored='[]' hold_count=0
+  local reserved candidates='[]' holds_json='' holds_ok=0 gating='[]' ignored='[]' hold_count=0
   local n row kind until action programme axis wait active is_reserved effect eff_cls eff_reason
-  local facts fact fact_axis fact_key fact_effect claimed default_pair def_cls def_reason
+  local facts fact fact_axis fact_key fact_effect fact_task answered retired='[]' claimed default_pair def_cls def_reason
   local winner cls authority reason_code detail_text materialize='[]' pred_json current_json applicability digest why basis
 
   today=${FM_CONTINUATION_TODAY:-$(date -u +%Y-%m-%d)}
@@ -398,6 +437,7 @@ resolve_json() {
 
   # Durable holds bound to THIS action.
   if holds_json=$(hold_rows_json); then
+    holds_ok=1
     hold_count=$(printf '%s' "$holds_json" | jq 'length')
     n=0
     while [ "$n" -lt "$hold_count" ]; do
@@ -409,6 +449,10 @@ resolve_json() {
       programme=$(printf '%s' "$row" | jq -r '.programme')
       axis=$(printf '%s' "$row" | jq -r '.axis')
       wait=$(printf '%s' "$row" | jq -r '.wait')
+      if ! fm_continuation_hold_kind_gates "$kind"; then
+        effect=$(fm_continuation_hold_effect "$kind" 0 '' 1); eff_reason=${effect#* }
+        ignored=$(jq -n --argjson a "$ignored" --argjson r "$row" --arg reason "$eff_reason" '$a + [{task:$r.task, reason:$reason}]'); continue
+      fi
       if [ -z "$action" ]; then
         ignored=$(jq -n --argjson a "$ignored" --argjson r "$row" '$a + [{task:$r.task, reason:"HOLD_UNBOUND"}]'); continue
       fi
@@ -438,7 +482,10 @@ resolve_json() {
   fi
 
   # Typed step facts: a reserved axis the action itself declares fires CAPTAIN
-  # with no pre-existing hold; a declared non-reserved axis is a refused claim.
+  # with no pre-existing hold; a declared non-reserved axis is a refused claim;
+  # a reserved axis whose decision task already records the captain's answer
+  # is retired. A task carrying a live captain hold gates through the hold
+  # path above, so it is not shown again here.
   facts=$(jq -c "[(.steps[$next_index].captain_axes[]? | select(type == \"object\")),
                   (.steps[$next_index].optional_captain_enhancements[]? | select(type == \"object\" and .required_to_proceed == true))]" "$PROGRAMME")
   n=$(printf '%s' "$facts" | jq 'length')
@@ -451,6 +498,16 @@ resolve_json() {
     fact_effect=$(printf '%s' "$fact" | jq -r '.effect // ""')
     fm_continuation_is_slug "$fact_axis" || continue
     if fm_continuation_axis_reserved "$fact_axis" "$reserved"; then
+      fact_task=$(fact_task_id "$fact_key" "$prog_id" "$next_id" "$fact_axis")
+      answered=''
+      if [ "$holds_ok" = 1 ] && [ "$(printf '%s' "$holds_json" | jq --arg t "$fact_task" '[.[] | select(.task == $t and .hold_kind == "captain")] | length')" = 0 ]; then
+        answered=$(fact_answered "$fact_task") || answered=''
+      fi
+      if [ -n "$answered" ]; then
+        retired=$(jq -n --argjson r "$retired" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg mode "$answered" \
+          '$r + [{axis:$axis, decision_key:$key, task:$task, mode:$mode}]')
+        continue
+      fi
       candidates=$(jq -n --argjson c "$candidates" --arg axis "$fact_axis" --arg key "$fact_key" --arg effect "$fact_effect" \
         '$c + [{source:"step_fact", rank:3, classification:"CAPTAIN", reason_code:"STEP_RESERVED_AXIS", axis:$axis, decision_key:$key, effect:$effect, detail:("axis " + $axis)}]')
       materialize=$(jq -n --argjson m "$materialize" --arg axis "$fact_axis" --arg key "$fact_key" --arg effect "$fact_effect" \
@@ -497,19 +554,22 @@ resolve_json() {
     'if $attempt == 0 then null else {attempt:$attempt, outcome:(if $outcome == "" then null else $outcome end), disposition:(if $path == "" then null else $path end), sha256:(if $sha == "" then null else $sha end)} end')
   applicability=$(jq -n -c --arg action "$next_id" --arg pid "$prog_id" --arg gen "$prog_gen" \
     --argjson action_generation "$((cur_attempt + 1))" --argjson pred "$pred_json" --argjson current "$current_json" \
-    --argjson gating "$gating" --arg today "$today" --arg psha "$prog_sha" \
+    --argjson gating "$gating" --argjson retired "$retired" --arg today "$today" --arg psha "$prog_sha" \
     '{action:$action, programme_id:$pid, programme_generation:$gen, programme_sha256:$psha, action_generation:$action_generation,
-      predecessor:$pred, current:$current, gating_holds:[$gating[] | .task], today:$today}')
+      predecessor:$pred, current:$current, gating_holds:[$gating[] | .task], answered_facts:[$retired[] | .task], today:$today}')
   digest=$(sha256_text "$applicability")
   why=$(fm_continuation_render_reason "$reason_code" "$next_id" \
     "$(printf '%s' "$pred_json" | jq -r 'if . == null then "" else .id + " attempt " + (.attempt | tostring) + " " + .outcome end')" \
     "$detail_text")
   basis=$(jq -n -c --argjson refs "$grant_refs" --argjson pred "$pred_json" --argjson gating "$gating" --argjson winner "$winner" \
-    --argjson facts "$facts" --arg reserved "$(printf '%s' "$reserved" | tr '\n' ' ')" '
+    --argjson facts "$facts" --argjson retired "$retired" --arg reserved "$(printf '%s' "$reserved" | tr '\n' ' ')" '
     [$refs[] | {kind:"programme_grant", ref:.}]
     + (if $pred == null then [] else [{kind:"predecessor_disposition"} + $pred] end)
     + [$gating[] | {kind:"hold", task, hold_kind, axis, wait, classification, reason_code}]
-    + [$facts[] | select(.axis != null) | .axis as $ax | {kind:"step_fact", axis:$ax, decision_key:(.decision_key // null), reserved:((($reserved | split(" ")) | index($ax)) != null)}]')
+    + [$facts[] | select(.axis != null) | .axis as $ax | (.decision_key // "") as $key
+       | ([$retired[] | select(.axis == $ax and .decision_key == $key)] | first) as $a
+       | {kind:"step_fact", axis:$ax, decision_key:(if $key == "" then null else $key end), reserved:((($reserved | split(" ")) | index($ax)) != null)}
+         + (if $a == null then {answered:false} else {answered:true, answered_task:$a.task, answered_mode:$a.mode} end)]')
 
   RESULT=$(jq -n --arg schema "$RESOLUTION_SCHEMA" --arg pid "$prog_id" --arg gen "$prog_gen" --arg path "$PROGRAMME" --arg sha "$prog_sha" \
     --arg next "$next_id" --arg title "$next_title" --argjson action_generation "$((cur_attempt + 1))" \
@@ -542,8 +602,7 @@ materialize_holds() {
     axis=$(printf '%s' "$item" | jq -r '.axis')
     key=$(printf '%s' "$item" | jq -r '.decision_key')
     effect=$(printf '%s' "$item" | jq -r '.effect')
-    if fm_continuation_is_slug "$key"; then task=$key
-    else task=$(printf '%s-%s-%s' "$(printf '%s' "$RESULT" | jq -r '.programme.id')" "$(printf '%s' "$RESULT" | jq -r '.next_action')" "$axis" | tr '_' '-'); fi
+    task=$(fact_task_id "$key" "$(printf '%s' "$RESULT" | jq -r '.programme.id')" "$(printf '%s' "$RESULT" | jq -r '.next_action')" "$axis")
     title=$(printf 'Captain decision for %s: %s' "$(printf '%s' "$RESULT" | jq -r '.next_action')" "${effect:-reserved axis $axis}" | tr '()' '[]')
     reason=$(printf 'reserved axis %s on programme step %s' "$axis" "$(printf '%s' "$RESULT" | jq -r '.next_action')")
     "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --title "$title" --reason "$reason" \

@@ -18,6 +18,7 @@ The resolver keeps no store of its own and reads three canonical sources.
 - The pinned programme file, located through `config/programme` ([`configuration.md`](configuration.md)), carries the ordered sequence, the standing grant and its references, the reserved axes, and each step's typed action facts.
 - Proof dispositions under each step's artifact root are read for their outcome only; the highest-numbered attempt is the current one.
 - Durable holds are read through tasks-axi from the same backlog the captain-hold owner writes; a hold binds to an action only through the typed `Continuation-binding:` line that `bin/fm-captain-hold.sh hold --action` or `bind-action` records ([`captain-hold-lifecycle.md`](captain-hold-lifecycle.md)).
+- The same backlog carries the captain's recorded answer to a typed step fact: when the fact's decision task (its `decision_key`, else programme-action-axis) is closed with the captain-hold owner's resolution record, or open, unheld, and newest-recorded as released, the fact is retired, listed in `basis_refs` as answered, and never materialized again; a plain closure without a record is not an answer.
 
 Control rulings reach the resolver through those stores rather than through a fourth reader: a ruling that changes the sequence or the grant is a programme-file change, and a ruling that opens or closes a wait is a bound hold.
 There is no second authority store, no compiled projection, and no reader of report, review, or chat prose.
@@ -30,6 +31,7 @@ Applicability binds the result to the action, the programme generation, the acti
 The `why` field and the `render` output are presentation derived from the typed fields; no renderer can override them.
 
 The classification law itself, including how a bound hold or a step's own typed facts gate an action, is stated once in the library header and applied by the resolver; a CAPTAIN result from a typed step fact is made durable with `resolve --materialize` through the captain-hold owner.
+That completes the lifecycle in code: the fact fires CAPTAIN, `--materialize` creates the hold, the captain answers through `bin/fm-captain-hold.sh answer`, and the recorded answer retires the fact without any programme-file edit.
 
 ## Consumer census
 

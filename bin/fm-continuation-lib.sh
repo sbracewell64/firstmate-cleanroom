@@ -144,6 +144,39 @@ fm_continuation_hold_effect() {  # <hold-kind> <axis-reserved> <wait> <date-acti
   esac
 }
 
+# Whether a hold kind can gate an action at all, derived from the hold-effect
+# law with every gating condition satisfied so the two cannot drift; a kind
+# that cannot gate needs no binding read.
+fm_continuation_hold_kind_gates() {  # <hold-kind>
+  case "$(fm_continuation_hold_effect "$1" 1 ruling 1)" in
+    IGNORE*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# THE recorded-answer contract as read here: a task body carrying the
+# resolution record bin/fm-captain-hold.sh (or the retired fm-decision-hold.sh)
+# writes when the captain answers. Records are prepended, so the first
+# `Resolution mode:` is the newest (answered, released, or repaired; empty
+# for a record predating the field).
+fm_continuation_answer_recorded() {  # <body>
+  case "$1" in
+    *"Resolution recorded by fm-captain-hold."*"Captain decision:"*) return 0 ;;
+    *"Resolution recorded by fm-decision-hold."*"Captain decision:"*) return 0 ;;
+  esac
+  return 1
+}
+
+fm_continuation_answer_mode() {  # <body>
+  local rest=$1
+  case "$rest" in
+    *"Resolution mode: "*) rest=${rest#*"Resolution mode: "} ;;
+    *) return 0 ;;
+  esac
+  rest=${rest%%$'\n'*}
+  printf '%s' "$rest"
+}
+
 # THE step-default law. Prints "<classification> <reason-code>" for a step's
 # own claimed classification when no typed fact gates it.
 fm_continuation_step_default() {  # <classification_when_next-or-empty>

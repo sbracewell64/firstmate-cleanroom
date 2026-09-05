@@ -309,14 +309,19 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   assert_contains "$out" "answer on proof-b-paid-runner ignored (ANSWER_OTHER_PROGRAMME)" "render names the ignored answer"
   pass "F9 an answer bound to another programme does not retire this programme's fact"
 
-  # ... nor for a later action of this programme that declares the same axis and key.
-  write_programme "$home" '.steps[2].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  # ... nor for a later action whose own decision task was answered while
+  # bound to proof-b: the answer's typed binding, not the key, names the action.
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]
+    | .steps[2].captain_axes = [{"axis":"new_paid_spend","decision_key":"re-review-paid-runner","effect":"a paid CI runner tier"}]'
+  run_hold "$home" hold re-review-paid-runner --title "Captain decision for proof-b: paid runner" --reason "fixture" \
+    --action proof-b --axis new_paid_spend --programme cleanroom-requalification >/dev/null || fail "F9: could not hold re-review-paid-runner"
+  run_hold "$home" answer re-review-paid-runner --decision-file "$home/ok.txt" >/dev/null || fail "F9: could not answer re-review-paid-runner"
   disposition "$home" proof-b 1 PROVED
   out=$(run_resolve "$home" resolve) || fail "F9 later action resolve failed"
   expect_typed "$out" architecture-re-review CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (answer bound to an earlier action)"
-  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answer_ignored.reason')" = ANSWER_OTHER_ACTION ] || fail "F9: the proof-b answer is listed as ignored for architecture-re-review"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answer_ignored.reason')" = ANSWER_OTHER_ACTION ] || fail "F9: the proof-b-bound answer is listed as ignored for architecture-re-review"
   [ "$(field "$out" '.applicability.answered_facts | length')" = 0 ] || fail "F9: an ignored answer is not an answered fact"
-  pass "F9 an answer bound to proof-b does not retire the same-axis fact on a later action"
+  pass "F9 an answer bound to proof-b does not retire a later action's fact even on that action's own decision task"
 
   # An unbound record (no Continuation-binding line) is not an answer for any action.
   home=$(make_home f9-unbound)
@@ -550,6 +555,24 @@ test_completion_and_configuration() {
   out=$(FM_PROGRAMME="$home/cleanroom/programme.json" FM_PROGRAMME_ROOT="$home/cleanroom" run_resolve "$home" summary) || fail "env-located programme failed"
   assert_contains "$out" "programme cleanroom-requalification@fm-requal-programme/v1: complete" "summary renders the completion token"
   pass "FM_PROGRAMME and FM_PROGRAMME_ROOT locate a programme without the config file"
+
+  # A decision_key binds exactly one step: a programme sharing one key across
+  # two steps is refused at load, naming the key and both steps, before any
+  # resolution runs; distinct keys resolve normally.
+  home=$(make_home shared-key)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"shared-runner","effect":"x"}]
+    | .steps[2].optional_captain_enhancements = [{"axis":"new_paid_spend","decision_key":"shared-runner","effect":"x","required_to_proceed":true}]'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "a shared decision_key must exit 1, got $rc: $out"
+  assert_contains "$out" "shared-runner" "the refusal names the shared key"
+  assert_contains "$out" "proof-b" "the refusal names the first step"
+  assert_contains "$out" "architecture-re-review" "the refusal names the second step"
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"x"}]
+    | .steps[2].optional_captain_enhancements = [{"axis":"new_paid_spend","decision_key":"runner-c","effect":"x","required_to_proceed":true}]'
+  out=$(run_resolve "$home" resolve) || fail "distinct decision keys must resolve"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "distinct decision keys"
+  pass "a decision_key shared by two steps is refused at load, naming the key and both steps; distinct keys resolve"
 
   # Without jq on PATH a pinned home fails loudly, but an unpinned home still
   # exits 3 so every consumer stays silent regardless of the toolchain.

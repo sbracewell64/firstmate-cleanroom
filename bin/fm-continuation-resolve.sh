@@ -27,7 +27,10 @@
 #      `steps[]` {id, title, artifact_root, terminal_predicate{kind, accept[]},
 #      classification_when_next, captain_axes[]{axis, decision_key, effect}}.
 #      Legacy `optional_captain_enhancements[]` entries count as captain_axes
-#      only when `required_to_proceed` is true. Located by --programme, then
+#      only when `required_to_proceed` is true. A decision_key binds exactly
+#      one step: a key declared by more than one step is refused at load,
+#      since one durable task cannot carry two actions' captain calls.
+#      Located by --programme, then
 #      FM_PROGRAMME, then the `programme=` line of $FM_HOME/config/programme.
 #      Relative artifact roots resolve against a root paired with the source
 #      that located the programme: --root always wins; a --programme or
@@ -174,7 +177,7 @@ config_value() {  # <key>
 PROGRAMME=''
 ROOT=''
 locate_programme() {
-  local root_default=''
+  local root_default='' shared
   if [ -n "$PROGRAMME_OPT" ]; then
     PROGRAMME=$PROGRAMME_OPT; root_default=${FM_PROGRAMME_ROOT:-}
   elif [ -n "${FM_PROGRAMME:-}" ]; then
@@ -193,6 +196,15 @@ locate_programme() {
   [ -d "$ROOT" ] || fail "programme root does not exist: $ROOT"
   jq -e '.programme_id and .schema and (.steps | type == "array" and length > 0)' "$PROGRAMME" >/dev/null 2>&1 \
     || fail "programme file is not a valid programme (programme_id, schema, steps[] required): $PROGRAMME"
+  shared=$(jq -r '
+    [.steps[] | select(type == "object") | (.id // "?") as $step
+      | ((.captain_axes // []) + (.optional_captain_enhancements // []))[]
+      | select(type == "object" and (.decision_key | type) == "string" and .decision_key != "")
+      | {key: .decision_key, step: $step}]
+    | group_by(.key) | map({key: .[0].key, steps: (map(.step) | unique)})
+    | map(select(.steps | length > 1))[]
+    | .key + " (steps " + (.steps | join(", ")) + ")"' "$PROGRAMME" 2>/dev/null | paste -sd ';' -)
+  [ -z "$shared" ] || fail "a decision_key must bind exactly one step; shared in $PROGRAMME: $shared"
 }
 
 # --- proof dispositions -------------------------------------------------------

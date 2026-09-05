@@ -109,7 +109,9 @@
 # materialization all key on that task, so a foreign hold that merely shares
 # the axis gates on its own but never stands in for the fact, each distinct
 # fact materializes exactly one canonical hold, and it is answered through
-# that same task; `--materialize` never replaces a live non-captain hold;
+# that same task; `--materialize` never replaces a live non-captain hold and
+# never rebinds a decision task whose binding names another action or
+# programme (it fails naming both), so replay converges on one binding;
 # a superseded or wrong-generation grant, an unreadable disposition, or an
 # unreadable hold store cannot authorize, so the result is CNO with
 # BROWSER_SOL (uncertainty is never CAPTAIN) unless a reserved-axis fact
@@ -655,10 +657,14 @@ resolve_json() {
 
 # Create the durable captain hold a CAPTAIN result from a typed step fact
 # requires, through the captain-hold owner only. Idempotent: an existing bound
-# hold is left as it is, and a decision task under a live non-captain hold is
-# never re-held (that hold and its binding belong to another wait).
+# hold is left as it is; a decision task under a live non-captain hold is
+# never re-held (that hold and its binding belong to another wait), and one
+# whose binding names another action or programme is never rebound (that
+# call belongs to the other action or programme) - both fail loudly.
 materialize_holds() {
-  local n i item axis key effect task title reason created='[]' show kind
+  local n i item axis key effect task title reason created='[]' show kind action programme binding bound_action bound_programme
+  action=$(printf '%s' "$RESULT" | jq -r '.next_action')
+  programme=$(printf '%s' "$RESULT" | jq -r '.programme.id')
   n=$(printf '%s' "$RESULT" | jq '.materialize | length')
   [ "$n" -gt 0 ] || { RESULT=$(printf '%s' "$RESULT" | jq '.materialized = []'); return 0; }
   i=0
@@ -675,6 +681,12 @@ materialize_holds() {
       kind=$(shown_value "$show" hold_kind)
       [ -z "$kind" ] || [ "$kind" = captain ] \
         || fail "cannot materialize captain hold $task: it carries a live $kind hold that must not be replaced"
+      binding=$(fm_continuation_binding_from_body "$(shown_value "$show" body)")
+      bound_action=$(fm_continuation_binding_field "$binding" action)
+      bound_programme=$(fm_continuation_binding_field "$binding" programme)
+      if [ -n "$bound_action" ] && { [ "$bound_action" != "$action" ] || { [ -n "$bound_programme" ] && [ "$bound_programme" != "$programme" ]; }; }; then
+        fail "cannot materialize captain hold $task: it is bound to action $bound_action programme ${bound_programme:-any} and must not be rebound to action $action programme $programme"
+      fi
     fi
     "$SCRIPT_DIR/fm-captain-hold.sh" hold "$task" --title "$title" --reason "$reason" \
       --action "$(printf '%s' "$RESULT" | jq -r '.next_action')" --axis "$axis" \

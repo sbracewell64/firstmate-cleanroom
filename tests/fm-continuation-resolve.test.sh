@@ -416,6 +416,69 @@ test_foreign_hold_sharing_axis_does_not_cover_fact() {
   pass "answering the fact's own task retires it"
 }
 
+# --- materialize never rebinds a decision task bound elsewhere ------------------
+
+test_materialize_never_rebinds_foreign_binding() {
+  local home out out2 rc before after
+  home=$(make_home rebind)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier"}]'
+  run_resolve "$home" resolve --materialize >/dev/null || fail "rebind: first materialize failed"
+  before=$(tasks_in "$home" show runner-b --full | sed -n 's/^  body: //p')
+
+  # A programme generation bump that keeps the step id, key, and effect text
+  # but changes the programme id must not take over the outstanding call.
+  write_programme "$home" '.programme_id = "cleanroom-requalification-v2"
+    | .steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier"}]'
+  out=$(run_resolve "$home" resolve) || fail "rebind: v2 resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "v2 sees the old hold as another programme's"
+  [ "$(field "$out" '.holds.ignored[] | select(.task == "runner-b") | .reason')" = HOLD_OTHER_PROGRAMME ] || fail "rebind: the old hold is ignored as another programme's"
+  out=$(run_resolve "$home" resolve --materialize 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "rebind: materialize over a foreign-programme binding must exit 1, got $rc: $out"
+  assert_contains "$out" "runner-b" "the refusal names the task"
+  assert_contains "$out" "bound to action proof-b programme cleanroom-requalification" "the refusal names the recorded binding"
+  assert_contains "$out" "must not be rebound to action proof-b programme cleanroom-requalification-v2" "the refusal names the fact's action and programme"
+  after=$(tasks_in "$home" show runner-b --full | sed -n 's/^  body: //p')
+  [ "$before" = "$after" ] || fail "rebind: the old binding must stay byte-identical: $after"
+  pass "materialize refuses to rebind a live captain hold bound to another programme and leaves its binding untouched"
+
+  # The old programme still sees its own hold, unchanged: no flip.
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier"}]'
+  out=$(run_resolve "$home" resolve --materialize) || fail "rebind: old programme replay failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "old programme keeps its own hold"
+  [ "$(field "$out" '.materialized | length')" = 0 ] || fail "rebind: the old programme has nothing to materialize"
+  after=$(tasks_in "$home" show runner-b --full | sed -n 's/^  body: //p')
+  [ "$before" = "$after" ] || fail "rebind: the old programme's replay must not move the binding: $after"
+  pass "the old programme's replay still sees its own hold unchanged"
+
+  # A live captain hold on the fact's task bound to another action refuses too.
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-c","effect":"a paid CI runner tier"}]'
+  run_hold "$home" hold runner-c --title "Captain decision for proof-b: a paid CI runner tier" --reason "earlier call" \
+    --action proof-a --axis new_paid_spend --programme cleanroom-requalification >/dev/null || fail "rebind: could not hold runner-c"
+  before=$(tasks_in "$home" show runner-c --full | sed -n 's/^  body: //p')
+  out=$(run_resolve "$home" resolve --materialize 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "rebind: materialize over a foreign-action binding must exit 1, got $rc: $out"
+  assert_contains "$out" "runner-c: it is bound to action proof-a programme cleanroom-requalification" "the refusal names the other action"
+  after=$(tasks_in "$home" show runner-c --full | sed -n 's/^  body: //p')
+  [ "$before" = "$after" ] || fail "rebind: the other action's binding must stay byte-identical"
+  pass "materialize refuses to rebind a live captain hold bound to another action"
+
+  # A same-action same-programme binding missing the axis converges through the owner.
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-d","effect":"a paid CI runner tier"}]'
+  run_hold "$home" hold runner-d --title "Captain decision for proof-b: a paid CI runner tier" --reason "axis-less call" \
+    --action proof-b --programme cleanroom-requalification >/dev/null || fail "rebind: could not hold runner-d"
+  out=$(run_resolve "$home" resolve --materialize) || fail "rebind: axis-less binding must converge: $out"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "axis-less binding converged"
+  [ "$(field "$out" '.materialized[0].task')" = runner-d ] || fail "rebind: the axis-less task was materialized"
+  after=$(tasks_in "$home" show runner-d --full | sed -n 's/^  body: //p' | jq -r '.')
+  [ "$(printf '%s\n' "$after" | grep -c '^Continuation-binding: ')" = 1 ] || fail "rebind: exactly one binding line after convergence"
+  printf '%s\n' "$after" | grep -qx 'Continuation-binding: action=proof-b programme=cleanroom-requalification axis=new_paid_spend' \
+    || fail "rebind: the converged binding carries the axis: $after"
+  out2=$(run_resolve "$home" resolve --materialize) || fail "rebind: replay failed"
+  [ "$(field "$out2" '.applicability_digest')" = "$(field "$out" '.applicability_digest')" ] || fail "rebind: replay digest must be stable"
+  pass "a same-action same-programme binding missing the axis converges to one binding"
+}
+
 # --- F7: a hold scoped to one action does not gate another ---------------------
 
 test_f7_scoped_hold_does_not_leak() {
@@ -857,6 +920,7 @@ timed test_f2_lifted_hold_is_not_authoritative
 timed test_f3_f4_ruling_and_external_waits
 timed test_f5_f9_reserved_axis_without_hold_materializes
 timed test_foreign_hold_sharing_axis_does_not_cover_fact
+timed test_materialize_never_rebinds_foreign_binding
 timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno

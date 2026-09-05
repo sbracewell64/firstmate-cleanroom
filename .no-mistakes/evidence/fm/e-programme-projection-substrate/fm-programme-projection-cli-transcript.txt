@@ -1,0 +1,150 @@
+### Fixture: 3-step programme (proof-a PROVED; proof-b next, phase=proofs, task_id=proof-b-worker bound to a git worktree; ceilings 4 programme / 6 step override)
+### paths under /tmp/fm-proj-evidence.1387R5 are redacted as $T below
+
+$ fm-programme-projection.sh project
+{
+  "schema": "fm-programme-projection/v1",
+  "programme": {
+    "id": "cleanroom-requalification",
+    "generation": "fm-requal-programme/v1",
+    "path": "$T/home/cleanroom/programme.json",
+    "root": "$T/home/cleanroom",
+    "sha256": "95cefde7f04e4e419669133aea416acb4961ade28528e64ae1435a9dbf53ed56"
+  },
+  "next_action": "proof-b",
+  "next_action_title": "fresh Proof B",
+  "phase": "proofs",
+  "phase_generation": 1,
+  "action_generation": 1,
+  "work_generation": "3",
+  "classification": "SELF_HANDLE",
+  "authority_state": "AUTHORIZED",
+  "reason_code": "STANDING_GRANT",
+  "basis_refs": [
+    {
+      "kind": "programme_grant",
+      "ref": "control#3 requalification programme"
+    },
+    {
+      "kind": "predecessor_disposition",
+      "id": "proof-a",
+      "attempt": 1,
+      "outcome": "PROVED",
+      "disposition": "$T/home/cleanroom/artifacts/proofs/proof-a/attempt-1/disposition.json",
+      "sha256": "a59d8cc0aa97a0f1d13365edd64b25e95db8e9f3101dd60b7a81403e65511f3d"
+    }
+  ],
+  "applicability": {
+    "action": "proof-b",
+    "action_generation": 1,
+    "candidate_identity": {
+      "head": "24604ee625b8004f30dbe689024a11864cfb92ce",
+      "pr_head": "0123456789abcdef0123456789abcdef01234567",
+      "spawn_gen": "3",
+      "task": "proof-b-worker",
+      "tree": "1c75ef3585be578eff39c44c19a947f33770ff09",
+      "worktree": "$T/candidate-wt"
+    },
+    "hold_grant_generation": "5c5c6da2ffc80ab700e803854dae56e5d1ca2221f9e4aa7b9fddbf5920b8e000",
+    "phase_generation": 1,
+    "phase_id": "proofs",
+    "predecessor_disposition": {
+      "attempt": 1,
+      "disposition": "$T/home/cleanroom/artifacts/proofs/proof-a/attempt-1/disposition.json",
+      "id": "proof-a",
+      "outcome": "PROVED",
+      "sha256": "a59d8cc0aa97a0f1d13365edd64b25e95db8e9f3101dd60b7a81403e65511f3d"
+    },
+    "programme_generation": "fm-requal-programme/v1",
+    "programme_id": "cleanroom-requalification",
+    "programme_sha256": "95cefde7f04e4e419669133aea416acb4961ade28528e64ae1435a9dbf53ed56",
+    "resolver_applicability_digest": "e6d857ad4e8cfea23684c5caa9d0f4b65e6749549a8527fab960c9223580a3f6",
+    "work_generation": "3"
+  },
+  "applicability_digest": "efa9d08995374ee819422de06249933735a308e80e53091deaba2e70bba9d542",
+  "delegation": {
+    "phase": "proofs",
+    "phase_steps": [
+      "proof-a",
+      "proof-b"
+    ],
+    "concurrency": {
+      "ceiling": 6,
+      "ladder": [
+        2,
+        3,
+        4,
+        6
+      ],
+      "hard_max": 6,
+      "source": "programme:steps[1].delegation.max_concurrency",
+      "hidden_fanout_counts_under_ceiling": true,
+      "ramps": false
+    },
+    "dispatch_profiles_configured": false,
+    "picks_model_or_effort": false,
+    "model_effort_owner": "config/crew-dispatch.json + quota-axi (AGENTS.md section 4)",
+    "enforces": false,
+    "enforcer": "bin/fm-spawn.sh"
+  },
+  "resolver": {
+    "schema": "fm-continuation-resolution/v1",
+    "applicability_digest": "e6d857ad4e8cfea23684c5caa9d0f4b65e6749549a8527fab960c9223580a3f6",
+    "cno": null,
+    "holds": {
+      "considered": 0,
+      "gating": []
+    }
+  }
+}
+exit=0
+
+$ fm-programme-projection.sh summary
+projection cleanroom-requalification@fm-requal-programme/v1: next=proof-b phase=proofs@1 gen=1/3 SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT ceiling=6 applicability=efa9d0899537
+
+$ fm-continuation-resolve.sh resolve | jq '{next_action,action_generation,classification,authority_state,reason_code,programme}'  # owner, for comparison
+{
+  "next_action": "proof-b",
+  "action_generation": 1,
+  "classification": "SELF_HANDLE",
+  "authority_state": "AUTHORIZED",
+  "reason_code": "STANDING_GRANT",
+  "programme": {
+    "id": "cleanroom-requalification",
+    "generation": "fm-requal-programme/v1",
+    "path": "$T/home/cleanroom/programme.json",
+    "root": "$T/home/cleanroom",
+    "sha256": "95cefde7f04e4e419669133aea416acb4961ade28528e64ae1435a9dbf53ed56"
+  }
+}
+
+$ # move the candidate head, re-project
+applicability_digest before head move: efa9d08995374ee819422de06249933735a308e80e53091deaba2e70bba9d542
+applicability_digest after  head move: 1a606eda42a83e02a2d858c157cfdaac61d276cc0b4259681acba45a7999c10d
+=> tuple changed (prior resolution structurally unusable)
+
+$ # place a reserved-axis captain hold bound to proof-b, re-project
+projection cleanroom-requalification@fm-requal-programme/v1: next=proof-b phase=proofs@1 gen=1/3 CAPTAIN/REQUIRES_CAPTAIN reason=HOLD_RESERVED_AXIS ceiling=6 applicability=f19a082a6329
+{"classification":"CAPTAIN","authority_state":"REQUIRES_CAPTAIN","reason_code":"HOLD_RESERVED_AXIS","gating":["spend-call"]}
+
+$ # lift the hold: summary returns to authorized
+projection cleanroom-requalification@fm-requal-programme/v1: next=proof-b phase=proofs@1 gen=1/3 SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT ceiling=6 applicability=1a606eda42a8
+
+$ fm-programme-projection.sh project --materialize
+fm-programme-projection: --materialize is refused; this layer has no authority to create a hold (use fm-continuation-resolve.sh resolve --materialize)
+exit=2
+
+$ # worktree= pointing at a plain dir nested inside the candidate repo
+fm-programme-projection: candidate worktree $T/candidate-wt/nested/plain (task proof-b-worker) is not a repository work tree: its physical path $T/candidate-wt/nested/plain differs from the enclosing work tree $T/candidate-wt
+exit=1
+
+$ # programme-level max_concurrency=5 (off ladder)
+fm-programme-projection: programme delegation.max_concurrency must be a ladder rung (2 3 4 6; hard max 6) in $T/home/cleanroom/programme.json, got 5
+exit=1
+
+$ # duplicate step id
+fm-programme-projection: step ids must be unique in $T/home/cleanroom/programme.json; duplicated: proof-a
+exit=1
+
+$ # no programme configured
+exit=3 stdout_bytes=0 stderr: fm-continuation-resolve: no programme configured (set $T/home/config/programme with a programme= line, or pass --programme)

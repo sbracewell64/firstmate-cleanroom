@@ -154,11 +154,12 @@ fm_continuation_hold_kind_gates() {  # <hold-kind>
   esac
 }
 
-# THE recorded-answer contract as read here: a task body carrying the
-# resolution record bin/fm-captain-hold.sh (or the retired fm-decision-hold.sh)
-# writes when the captain answers. Records are prepended, so the first
-# `Resolution mode:` is the newest (answered, released, or repaired; empty
-# for a record predating the field).
+# THE recorded-answer contract, read by its writer (bin/fm-captain-hold.sh)
+# and by the resolver alike: a task body carrying the resolution record the
+# captain-hold owner (or the retired fm-decision-hold.sh) writes when the
+# captain answers. The body may be decoded (real newlines) or still
+# show-escaped (one quoted line with \n escapes). Records are prepended, so
+# the first field match is the newest record.
 fm_continuation_answer_recorded() {  # <body>
   case "$1" in
     *"Resolution recorded by fm-captain-hold."*"Captain decision:"*) return 0 ;;
@@ -167,14 +168,27 @@ fm_continuation_answer_recorded() {  # <body>
   return 1
 }
 
-fm_continuation_answer_mode() {  # <body>
+# The newest record's one-line field value, or return 1 when absent.
+fm_continuation_answer_field() {  # <body> <field-label>
   local rest=$1
   case "$rest" in
-    *"Resolution mode: "*) rest=${rest#*"Resolution mode: "} ;;
-    *) return 0 ;;
+    *"$2: "*) rest=${rest#*"$2: "} ;;
+    *) return 1 ;;
   esac
+  rest=${rest%%\\n*}
   rest=${rest%%$'\n'*}
   printf '%s' "$rest"
+}
+
+# The newest record's decision digest.
+fm_continuation_answer_digest() {  # <body>
+  fm_continuation_answer_field "$1" "Decision digest"
+}
+
+# The newest record's resolution mode (answered, released, or repaired);
+# return 1 for a record predating the field.
+fm_continuation_answer_mode() {  # <body>
+  fm_continuation_answer_field "$1" "Resolution mode"
 }
 
 # THE step-default law. Prints "<classification> <reason-code>" for a step's

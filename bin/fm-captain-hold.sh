@@ -320,42 +320,10 @@ origin_open_decisions() {  # <origin-id>
   printf '%s' "$open"
 }
 
-# A resolution record written by this script or by the retired
-# fm-decision-hold.sh. Both carry the same leader-then-captain-decision shape.
-body_has_resolution_record() {  # <task-body>
-  case "$1" in
-    *"Resolution recorded by fm-captain-hold."*"Captain decision:"*) return 0 ;;
-    *"Resolution recorded by fm-decision-hold."*"Captain decision:"*) return 0 ;;
-  esac
-  return 1
-}
-
-# The recorded decision digest of either record format, from the show-escaped
-# body (multi-line bodies print as one quoted line with \n escapes). Records
-# are prepended, so the first match is the newest record.
-recorded_decision_digest() {  # <task-body>
-  local rest=$1
-  case "$rest" in
-    *"Decision digest: "*) rest=${rest#*"Decision digest: "} ;;
-    *) return 1 ;;
-  esac
-  rest=${rest%%\\n*}
-  rest=${rest%%$'\n'*}
-  printf '%s' "$rest"
-}
-
-# The newest record's `Resolution mode:` value; empty for a record predating it.
-recorded_resolution_mode() {  # <task-body>
-  local rest=$1
-  case "$rest" in
-    *"Resolution mode: "*) rest=${rest#*"Resolution mode: "} ;;
-    *) return 1 ;;
-  esac
-  rest=${rest%%\\n*}
-  rest=${rest%%$'\n'*}
-  printf '%s' "$rest"
-}
-
+# The resolution record's shape and its readers (fm_continuation_answer_recorded,
+# fm_continuation_answer_digest, fm_continuation_answer_mode) are owned by
+# bin/fm-continuation-lib.sh so the resolver reads the same contract this
+# script writes.
 resolution_block() {  # <mode>
   printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n' \
     "$DECISION_DIGEST" "$1" "$DECISION_TEXT"
@@ -369,7 +337,7 @@ verify_hold_durable() {  # <task-id>
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
-  if body_has_resolution_record "$body"; then
+  if fm_continuation_answer_recorded "$body"; then
     return 0
   fi
   if [ "$state" != "done" ] && [ "$hold_kind" = captain ]; then
@@ -586,11 +554,11 @@ command_answer() {
   if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
 
   if [ "$state" = "done" ]; then
-    if body_has_resolution_record "$body"; then
+    if fm_continuation_answer_recorded "$body"; then
       # An exact compatible retry is an idempotent no-op; drift is rejected.
-      [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+      [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ] \
         || fail "captain-held task $id records a different captain decision"
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
+      recorded_mode=$(fm_continuation_answer_mode "$body" || true)
       [ "$recorded_mode" != released ] \
         || fail "task $id records this answer with mode released; a closed task cannot replay that release"
       [ "$release" = 0 ] \
@@ -607,7 +575,7 @@ command_answer() {
     write_resolution_record "$id" repaired "$body"
     show=$(task_show "$id") || fail "task $id disappeared while recording the answer"
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
-    body_has_resolution_record "$(show_field "$show" body)" \
+    fm_continuation_answer_recorded "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     printf 'repaired: %s\n' "$id"
     return 0
@@ -620,9 +588,9 @@ command_answer() {
     # its own record on top. Either way the close mode is the caller's flag,
     # checked against an interrupted close's recorded mode so a retry cannot
     # silently flip a release into a close.
-    if body_has_resolution_record "$body" \
-      && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
+    if fm_continuation_answer_recorded "$body" \
+      && [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+      recorded_mode=$(fm_continuation_answer_mode "$body" || true)
       case "$recorded_mode" in
         released) [ "$release" = 1 ] || fail "task $id records this answer as a release; retry with --release" ;;
         answered) [ "$release" = 0 ] || fail "task $id records this answer as a close; retry without --release" ;;
@@ -634,16 +602,16 @@ command_answer() {
     write_resolution_record "$id" "$outcome" "$body"
     close_answered "$id" "$release"
     show=$(task_show "$id") || fail "task $id disappeared after closing"
-    body_has_resolution_record "$(show_field "$show" body)" \
+    fm_continuation_answer_recorded "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
 
   # Not held and not closed: only an already-recorded release replays cleanly.
-  if body_has_resolution_record "$body"; then
-    recorded_mode=$(recorded_resolution_mode "$body" || true)
-    [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+  if fm_continuation_answer_recorded "$body"; then
+    recorded_mode=$(fm_continuation_answer_mode "$body" || true)
+    [ "$(fm_continuation_answer_digest "$body" || true)" = "$DECISION_DIGEST" ] \
       || fail "task $id records a different captain decision with mode ${recorded_mode:-unknown}"
     [ "$recorded_mode" = released ] && [ "$release" = 1 ] \
       || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
@@ -816,9 +784,9 @@ command_answers() {
     state=$(show_field "$show" state)
     hold_kind=$(show_field_value "$show" hold_kind)
     body=$(show_field "$show" body)
-    recorded_digest=$(recorded_decision_digest "$body" || true)
-    recorded_mode=$(recorded_resolution_mode "$body" || true)
-    if body_has_resolution_record "$body" \
+    recorded_digest=$(fm_continuation_answer_digest "$body" || true)
+    recorded_mode=$(fm_continuation_answer_mode "$body" || true)
+    if fm_continuation_answer_recorded "$body" \
       && { [ "$recorded_digest" = "$digest" ] \
         || { case "$body" in *"Resolution recorded by fm-decision-hold."*) true ;; *) false ;; esac \
           && [ -n "$legacy_digest" ] && [ "$recorded_digest" = "$legacy_digest" ]; }; }; then

@@ -46,8 +46,11 @@
 #      store also carries the captain's recorded answer to a typed step fact:
 #      the fact's decision task (its decision_key, else programme-action-axis)
 #      retires the fact when it is closed with a resolution record, or open,
-#      unheld, and newest-recorded as released; a plain closure without a
-#      record is not an answer.
+#      unheld, and newest-recorded as released, and only when that task's own
+#      Continuation-binding names this action and this programme (or no
+#      programme); an answer bound to another action or programme, an unbound
+#      record, and a plain closure without a record are not answers for this
+#      action.
 #   Control rulings reach this resolver through those stores: a ruling that
 #   changes the sequence or grant is a programme-file change, and a ruling that
 #   opens or closes a wait is a bound hold written through the captain-hold owner.
@@ -322,21 +325,31 @@ fact_task_id() {  # <decision-key> <programme-id> <action> <axis>
   else printf '%s-%s-%s' "$2" "$3" "$4" | tr '_' '-'; fi
 }
 
-# Whether the captain has already answered a step fact on its task: closed with
-# a recorded answer, or open, unheld, and newest-recorded as released. Prints
-# the recorded mode and returns 0 when answered; a missing task, a live hold,
-# or a closure without a record is not an answer.
-fact_answered() {  # <task-id>
-  local show state kind body mode
+# Whether the captain has already answered a step fact for THIS action on its
+# task: closed with a recorded answer, or open, unheld, and newest-recorded as
+# released, and bound by its own Continuation-binding to this action and this
+# programme (or none). Prints the recorded mode and returns 0 when answered.
+# Returns 1 otherwise, printing the reason when a record exists but is bound
+# elsewhere or unbound; a missing task, a live hold, or a closure without a
+# record prints nothing.
+fact_answered() {  # <task-id> <action> <programme-id>
+  local show state kind body mode binding action programme
   show=$(tasks_axi show "$1" --full 2>/dev/null) || return 1
   state=$(show_field "$show" state)
   kind=$(shown_value "$show" hold_kind)
   body=$(shown_value "$show" body)
   fm_continuation_answer_recorded "$body" || return 1
-  mode=$(fm_continuation_answer_mode "$body")
-  if [ "$state" = "done" ]; then printf '%s' "${mode:-answered}"; return 0; fi
-  [ -z "$kind" ] && [ "$mode" = released ] || return 1
-  printf '%s' released
+  mode=$(fm_continuation_answer_mode "$body") || mode=''
+  if [ "$state" = "done" ]; then mode=${mode:-answered}
+  elif [ -z "$kind" ] && [ "$mode" = released ]; then :
+  else return 1; fi
+  binding=$(fm_continuation_binding_from_body "$body")
+  action=$(fm_continuation_binding_field "$binding" action)
+  programme=$(fm_continuation_binding_field "$binding" programme)
+  if [ -z "$action" ]; then printf 'ANSWER_UNBOUND'; return 1; fi
+  if [ "$action" != "$2" ]; then printf 'ANSWER_OTHER_ACTION'; return 1; fi
+  if [ -n "$programme" ] && [ "$programme" != "$3" ]; then printf 'ANSWER_OTHER_PROGRAMME'; return 1; fi
+  printf '%s' "$mode"
 }
 
 # --- resolution ---------------------------------------------------------------
@@ -350,7 +363,7 @@ resolve_json() {
   local cur_attempt=0 cur_outcome='' cur_path='' cur_sha=''
   local reserved candidates='[]' holds_json='' holds_ok=0 gating='[]' ignored='[]' hold_count=0
   local n row kind until action programme axis wait active is_reserved effect eff_cls eff_reason
-  local facts fact fact_axis fact_key fact_effect fact_task answered retired='[]' claimed default_pair def_cls def_reason
+  local facts fact fact_axis fact_key fact_effect fact_task answered retired='[]' unanswered='[]' claimed default_pair def_cls def_reason
   local winner cls authority reason_code detail_text materialize='[]' pred_json current_json applicability digest why basis
 
   today=${FM_CONTINUATION_TODAY:-$(date -u +%Y-%m-%d)}
@@ -501,12 +514,14 @@ resolve_json() {
       fact_task=$(fact_task_id "$fact_key" "$prog_id" "$next_id" "$fact_axis")
       answered=''
       if [ "$holds_ok" = 1 ] && [ "$(printf '%s' "$holds_json" | jq --arg t "$fact_task" '[.[] | select(.task == $t and .hold_kind == "captain")] | length')" = 0 ]; then
-        answered=$(fact_answered "$fact_task") || answered=''
-      fi
-      if [ -n "$answered" ]; then
-        retired=$(jq -n --argjson r "$retired" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg mode "$answered" \
-          '$r + [{axis:$axis, decision_key:$key, task:$task, mode:$mode}]')
-        continue
+        if answered=$(fact_answered "$fact_task" "$next_id" "$prog_id"); then
+          retired=$(jq -n --argjson r "$retired" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg mode "$answered" \
+            '$r + [{axis:$axis, decision_key:$key, task:$task, mode:$mode}]')
+          continue
+        elif [ -n "$answered" ]; then
+          unanswered=$(jq -n --argjson u "$unanswered" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg reason "$answered" \
+            '$u + [{axis:$axis, decision_key:$key, task:$task, reason:$reason}]')
+        fi
       fi
       candidates=$(jq -n --argjson c "$candidates" --arg axis "$fact_axis" --arg key "$fact_key" --arg effect "$fact_effect" \
         '$c + [{source:"step_fact", rank:3, classification:"CAPTAIN", reason_code:"STEP_RESERVED_AXIS", axis:$axis, decision_key:$key, effect:$effect, detail:("axis " + $axis)}]')
@@ -562,14 +577,17 @@ resolve_json() {
     "$(printf '%s' "$pred_json" | jq -r 'if . == null then "" else .id + " attempt " + (.attempt | tostring) + " " + .outcome end')" \
     "$detail_text")
   basis=$(jq -n -c --argjson refs "$grant_refs" --argjson pred "$pred_json" --argjson gating "$gating" --argjson winner "$winner" \
-    --argjson facts "$facts" --argjson retired "$retired" --arg reserved "$(printf '%s' "$reserved" | tr '\n' ' ')" '
+    --argjson facts "$facts" --argjson retired "$retired" --argjson unanswered "$unanswered" --arg reserved "$(printf '%s' "$reserved" | tr '\n' ' ')" '
     [$refs[] | {kind:"programme_grant", ref:.}]
     + (if $pred == null then [] else [{kind:"predecessor_disposition"} + $pred] end)
     + [$gating[] | {kind:"hold", task, hold_kind, axis, wait, classification, reason_code}]
     + [$facts[] | select(.axis != null) | .axis as $ax | (.decision_key // "") as $key
        | ([$retired[] | select(.axis == $ax and .decision_key == $key)] | first) as $a
+       | ([$unanswered[] | select(.axis == $ax and .decision_key == $key)] | first) as $u
        | {kind:"step_fact", axis:$ax, decision_key:(if $key == "" then null else $key end), reserved:((($reserved | split(" ")) | index($ax)) != null)}
-         + (if $a == null then {answered:false} else {answered:true, answered_task:$a.task, answered_mode:$a.mode} end)]')
+         + (if $a != null then {answered:true, answered_task:$a.task, answered_mode:$a.mode}
+            elif $u != null then {answered:false, answer_ignored:{task:$u.task, reason:$u.reason}}
+            else {answered:false} end)]')
 
   RESULT=$(jq -n --arg schema "$RESOLUTION_SCHEMA" --arg pid "$prog_id" --arg gen "$prog_gen" --arg path "$PROGRAMME" --arg sha "$prog_sha" \
     --arg next "$next_id" --arg title "$next_title" --argjson action_generation "$((cur_attempt + 1))" \
@@ -658,6 +676,9 @@ render_text() {  # <result-json>
       elif .kind == "predecessor_disposition" or .kind == "terminal_disposition" then "disposition " + .id + " attempt " + (.attempt | tostring) + " " + .outcome + " (" + .sha256[0:12] + ")"
       elif .kind == "hold" then "hold " + .task + " (" + .hold_kind + (if .axis != "" then ", axis " + .axis else "" end) + (if .wait != "" then ", wait " + .wait else "" end) + ") -> " + .classification
       elif .kind == "step_fact" then "step fact axis " + .axis + (if .reserved then " (reserved)" else " (not reserved)" end)
+        + (if .answered then ", answered by " + .answered_task + " (" + .answered_mode + ")"
+           elif .answer_ignored then ", answer on " + .answer_ignored.task + " ignored (" + .answer_ignored.reason + ")"
+           else "" end)
       else tojson end)),
     (if (.materialize | length) > 0 then "Durable captain hold required: run fm-continuation-resolve.sh resolve --materialize." else empty end),
     "Applicability " + .applicability_digest[0:12] + ": action " + (.applicability.action // "none") + ", generation " + ((.applicability.action_generation // "-") | tostring) + ", programme " + .applicability.programme_generation + "."'

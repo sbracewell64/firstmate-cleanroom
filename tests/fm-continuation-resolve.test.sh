@@ -284,6 +284,8 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   out=$(run_resolve "$home" resolve --materialize) || fail "F9 post-answer materialize failed"
   [ "$(field "$out" '.materialized | length')" = 0 ] || fail "F9: materialize skips an answered fact"
   [ "$(tasks_in "$home" list 2>/dev/null | grep -c '^  [A-Za-z]')" = 1 ] || fail "F9: materialize after the answer must create nothing"
+  out=$(run_resolve "$home" render) || fail "F9 post-answer render failed"
+  assert_contains "$out" "step fact axis new_paid_spend (reserved), answered by proof-b-paid-runner (released)" "render marks the answered fact"
   pass "F9 a captain answer recorded in release mode retires the typed fact: SELF_HANDLE/AUTHORIZED with no programme-file edit"
 
   # Close mode: the answered task is done and carries the record.
@@ -297,6 +299,37 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "F9 (answered by close)"
   [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered_mode')" = answered ] || fail "F9 close: the basis carries the recorded mode"
   pass "F9 a captain answer recorded in close mode retires the typed fact"
+
+  # The same answered task does not answer for another programme id ...
+  write_programme "$home" '.programme_id = "other-programme" | .steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  out=$(run_resolve "$home" resolve) || fail "F9 other programme resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (answer bound to another programme)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answer_ignored.reason')" = ANSWER_OTHER_PROGRAMME ] || fail "F9: the foreign answer is listed as ignored"
+  out=$(run_resolve "$home" render) || fail "F9 other programme render failed"
+  assert_contains "$out" "answer on proof-b-paid-runner ignored (ANSWER_OTHER_PROGRAMME)" "render names the ignored answer"
+  pass "F9 an answer bound to another programme does not retire this programme's fact"
+
+  # ... nor for a later action of this programme that declares the same axis and key.
+  write_programme "$home" '.steps[2].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  disposition "$home" proof-b 1 PROVED
+  out=$(run_resolve "$home" resolve) || fail "F9 later action resolve failed"
+  expect_typed "$out" architecture-re-review CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (answer bound to an earlier action)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answer_ignored.reason')" = ANSWER_OTHER_ACTION ] || fail "F9: the proof-b answer is listed as ignored for architecture-re-review"
+  [ "$(field "$out" '.applicability.answered_facts | length')" = 0 ] || fail "F9: an ignored answer is not an answered fact"
+  pass "F9 an answer bound to proof-b does not retire the same-axis fact on a later action"
+
+  # An unbound record (no Continuation-binding line) is not an answer for any action.
+  home=$(make_home f9-unbound)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"proof-b-paid-runner","effect":"a paid CI runner tier"}]'
+  tasks_in "$home" add proof-b-paid-runner "hand-made captain call" --kind task >/dev/null || fail "F9 unbound: could not add"
+  tasks_in "$home" hold proof-b-paid-runner --reason "hand-made" --kind captain >/dev/null || fail "F9 unbound: could not hold"
+  printf 'Approved.\n' > "$home/ok.txt"
+  run_hold "$home" answer proof-b-paid-runner --decision-file "$home/ok.txt" >/dev/null || fail "F9 unbound: could not answer"
+  out=$(run_resolve "$home" resolve) || fail "F9 unbound resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN STEP_RESERVED_AXIS "F9 (unbound answer)"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answer_ignored.reason')" = ANSWER_UNBOUND ] || fail "F9 unbound: the record is listed as unbound"
+  pass "F9 a recorded answer without a typed binding does not retire the fact"
 
   # A plain closure without a recorded answer is not an answer: the fact still fires.
   home=$(make_home f9-plain)

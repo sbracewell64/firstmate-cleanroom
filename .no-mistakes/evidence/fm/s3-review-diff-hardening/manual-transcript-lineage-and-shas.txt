@@ -1,0 +1,65 @@
+=== A. local branch, --stat: exact SHAs in header, rename/copy/delete summary ===
+$ fm-review-diff.sh demo --stat
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: local branch fm/demo ad876c4957e6b1fb71bd4fc7881f72f2d1a912f4
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+changed paths: 4 (added 1, modified 1, deleted 1, renamed 1, copied 0, other 0)
+M	README.md
+D	gone.txt
+A	keep-copy.txt
+R100	lib.sh	src-lib.sh
+
+ README.md            |  2 +-
+ gone.txt             | 31 -------------------------------
+ keep-copy.txt        | 30 ++++++++++++++++++++++++++++++
+ lib.sh => src-lib.sh |  0
+ 4 files changed, 31 insertions(+), 32 deletions(-)
+[exit 0]
+
+=== B. full diff (rename from/to, copy from/to, deleted file mode) ===
+$ fm-review-diff.sh demo
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: local branch fm/demo ad876c4957e6b1fb71bd4fc7881f72f2d1a912f4
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+changed paths: 4 (added 1, modified 1, deleted 1, renamed 1, copied 0, other 0)
+M	README.md
+D	gone.txt
+A	keep-copy.txt
+R100	lib.sh	src-lib.sh
+
+ README.md            |  2 +-
+ gone.txt             | 31 -------------------------------
+ keep-copy.txt        | 30 ++++++++++++++++++++++++++++++
+ lib.sh => src-lib.sh |  0
+ 4 files changed, 31 insertions(+), 32 deletions(-)
+
+diff --git a/README.md b/README.md
+index 626799f..8c1384d 100644
+--- a/README.md
++++ b/README.md
+-v1
++v2
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index 940a9ce..0000000
+--- a/gone.txt
++++ /dev/null
+diff --git a/keep-copy.txt b/keep-copy.txt
+new file mode 100644
+index 0000000..e8823e1
+--- /dev/null
++++ b/keep-copy.txt
+diff --git a/lib.sh b/src-lib.sh
+similarity index 100%
+rename from lib.sh
+rename to src-lib.sh
+[exit 0]
+
+=== C. reproduce from header SHAs with plain git ===
+$ git diff --stat --find-renames --find-copies 53dfd79d3fbf084df41cf7ea1f53858722d0a80a...ad876c4957e6b1fb71bd4fc7881f72f2d1a912f4
+ README.md            |  2 +-
+ gone.txt             | 31 -------------------------------
+ keep-copy.txt        | 30 ++++++++++++++++++++++++++++++
+ lib.sh => src-lib.sh |  0
+ 4 files changed, 31 insertions(+), 32 deletions(-)
+

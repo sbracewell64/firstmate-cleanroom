@@ -1,0 +1,73 @@
+=== refusals: each exits nonzero, names the bad field, prints no diff on stdout ===
+# meta pr=https://github.com/example/repo/pull/9abc
+$ fm-review-diff.sh demo
+error: meta for task demo has malformed pr= 'https://github.com/example/repo/pull/9abc': expected a canonical PR/MR URL or a positive PR number
+[exit 1]
+
+# meta pr= (empty)
+$ fm-review-diff.sh demo
+error: meta for task demo has malformed pr= '': expected a canonical PR/MR URL or a positive PR number
+[exit 1]
+
+# meta pr=0 (not positive)
+$ fm-review-diff.sh demo
+error: meta for task demo has malformed pr= '0': expected a canonical PR/MR URL or a positive PR number
+[exit 1]
+
+# meta pr_head=abc123 (short hex)
+$ fm-review-diff.sh demo
+error: meta for task demo has malformed pr_head= 'abc123': expected a 40- or 64-hex commit SHA
+[exit 1]
+
+# meta pr=1 then pr=2 (duplicate)
+$ fm-review-diff.sh demo
+error: meta for task demo has 2 pr= lines; exactly one is allowed
+[exit 1]
+
+# meta duplicate worktree=
+$ fm-review-diff.sh demo
+error: meta for task demo has 2 worktree= lines; exactly one is allowed
+[exit 1]
+
+# flag in task-id slot
+$ fm-review-diff.sh --stat demo
+usage: fm-review-diff.sh <task-id> [--stat]
+error: unparseable argument '--stat': expected <task-id> in the first position
+[exit 1]
+
+# unknown option
+$ fm-review-diff.sh demo --verbose
+usage: fm-review-diff.sh <task-id> [--stat]
+error: unparseable argument '--verbose': the only option is --stat
+[exit 1]
+
+# extra argument
+$ fm-review-diff.sh demo --stat extra
+usage: fm-review-diff.sh <task-id> [--stat]
+error: unparseable extra argument 'extra': expected <task-id> [--stat]
+[exit 1]
+
+# non-path-safe task id
+$ fm-review-diff.sh ../demo
+error: unparseable argument '../demo': task id is not path-safe
+[exit 1]
+
+# missing meta
+$ fm-review-diff.sh nosuch
+error: no meta for task nosuch at /tmp/fm-review-manual.uFDv/state/nosuch.meta
+[exit 1]
+
+# --help still works
+$ fm-review-diff.sh --help
+usage: fm-review-diff.sh <task-id> [--stat]
+[exit 0]
+
+=== full diff on copy case shows copy from/to ===
+C100	keep.txt	keep-copy.txt
+M	keep.txt
+R100	lib.sh	src-lib.sh
+
+--
+diff --git a/keep.txt b/keep-copy.txt
+similarity index 100%
+copy from keep.txt

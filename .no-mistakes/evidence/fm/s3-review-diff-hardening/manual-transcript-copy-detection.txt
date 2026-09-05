@@ -1,0 +1,20 @@
+=== D. copy detection when the source file is also modified (git --find-copies semantics) ===
+$ fm-review-diff.sh demo --stat
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: local branch fm/demo 0f9f9f826179635aed7f7d600699e43896fa84b8
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+changed paths: 5 (added 0, modified 2, deleted 1, renamed 1, copied 1, other 0)
+M	README.md
+D	gone.txt
+C100	keep.txt	keep-copy.txt
+M	keep.txt
+R100	lib.sh	src-lib.sh
+
+ README.md                 |  2 +-
+ gone.txt                  | 31 -------------------------------
+ keep.txt => keep-copy.txt |  0
+ keep.txt                  |  1 +
+ lib.sh => src-lib.sh      |  0
+ 5 files changed, 2 insertions(+), 32 deletions(-)
+[exit 0]
+

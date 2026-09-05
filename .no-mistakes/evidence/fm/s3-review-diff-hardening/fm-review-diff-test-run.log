@@ -1,0 +1,14 @@
+ok - fm-review-diff falls back to recorded pr_head when pull head cannot be fetched
+ok - fm-review-diff fetches refs/pull/<n>/head when pr_head= is absent
+ok - fm-review-diff prefers freshly fetched PR head over a stale recorded pr_head=
+ok - fm-review-diff without pr= keeps the worktree-branch diff
+ok - fm-review-diff falls back to local branch with a warning when PR head is unreachable
+ok - fm-review-diff header pins base and compare to exact commit SHAs
+ok - fm-review-diff reports an empty diff against the pinned base SHA
+ok - fm-review-diff shows old and new paths for a renamed file under --stat and full diff
+ok - fm-review-diff lists and counts a deleted file
+ok - fm-review-diff refuses a malformed pr= naming the field
+ok - fm-review-diff refuses a malformed pr_head= naming the field
+ok - fm-review-diff refuses duplicate worktree=, project=, pr=, and pr_head= fields
+ok - fm-review-diff refuses unparseable arguments naming the argument
+ok - fm-review-diff keeps every pre-existing refusal

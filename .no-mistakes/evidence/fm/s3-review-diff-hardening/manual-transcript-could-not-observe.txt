@@ -1,0 +1,29 @@
+=== E. pr= recorded, PR 9 pushed to origin refs/pull/9/head -> LIVE head observed, no label ===
+$ fm-review-diff.sh demo --stat
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: PR 9 head (fetched refs/pull/9/head) 681f86fff2fcdec5b0b5821274afb4579e8d35a4
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+changed paths: 5 (added 0, modified 2, deleted 1, renamed 1, copied 1, other 0)
+M	README.md
+=== F. live fetch fails (pull ref removed), recorded pr_head= reachable -> COULD NOT OBSERVE LIVE PR HEAD ===
+$ fm-review-diff.sh demo --stat
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: PR 9 recorded pr_head= 681f86fff2fcdec5b0b5821274afb4579e8d35a4
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+COULD NOT OBSERVE LIVE PR HEAD: fetch of refs/pull/9/head for PR 9 failed; this diff compares the RECORDED pr_head= 681f86fff2fcdec5b0b5821274afb4579e8d35a4, which may lag the open PR.
+changed paths: 5 (added 0, modified 2, deleted 1, renamed 1, copied 1, other 0)
+=== G. live fetch fails, recorded pr_head= well-formed but unreachable -> COULD NOT OBSERVE PR HEAD (local fallback, stderr warning retained) ===
+$ fm-review-diff.sh demo --stat
+warning: PR head unavailable; diff may lag the open PR (using local branch fm/demo)
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: local branch fm/demo 0f9f9f826179635aed7f7d600699e43896fa84b8
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+COULD NOT OBSERVE PR HEAD: fetch of refs/pull/9/head for PR 9 failed and no recorded pr_head= is reachable; this diff compares the LOCAL branch fm/demo as a fallback and may lag the open PR.
+changed paths: 5 (added 0, modified 2, deleted 1, renamed 1, copied 1, other 0)
+=== H. GitLab MR URL fetches refs/merge-requests/<n>/head ===
+$ fm-review-diff.sh demo --stat
+diff base: origin/main 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+diff compare: PR 12 head (fetched refs/merge-requests/12/head) 681f86fff2fcdec5b0b5821274afb4579e8d35a4
+merge-base: 53dfd79d3fbf084df41cf7ea1f53858722d0a80a
+changed paths: 5 (added 0, modified 2, deleted 1, renamed 1, copied 1, other 0)
+M	README.md

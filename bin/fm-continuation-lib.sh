@@ -52,6 +52,11 @@
 #   9. The captain-gate phrase pattern (FM_CONTINUATION_GATE_PHRASE_RE) that
 #      `fm-continuation-resolve.sh check-prose` refuses in captain-facing text
 #      when the typed result is not CAPTAIN.
+#  10. The recorded-answer contract readers (fm_continuation_answer_recorded,
+#      fm_continuation_answer_digest, fm_continuation_answer_mode): the one
+#      reading of the resolution record bin/fm-captain-hold.sh `answer` writes,
+#      shared by that writer and by the resolver's fact retirement so the two
+#      cannot drift.
 #
 # Every consumer reads these tables; none re-encodes them. Adding or changing a
 # rule is a one-line edit here and changes every consumer at once.

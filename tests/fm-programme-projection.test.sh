@@ -271,10 +271,53 @@ test_applicability_tuple_goes_stale() {
 
   # A superseded grant.
   write_programme "$home" '.steps[0].phase = "proofs" | .steps[1].phase = "proofs" | .authorization_basis.superseded_by = "control#9"'
-  moved=$(run_project "$home" project) || fail "superseded project failed"
+  moved=$(assert_composed "$home" "superseded")
   [ "$(field "$moved" '.applicability.hold_grant_generation')" != "$(field "$base" '.applicability.hold_grant_generation')" ] || fail "a superseded grant must change the hold/grant generation"
   [ "$(field "$moved" '.reason_code')" = GRANT_SUPERSEDED ] && [ "$(field "$moved" '.authority_state')" = CNO ] || fail "the resolver's superseded-grant CNO is composed verbatim"
   pass "a superseded grant makes the prior tuple non-matching and the composed authority follows the resolver"
+}
+
+# --- records that cannot be composed are refused, never nulled -----------------------
+
+test_uncomposable_records_refused() {
+  local home wt out err rc
+  home=$(make_home refuse)
+  disposition "$home" proof-a 1 PROVED
+
+  # A worktree path that is not a directory is an absent candidate: null.
+  fm_write_meta "$home/state/proof-b.meta" "spawn_gen=1" "worktree=$TMP_ROOT/refuse-missing-wt"
+  out=$(run_project "$home" project) || fail "absent worktree project failed: $out"
+  [ "$(field "$out" '.applicability.candidate_identity | [.head, .tree] | tojson')" = '[null,null]' ] || fail "an absent worktree directory yields a null head and tree"
+  pass "an absent worktree directory yields a null candidate head and tree"
+
+  # A worktree directory git cannot read must not collapse to the same null
+  # tuple: it is refused, naming the worktree.
+  wt="$TMP_ROOT/refuse-wt"
+  mkdir -p "$wt"
+  fm_write_meta "$home/state/proof-b.meta" "spawn_gen=1" "worktree=$wt"
+  err=$(run_project "$home" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "an unreadable worktree directory is refused"
+  assert_contains "$err" "$wt" "the refusal names the worktree"
+  out=$(run_project "$home" project 2>/dev/null); rc=$?
+  [ "$rc" = 1 ] && [ -z "$out" ] || fail "an unreadable worktree must print no projection on stdout"
+  pass "a present worktree whose head and tree git cannot read is refused rather than nulled"
+
+  # Once the same directory is a readable repository the projection binds to it.
+  fm_git_init_commit "$wt"
+  out=$(run_project "$home" project) || fail "readable worktree project failed: $out"
+  [ "$(field "$out" '.applicability.candidate_identity.head')" = "$(git -C "$wt" rev-parse HEAD)" ] || fail "a readable worktree binds its head"
+  pass "the same directory, once readable, binds its head and tree"
+
+  # A duplicated step id is not an injective fact identity; the programme is
+  # refused even though the resolver walks it positionally.
+  write_programme "$home" '.steps[1].id = "proof-a"'
+  err=$(run_project "$home" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "duplicate step ids are refused"
+  assert_contains "$err" "duplicated: proof-a" "the refusal names the duplicated id"
+  write_programme "$home"
+  out=$(run_project "$home" project) || fail "unique ids project failed: $out"
+  [ "$(field "$out" '.next_action')" = proof-b ] || fail "unique ids project again"
+  pass "a programme carrying duplicate step ids is refused, naming the id"
 }
 
 # --- determinism and zero side effects -----------------------------------------------
@@ -395,6 +438,7 @@ timed() {  # <test-function>
 
 timed test_composition_follows_resolver
 timed test_applicability_tuple_goes_stale
+timed test_uncomposable_records_refused
 timed test_deterministic_and_side_effect_free
 timed test_delegation_bounds
 timed test_not_configured_and_summary

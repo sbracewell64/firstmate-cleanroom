@@ -70,7 +70,13 @@
 #   4. state/<task_id>.meta (FM_STATE_OVERRIDE, else $FM_HOME/state): the
 #      `spawn_gen=` worker epoch bin/fm-spawn.sh records, the `pr_head=`
 #      bin/fm-pr-check.sh records, and the `worktree=` whose git HEAD commit
-#      and tree are read with `git rev-parse`. Absent meta or fields are null.
+#      and tree are read with `git rev-parse`. Absent meta, absent fields, and
+#      a worktree path that is not a directory are null; a worktree directory
+#      whose head or tree git cannot read is refused (exit 1) rather than
+#      nulled, so a moved head can never hide behind an unchanged tuple.
+#   Step ids must be unique: the resolver names the next action by id, and an
+#   id naming two steps cannot be composed back to one phase, task, or
+#   delegation override, so such a programme is refused (exit 1).
 #
 # RESULT (schema fm-programme-projection/v1), one JSON object:
 #   programme                {id, generation, path, root, sha256} from the resolver
@@ -206,10 +212,13 @@ PHASE_ID=''
 TASK_ID=''
 
 read_programme_fields() {
+  local dup
   PROGRAMME=$(rfield '.programme.path')
   ROOT=$(rfield '.programme.root // ""')
   [ -f "$PROGRAMME" ] || fail "programme file the resolver used does not exist: $PROGRAMME"
   [ -n "$ROOT" ] && [ -d "$ROOT" ] || fail "programme root the resolver used does not exist: $ROOT"
+  dup=$(jq -r '[.steps[] | select(type == "object") | .id | select(type == "string")] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$PROGRAMME")
+  [ -z "$dup" ] || fail "step ids must be unique in $PROGRAMME; duplicated: $dup"
   NEXT_ID=$(rfield '.next_action // ""')
   [ -n "$NEXT_ID" ] || return 0
   NEXT_INDEX=$(jq --arg id "$NEXT_ID" '[.steps[] | .id] | index($id) // -1' "$PROGRAMME")
@@ -323,7 +332,7 @@ delegation_json() {
 # --- worker epoch and candidate identity ------------------------------------------
 
 meta_value() {  # <meta-file> <key>
-  sed -n "s/^$2=//p" "$1" | head -1
+  sed -n "s/^$2=//p" "$1" | tail -1
 }
 
 candidate_json() {
@@ -334,12 +343,13 @@ candidate_json() {
     spawn_gen=$(meta_value "$meta" spawn_gen)
     pr_head=$(meta_value "$meta" pr_head)
     worktree=$(meta_value "$meta" worktree)
-    if [ -n "$worktree" ] && [ -d "$worktree" ] \
-      && revs=$(git -C "$worktree" rev-parse HEAD 'HEAD^{tree}' 2>/dev/null); then
+    if [ -n "$worktree" ] && [ -d "$worktree" ]; then
+      revs=$(git -C "$worktree" rev-parse HEAD 'HEAD^{tree}' 2>/dev/null) \
+        || fail "cannot read the candidate head and tree of worktree $worktree (task $TASK_ID)"
       head=$(printf '%s\n' "$revs" | sed -n 1p)
       tree=$(printf '%s\n' "$revs" | sed -n 2p)
       case "$head:$tree" in
-        *[!0-9a-f:]*) head=''; tree='' ;;
+        :*|*:|*[!0-9a-f:]*) fail "cannot read the candidate head and tree of worktree $worktree (task $TASK_ID)" ;;
       esac
     fi
   fi

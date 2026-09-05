@@ -103,9 +103,13 @@
 # is retired (listed in basis_refs as answered, fires nothing, and is never
 # materialized again), so an answered call cannot re-manufacture the gate;
 # retirement survives later non-captain holds on that task (an external wait
-# or a parked hold gates through the hold path, never re-fires the fact), and
-# only a live captain hold bound to that exact fact keeps it outstanding;
-# `--materialize` never replaces a live non-captain hold on a decision task;
+# or a parked hold gates through the hold path, never re-fires the fact);
+# ONE IDENTITY: a fact is identified everywhere by its own task
+# (fact_task_id) - coverage by a gating captain hold, answer lookup, and
+# materialization all key on that task, so a foreign hold that merely shares
+# the axis gates on its own but never stands in for the fact, each distinct
+# fact materializes exactly one canonical hold, and it is answered through
+# that same task; `--materialize` never replaces a live non-captain hold;
 # a superseded or wrong-generation grant, an unreadable disposition, or an
 # unreadable hold store cannot authorize, so the result is CNO with
 # BROWSER_SOL (uncertainty is never CAPTAIN) unless a reserved-axis fact
@@ -191,7 +195,7 @@ config_value() {  # <key>
 PROGRAMME=''
 ROOT=''
 locate_programme() {
-  local root_default='' prog_id facts shared
+  local root_default='' prog_id reserved facts shared
   if [ -n "$PROGRAMME_OPT" ]; then
     PROGRAMME=$PROGRAMME_OPT; root_default=${FM_PROGRAMME_ROOT:-}
   elif [ -n "${FM_PROGRAMME:-}" ]; then
@@ -211,6 +215,7 @@ locate_programme() {
   jq -e '.programme_id and .schema and (.steps | type == "array" and length > 0)' "$PROGRAMME" >/dev/null 2>&1 \
     || fail "programme file is not a valid programme (programme_id, schema, steps[] required): $PROGRAMME"
   prog_id=$(jq -r '.programme_id' "$PROGRAMME")
+  reserved=$(jq -r '.reserved_axes[]? | select(type == "string")' "$PROGRAMME")
   facts=$(jq -r '
     .steps[] | select(type == "object") | (.id // "?") as $step
       | ((.captain_axes // [] | map(select(type == "object")))
@@ -219,6 +224,7 @@ locate_programme() {
   shared=$(while IFS=$'\t' read -r step axis key; do
       [ -n "$step" ] || continue
       fm_continuation_is_slug "$axis" || continue
+      fm_continuation_axis_reserved "$axis" "$reserved" || continue
       printf '%s\t%s/%s\n' "$(fact_task_id "$key" "$prog_id" "$step" "$axis")" "$step" "$axis"
     done <<EOF | awk -F'\t' '
       { n[$1]++; f[$1] = (f[$1] == "" ? $2 : f[$1] ", " $2) }
@@ -539,8 +545,10 @@ resolve_json() {
   # Typed step facts: a reserved axis the action itself declares fires CAPTAIN
   # with no pre-existing hold; a declared non-reserved axis is a refused claim;
   # a reserved axis whose decision task already records the captain's answer
-  # is retired. A task carrying a live captain hold gates through the hold
-  # path above, so it is not shown again here.
+  # is retired. A fact is identified only by its own task: when that task
+  # carries a gating captain hold the fact is covered by it and needs nothing
+  # more; a foreign hold that merely shares the axis gates on its own and
+  # never stands in for the fact.
   facts=$(jq -c "[(.steps[$next_index].captain_axes[]? | select(type == \"object\")),
                   (.steps[$next_index].optional_captain_enhancements[]? | select(type == \"object\" and .required_to_proceed == true))]" "$PROGRAMME")
   n=$(printf '%s' "$facts" | jq 'length')
@@ -555,8 +563,10 @@ resolve_json() {
     if fm_continuation_axis_reserved "$fact_axis" "$reserved"; then
       fact_task=$(fact_task_id "$fact_key" "$prog_id" "$next_id" "$fact_axis")
       answered=''
-      if [ "$holds_ok" = 1 ] && [ "$(printf '%s' "$holds_json" | jq --arg t "$fact_task" --arg a "$next_id" --arg p "$prog_id" --arg x "$fact_axis" \
-          '[.[] | select(.task == $t and .hold_kind == "captain" and .action == $a and (.programme == "" or .programme == $p) and .axis == $x)] | length')" = 0 ]; then
+      if [ "$(printf '%s' "$gating" | jq --arg t "$fact_task" '[.[] | select(.task == $t and .classification == "CAPTAIN")] | length')" != 0 ]; then
+        continue
+      fi
+      if [ "$holds_ok" = 1 ]; then
         if answered=$(fact_answered "$fact_task" "$next_id" "$prog_id"); then
           retired=$(jq -n --argjson r "$retired" --arg axis "$fact_axis" --arg key "$fact_key" --arg task "$fact_task" --arg mode "$answered" \
             '$r + [{axis:$axis, decision_key:$key, task:$task, mode:$mode}]')
@@ -597,15 +607,9 @@ resolve_json() {
   if [ -n "$cno_reason" ] && [ "$cls" != CAPTAIN ]; then
     cls=BROWSER_SOL; authority=CNO; reason_code=$cno_reason; detail_text=$cno_detail
   fi
-  # Only a CAPTAIN winner from a typed step fact needs materializing; a CAPTAIN
-  # from an existing hold is already durable, and any other class needs no hold.
+  # Only a CAPTAIN result materializes, and only the facts whose own task
+  # carries no gating captain hold yet; a foreign hold never covers a fact.
   [ "$cls" = CAPTAIN ] || materialize='[]'
-  if [ "$cls" = CAPTAIN ] && [ "$(printf '%s' "$winner" | jq -r '.source')" = hold ]; then
-    # A hold already carries the captain gate; keep step-fact materialization
-    # only for axes no gating hold covers yet.
-    materialize=$(jq -n --argjson m "$materialize" --argjson g "$gating" \
-      '[$m[] | . as $f | select(([$g[] | select(.classification == "CAPTAIN" and .axis == $f.axis)] | length) == 0)]')
-  fi
 
   pred_json=$(printf '%s' "$completed" | jq -c 'last')
   current_json=$(jq -n --argjson attempt "${cur_attempt:-0}" --arg outcome "$cur_outcome" --arg path "$cur_path" --arg sha "$cur_sha" \

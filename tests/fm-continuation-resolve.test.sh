@@ -383,6 +383,39 @@ test_f5_f9_reserved_axis_without_hold_materializes() {
   pass "F9 a decision task closed without a recorded answer does not retire the typed fact"
 }
 
+# --- one identity: a foreign hold sharing the axis never stands in for a fact ---
+
+test_foreign_hold_sharing_axis_does_not_cover_fact() {
+  local home out
+  home=$(make_home foreign-axis)
+  disposition "$home" proof-a 1 PROVED
+  write_programme "$home" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid CI runner tier"}]'
+  run_hold "$home" hold foreign-spend --title "Hand-made paid spend call" --reason "someone asked" \
+    --action proof-b --axis new_paid_spend --programme cleanroom-requalification >/dev/null || fail "foreign: could not hold"
+  out=$(run_resolve "$home" resolve) || fail "foreign resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "foreign hold gates on its own"
+  [ "$(field "$out" '.materialize[0].decision_key')" = runner-b ] || fail "foreign: the fact's own task is still to materialize"
+  out=$(run_resolve "$home" resolve --materialize) || fail "foreign materialize failed"
+  [ "$(field "$out" '.materialized[0].task')" = runner-b ] || fail "foreign: materialize creates the fact's own task"
+  [ "$(field "$out" '.holds.gating | map(.task) | sort | join(" ")')" = "foreign-spend runner-b" ] || fail "foreign: both holds gate"
+  [ "$(field "$out" '.materialize | length')" = 0 ] || fail "foreign: once its own task is held, the fact is covered"
+  pass "a foreign captain hold sharing the axis gates on its own while the fact still materializes its own task"
+
+  printf 'Approved.\n' > "$home/ok.txt"
+  run_hold "$home" answer foreign-spend --decision-file "$home/ok.txt" >/dev/null || fail "foreign: could not answer the foreign hold"
+  out=$(run_resolve "$home" resolve) || fail "foreign post-answer resolve failed"
+  expect_typed "$out" proof-b CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "fact outstanding after the foreign answer"
+  [ "$(field "$out" '.holds.gating | map(.task) | join(" ")')" = runner-b ] || fail "foreign: only the fact's own hold gates now"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered')" = false ] || fail "foreign: answering the foreign hold does not answer the fact"
+  pass "answering the foreign hold alone leaves the fact outstanding"
+
+  run_hold "$home" answer runner-b --decision-file "$home/ok.txt" >/dev/null || fail "foreign: could not answer the fact's task"
+  out=$(run_resolve "$home" resolve) || fail "foreign final resolve failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "fact retired through its own task"
+  [ "$(field "$out" '.basis_refs[] | select(.kind == "step_fact") | .answered_task')" = runner-b ] || fail "foreign: the fact is answered through its own task"
+  pass "answering the fact's own task retires it"
+}
+
 # --- F7: a hold scoped to one action does not gate another ---------------------
 
 test_f7_scoped_hold_does_not_leak() {
@@ -642,6 +675,9 @@ test_completion_and_configuration() {
   out=$(run_resolve "$other" resolve 2>&1); rc=$?
   [ "$rc" = 1 ] || fail "a key equal to another fact's derived identity must exit 1, got $rc: $out"
   assert_contains "$out" "cleanroom-requalification-proof-b-new-paid-spend (facts proof-b/new_paid_spend, architecture-re-review/privacy_exposure)" "the refusal names the aliased identity across steps"
+  write_programme "$other" '.steps[1].captain_axes = [{"axis":"engineering_taste","effect":"tabs"}, {"axis":"engineering_taste","effect":"spaces"}]'
+  out=$(run_resolve "$other" resolve) || fail "keyless facts on a non-reserved axis must load: $out"
+  expect_typed "$out" proof-b BROWSER_SOL REQUIRES_RULING CAPTAIN_CLAIM_WITHOUT_RESERVED_AXIS "non-reserved facts are not load-bearing"
   write_programme "$other" '.steps[1].captain_axes = [{"axis":"new_paid_spend","decision_key":"runner-b","effect":"a paid runner"},
                                                       {"axis":"privacy_exposure","effect":"telemetry export"}]'
   out=$(run_resolve "$other" resolve --materialize) || fail "distinct identities must resolve and materialize: $out"
@@ -820,6 +856,7 @@ timed test_f1_authorized_continuation
 timed test_f2_lifted_hold_is_not_authoritative
 timed test_f3_f4_ruling_and_external_waits
 timed test_f5_f9_reserved_axis_without_hold_materializes
+timed test_foreign_hold_sharing_axis_does_not_cover_fact
 timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno

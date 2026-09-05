@@ -32,6 +32,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-continuation-resolve.sh` | Single deterministic owner of a pinned programme's next action and its typed authority, with a presentation renderer and a captain-gate prose check |
 | `fm-continuation-lib.sh` | Single owner of the programme continuation vocabulary, hold-effect and step-default tables, binding line, and reason-code presentation |
+| `fm-programme-projection.sh` | Stateless read-only projection tuple composed over `fm-continuation-resolve.sh`, adding phase and worker generations, an applicability tuple, and returned-not-enforced delegation bounds |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
 | `fm-dod-lib.sh`          | One owner of the ship task's mode-specific definition of done, rendered by both the brief scaffold and a scout promotion |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |

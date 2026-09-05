@@ -77,7 +77,11 @@ disposition() {  # <home> <proof> <attempt> <outcome>
 run_resolve() {  # <home> [args...]
   local home=$1
   shift
-  FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$RESOLVE" "$@"
+  # The resolver never probes tasks-axi itself, but `--materialize` hands the
+  # hold to the captain-hold owner, which does; the same verdict run_hold passes
+  # is forwarded so the owner skips its probes here too and the suite does not
+  # depend on the installed tool clearing the version floor.
+  FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$RESOLVE" "$@"
 }
 
 run_hold() {  # <home> [args...]

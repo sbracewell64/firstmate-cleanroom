@@ -85,6 +85,11 @@
 #                                    result is bound to; any change to it makes the
 #                                    result stale
 #   applicability_digest             sha256 of the canonical applicability JSON
+#   programme                        {id, generation, path, root, sha256}: the
+#                                    programme as located, so a composition layer
+#                                    (bin/fm-programme-projection.sh) reads the
+#                                    same file and artifact root this run used
+#                                    instead of re-deriving the location rules
 #   holds                            {considered, gating[], ignored[{task, reason}]}
 #   cno                              null, or {reason_code, detail} when a
 #                                    canonical input could not be observed
@@ -481,11 +486,11 @@ resolve_json() {
 
   if [ -z "$next_id" ]; then
     RESULT=$(jq -n --arg schema "$RESOLUTION_SCHEMA" --arg pid "$prog_id" --arg gen "$prog_gen" \
-      --arg path "$PROGRAMME" --arg sha "$prog_sha" --argjson completed "$completed" \
+      --arg path "$PROGRAMME" --arg root "$ROOT" --arg sha "$prog_sha" --argjson completed "$completed" \
       --argjson refs "$grant_refs" --arg today "$today" \
       --arg why "$(fm_continuation_render_reason PROGRAMME_COMPLETE '' '' '')" '
       {schema:$schema,
-       programme:{id:$pid, generation:$gen, path:$path, sha256:$sha},
+       programme:{id:$pid, generation:$gen, path:$path, root:$root, sha256:$sha},
        next_action:null, next_action_title:null, action_generation:null,
        classification:"SELF_HANDLE", authority_state:"AUTHORIZED", reason_code:"PROGRAMME_COMPLETE",
        basis_refs:([$refs[] | {kind:"programme_grant", ref:.}] + [$completed[] | {kind:"terminal_disposition"} + .]),
@@ -638,14 +643,14 @@ resolve_json() {
             elif $u != null then {answered:false, answer_ignored:{task:$u.task, reason:$u.reason}}
             else {answered:false} end)]')
 
-  RESULT=$(jq -n --arg schema "$RESOLUTION_SCHEMA" --arg pid "$prog_id" --arg gen "$prog_gen" --arg path "$PROGRAMME" --arg sha "$prog_sha" \
+  RESULT=$(jq -n --arg schema "$RESOLUTION_SCHEMA" --arg pid "$prog_id" --arg gen "$prog_gen" --arg path "$PROGRAMME" --arg root "$ROOT" --arg sha "$prog_sha" \
     --arg next "$next_id" --arg title "$next_title" --argjson action_generation "$((cur_attempt + 1))" \
     --arg cls "$cls" --arg authority "$authority" --arg reason "$reason_code" \
     --argjson basis "$basis" --argjson applicability "$applicability" --arg digest "$digest" \
     --argjson completed "$completed" --argjson considered "${hold_count:-0}" --argjson gating "$gating" --argjson ignored "$ignored" \
     --arg cno_reason "$cno_reason" --arg cno_detail "$cno_detail" --argjson materialize "$materialize" --arg why "$why" '
     {schema:$schema,
-     programme:{id:$pid, generation:$gen, path:$path, sha256:$sha},
+     programme:{id:$pid, generation:$gen, path:$path, root:$root, sha256:$sha},
      next_action:$next, next_action_title:(if $title == "" then null else $title end), action_generation:$action_generation,
      classification:$cls, authority_state:$authority, reason_code:$reason,
      basis_refs:$basis, applicability:$applicability, applicability_digest:$digest,

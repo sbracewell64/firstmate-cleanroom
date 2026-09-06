@@ -51,14 +51,29 @@ Every tracked path that can tell firstmate to proceed, wait, escalate, or ask th
 | Report synthesis | `check-prose` refuses captain-facing text that asserts a captain gate while the typed result is not CAPTAIN. |
 | Keyed status decisions | `bin/fm-wake-drain.sh`'s OPEN DECISIONS fold is an explicitly narrower owner over crewmate status keys and does not classify programme authority. |
 | Captain-hold lifecycle | `bin/fm-captain-hold.sh` remains the durability and effect owner; classification reaches it already typed through the binding and `--materialize`. |
+| Projection substrate | `bin/fm-programme-projection.sh` consumes `resolve` verbatim for every authority field and adds only phase, generation, applicability, and delegation members (see below). |
 
 ## Boundary
 
 The owner resolves continuation for the existing pinned sequence only.
 It carries no phase, delegation, plan-drift, or concurrency machinery, and adds no speculative fields for a later programme-control kernel.
 The typed concepts it does carry, the classification and authority enums, the applicability tuple, the reserved-axis policy, and the bound-hold effect law, are the stable seam a later kernel may consume, wrap, or extend.
+The one composition layer that does so today is the projection substrate below, and it leaves this owner exactly as narrow.
+
+## Projection substrate
+
+`bin/fm-programme-projection.sh` is a separately qualified composition layer above the resolver, built for a manager loop that reads one typed projection tuple and nothing else.
+It recomputes the tuple from canonical records on every call, holds no durable state, writes nothing, and carries no protected-effect authority: it never merges, spawns, holds, transitions, picks a model or effort, or enforces a bound.
+Its authority fields (next action, action generation, classification, authority state, reason code, basis references) are the resolver's, consumed verbatim, and its exit 3 for an unconfigured home mirrors the resolver's.
+Its own additions are the next action's phase and phase generation, the worker epoch read from the bound task's durable record, an applicability tuple that becomes structurally non-matching on any moved candidate head or tree, new attempt, new worker epoch, or superseded, lifted, or newly gating hold or grant, and the delegation bounds for the next phase.
+Delegation is returned, never enforced: `bin/fm-spawn.sh` stays the enforcer, dispatch profiles and quota keep model and effort, hidden fan-out counts under the ceiling, and the substrate reports a measured ladder rung without ever ramping.
+Superseded and lifted markers stay on the canonical hold and grant records the resolver already reads, so the substrate has no second store to consult or maintain.
+The script header owns the optional programme-file fields it reads (`phase`, `task_id`, and `delegation`), the concurrency ladder, and the result schema.
+The resolver stays narrow: the substrate reads the located programme path and artifact root back from the resolver's result instead of re-deriving location precedence, and nothing promotes the resolver into phase, delegation, or concurrency ownership.
+A renderer may turn the reason code, basis references, and applicability into prose but may not override the typed tuple, and no path may re-derive these fields from prose.
 
 ## Verification
 
 `tests/fm-continuation-lib.test.sh` pins every table in the library.
 `tests/fm-continuation-resolve.test.sh` runs the watched-red fixtures against a real tasks-axi backlog and proves the consumer closure above, including the no-pre-existing-hold captain case, the materialized hold, and the refused prose.
+`tests/fm-programme-projection.test.sh` proves the substrate's authority fields equal the resolver's under every driven classification, that each structural change makes a prior applicability tuple non-matching, that two calls over unchanged state are identical and write nothing, that every backlog access is a read, that delegation bounds are returned without a spawn, and that a record it cannot compose (an unreadable or nested candidate worktree, duplicate step ids, or an off-ladder ceiling) is refused rather than nulled or selected around.

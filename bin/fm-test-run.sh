@@ -600,6 +600,7 @@ tests/fm-pr-check-security.test.sh 157718
 tests/fm-procevent-quota.test.sh 1871
 tests/fm-procevent-when.test.sh 17939
 tests/fm-procevent.test.sh 84755
+tests/fm-programme-projection.test.sh 57000
 tests/fm-project-origin.test.sh 130
 tests/fm-public-followup.test.sh 244580
 tests/fm-quota-array-dispatch-live-e2e.test.sh 20

@@ -1,0 +1,28 @@
+### 2b (corrected: modified programme kept beside its evidence dir). Ruling record declares unrelated CNO_AT_B-S1 for the real Proof-B bytes; evidence_sha256 pin relaxed
+programme cleanroom-af-package@fm-af-programme/v1: next=architecture-re-review-ruling BROWSER_SOL/CNO reason=OWNER_EVIDENCE_SOURCE_OUTCOME_MISMATCH applicability=fd6da27f177e binding=grant:5554812621@1 identity=dc915cf78e7b
+[exit 0]
+Typed result: BROWSER_SOL / CNO [OWNER_EVIDENCE_SOURCE_OUTCOME_MISMATCH].
+The completion evidence bound to architecture-re-review-ruling was refused (OWNER_EVIDENCE_SOURCE_OUTCOME_MISMATCH: bound source artifacts/proofs/proof-b/attempt-3/disposition.json records outcome CNO_AT_B-S9, not the declared CNO_AT_B-S1); nothing is accepted from a record that does not bind this exact work, and the continuation goes to Browser Sol, never the captain.
+
+### 3 (corrected). Slice-C record downgraded to a mere landing: outcome MERGED, qualification removed; evidence_sha256 pin relaxed -> NOT accepted, slice-c is the next action, ordinary law, no captain gate
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-c-s3-changed-owner-evidence SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT applicability=831a45af1390 binding=grant:5554812621@1 identity=19f62ae9c5b9
+[exit 0]
+Programme cleanroom-af-package: next action slice-c-s3-changed-owner-evidence (C / S3 - hardened changed-owner evidence view (bin/fm-review-diff.sh)), attempt 1.
+Typed result: SELF_HANDLE / AUTHORIZED [STANDING_GRANT].
+The standing programme grant pre-authorizes slice-c-s3-changed-owner-evidence on the terminal-good predecessor (architecture-re-review-ruling PROCEED_WITH_CONDITIONS by control_ruling sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623); no typed fact gates it, so it proceeds without a fresh captain word.
+Basis:
+  - grant sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621 (Captain: bounded A-F implementation authorization)
+  - grant sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623 (Browser Sol: post-Proof-B architecture re-review final disposition; A-F packet)
+{"classification":"SELF_HANDLE","reason_code":"STANDING_GRANT","evidence":{"status":"NOT_ACCEPTED","outcome":"MERGED","reason_code":null},"completed":["architecture-re-review-ruling"]}
+
+### 3b. Same mere-landing record but accept list widened to a substring token check: outcome MERGED vs accept [MERGED_QUALIFIED] must not match
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-c-s3-changed-owner-evidence SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT applicability=6eb853ed4725 binding=grant:5554812621@1 identity=721098548f96
+[exit 0]
+
+### 8. Record whose candidate is a string against the pinned slice-c step (pin relaxed on digest only) -> typed refusal, never ACCEPTED
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-c-s3-changed-owner-evidence BROWSER_SOL/CNO reason=OWNER_EVIDENCE_MALFORMED applicability=746ee609fff5 binding=grant:5554812621@1 identity=375fddf10769
+[exit 0]
+
+### 9. Record naming step phase-manager-pilot for slice-c step -> STEP_MISMATCH
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-c-s3-changed-owner-evidence BROWSER_SOL/CNO reason=OWNER_EVIDENCE_STEP_MISMATCH applicability=8bee07e9644b binding=grant:5554812621@1 identity=089806c8acae
+[exit 0]

@@ -1,0 +1,103 @@
+{
+  "classification": "BROWSER_SOL",
+  "authority": null,
+  "reason_code": "REQUIRED_BINDING_MISSING",
+  "next_action": "slice-a-s1-publication-integrity",
+  "completed": [
+    {
+      "id": "architecture-re-review-ruling",
+      "attempt": null,
+      "outcome": "PROCEED_WITH_CONDITIONS",
+      "disposition": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/programmes/cleanroom-af-package/evidence/architecture-re-review-ruling.json",
+      "sha256": "2f14efa3cc887f19503daa68545d8b1f867e8b06f0a54bbf10acd9ba9e826efa",
+      "evidence_kind": "accepted_owner_evidence",
+      "evidence_id": "architecture-re-review-ruling-5554585623",
+      "owner": {
+        "kind": "control_ruling",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554585623",
+        "ruler": "browser-sol (captain-delegated)",
+        "posted_at": "2026-09-05T20:30:43Z"
+      }
+    },
+    {
+      "id": "slice-c-s3-changed-owner-evidence",
+      "attempt": null,
+      "outcome": "MERGED_QUALIFIED",
+      "disposition": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/programmes/cleanroom-af-package/evidence/slice-c-s3-pr5-landing.json",
+      "sha256": "2c732e9721109e25ba7f2e990b57c59e688099cefa4a4e0425384a3a2199af44",
+      "evidence_kind": "accepted_owner_evidence",
+      "evidence_id": "slice-c-s3-pr5-landing",
+      "owner": {
+        "kind": "pull_request_merge",
+        "ref": "sbracewell64/firstmate-cleanroom#5",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom/pull/5",
+        "title": "fix(bin): harden fm-review-diff revision pinning, lineage, and malformed-meta refusals"
+      }
+    },
+    {
+      "id": "slice-e-projection-substrate",
+      "attempt": null,
+      "outcome": "MERGED_QUALIFIED",
+      "disposition": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/programmes/cleanroom-af-package/evidence/slice-e-pr6-landing.json",
+      "sha256": "a9d5faf7ca74b12a6a739c578fa52fe79c3b00cb1f30690f333e423dc5a1761e",
+      "evidence_kind": "accepted_owner_evidence",
+      "evidence_id": "slice-e-pr6-landing",
+      "owner": {
+        "kind": "pull_request_merge",
+        "ref": "sbracewell64/firstmate-cleanroom#6",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom/pull/6",
+        "title": "feat(bin): add stateless programme projection substrate over the continuation resolver"
+      }
+    }
+  ],
+  "binding": {
+    "present": true,
+    "commission": {
+      "work_id": "cleanroom-af-package",
+      "work_generation": 1,
+      "parent": "FM-PROGRAMME-BINDING-20260906 under FM-HANDOFF-LIVENESS-2026-09-06 / FM-CONTROL-REQUEST-REPAIR-2026-09-06"
+    },
+    "grant": {
+      "owner": "control_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554812621",
+      "id": 5554812621,
+      "authority": "CAPTAIN",
+      "posted_at": "2026-09-05T21:11:42Z",
+      "capture": {
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554812621",
+        "sha256": "eef4ec22989763682538cc56259cd3f129631c43d59e3695f17a37e20caf1900",
+        "bytes": 6989,
+        "digest_basis": "fetched_bytes",
+        "captured_at": "2026-09-06T20:05:00Z"
+      }
+    },
+    "programme_generation": "fm-af-programme/v1",
+    "evidence_kinds": [
+      "latest_attempt_disposition_outcome_in",
+      "accepted_owner_evidence"
+    ]
+  },
+  "runtime": {
+    "resolver": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/bin/fm-continuation-resolve.sh",
+    "resolver_sha256": "98b77c3c721b90c79b8837aac827ff314ecf31877a0ca17c581fdc1ec9f22f0e",
+    "lib_sha256": "2fed192f95729219350b6c29023ba83e520e989958f5d52ed2f1187c726282c5",
+    "supported_evidence_kinds": [
+      "latest_attempt_disposition_outcome_in",
+      "accepted_owner_evidence"
+    ],
+    "supported_owner_kinds": [
+      "control_ruling",
+      "control_report",
+      "pull_request_merge"
+    ]
+  },
+  "accountable_owner": "engineering: the qualification or landing owner that produces the bound completion evidence (no-mistakes, the exact-head merge owner, or the control ruling owner); never the captain",
+  "material_identity": "970cf8aea6ffe146acaeec5a13c9c4378d74a69ce44d6418c5b3bab76ff40ec2",
+  "evidence": {
+    "status": "CNO",
+    "reason_code": "REQUIRED_BINDING_MISSING"
+  }
+}

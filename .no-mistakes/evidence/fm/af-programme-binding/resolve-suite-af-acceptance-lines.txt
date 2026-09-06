@@ -1,0 +1,13 @@
+ok - the identity rule runs over the task materialize would hold: keyless aliases are refused, distinct identities materialize their own holds
+ok - AF real accepted-owner evidence for A-E under the grant with no gating hold resolves the pilot F as SELF_HANDLE/AUTHORIZED; the Proof-B CNO_AT_B-S9 transition is accepted through the ruling owner without rewriting it
+ok - AF render and check-prose refuse to manufacture a captain gate for the authorized pilot
+ok - AF the material identity is clock-free while applicability stays date-bound
+ok - AF a same-title-different-id hold from the historical programme never gates the pilot, while a reserved-axis hold bound to pilot-f still reaches the captain
+ok - a mere landing without its bound qualification record leaves the slice as the next action and cannot yield F
+ok - a re-issued evidence record invalidates the prior applicability and material identity
+ok - hold supersession and restoration move and restore the material identity deterministically
+ok - the material identity is the same for the same material state resolved from a home at another absolute path
+ok - status and away-digest readers key on the presented identity and do not recap unchanged state
+ok - a material change is presented once per identity, acknowledged only as presented, and state that moves between presentation and acknowledgement surfaces again instead of being swallowed
+ok - a no-ack turn over a lingering pending identity stays quiet, promotes exactly that identity, and the readers converge on unchanged
+ok - a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once

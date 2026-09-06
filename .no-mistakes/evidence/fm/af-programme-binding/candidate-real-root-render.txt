@@ -1,0 +1,23 @@
+$ bin/fm-continuation-resolve.sh render   (candidate pinned, root=/mnt/e/FirstMate-Cleanroom read-only, temp FM_HOME)
+Programme cleanroom-af-package: next action slice-a-s1-publication-integrity (A / S1 - coherent publication/exporter integrity (exchange/bin/render-manifest.py, exchange-current.py)), attempt 1.
+Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING].
+The completion evidence slice-a-s1-publication-integrity requires is not bound (no owner-produced evidence record is bound at /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/programmes/cleanroom-af-package/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge)); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.
+Basis:
+  - grant sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621 (Captain: bounded A-F implementation authorization)
+  - grant sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623 (Browser Sol: post-Proof-B architecture re-review final disposition; A-F packet)
+  - grant sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)
+  - owner evidence slice-e-projection-substrate MERGED_QUALIFIED by pull_request_merge sbracewell64/firstmate-cleanroom#6 (a9d5faf7ca74)
+Evidence for slice-a-s1-publication-integrity: CNO [REQUIRED_BINDING_MISSING] no owner-produced evidence record is bound at /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1W7NXJ79V6FAJ706TPVP83P/programmes/cleanroom-af-package/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge) (absent).
+Accountable owner: engineering: the qualification or landing owner that produces the bound completion evidence (no-mistakes, the exact-head merge owner, or the control ruling owner); never the captain.
+Binding: commission cleanroom-af-package@1 under grant 5554812621 (sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621), ruling 5554585623; consumer contract fm-continuation-resolution/v1; evidence kinds latest_attempt_disposition_outcome_in, accepted_owner_evidence.
+Applicability 6de09c9b48a5: action slice-a-s1-publication-integrity, generation 1, programme fm-af-programme/v1.
+Material identity 970cf8aea6ffe146acaeec5a13c9c4378d74a69ce44d6418c5b3bab76ff40ec2 (clock-free; a presentation caller keys quiet handling on it).
+[exit 0]
+
+$ bin/fm-continuation-resolve.sh summary
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-a-s1-publication-integrity BROWSER_SOL/CNO reason=REQUIRED_BINDING_MISSING applicability=6de09c9b48a5 binding=grant:5554812621@1 identity=970cf8aea6ff
+[exit 0]
+
+$ bin/fm-programme-projection.sh summary
+projection cleanroom-af-package@fm-af-programme/v1: next=slice-a-s1-publication-integrity phase=package-qualification@0 gen=1/- BROWSER_SOL/CNO reason=REQUIRED_BINDING_MISSING ceiling=2 applicability=f4c214e82a8a
+[exit 0]

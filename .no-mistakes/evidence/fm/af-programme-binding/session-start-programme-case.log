@@ -1,0 +1,2 @@
+# fm-session-start.test.sh: all assertions passed
+ok - the fleet-state digest embeds the typed programme continuation when pinned and stays silent otherwise

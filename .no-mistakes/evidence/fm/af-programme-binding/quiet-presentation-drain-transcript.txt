@@ -1,0 +1,52 @@
+## Quiet presentation through bin/fm-wake-drain.sh over the pinned A-F candidate (temp home, copied clean-room root)
+
+$ drain #1 (today=2026-09-06): first observation of the material state
+PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):
+Programme cleanroom-af-package: next action slice-a-s1-publication-integrity (A / S1 - coherent publication/exporter integrity (exchange/bin/render-manifest.py, exchange-current.py)), attempt 1.
+Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING].
+The completion evidence slice-a-s1-publication-integrity requires is not bound (no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/programme/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge)); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.
+  - grant sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)
+Evidence for slice-a-s1-publication-integrity: CNO [REQUIRED_BINDING_MISSING] no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/programme/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge) (absent).
+Applicability 37ec71a4b737: action slice-a-s1-publication-integrity, generation 1, programme fm-af-programme/v1.
+PROGRAMME CONTINUATION: presented identity 970cf8aea6ff (acknowledged with this presentation; nothing is pending).
+[state/.programme-presented: 970cf8aea6ff] [state/.programme-presented.pending: none]
+
+$ drain #2 (same state, same day): must be quiet
+[state/.programme-presented: 970cf8aea6ff] [state/.programme-presented.pending: none]
+
+$ drain #3 (same state, NEXT day 2026-09-07; clocks excluded from identity): must be quiet
+[state/.programme-presented: 970cf8aea6ff] [state/.programme-presented.pending: none]
+
+$ bin/fm-fleet-snapshot.sh presentation member:
+{"state":"unchanged","presented_identity":"970cf8aea6ffe146acaeec5a13c9c4378d74a69ce44d6418c5b3bab76ff40ec2"}
+
+$ material change: Proof-B disposition bytes under the root rewritten (outcome -> PROVED)
+$ drain #4: the new material state (OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH) surfaces once
+PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):
+Programme cleanroom-af-package: next action architecture-re-review-ruling (completed post-Proof-B architecture re-review (predecessor obligation)), attempt 1.
+Typed result: BROWSER_SOL / CNO [OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH].
+  - grant sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)
+Applicability 7c36b61197ca: action architecture-re-review-ruling, generation 1, programme fm-af-programme/v1.
+PROGRAMME CONTINUATION: presented identity 7f8fa6d68e50 (acknowledged with this presentation; nothing is pending).
+[state/.programme-presented: 7f8fa6d68e50] [state/.programme-presented.pending: none]
+
+$ drain #5 (unchanged): quiet again
+[state/.programme-presented: 7f8fa6d68e50] [state/.programme-presented.pending: none]
+
+$ restore the exact Proof-B bytes
+$ drain #6: the restored state surfaces once more (identity differs from the last presented one)
+PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):
+Programme cleanroom-af-package: next action slice-a-s1-publication-integrity (A / S1 - coherent publication/exporter integrity (exchange/bin/render-manifest.py, exchange-current.py)), attempt 1.
+Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING].
+The completion evidence slice-a-s1-publication-integrity requires is not bound (no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/programme/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge)); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.
+  - grant sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)
+Evidence for slice-a-s1-publication-integrity: CNO [REQUIRED_BINDING_MISSING] no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/programme/evidence/slice-a-s1-qualification.json for step slice-a-s1-publication-integrity (accepted owner kinds: control_ruling control_report pull_request_merge) (absent).
+Applicability 0b7e4650598a: action slice-a-s1-publication-integrity, generation 1, programme fm-af-programme/v1.
+PROGRAMME CONTINUATION: presented identity 970cf8aea6ff (acknowledged with this presentation; nothing is pending).
+[state/.programme-presented: 970cf8aea6ff] [state/.programme-presented.pending: none]
+
+$ bin/fm-fleet-view.sh programme section:
+## Programme continuation
+cleanroom-af-package: next action slice-a-s1-publication-integrity - BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING]. Owner: bin/fm-continuation-resolve.sh. Binding: grant 5554812621 commission cleanroom-af-package. Accountable: engineering: the qualification or landing owner that produces the bound completion evidence (no-mistakes, the exact-head merge owner, or the control ruling owner); never the captain. Presentation: unchanged since last presented (identity 970cf8aea6ff); not news.
+
+## Secondmates

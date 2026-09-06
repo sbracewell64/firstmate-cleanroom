@@ -1,0 +1,154 @@
+ok - F1 Proof A PROVED under the standing grant resolves Proof B as SELF_HANDLE/AUTHORIZED with the exact predecessor disposition as basis
+ok - F1 replay over unchanged canonical state converges on the same applicability digest
+ok - F1 a later attempt changes action_generation and the applicability digest, so a stale resolution cannot be reused
+# test_f1_authorized_continuation: 1s
+ok - F2 before the lift, the bound reserved-axis captain hold gates Proof A as CAPTAIN
+ok - F2 after the explicit lift the old hold is non-authoritative and Proof A proceeds under the standing grant
+ok - F6 a closed (superseded) hold is not read as a live gate
+# test_f2_lifted_hold_is_not_authoritative: 3s
+ok - F3 a bound ruling wait resolves Proof B as BROWSER_SOL/REQUIRES_RULING, never CAPTAIN
+ok - F4 a bound external wait resolves Proof B as EXTERNAL_DEPENDENCY/WAITING_EXTERNAL, never CAPTAIN
+ok - F3+F4 with both waits bound, the ruling wait dominates and both holds remain in the basis
+ok - a bound date gate is an external wait while live and non-authoritative once its date has passed
+# test_f3_f4_ruling_and_external_waits: 4s
+ok - F5 a typed reserved axis on the next action fires CAPTAIN/REQUIRES_CAPTAIN with no pre-existing hold
+ok - F5 a plain resolve is read-only
+ok - F9 non-vacuity: --materialize creates the canonical captain hold through fm-captain-hold.sh and the result then rests on that durable hold
+ok - F9 materialize is idempotent and converges on one stable binding across replays
+ok - F9 a captain answer recorded in release mode retires the typed fact: SELF_HANDLE/AUTHORIZED with no programme-file edit
+ok - F9 an answered fact stays retired under a later external hold, which gates as EXTERNAL_DEPENDENCY and survives materialize
+ok - F9 an answered fact stays retired under an unrelated non-captain hold
+ok - F9 a captain answer recorded in close mode retires the typed fact
+ok - F9 an answer bound to another programme does not retire this programme's fact
+ok - F9 an answer bound to proof-b does not retire a later action's fact even on that action's own decision task
+ok - F9 a recorded answer without a typed binding does not retire the fact
+ok - F9 a decision task closed without a recorded answer does not retire the typed fact
+# test_f5_f9_reserved_axis_without_hold_materializes: 18s
+ok - a foreign captain hold sharing the axis gates on its own while the fact still materializes its own task
+ok - answering the foreign hold alone leaves the fact outstanding
+ok - answering the fact's own task retires it
+# test_foreign_hold_sharing_axis_does_not_cover_fact: 6s
+ok - materialize refuses to rebind a live captain hold bound to another programme and leaves its binding untouched
+ok - the old programme's replay still sees its own hold unchanged
+ok - materialize refuses to rebind a live captain hold bound to another action
+ok - a same-action same-programme binding missing the axis converges to one binding
+# test_materialize_never_rebinds_foreign_binding: 10s
+ok - F7 a reserved-axis hold bound to Proof A does not gate Proof B
+ok - F7 a hold bound to another programme's action of the same name does not gate this programme
+ok - F7 an unbound captain hold (generic caution) cannot gate a programme action
+# test_f7_scoped_hold_does_not_leak: 3s
+ok - F8 a bound captain hold with no reserved axis is refused to BROWSER_SOL
+ok - F8 a captain hold naming an axis outside the reserved set is refused to BROWSER_SOL
+ok - F8 a programme step claiming CAPTAIN without a typed reserved axis is refused to BROWSER_SOL
+ok - F8 a typed step fact on a non-reserved axis is refused and materializes no hold
+# test_f8_captain_claim_without_axis_is_refused: 2s
+ok - a superseded grant cannot authorize: CNO with BROWSER_SOL, never AUTHORIZED and never CAPTAIN
+ok - a grant pinned to another programme generation cannot authorize: CNO
+ok - a grant pinned to the current programme generation authorizes
+ok - a bound reserved-axis captain hold dominates a CNO grant
+# test_grant_applicability_is_cno: 2s
+tests/fm-continuation-resolve.test.sh: line 583: /tmp/fm-continuation.ADyfnv/cno/cleanroom/artifacts/proofs/proof-b/attempt-1/disposition.json: No such file or directory
+ok - an unreadable current disposition makes the continuation CNO rather than authorized
+ok - a newer attempt without a terminal disposition is CNO, never an older-PROVED fallback
+ok - an unreadable hold store cannot prove the absence of a captain hold: CNO, never AUTHORIZED
+ok - a silent hold store (exit 0, no listing) is unreadable, not empty
+ok - a listed held task whose record cannot be shown is an unreadable store, not a skipped hold
+ok - parked and load holds are read from the listing alone, never shown, and stay counted and ignored
+# test_unreadable_inputs_are_cno: 2s
+ok - every step terminal-good resolves to PROGRAMME_COMPLETE with no next action
+ok - FM_PROGRAMME pairs with FM_PROGRAMME_ROOT, never with the config root= line
+ok - FM_PROGRAMME without FM_PROGRAMME_ROOT resolves against its own directory, not the config root
+ok - --programme pairs with --root or FM_PROGRAMME_ROOT, then its own directory
+ok - --root overrides every paired root
+ok - a home without config/programme exits 3 so every consumer stays silent
+ok - FM_PROGRAMME and FM_PROGRAMME_ROOT locate a programme without the config file
+ok - a decision_key shared by two required facts, across steps or in one step, is refused at load; distinct keys resolve
+ok - the identity rule runs over the task materialize would hold: keyless aliases are refused, distinct identities materialize their own holds
+ok - a non-required enhancement reusing a key cannot overwrite, alias, or retire the required fact's binding
+ok - an unpinned home exits 3 even without jq on PATH, so consumers stay silent
+# test_completion_and_configuration: 9s
+ok - render is derived from the typed fields and asserts no captain gate for an authorized continuation
+ok - summary prints the one-line typed token
+ok - check-prose refuses report prose that manufactures a captain gate for an authorized continuation
+ok - check-prose accepts prose that makes no captain-gate claim
+ok - check-prose accepts captain-gate phrasing exactly when the typed resolution is CAPTAIN
+# test_render_and_check_prose: 2s
+ok - the binding writer validates its tokens and refuses malformed input
+ok - bind-action appends the one binding line after the existing body
+ok - bind-action is idempotent for an identical binding
+ok - bind-action replaces a different binding with exactly one current line
+ok - bind-action refuses a closed task
+# test_captain_hold_binding_mechanics: 2s
+ok - the canonical fleet snapshot embeds the typed resolution verbatim under programme_continuation
+ok - bearings projects the typed row from the snapshot and asserts no captain gate
+ok - the fleet view renders the typed programme line
+ok - the away-mode digest embeds the typed summary token from the same owner
+ok - with no programme configured every consumer stays silent rather than inventing a state
+# test_consumers_project_the_typed_result: 2s
+ok - AF real accepted-owner evidence for A-E under the grant with no gating hold resolves the pilot F as SELF_HANDLE/AUTHORIZED; the Proof-B CNO_AT_B-S9 transition is accepted through the ruling owner without rewriting it
+ok - AF render and check-prose refuse to manufacture a captain gate for the authorized pilot
+ok - AF the material identity is clock-free while applicability stays date-bound
+ok - AF a same-title-different-id hold from the historical programme never gates the pilot, while a reserved-axis hold bound to pilot-f still reaches the captain
+# test_af_accepted_owner_evidence_yields_f: 7s
+ok - a mere landing without its bound qualification record leaves the slice as the next action and cannot yield F
+ok - accept membership is exact on both evidence paths: a substring of an accepted token is never accepted
+ok - a qualification claim without its binding is refused, a self-report cannot claim qualification, and an honest self-report is observed but never accepted
+ok - a slice whose qualification evidence is absent or unreadable resolves as REQUIRED_BINDING_MISSING / CNO, never PASS and never CAPTAIN
+# test_af_landing_without_qualification_cannot_yield_f: 7s
+ok - refused: wrong programme -> OWNER_EVIDENCE_PROGRAMME_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: wrong slice (same title, different id) -> OWNER_EVIDENCE_STEP_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: wrong project -> OWNER_EVIDENCE_PROJECT_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: wrong commission -> OWNER_EVIDENCE_WORK_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: wrong owner -> OWNER_EVIDENCE_OWNER_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: wrong candidate -> OWNER_EVIDENCE_CANDIDATE_MISMATCH (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: superseded record -> OWNER_EVIDENCE_SUPERSEDED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: contradictory record -> OWNER_EVIDENCE_CONTRADICTORY (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: unsupported owner kind -> OWNER_EVIDENCE_OWNER_KIND_UNSUPPORTED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: unsupported schema -> OWNER_EVIDENCE_SCHEMA_UNSUPPORTED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: malformed record -> OWNER_EVIDENCE_MALFORMED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: sources not an array -> OWNER_EVIDENCE_MALFORMED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: source entry not an object -> OWNER_EVIDENCE_MALFORMED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: string candidate against a pinned candidate -> OWNER_EVIDENCE_MALFORMED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: array candidate against a pinned candidate -> OWNER_EVIDENCE_MALFORMED (BROWSER_SOL/CNO, never CAPTAIN)
+ok - refused: malformed sources shapes (non-array, non-object entry) yield a precise OWNER_EVIDENCE_MALFORMED CNO instead of a crash
+ok - refused: a record from another evidence generation than the programme pins
+ok - refused: a receipt whose bytes differ from the pinned evidence generation (forged receipt)
+ok - refused: a ruling record under a different acceptance policy digest
+ok - refused: a ruling record claiming a different CNO than the bound Proof-B disposition records (unrelated CNO is never accepted)
+ok - refused: a bound source whose bytes moved (the adverse record is bound exactly, never loosely)
+ok - refused: a wrong artifact root cannot observe the bound source (CNO, never authorized)
+ok - a ruling record whose decision is not the accepted one leaves the predecessor step waiting on Browser Sol rather than fabricating a proof attempt or a captain gate
+# test_af_refusal_matrix: 14s
+ok - refused at load: duplicate step ids
+ok - refused at load: unsupported evidence kind
+ok - refused at load: dependency on a later step (order contradiction)
+ok - refused at load: dependency on itself (cycle)
+ok - refused at load: dependency on an unknown step
+ok - refused at load: regex-shaped dependency never matches a real step
+ok - refused at load: dot-shaped dependency never matches a real step
+ok - refused at load: pinned candidate that is not an object
+ok - refused at load: accept list that is a string
+ok - refused at load: accept list that is empty
+ok - refused at load: accept list with a non-string entry
+ok - refused at load: accept list absent
+ok - refused at load: missing required binding
+ok - refused at load: consumer contract mismatch
+ok - refused at load: unsupported bound evidence kind
+ok - refused at load: binding does not cover a step kind
+ok - refused at load: binding generation mismatch
+ok - refused at load: binding without a programme generation
+ok - refused at load: owner step without an evidence path
+ok - a legacy proof-only programme resolves with REQUIRED_BINDING_MISSING printed by every reader, never a silent N/A
+# test_af_structure_and_binding_refusals: 3s
+ok - a re-issued evidence record invalidates the prior applicability and material identity
+ok - a superseded grant cannot authorize any A-F step
+ok - hold supersession and restoration move and restore the material identity deterministically
+ok - the material identity is the same for the same material state resolved from a home at another absolute path
+# test_af_applicability_invalidation: 5s
+ok - unchanged programme state is presented once and then stays quiet across polls and restarts
+ok - status and away-digest readers key on the presented identity and do not recap unchanged state
+ok - a material change is presented once per identity, acknowledged only as presented, and state that moves between presentation and acknowledgement surfaces again instead of being swallowed
+ok - a no-ack turn over a lingering pending identity stays quiet, promotes exactly that identity, and the readers converge on unchanged
+ok - a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once
+# test_af_presentation_quiet_and_ack_race: 20s
+# fm-continuation-resolve.test.sh: all assertions passed

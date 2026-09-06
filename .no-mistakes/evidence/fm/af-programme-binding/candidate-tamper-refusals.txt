@@ -1,0 +1,46 @@
+### 0. Copied candidate + copied real Proof-B bytes under a different absolute root: same typed result, path-free material identity
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-a-s1-publication-integrity BROWSER_SOL/CNO reason=REQUIRED_BINDING_MISSING applicability=37ec71a4b737 binding=grant:5554812621@1 identity=970cf8aea6ff
+[exit 0]
+
+### 1. Proof-B disposition outcome rewritten CNO_AT_B-S9 -> PROVED under the artifact root (moved bytes)
+programme cleanroom-af-package@fm-af-programme/v1: next=architecture-re-review-ruling BROWSER_SOL/CNO reason=OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH applicability=e88080cf199f binding=grant:5554812621@1 identity=7f8fa6d68e50
+[exit 0]
+Programme cleanroom-af-package: next action architecture-re-review-ruling (completed post-Proof-B architecture re-review (predecessor obligation)), attempt 1.
+Typed result: BROWSER_SOL / CNO [OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH].
+The completion evidence bound to architecture-re-review-ruling was refused (OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH: bound source artifacts/proofs/proof-b/attempt-3/disposition.json sha256 23326a6344c60f420f4947fa98d250cac4ee16f183d7e579f894f864cb14f4f9 differs from the recorded 619f6bfd82ae8916cdbfcb38da68d662527b21a3bdf3996257c2e62d2c16ef11); nothing is accepted from a record that does not bind this exact work, and the continuation goes to Browser Sol, never the captain.
+
+### 2. Ruling record edited to bind an unrelated CNO outcome (declared outcome CNO_AT_B-S1, same bytes) -> pin/outcome refusal, never PASS
+programme cleanroom-af-package@fm-af-programme/v1: next=architecture-re-review-ruling BROWSER_SOL/CNO reason=OWNER_EVIDENCE_DIGEST_MISMATCH applicability=da6b98b0a9af binding=grant:5554812621@1 identity=524bc795d2dc
+[exit 0]
+Programme cleanroom-af-package: next action architecture-re-review-ruling (completed post-Proof-B architecture re-review (predecessor obligation)), attempt 1.
+Typed result: BROWSER_SOL / CNO [OWNER_EVIDENCE_DIGEST_MISMATCH].
+The completion evidence bound to architecture-re-review-ruling was refused (OWNER_EVIDENCE_DIGEST_MISMATCH: record bytes sha256 c85ff26d80f4147f494ebacbb28b9e8098b4c1f34de183564cf74dc243177597 differ from the pinned evidence generation 2f14efa3cc887f19503daa68545d8b1f867e8b06f0a54bbf10acd9ba9e826efa); nothing is accepted from a record that does not bind this exact work, and the continuation goes to Browser Sol, never the captain.
+
+### 2b. Same edit with the step evidence_sha256 pin relaxed so the source check itself is reached
+programme cleanroom-af-package@fm-af-programme/v1: next=architecture-re-review-ruling BROWSER_SOL/CNO reason=REQUIRED_BINDING_MISSING applicability=d8be22c7cf7c binding=grant:5554812621@1 identity=2630b75938c3
+[exit 0]
+Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING].
+The completion evidence architecture-re-review-ruling requires is not bound (no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/evidence/architecture-re-review-ruling.json for step architecture-re-review-ruling (accepted owner kinds: control_ruling control_report pull_request_merge)); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.
+
+### 3. Slice-C record downgraded to a mere landing (outcome MERGED, no qualification), pin relaxed -> NOT accepted, step becomes next action, no captain gate
+programme cleanroom-af-package@fm-af-programme/v1: next=architecture-re-review-ruling BROWSER_SOL/CNO reason=REQUIRED_BINDING_MISSING applicability=3e7037e490ab binding=grant:5554812621@1 identity=6a01cca489e6
+[exit 0]
+Programme cleanroom-af-package: next action architecture-re-review-ruling (completed post-Proof-B architecture re-review (predecessor obligation)), attempt 1.
+Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING].
+The completion evidence architecture-re-review-ruling requires is not bound (no owner-produced evidence record is bound at /tmp/fm-af-tamper-56044/evidence/architecture-re-review-ruling.json for step architecture-re-review-ruling (accepted owner kinds: control_ruling control_report pull_request_merge)); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.
+
+### 4. Slice-C record downgraded but the shipped programme pin (evidence_sha256) intact -> digest refusal
+programme cleanroom-af-package@fm-af-programme/v1: next=slice-c-s3-changed-owner-evidence BROWSER_SOL/CNO reason=OWNER_EVIDENCE_DIGEST_MISMATCH applicability=9c44747f9493 binding=grant:5554812621@1 identity=8840c9bc8979
+[exit 0]
+
+### 5. Programme with an owner-evidence step and binding removed -> refused at load
+fm-continuation-resolve: REQUIRED_BINDING_MISSING: /tmp/fm-af-tamper-56044/p5.json uses accepted_owner_evidence steps but declares no binding {commission, grant, consumer.contract, evidence_kinds, programme_generation}; nothing is accepted from an unbound programme
+[exit 1]
+
+### 6. depends_on regex-looking entry slice-[ce] -> refused at load
+fm-continuation-resolve: steps[6] (pilot-f-concurrency-2) depends_on entry 'slice-[ce]' is not a step id slug
+[exit 1]
+
+### 7. terminal_predicate.accept as a string -> refused at load
+fm-continuation-resolve: steps[2] (slice-e-projection-substrate) terminal_predicate.accept must be a non-empty array of outcome strings (got string)
+[exit 1]

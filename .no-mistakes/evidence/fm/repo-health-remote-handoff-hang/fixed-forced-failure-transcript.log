@@ -1,0 +1,14 @@
+$ FM_REMOTE_HANDOFF_RECEIPT_GATE_SECONDS=0 TMPDIR=/tmp/fm-fixed-forced-01M1T9FS bash tests/fm-remote-backlog-handoff.test.sh   # fixed fixture (f0a1383), forced receipt deadline
+ok - confined put rejects incomplete and superseded payload generations
+ok - confined put rejects directory replacement without external writes
+ok - ambiguous receipt leaves one durable outbox and no duplicate dispatchable source
+ok - re-delivery after unknown completion converges without duplication
+ok - dropped transfer recovery overwrites scratch and delivers exactly once
+not ok - first serialized handoff never reached receipt within 0s
+--- handoff output ---
+
+exit=1 (124 would mean hung past the 300s guard)  wall=11.6s
+$ pgrep -fa -- /tmp/fm-fixed-forced-01M1T9FS   # fixture processes still alive after exit
+(none)
+$ ls -A /tmp/fm-fixed-forced-01M1T9FS   # leftover temp roots
+(empty)

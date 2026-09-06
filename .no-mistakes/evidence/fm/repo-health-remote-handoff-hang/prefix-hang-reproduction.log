@@ -1,0 +1,12 @@
+$ TMPDIR=/tmp/fm-base-forced-01M1T9FS timeout 60 bash <base dc66ba5 fixture, serialized receipt budget forced to 0 ticks>
+ok - confined put rejects incomplete and superseded payload generations
+ok - confined put rejects directory replacement without external writes
+ok - ambiguous receipt leaves one durable outbox and no duplicate dispatchable source
+ok - re-delivery after unknown completion converges without duplication
+ok - dropped transfer recovery overwrites scratch and delivers exactly once
+not ok - first serialized handoff never reached receipt
+exit=124 (124 = still hung when the 60s guard fired)  wall=60.1s
+$ pgrep -fa -- /tmp/fm-base-forced-01M1T9FS   # fixture processes still alive after the guard killed the fixture
+907946 /bin/bash /tmp/fm-base-forced-01M1T9FS/fm-remote-handoff.uDPsyF/remote-root/bin/fm-remote-job-worker.sh
+$ ls -A /tmp/fm-base-forced-01M1T9FS   # leftover temp roots
+(empty)

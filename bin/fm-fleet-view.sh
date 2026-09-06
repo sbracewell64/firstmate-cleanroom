@@ -95,6 +95,12 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
   (if (.programme_continuation.configured // false) | not then "No programme is configured for this home."
    elif .programme_continuation.error then "Resolver failed (exit \(.programme_continuation.exit_code)); continuation authority is unproven, not captain-gated."
    else "\(.programme_continuation.programme.id): next action \(.programme_continuation.next_action // "none (complete)") - \(.programme_continuation.classification) / \(.programme_continuation.authority_state) [\(.programme_continuation.reason_code)]. Owner: bin/fm-continuation-resolve.sh."
+        + (if (.programme_continuation.binding.present // false) then " Binding: grant \(.programme_continuation.binding.grant.id) commission \(.programme_continuation.binding.commission.work_id)."
+           else " Binding: REQUIRED_BINDING_MISSING." end)
+        + " Accountable: \(.programme_continuation.accountable_owner // "-")."
+        + (if .programme_continuation.presentation.state == "unchanged" then " Presentation: unchanged since last presented (identity \(.programme_continuation.material_identity[0:12])); not news."
+           elif .programme_continuation.presentation.state == "pending-ack" then " Presentation: presented, acknowledgement pending (identity \(.programme_continuation.material_identity[0:12]))."
+           else " Presentation: NEW material state (identity \(.programme_continuation.material_identity[0:12]))." end)
    end),
   "",
   "## Secondmates",

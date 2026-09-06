@@ -185,6 +185,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # (fm_busy_classify).
 # shellcheck source=bin/fm-busy-lib.sh
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+. "$FM_DAEMON_DIR/fm-programme-presentation-lib.sh"
 
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
@@ -691,11 +693,24 @@ escalate_add() {  # <state> <distilled-item>
 
 # The typed programme-continuation token for a digest, or nothing. Owned by
 # bin/fm-continuation-resolve.sh; this daemon embeds and never interprets it.
-programme_digest_token() {
-  local out rc=0
+# Quiet: the token is appended only while its material identity differs from
+# the identity the wake drain already presented (the summary carries the
+# identity's 12-character prefix, compared against the presented record by
+# bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
+programme_digest_token() {  # [<state>]
+  local out rc=0 state=${1:-} token presented pending
   out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
   case "$rc" in
-    0) printf ' | %s' "$(_collapse_newlines "$out")" ;;
+    0)
+      if [ -n "$state" ]; then
+        token=$(printf '%s' "$out" | sed -n 's/.* identity=\([0-9a-f]*\).*/\1/p' | head -1)
+        presented=$(fm_programme_presented_identity "$state")
+        pending=$(fm_programme_pending_identity "$state")
+        if [ -n "$token" ] && { [ "${presented:0:12}" = "$token" ] || [ "${pending:0:12}" = "$token" ]; }; then
+          return 0
+        fi
+      fi
+      printf ' | %s' "$(_collapse_newlines "$out")" ;;
     3) : ;;
     *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
   esac
@@ -718,7 +733,7 @@ escalate_flush() {  # <state>
   # the digest's event prose: append the one-line typed resolution when this
   # home pins a programme (exit 3 = none configured, stay silent; a failure is
   # named rather than guessed).
-  msg="$msg$(programme_digest_token)"
+  msg="$msg$(programme_digest_token "$state")"
   if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
   return 1
 }

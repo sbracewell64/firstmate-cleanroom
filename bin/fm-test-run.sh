@@ -557,7 +557,7 @@ tests/fm-cmux-claude-composer-live-e2e.test.sh 21
 tests/fm-codex-continuity-live-e2e.test.sh 13
 tests/fm-composer-matrix-live-e2e.test.sh 21
 tests/fm-continuation-lib.test.sh 120
-tests/fm-continuation-resolve.test.sh 196000
+tests/fm-continuation-resolve.test.sh 310000
 tests/fm-control-relaunch.test.sh 47656
 tests/fm-control.test.sh 38218
 tests/fm-cursor-harness.test.sh 30108
@@ -600,7 +600,7 @@ tests/fm-pr-check-security.test.sh 157718
 tests/fm-procevent-quota.test.sh 1871
 tests/fm-procevent-when.test.sh 17939
 tests/fm-procevent.test.sh 84755
-tests/fm-programme-projection.test.sh 57000
+tests/fm-programme-projection.test.sh 75000
 tests/fm-project-origin.test.sh 130
 tests/fm-public-followup.test.sh 244580
 tests/fm-quota-array-dispatch-live-e2e.test.sh 20

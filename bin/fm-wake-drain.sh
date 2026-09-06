@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-lease-lib.sh
 . "$SCRIPT_DIR/fm-lease-lib.sh"
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 
 DRAIN_TMP=
 DRAIN_VIEW_TMP=
@@ -360,8 +362,19 @@ print_status_sections() {
   status_commit_presentation_snapshot "$STATE" "$acknowledged"
 }
 
-print_status_presentation() {  # [<deduped-raw-rows>]
-  local rows=${1:-} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
+# The programme continuation's quiet presentation (bin/fm-programme-presentation-lib.sh):
+# main actor only, once per material change, keyed on the resolver's
+# clock-free identity. <ack-mode> is `pending` on a turn that prints
+# WAKE_ACK_REQUIRED (the identity is acknowledged by that command) and `commit`
+# on a turn that prints none. Exit 3 (no programme pinned) prints nothing, and
+# a presentation failure never changes the drain's exit status.
+print_programme_presentation() {  # <ack-mode>
+  [ "$ACTOR" = main ] || return 0
+  fm_programme_present "$STATE" "$1" || true
+}
+
+print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
+  local rows=${1:-} ack_mode=${2:-commit} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
   fm_lock_acquire_wait "$lock" || return 1
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'
@@ -375,6 +388,7 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
+  print_programme_presentation "$ack_mode"
   fm_lock_release "$lock"
   return "$rc"
 }
@@ -482,6 +496,13 @@ if [ -n "$ACK_THROUGH" ]; then
     consume_actor_rows_locked "$ELIGIBLE_ROWS_FILE" "$ACK_THROUGH" || exit 1
   else
     consume_actor_rows_locked "$MAIN_ROWS_FILE" "$ACK_THROUGH" || exit 1
+    # Acknowledge exactly the programme identity the presenting drain recorded;
+    # state that moved since then is not re-resolved here and surfaces at the
+    # next drain (bin/fm-programme-presentation-lib.sh).
+    fm_programme_ack_pending "$STATE" || {
+      echo "wake drain: presented programme identity could not be acknowledged safely" >&2
+      exit 1
+    }
   fi
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
@@ -509,9 +530,11 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_status_presentation) || true
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
+    (print_status_presentation '' pending) || true
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
+  else
+    (print_status_presentation '' commit) || true
   fi
   assert_watcher_liveness
   exit 0
@@ -587,6 +610,6 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(print_status_presentation "$RAW_ROWS") || true
+(print_status_presentation "$RAW_ROWS" pending) || true
 assert_watcher_liveness
 exit 0

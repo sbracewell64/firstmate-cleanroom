@@ -2292,6 +2292,16 @@ JSON
     assert_contains "$out" "Typed result: BROWSER_SOL / CNO [HOLD_STORE_UNREADABLE]" "without tasks-axi the digest carries CNO, never AUTHORIZED"
   fi
   printf '%s' "$out" | grep -qiE 'needs your word|without your word|captain required' && fail "the digest must not assert a captain gate"
+  # The locked wake drain in section 3 presents the material state once and
+  # records it, so the fleet-state subsection labels the same state as already
+  # presented rather than as news; a programme with no commission/grant binding
+  # is printed as REQUIRED_BINDING_MISSING, never as an optional N/A.
+  assert_contains "$out" "PROGRAMME CONTINUATION (material state changed since last presented" "the wake drain presents the programme state once"
+  assert_contains "$out" "Presentation: unchanged since it was last presented and acknowledged" "the digest labels the drained state as already presented"
+  assert_contains "$out" "Binding: REQUIRED_BINDING_MISSING" "an unbound programme is printed loudly"
+  out=$(run_session_start "$home" "$root" "$path")
+  assert_not_contains "$out" "PROGRAMME CONTINUATION (material state changed" "a restart over unchanged programme state re-presents nothing in the wake drain"
+  assert_contains "$out" "Presentation: unchanged since it was last presented and acknowledged" "the restart digest still labels the state as presented"
 
   pass "the fleet-state digest embeds the typed programme continuation when pinned and stays silent otherwise"
 }

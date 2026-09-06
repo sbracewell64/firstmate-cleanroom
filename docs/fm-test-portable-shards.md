@@ -81,6 +81,7 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 `tests/fm-continuation-resolve.test.sh` (196000 ms) and `tests/fm-continuation-lib.test.sh` (120 ms) joined the serial lane on 2026-09-04 with locally measured hints, pending the next CI artifact refresh.
 `tests/fm-programme-projection.test.sh` (57000 ms) joined the serial lane on 2026-09-05 with a locally measured hint, pending the same refresh.
+On 2026-09-06 the owner-evidence adapter and quiet-presentation cases raised the locally measured hints to 310000 ms for `tests/fm-continuation-resolve.test.sh` and 75000 ms for `tests/fm-programme-projection.test.sh`, pending the same refresh.
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 282379 ms, is the floor for any shard count.
 

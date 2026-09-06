@@ -124,10 +124,10 @@
 #    evidence_kinds[], programme_generation, ...}
 #   Verified at load: `consumer.contract` must equal this resolver's result
 #   schema, `evidence_kinds` must be a subset of the closed vocabulary and
-#   cover every step's kind, and `programme_generation` when present must equal
-#   `schema`; a mismatch is refused (exit 1). A programme with an
-#   accepted_owner_evidence step and no binding is refused with
-#   REQUIRED_BINDING_MISSING. The result's `binding` field carries the object
+#   cover every step's kind, and `programme_generation` is required and must
+#   equal `schema`; an absent member or a mismatch is refused (exit 1). A
+#   programme with an accepted_owner_evidence step and no binding is refused
+#   with REQUIRED_BINDING_MISSING. The result's `binding` field carries the object
 #   with `present: true`, or `{present:false, reason:"REQUIRED_BINDING_MISSING"}`
 #   for a legacy proof-only programme, which every caller prints loudly rather
 #   than as an optional N/A. The result's `runtime` names this resolver's own
@@ -174,9 +174,11 @@
 #                                    reason, cno, accountable owner, predecessor,
 #                                    current, evidence, gating holds, answered
 #                                    facts, materialize axes, completed ids}. It
-#                                    excludes `today` and every path, so a
-#                                    presentation caller can key "already
-#                                    presented" on material state alone
+#                                    carries the CNO reason code without its
+#                                    detail and excludes `today` and every
+#                                    path, so a presentation caller can key
+#                                    "already presented" on material state
+#                                    alone
 #   why                              PRESENTATION ONLY, rendered from
 #                                    reason_code + basis_refs + applicability
 #
@@ -376,7 +378,7 @@ validate_binding() {
   has_owner=$(jq -r --arg k "$OWNER_KIND" '[.steps[] | .terminal_predicate.kind] | index($k) != null' "$PROGRAMME")
   if [ "$(jq -r '.binding | type' "$PROGRAMME")" = null ]; then
     if [ "$has_owner" = true ]; then
-      fail "REQUIRED_BINDING_MISSING: $PROGRAMME uses $OWNER_KIND steps but declares no binding {commission, grant, consumer.contract, evidence_kinds}; nothing is accepted from an unbound programme"
+      fail "REQUIRED_BINDING_MISSING: $PROGRAMME uses $OWNER_KIND steps but declares no binding {commission, grant, consumer.contract, evidence_kinds, programme_generation}; nothing is accepted from an unbound programme"
     fi
     BINDING_JSON=$(jq -n '{present:false, reason:"REQUIRED_BINDING_MISSING", detail:"the programme declares no commission/grant/consumer binding; authority derives from the grant refs alone and the binding must be recorded by the programme owner"}')
     return 0
@@ -386,7 +388,8 @@ validate_binding() {
   [ "$contract" = "$RESOLUTION_SCHEMA" ] \
     || fail "binding.consumer.contract must name this resolver's result contract $RESOLUTION_SCHEMA (got ${contract:-absent}); a different consumer contract or version cannot be consumed here"
   gen=$(jq -r '.binding.programme_generation // ""' "$PROGRAMME")
-  [ -z "$gen" ] || [ "$gen" = "$(jq -r '.schema' "$PROGRAMME")" ] \
+  [ -n "$gen" ] || fail "binding.programme_generation is required and must name the programme schema $(jq -r '.schema' "$PROGRAMME"); a binding without its programme generation cannot be consumed"
+  [ "$gen" = "$(jq -r '.schema' "$PROGRAMME")" ] \
     || fail "binding.programme_generation $gen does not match the programme schema $(jq -r '.schema' "$PROGRAMME")"
   [ "$(jq -r '.binding.evidence_kinds | type' "$PROGRAMME")" = array ] || fail "binding.evidence_kinds must be an array"
   kinds=$(jq -r '.binding.evidence_kinds[] | tostring' "$PROGRAMME")
@@ -461,7 +464,8 @@ read_owner_evidence() {  # <step-index> <step-id>
        evidence_id:($doc.evidence_id // null), owner:($doc.owner // null), generation:($doc.generation // null),
        candidate:($doc.candidate // null), policy:($doc.policy // null), verifier:($doc.verifier // null),
        qualification:($doc.qualification // null), captures:($doc.captures // []),
-       sources:[($doc.sources // [])[] | {kind, path, sha256, outcome:(.outcome // null)}]}'
+       sources:[(($doc.sources // []) | if type == "array" then .[] else empty end)
+                | if type == "object" then {kind, path, sha256, outcome:(.outcome // null)} else {kind:null, path:null, sha256:null, outcome:null} end]}'
   }
   if [ ! -f "$path" ]; then
     emit CNO REQUIRED_BINDING_MISSING "no owner-produced evidence record is bound at $path for step $sid (accepted owner kinds: $FM_CONTINUATION_OWNER_KINDS)" null '' ''
@@ -530,10 +534,11 @@ read_owner_evidence() {  # <step-index> <step-id>
     refuse OWNER_EVIDENCE_CONTRADICTORY "record carries observed_bad: $(printf '%s' "$doc" | jq -c '.observed_bad')"; return 0
   fi
   sources=$(printf '%s' "$doc" | jq -c '.sources // []')
-  [ "$(printf '%s' "$sources" | jq -r 'type')" = array ] || { refuse OWNER_EVIDENCE_MALFORMED "sources must be an array"; return 0; }
+  [ "$(printf '%s' "$sources" | jq -r 'type')" = array ] || { refuse OWNER_EVIDENCE_MALFORMED "sources must be an array (got $(printf '%s' "$sources" | jq -r 'type'))"; return 0; }
   n=$(printf '%s' "$sources" | jq 'length'); j=0
   while [ "$j" -lt "$n" ]; do
     src=$(printf '%s' "$sources" | jq -c ".[$j]"); j=$((j + 1))
+    [ "$(printf '%s' "$src" | jq -r 'type')" = object ] || { refuse OWNER_EVIDENCE_MALFORMED "source entry $j must be an object (got $(printf '%s' "$src" | jq -r 'type'))"; return 0; }
     [ "$(printf '%s' "$src" | jq -r '.kind // ""')" = local_file ] || { refuse OWNER_EVIDENCE_MALFORMED "source kind $(printf '%s' "$src" | jq -r '.kind // "absent"') is not local_file"; return 0; }
     spath=$(printf '%s' "$src" | jq -r '.path // ""'); ssha=$(printf '%s' "$src" | jq -r '.sha256 // ""'); sout=$(printf '%s' "$src" | jq -r '.outcome // ""')
     { [ -n "$spath" ] && [ -n "$ssha" ]; } || { refuse OWNER_EVIDENCE_MALFORMED "every bound source needs path and sha256"; return 0; }
@@ -987,7 +992,8 @@ finish_result() {
     {programme_id:.programme.id, programme_generation:.programme.generation, programme_sha256:.programme.sha256,
      binding:{work_id:(.binding.commission.work_id // null), work_generation:(.binding.commission.work_generation // null),
               grant_id:(.binding.grant.id // null), ruling_id:(.binding.ruling.id // null), present:.binding.present},
-     next_action, action_generation, classification, authority_state, reason_code, cno, accountable_owner,
+     next_action, action_generation, classification, authority_state, reason_code,
+     cno:(.cno | if . == null then null else {reason_code} end), accountable_owner,
      predecessor:(.applicability.predecessor | if . == null then null else {id, attempt, outcome, sha256} end),
      current:(.applicability.current | if . == null then null else {attempt, outcome, sha256} end),
      evidence:(.evidence | if . == null then null else {sha256, status, outcome, reason_code} end),

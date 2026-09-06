@@ -1143,7 +1143,26 @@ contradictory record|OWNER_EVIDENCE_CONTRADICTORY|.observed_bad = [{predicate:"e
 unsupported owner kind|OWNER_EVIDENCE_OWNER_KIND_UNSUPPORTED|.owner.kind = "shell_command"
 unsupported schema|OWNER_EVIDENCE_SCHEMA_UNSUPPORTED|.schema = "fm-accepted-owner-evidence/v2"
 malformed record|OWNER_EVIDENCE_MALFORMED|del(.owner.ref)
+sources not an array|OWNER_EVIDENCE_MALFORMED|.sources = "nope"
+source entry not an object|OWNER_EVIDENCE_MALFORMED|.sources = ["x"]
 ROWS
+  # The two malformed source shapes are refused with their precise detail and
+  # a typed result (exit 0), never a resolver crash.
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .sources = {kind:"local_file"}'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 0 ] || fail "non-array sources must resolve to a typed result, not exit $rc: $out"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_MALFORMED "non-array sources"
+  assert_contains "$(field "$out" '.cno.detail')" "sources must be an array (got object)" "non-array sources detail is precise"
+  [ "$(field "$out" '.evidence.sources | length')" = 0 ] || fail "a non-array sources projects as no bound sources"
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .sources = [{kind:"local_file", path:"policy.md", sha256:"'"$(sha_of "$home/cleanroom/policy.md")"'"}, 7]'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 0 ] || fail "non-object source entry must resolve to a typed result, not exit $rc: $out"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_MALFORMED "non-object source entry"
+  assert_contains "$(field "$out" '.cno.detail')" "source entry 2 must be an object (got number)" "non-object source detail is precise"
+  [ "$(field "$out" '.evidence.sources | length')" = 2 ] && [ "$(field "$out" '.evidence.sources[1].kind')" = null ] || fail "a non-object source entry projects as a null-shaped entry"
+  pass "refused: malformed sources shapes (non-array, non-object entry) yield a precise OWNER_EVIDENCE_MALFORMED CNO instead of a crash"
   # An unpinned generation is not compared; pin generation 1 on the step and
   # a generation-2 record is refused.
   write_af_programme "$home" '.steps[1].terminal_predicate.evidence_generation = 1 | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
@@ -1217,6 +1236,7 @@ test_af_structure_and_binding_refusals() {
   refuse_load "unsupported bound evidence kind" '.binding.evidence_kinds += ["arbitrary_command"]' "unsupported completion-evidence kind arbitrary_command"
   refuse_load "binding does not cover a step kind" '.binding.evidence_kinds = ["latest_attempt_disposition_outcome_in"]' "does not declare"
   refuse_load "binding generation mismatch" '.binding.programme_generation = "fm-af-programme/v0"' "does not match the programme schema"
+  refuse_load "binding without a programme generation" 'del(.binding.programme_generation)' "binding.programme_generation is required"
   refuse_load "owner step without an evidence path" 'del(.steps[2].terminal_predicate.evidence)' "names no terminal_predicate.evidence record"
 
   # A legacy proof-only programme still resolves, and every reader sees the
@@ -1264,6 +1284,22 @@ test_af_applicability_invalidation() {
   out=$(run_resolve "$home" resolve) || fail "restored resolve failed"
   [ "$(field "$out" '.material_identity')" = "$(field "$base" '.material_identity')" ] || fail "restored state converges on the same identity"
   pass "hold supersession and restoration move and restore the material identity deterministically"
+  # The identity excludes every path: the same material state resolved from a
+  # copy of the home at another absolute path (a CNO whose detail names the
+  # missing record's path) yields the same identity.
+  local moved
+  rm -f "$(af_evidence_dir "$home")/slice-a.json"
+  base=$(run_resolve "$home" resolve) || fail "unbound resolve failed"
+  expect_cno_refusal "$base" slice-a REQUIRED_BINDING_MISSING "unbound slice-a"
+  moved="$TMP_ROOT/af-applicability-moved-elsewhere"
+  cp -R "$home" "$moved"
+  printf 'programme=%s\nroot=%s\n' "$(af_programme_path "$moved")" "$moved/cleanroom" > "$moved/config/programme"
+  out=$(run_resolve "$moved" resolve) || fail "moved-home resolve failed"
+  expect_cno_refusal "$out" slice-a REQUIRED_BINDING_MISSING "unbound slice-a from the moved home"
+  [ "$(field "$out" '.cno.detail')" != "$(field "$base" '.cno.detail')" ] || fail "the CNO detail names the home's own path"
+  [ "$(field "$out" '.programme.path')" != "$(field "$base" '.programme.path')" ] || fail "the moved home is located at its own path"
+  [ "$(field "$out" '.material_identity')" = "$(field "$base" '.material_identity')" ] || fail "the material identity must not change with the home's absolute path"
+  pass "the material identity is the same for the same material state resolved from a home at another absolute path"
 }
 
 # --- quiet presentation: present once, stay quiet, ack only what was presented ---

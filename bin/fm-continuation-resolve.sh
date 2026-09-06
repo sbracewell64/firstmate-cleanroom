@@ -46,11 +46,64 @@
 #      programme then uses the config file's `root=` line; the fallback is the
 #      programme file's own directory. The config `root=` never pairs with a
 #      programme located elsewhere.
+#      Structure refused at load (exit 1, naming the defect): a duplicated
+#      step id; a `terminal_predicate.kind` outside the closed vocabulary
+#      bin/fm-continuation-lib.sh owns (FM_CONTINUATION_EVIDENCE_KINDS); a
+#      step `depends_on` (string or array) whose entry is not a step id slug
+#      (matched as an exact string, never a pattern) or names an unknown step,
+#      itself, or a LATER step (the pinned order is the sequence; a dependency
+#      on a later step is an order contradiction and a cycle is impossible
+#      once every dependency points earlier); a `terminal_predicate.candidate`
+#      pin that is not an object; a `terminal_predicate.accept` that is not a
+#      non-empty array of outcome strings (membership is exact, never a
+#      substring). The walk itself stays sequential: the next action is the
+#      first step in pinned order that is not terminal-good.
+#      The optional top-level `project` (forge slug) and `binding` object are
+#      data the evidence adapter and the callers consume (see 2b and BINDING).
 #   2. Proof dispositions: <root>/<artifact_root>/attempt-<n>/disposition.json,
 #      read for `.outcome` only; the highest-numbered attempt directory is the
 #      current one (predicate kind latest_attempt_disposition_outcome_in), and
 #      when it has no readable disposition the step is not terminal: it is the
 #      next action with CNO, never an older attempt's authorization.
+#   2b. Accepted owner evidence (predicate kind accepted_owner_evidence): the
+#      CLOSED non-proof completion-evidence adapter. A step of this kind names
+#      `terminal_predicate.evidence`, one owner-produced machine-readable JSON
+#      record (schema fm-accepted-owner-evidence/v1) resolved against the
+#      programme file's own directory when relative, since the programme owner
+#      authors the record beside the programme; `accept[]` names the observed
+#      outcomes that count as terminal-good. The record carries: `evidence_id`
+#      (slug), `programme_id`, `step`, `project`, `work_id`, `owner`
+#      {kind, ref} with kind in the closed owner vocabulary the library owns,
+#      `outcome` in that owner kind's closed outcome vocabulary, and optionally
+#      `generation` (integer), `candidate` {exact identities such as head,
+#      merge_commit, base}, `policy` {id, digest}, `verifier` {tool, ...},
+#      `qualification` {pipeline, evidence_refs[]} (required for
+#      MERGED_QUALIFIED), `captures[]` (declared locators, byte counts and
+#      sha256 of the owner bytes the producer read), `sources[]` (local files
+#      under <root> the record binds: {kind:"local_file", path, sha256,
+#      outcome?}, verified here by recomputed sha256 and, when `outcome` is
+#      declared, by that file's own `.outcome`), `observed_bad[]`, and
+#      `superseded_by`. The step may pin `owner_ref`, `candidate` {keys that
+#      must equal the record's}, `policy_digest`, `evidence_sha256`, and
+#      `evidence_generation`; every pin is verified. The adapter returns an
+#      observed status and applicability ONLY and grants nothing:
+#        ACCEPTED       outcome in accept[] and every check passed -> terminal-good
+#        NOT_ACCEPTED   well-formed, verified, outcome not in accept[] (a
+#                       landing or report without its qualification) -> the
+#                       step is the next action under the ordinary law
+#        REFUSED        unsupported schema, owner kind, or outcome; malformed;
+#                       programme, step, project, work, owner, candidate,
+#                       policy, digest, or generation mismatch; superseded;
+#                       observed_bad recorded; bound source digest or outcome
+#                       mismatch -> the step is the next action with CNO
+#                       (reason OWNER_EVIDENCE_*), never AUTHORIZED
+#        CNO            record absent (REQUIRED_BINDING_MISSING), unreadable,
+#                       or a bound source unreadable -> the step is the next
+#                       action with CNO, never AUTHORIZED
+#      A missing record is CNO and a contradiction is a refusal; neither ever
+#      becomes CAPTAIN. No command, predicate registry, plugin, or workflow
+#      language is read from a record; an owner kind or outcome outside the
+#      closed tables is refused, not interpreted.
 #   3. Durable hold state through tasks-axi in FM_HOME, the same backlog the
 #      captain-hold owner (bin/fm-captain-hold.sh) writes. A hold binds to an
 #      action only through the typed `Continuation-binding:` body line that
@@ -67,6 +120,23 @@
 #   Control rulings reach this resolver through those stores: a ruling that
 #   changes the sequence or grant is a programme-file change, and a ruling that
 #   opens or closes a wait is a bound hold written through the captain-hold owner.
+#
+# BINDING (programme `binding` object, required whenever any step uses
+# accepted_owner_evidence, tolerated absent for a proof-only programme):
+#   {commission:{work_id, work_generation}, grant:{owner, ref, id},
+#    ruling:{owner, ref, id}, consumer:{contract, projection},
+#    evidence_kinds[], programme_generation, ...}
+#   Verified at load: `consumer.contract` must equal this resolver's result
+#   schema, `evidence_kinds` must be a subset of the closed vocabulary and
+#   cover every step's kind, and `programme_generation` is required and must
+#   equal `schema`; an absent member or a mismatch is refused (exit 1). A
+#   programme with an accepted_owner_evidence step and no binding is refused
+#   with REQUIRED_BINDING_MISSING. The result's `binding` field carries the object
+#   with `present: true`, or `{present:false, reason:"REQUIRED_BINDING_MISSING"}`
+#   for a legacy proof-only programme, which every caller prints loudly rather
+#   than as an optional N/A. The result's `runtime` names this resolver's own
+#   path, sha256, and supported evidence kinds, so a caller can tell a landed
+#   resolver from the one it is actually running.
 #
 # RESULT (schema fm-continuation-resolution/v1), one JSON object:
 #   next_action, next_action_title   the first step whose latest disposition is
@@ -95,6 +165,24 @@
 #                                    canonical input could not be observed
 #   materialize / materialized       the captain hold a CAPTAIN result from a
 #                                    typed step fact requires / has created
+#   evidence                         null, or the adapter's observed reading of
+#                                    the next action's owner evidence record
+#                                    (path, sha256, status, outcome, reason_code,
+#                                    detail, owner, sources[])
+#   binding, runtime                 see BINDING above
+#   accountable_owner                the one owner accountable for the next
+#                                    action (library projection; never authority)
+#   material_identity                sha256 of the clock-free canonical tuple
+#                                    {programme, binding ids, next action and
+#                                    generation, classification, authority,
+#                                    reason, cno, accountable owner, predecessor,
+#                                    current, evidence, gating holds, answered
+#                                    facts, materialize axes, completed ids}. It
+#                                    carries the CNO reason code without its
+#                                    detail and excludes `today` and every
+#                                    path, so a presentation caller can key
+#                                    "already presented" on material state
+#                                    alone
 #   why                              PRESENTATION ONLY, rendered from
 #                                    reason_code + basis_refs + applicability
 #
@@ -140,6 +228,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-continuation-lib.sh"
 RESOLUTION_SCHEMA='fm-continuation-resolution/v1'
 GRANT_KIND='standing_sequence_grant'
+PROOF_KIND='latest_attempt_disposition_outcome_in'
+OWNER_KIND='accepted_owner_evidence'
 
 usage() {
   awk '
@@ -240,6 +330,92 @@ $facts
 EOF
   )
   [ -z "$shared" ] || fail "a required fact's durable identity (decision_key when a slug, else programme-action-axis) must be unique; shared in $PROGRAMME: $shared"
+  validate_structure
+  validate_binding
+}
+
+PROGRAMME_DIR=''
+# Step ids, predicate kinds, per-kind required fields, and explicit dependencies.
+validate_structure() {
+  local dup rows i sid kind dep deps j seen=''
+  PROGRAMME_DIR=$(cd "$(dirname "$PROGRAMME")" && pwd)
+  dup=$(jq -r '[.steps[] | select(type == "object") | .id | select(type == "string")] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$PROGRAMME")
+  [ -z "$dup" ] || fail "step ids must be unique in $PROGRAMME; duplicated: $dup"
+  # Joined on the unit separator, not a tab: an empty middle field (a proof
+  # step has no evidence path, an owner step no artifact root) would collapse
+  # under a whitespace IFS and shift the columns.
+  rows=$(jq -r '.steps[] | [(.id // ""), (.terminal_predicate.kind // ""), (.artifact_root // "" | tostring), (.terminal_predicate.evidence // "" | tostring),
+                            ((.terminal_predicate.candidate // {}) | type),
+                            (.terminal_predicate.accept | if type == "array" and length > 0 and all(type == "string") then "ok" elif type == "array" then "array of " + (length | tostring) + " non-string or no entries" else type end),
+                            ((.depends_on // []) | if type == "string" then [.] elif type == "array" then . else ["<invalid>"] end | map(tostring) | join(" "))] | join("\u001f")' "$PROGRAMME")
+  i=0
+  while IFS=$'\x1f' read -r sid kind root evidence cand_type accept_shape deps; do
+    fm_continuation_is_slug "$sid" || fail "steps[$i].id must be a slug"
+    fm_continuation_is_evidence_kind "$kind" \
+      || fail "steps[$i] ($sid) terminal_predicate.kind must be one of: $FM_CONTINUATION_EVIDENCE_KINDS (got ${kind:-absent})"
+    case "$kind" in
+      "$PROOF_KIND") [ -n "$root" ] || fail "steps[$i] ($sid) has no artifact_root" ;;
+      "$OWNER_KIND") [ -n "$evidence" ] || fail "steps[$i] ($sid) names no terminal_predicate.evidence record" ;;
+    esac
+    [ "$cand_type" = object ] || fail "steps[$i] ($sid) terminal_predicate.candidate must be an object of exact identities (got $cand_type)"
+    [ "$accept_shape" = ok ] || fail "steps[$i] ($sid) terminal_predicate.accept must be a non-empty array of outcome strings (got $accept_shape)"
+    for dep in $deps; do
+      [ "$dep" != '<invalid>' ] || fail "steps[$i] ($sid) depends_on must be a step id or an array of step ids"
+      fm_continuation_is_slug "$dep" || fail "steps[$i] ($sid) depends_on entry '$dep' is not a step id slug"
+      [ "$dep" != "$sid" ] || fail "steps[$i] ($sid) depends on itself (cycle)"
+      j=$(printf '%s\n' "$seen" | grep -nxF -- "$dep" | head -1 | cut -d: -f1) || true
+      if [ -z "$j" ]; then
+        if jq -e --arg d "$dep" '[.steps[] | .id] | index($d) != null' "$PROGRAMME" >/dev/null; then
+          fail "steps[$i] ($sid) depends on a LATER step $dep; the pinned order is the sequence, so this is an order contradiction (or a cycle)"
+        fi
+        fail "steps[$i] ($sid) depends on an unknown step $dep"
+      fi
+    done
+    seen="$seen$sid
+"
+    i=$((i + 1))
+  done <<EOF
+$rows
+EOF
+}
+
+BINDING_JSON='{"present":false}'
+# The commission/grant/consumer binding: required for any owner-evidence step,
+# verified against this resolver's contract and supported kinds.
+validate_binding() {
+  local has_owner kinds kind step_kinds contract gen
+  has_owner=$(jq -r --arg k "$OWNER_KIND" '[.steps[] | .terminal_predicate.kind] | index($k) != null' "$PROGRAMME")
+  if [ "$(jq -r '.binding | type' "$PROGRAMME")" = null ]; then
+    if [ "$has_owner" = true ]; then
+      fail "REQUIRED_BINDING_MISSING: $PROGRAMME uses $OWNER_KIND steps but declares no binding {commission, grant, consumer.contract, evidence_kinds, programme_generation}; nothing is accepted from an unbound programme"
+    fi
+    BINDING_JSON=$(jq -n '{present:false, reason:"REQUIRED_BINDING_MISSING", detail:"the programme declares no commission/grant/consumer binding; authority derives from the grant refs alone and the binding must be recorded by the programme owner"}')
+    return 0
+  fi
+  [ "$(jq -r '.binding | type' "$PROGRAMME")" = object ] || fail "binding must be an object in $PROGRAMME"
+  contract=$(jq -r '.binding.consumer.contract // ""' "$PROGRAMME")
+  [ "$contract" = "$RESOLUTION_SCHEMA" ] \
+    || fail "binding.consumer.contract must name this resolver's result contract $RESOLUTION_SCHEMA (got ${contract:-absent}); a different consumer contract or version cannot be consumed here"
+  gen=$(jq -r '.binding.programme_generation // ""' "$PROGRAMME")
+  [ -n "$gen" ] || fail "binding.programme_generation is required and must name the programme schema $(jq -r '.schema' "$PROGRAMME"); a binding without its programme generation cannot be consumed"
+  [ "$gen" = "$(jq -r '.schema' "$PROGRAMME")" ] \
+    || fail "binding.programme_generation $gen does not match the programme schema $(jq -r '.schema' "$PROGRAMME")"
+  [ "$(jq -r '.binding.evidence_kinds | type' "$PROGRAMME")" = array ] || fail "binding.evidence_kinds must be an array"
+  kinds=$(jq -r '.binding.evidence_kinds[] | tostring' "$PROGRAMME")
+  for kind in $kinds; do
+    fm_continuation_is_evidence_kind "$kind" || fail "binding.evidence_kinds names an unsupported completion-evidence kind $kind; this resolver supports: $FM_CONTINUATION_EVIDENCE_KINDS"
+  done
+  step_kinds=$(jq -r '[.steps[] | .terminal_predicate.kind] | unique[]' "$PROGRAMME")
+  for kind in $step_kinds; do
+    case " $(printf '%s' "$kinds" | tr '\n' ' ') " in
+      *" $kind "*) ;;
+      *) fail "a step uses completion-evidence kind $kind that binding.evidence_kinds does not declare" ;;
+    esac
+  done
+  fm_continuation_is_slug "$(jq -r '.binding.commission.work_id // ""' "$PROGRAMME")" || fail "binding.commission.work_id must be a slug"
+  [ -n "$(jq -r '.binding.grant.id // ""' "$PROGRAMME")" ] && [ -n "$(jq -r '.binding.grant.ref // ""' "$PROGRAMME")" ] \
+    || fail "binding.grant must name the controlling grant's id and ref"
+  BINDING_JSON=$(jq -c '.binding + {present:true}' "$PROGRAMME")
 }
 
 # --- proof dispositions -------------------------------------------------------
@@ -270,6 +446,136 @@ latest_disposition() {  # <artifact-root>
   outcome=$(jq -r 'if (.outcome | type) == "string" then .outcome else empty end' "$disp" 2>/dev/null) || outcome=''
   [ -n "$outcome" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
   printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$(sha256_file "$disp")"
+}
+
+# --- accepted owner evidence ---------------------------------------------------
+
+# One JSON object describing the adapter's reading of a step's owner evidence
+# record: {path, sha256, status, outcome, reason_code, detail, evidence_id,
+# owner, generation, candidate, policy, verifier, qualification, captures,
+# sources}. Always prints; status carries the verdict (ACCEPTED, NOT_ACCEPTED,
+# REFUSED, CNO). Every check is a closed comparison of record fields against
+# the programme step, the binding, and local bytes; nothing in the record is
+# executed or interpreted.
+read_owner_evidence() {  # <step-index> <step-id>
+  local i=$1 sid=$2 rel path sha doc status='' reason='' detail='' outcome=''
+  local kind ref accept pin_ref pin_cand pin_policy pin_sha pin_gen work_id prog_project ev_project ev_work cand_type
+  local sources n j src spath ssha sout sfile fsha fout
+  rel=$(jq -r ".steps[$i].terminal_predicate.evidence // \"\"" "$PROGRAMME")
+  case "$rel" in
+    /*) path=$rel ;;
+    *) path="$PROGRAMME_DIR/$rel" ;;
+  esac
+  emit() {  # <status> <reason> <detail> <doc-or-null> <sha> <outcome>
+    jq -n -c --arg path "$path" --arg status "$1" --arg reason "$2" --arg detail "$3" --argjson doc "${4:-null}" --arg sha "$5" --arg outcome "$6" '
+      {path:$path, sha256:(if $sha == "" then null else $sha end), status:$status, outcome:(if $outcome == "" then null else $outcome end),
+       reason_code:(if $reason == "" then null else $reason end), detail:(if $detail == "" then null else $detail end),
+       evidence_id:($doc.evidence_id // null), owner:($doc.owner // null), generation:($doc.generation // null),
+       candidate:($doc.candidate // null), policy:($doc.policy // null), verifier:($doc.verifier // null),
+       qualification:($doc.qualification // null), captures:($doc.captures // []),
+       sources:[(($doc.sources // []) | if type == "array" then .[] else empty end)
+                | if type == "object" then {kind, path, sha256, outcome:(.outcome // null)} else {kind:null, path:null, sha256:null, outcome:null} end]}'
+  }
+  if [ ! -f "$path" ]; then
+    emit CNO REQUIRED_BINDING_MISSING "no owner-produced evidence record is bound at $path for step $sid (accepted owner kinds: $FM_CONTINUATION_OWNER_KINDS)" null '' ''
+    return 0
+  fi
+  sha=$(sha256_file "$path")
+  if ! doc=$(jq -c 'if type == "object" then . else error("not an object") end' "$path" 2>/dev/null); then
+    emit CNO OWNER_EVIDENCE_UNREADABLE "$path is not a readable JSON object" null "$sha" ''
+    return 0
+  fi
+  refuse() {  # <reason> <detail>
+    emit REFUSED "$1" "$2" "$doc" "$sha" "$(printf '%s' "$doc" | jq -r 'if (.outcome | type) == "string" then .outcome else "" end')"
+  }
+  if [ "$(printf '%s' "$doc" | jq -r '.schema // ""')" != "$FM_CONTINUATION_EVIDENCE_SCHEMA" ]; then
+    refuse OWNER_EVIDENCE_SCHEMA_UNSUPPORTED "schema $(printf '%s' "$doc" | jq -r '.schema // "absent"') is not $FM_CONTINUATION_EVIDENCE_SCHEMA"; return 0
+  fi
+  if ! printf '%s' "$doc" | jq -e '(.evidence_id | type) == "string" and (.programme_id | type) == "string" and (.step | type) == "string"
+        and (.owner | type) == "object" and (.owner.kind | type) == "string" and (.owner.ref | type) == "string" and (.outcome | type) == "string"' >/dev/null 2>&1; then
+    refuse OWNER_EVIDENCE_MALFORMED "evidence_id, programme_id, step, owner{kind, ref}, and outcome are required strings"; return 0
+  fi
+  fm_continuation_is_slug "$(printf '%s' "$doc" | jq -r '.evidence_id')" || { refuse OWNER_EVIDENCE_MALFORMED "evidence_id must be a slug"; return 0; }
+  kind=$(printf '%s' "$doc" | jq -r '.owner.kind'); ref=$(printf '%s' "$doc" | jq -r '.owner.ref'); outcome=$(printf '%s' "$doc" | jq -r '.outcome')
+  fm_continuation_is_owner_kind "$kind" || { refuse OWNER_EVIDENCE_OWNER_KIND_UNSUPPORTED "owner kind $kind is not one of: $FM_CONTINUATION_OWNER_KINDS"; return 0; }
+  fm_continuation_owner_outcome_supported "$kind" "$outcome" \
+    || { refuse OWNER_EVIDENCE_OUTCOME_UNSUPPORTED "outcome $outcome is not in the $kind vocabulary ($(fm_continuation_owner_outcomes "$kind"))"; return 0; }
+  if [ "$outcome" = MERGED_QUALIFIED ] && ! printf '%s' "$doc" | jq -e '(.qualification.pipeline | type) == "string" and (.qualification.evidence_refs | type) == "array" and (.qualification.evidence_refs | length) > 0' >/dev/null 2>&1; then
+    refuse OWNER_EVIDENCE_MALFORMED "MERGED_QUALIFIED requires qualification{pipeline, evidence_refs[]} binding the qualification record"; return 0
+  fi
+  [ "$(printf '%s' "$doc" | jq -r '.programme_id')" = "$(jq -r '.programme_id' "$PROGRAMME")" ] \
+    || { refuse OWNER_EVIDENCE_PROGRAMME_MISMATCH "record names programme $(printf '%s' "$doc" | jq -r '.programme_id'), not $(jq -r '.programme_id' "$PROGRAMME")"; return 0; }
+  [ "$(printf '%s' "$doc" | jq -r '.step')" = "$sid" ] \
+    || { refuse OWNER_EVIDENCE_STEP_MISMATCH "record names step $(printf '%s' "$doc" | jq -r '.step'), not $sid"; return 0; }
+  prog_project=$(jq -r '.project // ""' "$PROGRAMME"); ev_project=$(printf '%s' "$doc" | jq -r '.project // ""')
+  if [ -n "$prog_project" ] && [ "$ev_project" != "$prog_project" ]; then
+    refuse OWNER_EVIDENCE_PROJECT_MISMATCH "record names project ${ev_project:-<none>}, not $prog_project"; return 0
+  fi
+  work_id=$(printf '%s' "$BINDING_JSON" | jq -r '.commission.work_id // ""'); ev_work=$(printf '%s' "$doc" | jq -r '.work_id // ""')
+  if [ -n "$work_id" ] && [ "$ev_work" != "$work_id" ]; then
+    refuse OWNER_EVIDENCE_WORK_MISMATCH "record names work ${ev_work:-<none>}, not the bound commission $work_id"; return 0
+  fi
+  pin_ref=$(jq -r ".steps[$i].terminal_predicate.owner_ref // \"\"" "$PROGRAMME")
+  if [ -n "$pin_ref" ] && [ "$pin_ref" != "$ref" ]; then
+    refuse OWNER_EVIDENCE_OWNER_MISMATCH "record owner $ref is not the pinned owner $pin_ref"; return 0
+  fi
+  cand_type=$(printf '%s' "$doc" | jq -r '.candidate | type')
+  case "$cand_type" in
+    object|null) ;;
+    *) refuse OWNER_EVIDENCE_MALFORMED "candidate must be an object of exact identities (got $cand_type)"; return 0 ;;
+  esac
+  pin_cand=$(jq -c ".steps[$i].terminal_predicate.candidate // {}" "$PROGRAMME")
+  if [ "$pin_cand" != '{}' ]; then
+    if ! detail=$(printf '%s' "$doc" | jq -r --argjson pin "$pin_cand" '(.candidate // {}) as $c | [$pin | to_entries[] | select((.value | tostring) != (($c[.key] // null) | tostring)) | .key + "=" + (.value | tostring) + " (record " + (($c[.key] // "absent") | tostring) + ")"] | join(", ")' 2>/dev/null); then
+      refuse OWNER_EVIDENCE_CANDIDATE_MISMATCH "pinned candidate identity could not be compared against the record's candidate"; return 0
+    fi
+    if [ -n "$detail" ]; then refuse OWNER_EVIDENCE_CANDIDATE_MISMATCH "pinned candidate identity differs: $detail"; return 0; fi
+  fi
+  pin_policy=$(jq -r ".steps[$i].terminal_predicate.policy_digest // \"\"" "$PROGRAMME")
+  if [ -n "$pin_policy" ] && [ "$(printf '%s' "$doc" | jq -r '.policy.digest // ""')" != "$pin_policy" ]; then
+    refuse OWNER_EVIDENCE_POLICY_MISMATCH "record policy digest $(printf '%s' "$doc" | jq -r '.policy.digest // "absent"') is not the pinned $pin_policy"; return 0
+  fi
+  pin_sha=$(jq -r ".steps[$i].terminal_predicate.evidence_sha256 // \"\"" "$PROGRAMME")
+  if [ -n "$pin_sha" ] && [ "$pin_sha" != "$sha" ]; then
+    refuse OWNER_EVIDENCE_DIGEST_MISMATCH "record bytes sha256 $sha differ from the pinned evidence generation $pin_sha"; return 0
+  fi
+  pin_gen=$(jq -r ".steps[$i].terminal_predicate.evidence_generation // \"\"" "$PROGRAMME")
+  if [ -n "$pin_gen" ] && [ "$(printf '%s' "$doc" | jq -r '.generation // ""')" != "$pin_gen" ]; then
+    refuse OWNER_EVIDENCE_GENERATION_MISMATCH "record generation $(printf '%s' "$doc" | jq -r '.generation // "absent"') is not the pinned $pin_gen"; return 0
+  fi
+  if [ -n "$(printf '%s' "$doc" | jq -r '.superseded_by // ""')" ]; then
+    refuse OWNER_EVIDENCE_SUPERSEDED "record is superseded by $(printf '%s' "$doc" | jq -r '.superseded_by')"; return 0
+  fi
+  if [ "$(printf '%s' "$doc" | jq -r '(.observed_bad // []) | length')" != 0 ]; then
+    refuse OWNER_EVIDENCE_CONTRADICTORY "record carries observed_bad: $(printf '%s' "$doc" | jq -c '.observed_bad')"; return 0
+  fi
+  sources=$(printf '%s' "$doc" | jq -c '.sources // []')
+  [ "$(printf '%s' "$sources" | jq -r 'type')" = array ] || { refuse OWNER_EVIDENCE_MALFORMED "sources must be an array (got $(printf '%s' "$sources" | jq -r 'type'))"; return 0; }
+  n=$(printf '%s' "$sources" | jq 'length'); j=0
+  while [ "$j" -lt "$n" ]; do
+    src=$(printf '%s' "$sources" | jq -c ".[$j]"); j=$((j + 1))
+    [ "$(printf '%s' "$src" | jq -r 'type')" = object ] || { refuse OWNER_EVIDENCE_MALFORMED "source entry $j must be an object (got $(printf '%s' "$src" | jq -r 'type'))"; return 0; }
+    [ "$(printf '%s' "$src" | jq -r '.kind // ""')" = local_file ] || { refuse OWNER_EVIDENCE_MALFORMED "source kind $(printf '%s' "$src" | jq -r '.kind // "absent"') is not local_file"; return 0; }
+    spath=$(printf '%s' "$src" | jq -r '.path // ""'); ssha=$(printf '%s' "$src" | jq -r '.sha256 // ""'); sout=$(printf '%s' "$src" | jq -r '.outcome // ""')
+    { [ -n "$spath" ] && [ -n "$ssha" ]; } || { refuse OWNER_EVIDENCE_MALFORMED "every bound source needs path and sha256"; return 0; }
+    case "$spath" in
+      /*) sfile=$spath ;;
+      *) sfile="$ROOT/$spath" ;;
+    esac
+    if [ ! -f "$sfile" ]; then
+      emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath is not readable under root $ROOT" "$doc" "$sha" "$outcome"; return 0
+    fi
+    fsha=$(sha256_file "$sfile")
+    [ "$fsha" = "$ssha" ] || { refuse OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH "bound source $spath sha256 $fsha differs from the recorded $ssha"; return 0; }
+    if [ -n "$sout" ]; then
+      fout=$(jq -r 'if (.outcome | type) == "string" then .outcome else "" end' "$sfile" 2>/dev/null) || fout=''
+      [ -n "$fout" ] || { emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath carries no readable outcome" "$doc" "$sha" "$outcome"; return 0; }
+      [ "$fout" = "$sout" ] || { refuse OWNER_EVIDENCE_SOURCE_OUTCOME_MISMATCH "bound source $spath records outcome $fout, not the declared $sout"; return 0; }
+    fi
+  done
+  accept=$(jq -c ".steps[$i].terminal_predicate.accept // []" "$PROGRAMME")
+  if [ "$(jq -n --argjson a "$accept" --arg o "$outcome" 'any($a[]; . == $o)')" = true ]; then status=ACCEPTED; else status=NOT_ACCEPTED; fi
+  emit "$status" '' '' "$doc" "$sha" "$outcome"
 }
 
 # --- durable holds through tasks-axi -----------------------------------------
@@ -406,6 +712,7 @@ fact_answered() {  # <task-id> <action> <programme-id>
 # --- resolution ---------------------------------------------------------------
 
 RESULT=''
+RUNTIME_JSON='null'
 
 resolve_json() {
   local today prog_sha prog_id prog_gen grant_kind grant_refs grant_superseded grant_gen
@@ -416,9 +723,13 @@ resolve_json() {
   local n row kind until action programme axis wait active is_reserved effect eff_cls eff_reason
   local facts fact fact_axis fact_key fact_effect fact_task answered retired='[]' unanswered='[]' claimed default_pair def_cls def_reason
   local winner cls authority reason_code detail_text materialize='[]' pred_json current_json applicability digest why basis
+  local kind evidence_json=null ev_status
 
   today=${FM_CONTINUATION_TODAY:-$(date -u +%Y-%m-%d)}
   prog_sha=$(sha256_file "$PROGRAMME")
+  RUNTIME_JSON=$(jq -n -c --arg path "$SCRIPT_DIR/fm-continuation-resolve.sh" --arg sha "$(sha256_file "$SCRIPT_DIR/fm-continuation-resolve.sh")" \
+    --arg lib "$(sha256_file "$SCRIPT_DIR/fm-continuation-lib.sh")" --arg kinds "$FM_CONTINUATION_EVIDENCE_KINDS" --arg owners "$FM_CONTINUATION_OWNER_KINDS" \
+    '{resolver:$path, resolver_sha256:$sha, lib_sha256:$lib, supported_evidence_kinds:($kinds | split(" ")), supported_owner_kinds:($owners | split(" "))}')
   prog_id=$(jq -r '.programme_id' "$PROGRAMME")
   prog_gen=$(jq -r '.schema' "$PROGRAMME")
   fm_continuation_is_slug "$prog_id" || fail "programme_id must be a slug: $prog_id"
@@ -446,9 +757,28 @@ resolve_json() {
     fm_continuation_is_slug "$sid" || fail "steps[$i].id must be a slug"
     title=$(jq -r ".steps[$i].title // \"\"" "$PROGRAMME")
     root=$(jq -r ".steps[$i].artifact_root // \"\"" "$PROGRAMME")
-    [ -n "$root" ] || fail "steps[$i] ($sid) has no artifact_root"
-    [ "$(jq -r ".steps[$i].terminal_predicate.kind // \"\"" "$PROGRAMME")" = latest_attempt_disposition_outcome_in ] \
-      || fail "steps[$i] ($sid) terminal_predicate.kind must be latest_attempt_disposition_outcome_in"
+    kind=$(jq -r ".steps[$i].terminal_predicate.kind // \"\"" "$PROGRAMME")
+    if [ "$kind" = "$OWNER_KIND" ]; then
+      # The closed owner-evidence adapter: an ACCEPTED record completes the
+      # step; anything else makes it the next action, with CNO for a missing,
+      # unreadable, or refused record and the ordinary law for a well-formed
+      # record whose outcome is simply not accepted.
+      evidence_json=$(read_owner_evidence "$i" "$sid")
+      ev_status=$(printf '%s' "$evidence_json" | jq -r '.status')
+      if [ "$ev_status" = ACCEPTED ]; then
+        completed=$(jq -n --argjson c "$completed" --arg id "$sid" --argjson ev "$evidence_json" \
+          '$c + [{id:$id, attempt:null, outcome:$ev.outcome, disposition:$ev.path, sha256:$ev.sha256, evidence_kind:"accepted_owner_evidence", evidence_id:$ev.evidence_id, owner:$ev.owner}]')
+        evidence_json=null
+        i=$((i + 1))
+        continue
+      fi
+      next_id=$sid; next_title=$title; next_index=$i
+      cur_attempt=0; cur_outcome=$(printf '%s' "$evidence_json" | jq -r '.outcome // ""'); cur_path=$(printf '%s' "$evidence_json" | jq -r '.path'); cur_sha=$(printf '%s' "$evidence_json" | jq -r '.sha256 // ""')
+      if [ "$ev_status" != NOT_ACCEPTED ] && [ -z "$cno_reason" ]; then
+        cno_reason=$(printf '%s' "$evidence_json" | jq -r '.reason_code'); cno_detail=$(printf '%s' "$evidence_json" | jq -r '.detail')
+      fi
+      break
+    fi
     if pred_line=$(latest_disposition "$root"); then
       pred_attempt=$(printf '%s' "$pred_line" | cut -f1)
       pred_outcome=$(printf '%s' "$pred_line" | cut -f2)
@@ -470,7 +800,7 @@ resolve_json() {
     accept=$(jq -c ".steps[$i].terminal_predicate.accept // []" "$PROGRAMME")
     good=0
     if [ -n "${pred_outcome:-}" ]; then
-      good=$(jq -n --argjson a "$accept" --arg o "$pred_outcome" '($a | index($o)) != null' | sed 's/true/1/; s/false/0/')
+      good=$(jq -n --argjson a "$accept" --arg o "$pred_outcome" 'any($a[]; . == $o)' | sed 's/true/1/; s/false/0/')
     fi
     if [ "$good" = 1 ]; then
       completed=$(jq -n --argjson c "$completed" --arg id "$sid" --argjson attempt "$pred_attempt" \
@@ -497,9 +827,10 @@ resolve_json() {
        applicability:{action:null, programme_id:$pid, programme_generation:$gen, action_generation:null,
                       predecessor:($completed | last), current:null, gating_holds:[], today:$today},
        completed:$completed, holds:{considered:0, gating:[], ignored:[]}, cno:null,
-       materialize:[], why:$why}
+       materialize:[], evidence:null, why:$why}
       | .applicability_digest = (.applicability | tojson)')
     RESULT=$(printf '%s' "$RESULT" | jq --arg d "$(sha256_text "$(printf '%s' "$RESULT" | jq -r '.applicability_digest')")" '.applicability_digest = $d')
+    finish_result
     return 0
   fi
 
@@ -624,11 +955,14 @@ resolve_json() {
   applicability=$(jq -n -c --arg action "$next_id" --arg pid "$prog_id" --arg gen "$prog_gen" \
     --argjson action_generation "$((cur_attempt + 1))" --argjson pred "$pred_json" --argjson current "$current_json" \
     --argjson gating "$gating" --argjson retired "$retired" --arg today "$today" --arg psha "$prog_sha" \
+    --argjson evidence "$evidence_json" \
     '{action:$action, programme_id:$pid, programme_generation:$gen, programme_sha256:$psha, action_generation:$action_generation,
-      predecessor:$pred, current:$current, gating_holds:[$gating[] | .task], answered_facts:[$retired[] | .task], today:$today}')
+      predecessor:$pred, current:$current,
+      evidence:(if $evidence == null then null else {path:$evidence.path, sha256:$evidence.sha256, status:$evidence.status, outcome:$evidence.outcome, reason_code:$evidence.reason_code} end),
+      gating_holds:[$gating[] | .task], answered_facts:[$retired[] | .task], today:$today}')
   digest=$(sha256_text "$applicability")
   why=$(fm_continuation_render_reason "$reason_code" "$next_id" \
-    "$(printf '%s' "$pred_json" | jq -r 'if . == null then "" else .id + " attempt " + (.attempt | tostring) + " " + .outcome end')" \
+    "$(printf '%s' "$pred_json" | jq -r 'if . == null then "" elif .attempt == null then .id + " " + .outcome + " by " + (.owner.kind // "owner") + " " + (.owner.ref // "") else .id + " attempt " + (.attempt | tostring) + " " + .outcome end')" \
     "$detail_text")
   basis=$(jq -n -c --argjson refs "$grant_refs" --argjson pred "$pred_json" --argjson gating "$gating" --argjson winner "$winner" \
     --argjson facts "$facts" --argjson retired "$retired" --argjson unanswered "$unanswered" --arg reserved "$(printf '%s' "$reserved" | tr '\n' ' ')" '
@@ -648,7 +982,7 @@ resolve_json() {
     --arg cls "$cls" --arg authority "$authority" --arg reason "$reason_code" \
     --argjson basis "$basis" --argjson applicability "$applicability" --arg digest "$digest" \
     --argjson completed "$completed" --argjson considered "${hold_count:-0}" --argjson gating "$gating" --argjson ignored "$ignored" \
-    --arg cno_reason "$cno_reason" --arg cno_detail "$cno_detail" --argjson materialize "$materialize" --arg why "$why" '
+    --arg cno_reason "$cno_reason" --arg cno_detail "$cno_detail" --argjson materialize "$materialize" --argjson evidence "$evidence_json" --arg why "$why" '
     {schema:$schema,
      programme:{id:$pid, generation:$gen, path:$path, root:$root, sha256:$sha},
      next_action:$next, next_action_title:(if $title == "" then null else $title end), action_generation:$action_generation,
@@ -657,7 +991,33 @@ resolve_json() {
      completed:$completed,
      holds:{considered:$considered, gating:$gating, ignored:$ignored},
      cno:(if $cno_reason == "" then null else {reason_code:$cno_reason, detail:$cno_detail} end),
-     materialize:$materialize, why:$why}')
+     materialize:$materialize, evidence:$evidence, why:$why}')
+  finish_result
+}
+
+# The fields every result carries beyond the typed authority: the verified
+# binding, this resolver's runtime identity, the accountable owner, and the
+# clock-free material identity a presentation caller keys on.
+finish_result() {
+  local owner material
+  owner=$(fm_continuation_accountable_owner "$(printf '%s' "$RESULT" | jq -r '.classification')" \
+    "$(printf '%s' "$RESULT" | jq -r '.authority_state')" "$(printf '%s' "$RESULT" | jq -r '.reason_code')")
+  RESULT=$(printf '%s' "$RESULT" | jq --argjson binding "$BINDING_JSON" --argjson runtime "$RUNTIME_JSON" --arg owner "$owner" \
+    '. + {binding:$binding, runtime:$runtime, accountable_owner:$owner}')
+  material=$(printf '%s' "$RESULT" | jq -c -S '
+    {programme_id:.programme.id, programme_generation:.programme.generation, programme_sha256:.programme.sha256,
+     binding:{work_id:(.binding.commission.work_id // null), work_generation:(.binding.commission.work_generation // null),
+              grant_id:(.binding.grant.id // null), ruling_id:(.binding.ruling.id // null), present:.binding.present},
+     next_action, action_generation, classification, authority_state, reason_code,
+     cno:(.cno | if . == null then null else {reason_code} end), accountable_owner,
+     predecessor:(.applicability.predecessor | if . == null then null else {id, attempt, outcome, sha256} end),
+     current:(.applicability.current | if . == null then null else {attempt, outcome, sha256} end),
+     evidence:(.evidence | if . == null then null else {sha256, status, outcome, reason_code} end),
+     gating_holds:[.holds.gating[]? | {task, hold_kind, hold_until, axis, wait, classification, reason_code}],
+     answered_facts:(.applicability.answered_facts // []),
+     materialize:[.materialize[]? | .axis],
+     completed:[.completed[]? | {id, attempt, outcome, sha256}]}')
+  RESULT=$(printf '%s' "$RESULT" | jq --arg m "$(sha256_text "$material")" '. + {material_identity:$m}')
 }
 
 # Create the durable captain hold a CAPTAIN result from a typed step fact
@@ -722,7 +1082,9 @@ summary_line() {  # <result-json>
       "programme " + .programme.id + "@" + .programme.generation + ": next=" + .next_action
       + " " + .classification + "/" + .authority_state + " reason=" + .reason_code
       + " applicability=" + .applicability_digest[0:12]
-    end'
+    end
+    + " binding=" + (if .binding.present then "grant:" + (.binding.grant.id | tostring) + "@" + (.binding.commission.work_generation // 0 | tostring) else "REQUIRED_BINDING_MISSING" end)
+    + " identity=" + .material_identity[0:12]'
 }
 
 command_summary() {
@@ -743,6 +1105,7 @@ render_text() {  # <result-json>
     "Basis:",
     (.basis_refs[] | "  - " + (
       if .kind == "programme_grant" then "grant " + .ref
+      elif (.kind == "predecessor_disposition" or .kind == "terminal_disposition") and .attempt == null then "owner evidence " + .id + " " + .outcome + " by " + (.owner.kind // "?") + " " + (.owner.ref // "?") + " (" + .sha256[0:12] + ")"
       elif .kind == "predecessor_disposition" or .kind == "terminal_disposition" then "disposition " + .id + " attempt " + (.attempt | tostring) + " " + .outcome + " (" + .sha256[0:12] + ")"
       elif .kind == "hold" then "hold " + .task + " (" + .hold_kind + (if .axis != "" then ", axis " + .axis else "" end) + (if .wait != "" then ", wait " + .wait else "" end) + ") -> " + .classification
       elif .kind == "step_fact" then "step fact axis " + .axis + (if .reserved then " (reserved)" else " (not reserved)" end)
@@ -750,8 +1113,20 @@ render_text() {  # <result-json>
            elif .answer_ignored then ", answer on " + .answer_ignored.task + " ignored (" + .answer_ignored.reason + ")"
            else "" end)
       else tojson end)),
+    (if .evidence != null then "Evidence for " + .next_action + ": " + .evidence.status
+        + (if .evidence.outcome then " outcome " + .evidence.outcome else "" end)
+        + (if .evidence.owner then " by " + .evidence.owner.kind + " " + .evidence.owner.ref else "" end)
+        + (if .evidence.reason_code then " [" + .evidence.reason_code + "] " + (.evidence.detail // "") else "" end)
+        + " (" + ((.evidence.sha256 // "absent")[0:12]) + ")." else empty end),
     (if (.materialize | length) > 0 then "Durable captain hold required: run fm-continuation-resolve.sh resolve --materialize." else empty end),
-    "Applicability " + .applicability_digest[0:12] + ": action " + (.applicability.action // "none") + ", generation " + ((.applicability.action_generation // "-") | tostring) + ", programme " + .applicability.programme_generation + "."'
+    "Accountable owner: " + .accountable_owner + ".",
+    (if .binding.present then "Binding: commission " + .binding.commission.work_id + "@" + ((.binding.commission.work_generation // 0) | tostring)
+        + " under grant " + (.binding.grant.id | tostring) + " (" + .binding.grant.ref + ")"
+        + (if .binding.ruling then ", ruling " + (.binding.ruling.id | tostring) else "" end)
+        + "; consumer contract " + .binding.consumer.contract + "; evidence kinds " + (.binding.evidence_kinds | join(", ")) + "."
+     else "Binding: REQUIRED_BINDING_MISSING - " + .binding.detail + "." end),
+    "Applicability " + .applicability_digest[0:12] + ": action " + (.applicability.action // "none") + ", generation " + ((.applicability.action_generation // "-") | tostring) + ", programme " + .applicability.programme_generation + ".",
+    "Material identity " + .material_identity + " (clock-free; a presentation caller keys quiet handling on it)."'
 }
 
 command_render() {

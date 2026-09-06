@@ -913,6 +913,569 @@ test_consumers_project_the_typed_result() {
   pass "with no programme configured every consumer stays silent rather than inventing a state"
 }
 
+# --- accepted owner evidence: the A-F package binding ----------------------------
+#
+# Fixtures for the CLOSED non-proof completion-evidence adapter. The programme
+# mirrors the A-F package shape: a predecessor ruling step bound to the real
+# Proof-B adverse disposition by exact bytes, two package slices bound to
+# owner records, and a proof-shaped pilot step F. Evidence records are authored
+# beside the programme (resolved against its directory); bound sources resolve
+# against the artifact root.
+af_programme_path() { printf '%s/cleanroom/af/programme.json' "$1"; }
+af_evidence_dir() { printf '%s/cleanroom/af/evidence' "$1"; }
+
+write_af_programme() {  # <home> [jq-filter]
+  local home=$1 filter=${2:-.}
+  mkdir -p "$(af_evidence_dir "$home")"
+  jq "$filter" <<'JSON' > "$(af_programme_path "$home")"
+{
+  "schema": "fm-af-programme/v1",
+  "programme_id": "cleanroom-af-package",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "authorization_basis": {"kind": "standing_sequence_grant", "programme_generation": "fm-af-programme/v1",
+    "refs": ["control#3#issuecomment-5554812621 (grant)", "control#3#issuecomment-5554585623 (ruling)"]},
+  "binding": {
+    "commission": {"work_id": "cleanroom-af-package", "work_generation": 1},
+    "grant": {"owner": "control_grant", "ref": "control#3#issuecomment-5554812621", "id": 5554812621},
+    "ruling": {"owner": "control_ruling", "ref": "control#3#issuecomment-5554585623", "id": 5554585623},
+    "consumer": {"contract": "fm-continuation-resolution/v1", "projection": "fm-programme-projection/v1"},
+    "evidence_kinds": ["latest_attempt_disposition_outcome_in", "accepted_owner_evidence"],
+    "programme_generation": "fm-af-programme/v1"
+  },
+  "reserved_axes": ["new_paid_spend", "security_control_weakening", "privacy_exposure",
+                    "credential_or_identity_provisioning", "destructive_or_irreversible", "personal_or_product_preference"],
+  "delegation": {"max_concurrency": 2},
+  "steps": [
+    {"id": "architecture-re-review-ruling", "title": "completed architecture re-review", "phase": "predecessor-obligations",
+     "terminal_predicate": {"kind": "accepted_owner_evidence", "evidence": "evidence/ruling.json", "accept": ["PROCEED_WITH_CONDITIONS"],
+                            "owner_ref": "control#3#issuecomment-5554585623", "policy_digest": "POLICYDIGEST"},
+     "classification_when_next": "BROWSER_SOL"},
+    {"id": "slice-c", "title": "C / S3 landing", "phase": "package-qualification", "depends_on": ["architecture-re-review-ruling"],
+     "terminal_predicate": {"kind": "accepted_owner_evidence", "evidence": "evidence/slice-c.json", "accept": ["MERGED_QUALIFIED"],
+                            "owner_ref": "sbracewell64/firstmate-cleanroom#5", "candidate": {"merge_commit": "dc66ba5ce35be4917424a529a45e61f4a9fa556c"}},
+     "classification_when_next": "SELF_HANDLE"},
+    {"id": "slice-a", "title": "A / S1 qualification", "phase": "package-qualification", "depends_on": "architecture-re-review-ruling",
+     "terminal_predicate": {"kind": "accepted_owner_evidence", "evidence": "evidence/slice-a.json", "accept": ["MERGED_QUALIFIED", "ADOPT_OPTION"]},
+     "classification_when_next": "SELF_HANDLE"},
+    {"id": "pilot-f", "title": "F pilot", "phase": "pilot", "depends_on": ["slice-c", "slice-a"],
+     "artifact_root": "artifacts/proofs/af-pilot-f",
+     "terminal_predicate": {"kind": "latest_attempt_disposition_outcome_in", "accept": ["PROVED", "COMPLETE"]},
+     "classification_when_next": "SELF_HANDLE", "delegation": {"max_concurrency": 2}}
+  ]
+}
+JSON
+}
+
+# The real Proof-B adverse shape: attempt-3 CNO_AT_B-S9 with zero observed-bad,
+# written under the artifact root exactly as the proof owner would.
+write_proof_b_adverse() {  # <home>
+  local dir="$1/cleanroom/artifacts/proofs/proof-b/attempt-3"
+  mkdir -p "$dir"
+  jq -n '{schema:"fm-proof-disposition/v1", proof_id:"proof-b", attempt:3, outcome:"CNO_AT_B-S9", counts:{observed_good:39, observed_bad:0, could_not_observe:1}}' > "$dir/disposition.json"
+  printf 'policy bytes\n' > "$1/cleanroom/policy.md"
+}
+
+sha_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' || sha256sum "$1" | awk '{print $1}'; }
+
+# write_evidence <home> <file> <jq-program>: one owner record built from a
+# well-formed base by a jq program (so a case mutates exactly one thing).
+write_evidence() {  # <home> <file> <step> <owner-kind> <owner-ref> <outcome> [jq-filter]
+  local home=$1 file=$2 step=$3 kind=$4 ref=$5 outcome=$6 filter=${7:-.}
+  jq -n --arg step "$step" --arg kind "$kind" --arg ref "$ref" --arg outcome "$outcome" '
+    {schema:"fm-accepted-owner-evidence/v1", evidence_id:("ev-" + $step), programme_id:"cleanroom-af-package", step:$step,
+     project:"sbracewell64/firstmate-cleanroom", work_id:"cleanroom-af-package", generation:1,
+     owner:{kind:$kind, ref:$ref}, outcome:$outcome, candidate:{}, policy:null, verifier:{tool:"fixture"},
+     captures:[], sources:[], observed_bad:[], superseded_by:null}' | jq "$filter" > "$(af_evidence_dir "$home")/$file"
+}
+
+# The accepted A-E shape: ruling bound to Proof-B by bytes and outcome, C landed
+# and qualified, A qualified.
+write_af_accepted_evidence() {  # <home>
+  local home=$1 psha policy
+  write_proof_b_adverse "$home"
+  psha=$(sha_of "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")
+  policy=$(sha_of "$home/cleanroom/policy.md")
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 PROCEED_WITH_CONDITIONS \
+    ".policy = {id:\"architecture-review-acceptance-v1\", digest:\"$policy\"}
+     | .sources = [{kind:\"local_file\", path:\"artifacts/proofs/proof-b/attempt-3/disposition.json\", sha256:\"$psha\", outcome:\"CNO_AT_B-S9\"},
+                   {kind:\"local_file\", path:\"policy.md\", sha256:\"$policy\"}]"
+  write_af_programme "$home" ".steps[0].terminal_predicate.policy_digest = \"$policy\""
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {head:"9ce75aa2edcea3e94981c35fd217102a8fe26585", merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"}
+     | .qualification = {pipeline:"no-mistakes", evidence_refs:["https://example.invalid/evidence"]}'
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"1111111111111111111111111111111111111111"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["https://example.invalid/e"]}'
+}
+
+make_af_home() {  # <name>
+  local home="$TMP_ROOT/$1"
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects" "$home/cleanroom/artifacts/proofs"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+  printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  write_af_programme "$home"
+  printf 'programme=%s\nroot=%s\n' "$(af_programme_path "$home")" "$home/cleanroom" > "$home/config/programme"
+  printf '%s\n' "$home"
+}
+
+expect_cno_refusal() {  # <json> <next> <reason> <label>
+  expect_typed "$1" "$2" BROWSER_SOL CNO "$3" "$4"
+  [ "$(field "$1" '.cno.reason_code')" = "$3" ] || fail "$4: cno.reason_code $(field "$1" '.cno.reason_code') != $3"
+  [ "$(field "$1" '.evidence.reason_code')" = "$3" ] || fail "$4: evidence.reason_code carries the refusal"
+  printf '%s' "$(field "$1" '.accountable_owner')" | grep -q 'never the captain' || fail "$4: accountable owner must name engineering, never the captain"
+  printf '%s' "$(field "$1" '.why')" | grep -qiE 'your word|captain required|awaiting captain' && fail "$4: why must not assert a captain gate"
+  return 0
+}
+
+test_af_accepted_owner_evidence_yields_f() {
+  local home out again prose rc
+  home=$(make_af_home af-yield)
+  write_af_accepted_evidence "$home"
+  out=$(run_resolve "$home" resolve) || fail "AF yield resolve failed: $out"
+  expect_typed "$out" pilot-f SELF_HANDLE AUTHORIZED STANDING_GRANT "AF yield"
+  [ "$(field "$out" '.completed | map(.id) | join(",")')" = "architecture-re-review-ruling,slice-c,slice-a" ] || fail "AF yield: A-E steps complete: $(field "$out" '.completed')"
+  [ "$(field "$out" '.completed[0].outcome')" = PROCEED_WITH_CONDITIONS ] || fail "AF yield: the ruling's own decision token is the outcome"
+  [ "$(field "$out" '.completed[0].attempt')" = null ] || fail "AF yield: an owner record is not a proof attempt"
+  [ "$(field "$out" '.completed[0].evidence_kind')" = accepted_owner_evidence ] || fail "AF yield: completion names the evidence kind"
+  [ "$(field "$out" '.action_generation')" = 1 ] || fail "AF yield: the pilot would run as attempt 1"
+  [ "$(field "$out" '.binding.present')" = true ] && [ "$(field "$out" '.binding.grant.id')" = 5554812621 ] || fail "AF yield: binding carries the controlling grant"
+  [ "$(field "$out" '.runtime.supported_evidence_kinds | join(" ")')" = "latest_attempt_disposition_outcome_in accepted_owner_evidence" ] || fail "AF yield: runtime names the supported kinds"
+  [ "$(field "$out" '.evidence')" = null ] || fail "AF yield: a proof-shaped next action carries no owner evidence reading"
+  [ "$(field "$out" '.materialize | length')" = 0 ] || fail "AF yield: nothing to materialize"
+  printf '%s' "$(field "$out" '.accountable_owner')" | grep -q 'firstmate under the standing programme grant' || fail "AF yield: accountable owner is firstmate under the grant"
+  [ "$(jq -r '.outcome' "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")" = CNO_AT_B-S9 ] || fail "AF yield: the adverse Proof-B record is untouched"
+  pass "AF real accepted-owner evidence for A-E under the grant with no gating hold resolves the pilot F as SELF_HANDLE/AUTHORIZED; the Proof-B CNO_AT_B-S9 transition is accepted through the ruling owner without rewriting it"
+
+  out=$(run_resolve "$home" render) || fail "AF render failed"
+  assert_contains "$out" "owner evidence slice-a MERGED_QUALIFIED by pull_request_merge sbracewell64/firstmate-cleanroom#9" "render names the owner evidence predecessor"
+  assert_contains "$out" "Binding: commission cleanroom-af-package@1 under grant 5554812621" "render states the binding"
+  assert_contains "$out" "Material identity " "render carries the material identity"
+  printf 'Pilot F needs your word before it runs.\n' > "$home/prose.md"
+  prose=$(run_resolve "$home" check-prose "$home/prose.md" 2>&1); rc=$?
+  [ "$rc" = 1 ] || fail "check-prose must refuse a captain gate for an authorized pilot (rc=$rc): $prose"
+  pass "AF render and check-prose refuse to manufacture a captain gate for the authorized pilot"
+
+  # Replay converges; the material identity ignores the clock while the
+  # applicability tuple still carries the date.
+  again=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-30 "$RESOLVE" resolve) || fail "AF replay failed"
+  [ "$(field "$out" '.material_identity' 2>/dev/null)" != "" ] || true
+  out=$(run_resolve "$home" resolve) || fail "AF re-resolve failed"
+  [ "$(field "$out" '.material_identity')" = "$(field "$again" '.material_identity')" ] || fail "AF: a different day must not change the material identity"
+  [ "$(field "$out" '.applicability_digest')" != "$(field "$again" '.applicability_digest')" ] || fail "AF: the applicability tuple still binds the date"
+  pass "AF the material identity is clock-free while applicability stays date-bound"
+
+  # A genuine reserved-axis hold on THIS pilot still reaches the captain, once,
+  # while a hold on the historical programme's same-titled step never does.
+  run_hold "$home" hold old-pilot-hold --title "old pilot hold" --reason "old programme" \
+    --action phase-manager-pilot --axis new_paid_spend --programme cleanroom-requalification >/dev/null || fail "AF: could not hold old pilot"
+  out=$(run_resolve "$home" resolve) || fail "AF old hold resolve failed"
+  expect_typed "$out" pilot-f SELF_HANDLE AUTHORIZED STANDING_GRANT "AF (old programme hold)"
+  [ "$(field "$out" '.holds.ignored[] | select(.task == "old-pilot-hold") | .reason')" = HOLD_OTHER_ACTION ] || fail "AF: the old programme's pilot hold is ignored"
+  run_hold "$home" hold pilot-spend --title "pilot paid runner" --reason "paid runner for the pilot" \
+    --action pilot-f --axis new_paid_spend --programme cleanroom-af-package >/dev/null || fail "AF: could not hold pilot-f"
+  out=$(run_resolve "$home" resolve) || fail "AF reserved hold resolve failed"
+  expect_typed "$out" pilot-f CAPTAIN REQUIRES_CAPTAIN HOLD_RESERVED_AXIS "AF (reserved hold on pilot-f)"
+  pass "AF a same-title-different-id hold from the historical programme never gates the pilot, while a reserved-axis hold bound to pilot-f still reaches the captain"
+}
+
+test_af_landing_without_qualification_cannot_yield_f() {
+  local home out
+  home=$(make_af_home af-landing)
+  write_af_accepted_evidence "$home"
+  # Slice A merely landed: MERGED, no bound qualification.
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  out=$(run_resolve "$home" resolve) || fail "landing resolve failed: $out"
+  expect_typed "$out" slice-a SELF_HANDLE AUTHORIZED STANDING_GRANT "landing only"
+  [ "$(field "$out" '.evidence.status')" = NOT_ACCEPTED ] && [ "$(field "$out" '.evidence.outcome')" = MERGED ] || fail "landing: the record is read as observed but not accepted"
+  [ "$(field "$out" '.completed | length')" = 2 ] || fail "landing: only the ruling and C are complete"
+  [ "$(field "$out" '.cno')" = null ] || fail "landing: an observed landing is not CNO"
+  pass "a mere landing without its bound qualification record leaves the slice as the next action and cannot yield F"
+
+  # Membership is exact: an outcome that is a substring of every accepted
+  # token (MERGED inside MERGED_QUALIFIED and CLOSED_UNMERGED) is not accepted,
+  # on the owner path and on the proof path alike.
+  write_af_programme "$home" '.steps[2].terminal_predicate.accept = ["CLOSED_UNMERGED", "MERGED_QUALIFIED"] | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "substring accept resolve failed: $out"
+  expect_typed "$out" slice-a SELF_HANDLE AUTHORIZED STANDING_GRANT "substring outcome"
+  [ "$(field "$out" '.evidence.status')" = NOT_ACCEPTED ] || fail "MERGED is not a member of [CLOSED_UNMERGED, MERGED_QUALIFIED]"
+  write_af_programme "$home" '.steps[2].terminal_predicate.accept = ["MERGED"] | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "exact accept resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] && [ "$(field "$out" '.completed | length')" = 3 ] || fail "an exactly listed outcome is accepted"
+  local dir="$home/cleanroom/artifacts/proofs/af-pilot-f/attempt-1"
+  mkdir -p "$dir"
+  jq -n '{schema:"fm-proof-disposition/v1", proof_id:"pilot-f", attempt:1, outcome:"PROVE"}' > "$dir/disposition.json"
+  out=$(run_resolve "$home" resolve) || fail "proof substring resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] && [ "$(field "$out" '.action_generation')" = 2 ] || fail "PROVE is not a member of [PROVED, COMPLETE] on the proof path"
+  jq -n '{schema:"fm-proof-disposition/v1", proof_id:"pilot-f", attempt:1, outcome:"PROVED"}' > "$dir/disposition.json"
+  out=$(run_resolve "$home" resolve) || fail "proof exact resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = null ] || fail "an exactly listed proof outcome completes the step"
+  write_af_programme "$home" '.steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  rm -r "$home/cleanroom/artifacts/proofs/af-pilot-f"
+  pass "accept membership is exact on both evidence paths: a substring of an accepted token is never accepted"
+
+  # Claiming qualification without binding it is malformed, and a self-report
+  # cannot claim a qualification outcome at all (forged receipt).
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED
+  out=$(run_resolve "$home" resolve) || fail "unbound qualification resolve failed"
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_MALFORMED "unbound qualification"
+  write_evidence "$home" slice-a.json slice-a control_report 'control#3#issuecomment-5554936473' MERGED_QUALIFIED
+  out=$(run_resolve "$home" resolve) || fail "forged report resolve failed"
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_OUTCOME_UNSUPPORTED "forged self-report"
+  write_evidence "$home" slice-a.json slice-a control_report 'control#3#issuecomment-5554936473' REPORTED_SELF_TESTED
+  out=$(run_resolve "$home" resolve) || fail "self-report resolve failed"
+  expect_typed "$out" slice-a SELF_HANDLE AUTHORIZED STANDING_GRANT "self-report"
+  [ "$(field "$out" '.evidence.status')" = NOT_ACCEPTED ] || fail "self-report: observed, not accepted"
+  pass "a qualification claim without its binding is refused, a self-report cannot claim qualification, and an honest self-report is observed but never accepted"
+
+  # No record at all: the required binding is missing, CNO, never a captain gate.
+  rm "$(af_evidence_dir "$home")/slice-a.json"
+  out=$(run_resolve "$home" resolve) || fail "missing evidence resolve failed"
+  expect_cno_refusal "$out" slice-a REQUIRED_BINDING_MISSING "missing evidence"
+  out=$(run_resolve "$home" render) || fail "missing evidence render failed"
+  assert_contains "$out" "Typed result: BROWSER_SOL / CNO [REQUIRED_BINDING_MISSING]" "render states the missing binding"
+  assert_contains "$out" "Evidence for slice-a: CNO [REQUIRED_BINDING_MISSING]" "render names the missing record"
+  printf 'not json' > "$(af_evidence_dir "$home")/slice-a.json"
+  out=$(run_resolve "$home" resolve) || fail "unreadable evidence resolve failed"
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_UNREADABLE "unreadable evidence"
+  pass "a slice whose qualification evidence is absent or unreadable resolves as REQUIRED_BINDING_MISSING / CNO, never PASS and never CAPTAIN"
+}
+
+test_af_refusal_matrix() {
+  local home out psha case_name filter reason
+  home=$(make_af_home af-refuse)
+  write_af_accepted_evidence "$home"
+  psha=$(sha_of "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")
+  # Each row mutates exactly one thing in the otherwise-accepted slice-c record.
+  while IFS='|' read -r case_name reason filter; do
+    [ -n "$case_name" ] || continue
+    write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+      ".candidate = {head:\"9ce75aa2edcea3e94981c35fd217102a8fe26585\", merge_commit:\"dc66ba5ce35be4917424a529a45e61f4a9fa556c\"}
+       | .qualification = {pipeline:\"no-mistakes\", evidence_refs:[\"https://example.invalid/evidence\"]} | $filter"
+    out=$(run_resolve "$home" resolve) || fail "$case_name resolve failed: $out"
+    expect_cno_refusal "$out" slice-c "$reason" "$case_name"
+    pass "refused: $case_name -> $reason (BROWSER_SOL/CNO, never CAPTAIN)"
+  done <<'ROWS'
+wrong programme|OWNER_EVIDENCE_PROGRAMME_MISMATCH|.programme_id = "cleanroom-requalification"
+wrong slice (same title, different id)|OWNER_EVIDENCE_STEP_MISMATCH|.step = "phase-manager-pilot"
+wrong project|OWNER_EVIDENCE_PROJECT_MISMATCH|.project = "someone-else/firstmate-cleanroom"
+wrong commission|OWNER_EVIDENCE_WORK_MISMATCH|.work_id = "cleanroom-f-execution-subject-adoption"
+wrong owner|OWNER_EVIDENCE_OWNER_MISMATCH|.owner.ref = "sbracewell64/firstmate-cleanroom#6"
+wrong candidate|OWNER_EVIDENCE_CANDIDATE_MISMATCH|.candidate.merge_commit = "9783fc78f0873ec436c32268ec0f10f42366033f"
+superseded record|OWNER_EVIDENCE_SUPERSEDED|.superseded_by = "ev-slice-c-2"
+contradictory record|OWNER_EVIDENCE_CONTRADICTORY|.observed_bad = [{predicate:"exact head", value:"observed-bad"}]
+unsupported owner kind|OWNER_EVIDENCE_OWNER_KIND_UNSUPPORTED|.owner.kind = "shell_command"
+unsupported schema|OWNER_EVIDENCE_SCHEMA_UNSUPPORTED|.schema = "fm-accepted-owner-evidence/v2"
+malformed record|OWNER_EVIDENCE_MALFORMED|del(.owner.ref)
+sources not an array|OWNER_EVIDENCE_MALFORMED|.sources = "nope"
+source entry not an object|OWNER_EVIDENCE_MALFORMED|.sources = ["x"]
+string candidate against a pinned candidate|OWNER_EVIDENCE_MALFORMED|.candidate = "x"
+array candidate against a pinned candidate|OWNER_EVIDENCE_MALFORMED|.candidate = ["dc66ba5ce35be4917424a529a45e61f4a9fa556c"]
+ROWS
+  # The two malformed source shapes are refused with their precise detail and
+  # a typed result (exit 0), never a resolver crash.
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .sources = {kind:"local_file"}'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 0 ] || fail "non-array sources must resolve to a typed result, not exit $rc: $out"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_MALFORMED "non-array sources"
+  assert_contains "$(field "$out" '.cno.detail')" "sources must be an array (got object)" "non-array sources detail is precise"
+  [ "$(field "$out" '.evidence.sources | length')" = 0 ] || fail "a non-array sources projects as no bound sources"
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .sources = [{kind:"local_file", path:"policy.md", sha256:"'"$(sha_of "$home/cleanroom/policy.md")"'"}, 7]'
+  out=$(run_resolve "$home" resolve 2>&1); rc=$?
+  [ "$rc" = 0 ] || fail "non-object source entry must resolve to a typed result, not exit $rc: $out"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_MALFORMED "non-object source entry"
+  assert_contains "$(field "$out" '.cno.detail')" "source entry 2 must be an object (got number)" "non-object source detail is precise"
+  [ "$(field "$out" '.evidence.sources | length')" = 2 ] && [ "$(field "$out" '.evidence.sources[1].kind')" = null ] || fail "a non-object source entry projects as a null-shaped entry"
+  pass "refused: malformed sources shapes (non-array, non-object entry) yield a precise OWNER_EVIDENCE_MALFORMED CNO instead of a crash"
+  # An unpinned generation is not compared; pin generation 1 on the step and
+  # a generation-2 record is refused.
+  write_af_programme "$home" '.steps[1].terminal_predicate.evidence_generation = 1 | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .generation = 2'
+  out=$(run_resolve "$home" resolve) || fail "generation pin resolve failed"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_GENERATION_MISMATCH "pinned evidence generation"
+  pass "refused: a record from another evidence generation than the programme pins"
+
+  # Byte pin: the exact record bytes are the evidence generation.
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]}'
+  write_af_programme "$home" '.steps[1].terminal_predicate.evidence_sha256 = "'"$(sha_of "$(af_evidence_dir "$home")/slice-c.json")"'" | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "byte pin resolve failed"
+  [ "$(field "$out" '.next_action')" = pilot-f ] || fail "byte pin: the pinned bytes are accepted"
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .verifier.tool = "forged"'
+  out=$(run_resolve "$home" resolve) || fail "forged bytes resolve failed"
+  expect_cno_refusal "$out" slice-c OWNER_EVIDENCE_DIGEST_MISMATCH "forged receipt bytes"
+  pass "refused: a receipt whose bytes differ from the pinned evidence generation (forged receipt)"
+
+  # The ruling step: policy digest, bound-source digest, bound-source outcome,
+  # and a wrong root.
+  write_af_programme "$home" '.steps[0].terminal_predicate.policy_digest = "0000000000000000000000000000000000000000000000000000000000000000"'
+  out=$(run_resolve "$home" resolve) || fail "policy resolve failed"
+  expect_cno_refusal "$out" architecture-re-review-ruling OWNER_EVIDENCE_POLICY_MISMATCH "wrong policy"
+  pass "refused: a ruling record under a different acceptance policy digest"
+  write_af_programme "$home" '.steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 PROCEED_WITH_CONDITIONS \
+    ".policy = {digest:\"$(sha_of "$home/cleanroom/policy.md")\"} | .sources = [{kind:\"local_file\", path:\"artifacts/proofs/proof-b/attempt-3/disposition.json\", sha256:\"$psha\", outcome:\"CNO_AT_B-S3\"}]"
+  out=$(run_resolve "$home" resolve) || fail "source outcome resolve failed"
+  expect_cno_refusal "$out" architecture-re-review-ruling OWNER_EVIDENCE_SOURCE_OUTCOME_MISMATCH "unrelated CNO"
+  pass "refused: a ruling record claiming a different CNO than the bound Proof-B disposition records (unrelated CNO is never accepted)"
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 PROCEED_WITH_CONDITIONS \
+    ".policy = {digest:\"$(sha_of "$home/cleanroom/policy.md")\"} | .sources = [{kind:\"local_file\", path:\"artifacts/proofs/proof-b/attempt-3/disposition.json\", sha256:\"0000000000000000000000000000000000000000000000000000000000000000\", outcome:\"CNO_AT_B-S9\"}]"
+  out=$(run_resolve "$home" resolve) || fail "source digest resolve failed"
+  expect_cno_refusal "$out" architecture-re-review-ruling OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH "source digest"
+  pass "refused: a bound source whose bytes moved (the adverse record is bound exactly, never loosely)"
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 PROCEED_WITH_CONDITIONS \
+    ".policy = {digest:\"$(sha_of "$home/cleanroom/policy.md")\"} | .sources = [{kind:\"local_file\", path:\"artifacts/proofs/proof-b/attempt-3/disposition.json\", sha256:\"$psha\", outcome:\"CNO_AT_B-S9\"}]"
+  mkdir -p "$home/elsewhere"
+  out=$(run_resolve "$home" resolve --root "$home/elsewhere") || fail "wrong root resolve failed"
+  expect_cno_refusal "$out" architecture-re-review-ruling OWNER_EVIDENCE_SOURCE_UNREADABLE "wrong root"
+  pass "refused: a wrong artifact root cannot observe the bound source (CNO, never authorized)"
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 OUT_OF_SCOPE_CAPTAIN_RESERVED \
+    ".policy = {digest:\"$(sha_of "$home/cleanroom/policy.md")\"}"
+  out=$(run_resolve "$home" resolve) || fail "ruling not accepted resolve failed"
+  expect_typed "$out" architecture-re-review-ruling BROWSER_SOL REQUIRES_RULING STEP_REQUIRES_RULING "ruling not accepted"
+  [ "$(field "$out" '.evidence.status')" = NOT_ACCEPTED ] || fail "a recorded reserved-directive ruling is observed, not accepted, and waits on Browser Sol"
+  pass "a ruling record whose decision is not the accepted one leaves the predecessor step waiting on Browser Sol rather than fabricating a proof attempt or a captain gate"
+}
+
+test_af_structure_and_binding_refusals() {
+  local home err rc
+  home=$(make_af_home af-structure)
+  write_af_accepted_evidence "$home"
+  refuse_load() {  # <label> <jq-filter> <expected-text>
+    write_af_programme "$home" "$2 | .steps[0].terminal_predicate.policy_digest = \"$(sha_of "$home/cleanroom/policy.md")\""
+    err=$(run_resolve "$home" resolve 2>&1 >/dev/null); rc=$?
+    [ "$rc" = 1 ] || fail "$1: expected refusal exit 1, got $rc"
+    assert_contains "$err" "$3" "$1 refusal names the defect"
+    pass "refused at load: $1"
+  }
+  refuse_load "duplicate step ids" '.steps[2].id = "slice-c"' "duplicated: slice-c"
+  refuse_load "unsupported evidence kind" '.steps[2].terminal_predicate.kind = "shell_predicate"' "terminal_predicate.kind must be one of"
+  refuse_load "dependency on a later step (order contradiction)" '.steps[1].depends_on = ["pilot-f"]' "depends on a LATER step pilot-f"
+  refuse_load "dependency on itself (cycle)" '.steps[1].depends_on = ["slice-c"]' "depends on itself"
+  refuse_load "dependency on an unknown step" '.steps[1].depends_on = ["slice-z"]' "depends on an unknown step slice-z"
+  refuse_load "regex-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice-[ce]"]' "is not a step id slug"
+  refuse_load "dot-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice.c"]' "depends on an unknown step slice.c"
+  refuse_load "pinned candidate that is not an object" '.steps[1].terminal_predicate.candidate = "dc66ba5ce35be4917424a529a45e61f4a9fa556c"' "terminal_predicate.candidate must be an object"
+  refuse_load "accept list that is a string" '.steps[1].terminal_predicate.accept = "MERGED_QUALIFIED"' "(slice-c) terminal_predicate.accept must be a non-empty array of outcome strings (got string)"
+  refuse_load "accept list that is empty" '.steps[1].terminal_predicate.accept = []' "terminal_predicate.accept must be a non-empty array"
+  refuse_load "accept list with a non-string entry" '.steps[3].terminal_predicate.accept = ["PROVED", 1]' "(pilot-f) terminal_predicate.accept must be a non-empty array"
+  refuse_load "accept list absent" 'del(.steps[3].terminal_predicate.accept)' "terminal_predicate.accept must be a non-empty array of outcome strings (got null)"
+  refuse_load "missing required binding" 'del(.binding)' "REQUIRED_BINDING_MISSING"
+  refuse_load "consumer contract mismatch" '.binding.consumer.contract = "fm-continuation-resolution/v2"' "binding.consumer.contract must name"
+  refuse_load "unsupported bound evidence kind" '.binding.evidence_kinds += ["arbitrary_command"]' "unsupported completion-evidence kind arbitrary_command"
+  refuse_load "binding does not cover a step kind" '.binding.evidence_kinds = ["latest_attempt_disposition_outcome_in"]' "does not declare"
+  refuse_load "binding generation mismatch" '.binding.programme_generation = "fm-af-programme/v0"' "does not match the programme schema"
+  refuse_load "binding without a programme generation" 'del(.binding.programme_generation)' "binding.programme_generation is required"
+  refuse_load "owner step without an evidence path" 'del(.steps[2].terminal_predicate.evidence)' "names no terminal_predicate.evidence record"
+
+  # A legacy proof-only programme still resolves, and every reader sees the
+  # missing binding loudly rather than as an optional N/A.
+  local legacy out
+  legacy=$(make_home af-legacy)
+  disposition "$legacy" proof-a 1 PROVED
+  out=$(run_resolve "$legacy" resolve) || fail "legacy resolve failed"
+  expect_typed "$out" proof-b SELF_HANDLE AUTHORIZED STANDING_GRANT "legacy"
+  [ "$(field "$out" '.binding.present')" = false ] && [ "$(field "$out" '.binding.reason')" = REQUIRED_BINDING_MISSING ] || fail "legacy: binding reported missing"
+  out=$(run_resolve "$legacy" render) || fail "legacy render failed"
+  assert_contains "$out" "Binding: REQUIRED_BINDING_MISSING" "legacy render prints the missing binding"
+  out=$(run_resolve "$legacy" summary) || fail "legacy summary failed"
+  assert_contains "$out" "binding=REQUIRED_BINDING_MISSING" "legacy summary prints the missing binding"
+  pass "a legacy proof-only programme resolves with REQUIRED_BINDING_MISSING printed by every reader, never a silent N/A"
+}
+
+test_af_applicability_invalidation() {
+  local home base out
+  home=$(make_af_home af-applicability)
+  write_af_accepted_evidence "$home"
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  base=$(run_resolve "$home" resolve) || fail "base resolve failed"
+  [ "$(field "$base" '.next_action')" = slice-a ] || fail "base: slice-a is next"
+  # Evidence change (the record is re-issued): both digests move.
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED '.generation = 2'
+  out=$(run_resolve "$home" resolve) || fail "evidence-change resolve failed"
+  [ "$(field "$out" '.applicability_digest')" != "$(field "$base" '.applicability_digest')" ] || fail "an evidence change must move the applicability digest"
+  [ "$(field "$out" '.material_identity')" != "$(field "$base" '.material_identity')" ] || fail "an evidence change must move the material identity"
+  [ "$(field "$out" '.applicability.evidence.sha256')" != "$(field "$base" '.applicability.evidence.sha256')" ] || fail "applicability binds the evidence bytes"
+  pass "a re-issued evidence record invalidates the prior applicability and material identity"
+  # Grant supersession invalidates authority.
+  write_af_programme "$home" '.authorization_basis.superseded_by = "control#3#issuecomment-9999" | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "superseded grant resolve failed"
+  expect_typed "$out" slice-a BROWSER_SOL CNO GRANT_SUPERSEDED "superseded grant"
+  pass "a superseded grant cannot authorize any A-F step"
+  write_af_programme "$home" '.steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  # A newly bound hold moves the identity; lifting it restores it.
+  bound_hold "$home" slice-a-wait external slice-a '' cleanroom-af-package external
+  out=$(run_resolve "$home" resolve) || fail "hold resolve failed"
+  expect_typed "$out" slice-a EXTERNAL_DEPENDENCY WAITING_EXTERNAL HOLD_EXTERNAL_WAIT "hold on slice-a"
+  [ "$(field "$out" '.material_identity')" != "$(field "$base" '.material_identity')" ] || fail "a gating hold must move the material identity"
+  tasks_in "$home" unhold slice-a-wait >/dev/null
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  out=$(run_resolve "$home" resolve) || fail "restored resolve failed"
+  [ "$(field "$out" '.material_identity')" = "$(field "$base" '.material_identity')" ] || fail "restored state converges on the same identity"
+  pass "hold supersession and restoration move and restore the material identity deterministically"
+  # The identity excludes every path: the same material state resolved from a
+  # copy of the home at another absolute path (a CNO whose detail names the
+  # missing record's path) yields the same identity.
+  local moved
+  rm -f "$(af_evidence_dir "$home")/slice-a.json"
+  base=$(run_resolve "$home" resolve) || fail "unbound resolve failed"
+  expect_cno_refusal "$base" slice-a REQUIRED_BINDING_MISSING "unbound slice-a"
+  moved="$TMP_ROOT/af-applicability-moved-elsewhere"
+  cp -R "$home" "$moved"
+  printf 'programme=%s\nroot=%s\n' "$(af_programme_path "$moved")" "$moved/cleanroom" > "$moved/config/programme"
+  out=$(run_resolve "$moved" resolve) || fail "moved-home resolve failed"
+  expect_cno_refusal "$out" slice-a REQUIRED_BINDING_MISSING "unbound slice-a from the moved home"
+  [ "$(field "$out" '.cno.detail')" != "$(field "$base" '.cno.detail')" ] || fail "the CNO detail names the home's own path"
+  [ "$(field "$out" '.programme.path')" != "$(field "$base" '.programme.path')" ] || fail "the moved home is located at its own path"
+  [ "$(field "$out" '.material_identity')" = "$(field "$base" '.material_identity')" ] || fail "the material identity must not change with the home's absolute path"
+  pass "the material identity is the same for the same material state resolved from a home at another absolute path"
+}
+
+# --- quiet presentation: present once, stay quiet, ack only what was presented ---
+
+DRAIN="$ROOT/bin/fm-wake-drain.sh"
+
+run_drain() {  # <home> [drain args...]
+  local home=$1
+  shift
+  # FM_ROOT_OVERRIDE points fm-guard's tangle check at a non-git directory so
+  # the drain prints no spurious banner (the same trick tests/wake-helpers.sh uses).
+  FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_ROOT_OVERRIDE="$home/tangle-root" FM_CONTINUATION_TODAY=2026-09-04 "$DRAIN" "$@"
+}
+
+queue_wake() {  # <home>
+  FM_STATE_OVERRIDE="$1/state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_wake_append heartbeat fixture "fixture wake"
+  ' _ "$ROOT/bin/fm-wake-lib.sh"
+}
+
+# present_pending <home>: the presenter the drain calls on a WAKE_ACK_REQUIRED
+# turn, run through the library's own interface so a pending record can be
+# left behind exactly as a turn whose acknowledgement never ran leaves it.
+present_pending() {  # <home>
+  FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$1" FM_CONFIG_OVERRIDE="$1/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_programme_present "$2" pending
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$1/state"
+}
+
+test_af_presentation_quiet_and_ack_race() {
+  local home out ack first second third presented snap view token
+  home=$(make_af_home af-present)
+  mkdir -p "$home/tangle-root"
+  write_af_accepted_evidence "$home"
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  first=$(run_resolve "$home" resolve | jq -r '.material_identity')
+
+  # Empty queue, nothing to acknowledge later: presented once and committed.
+  out=$(run_drain "$home" 2>/dev/null) || fail "first drain failed"
+  assert_contains "$out" "PROGRAMME CONTINUATION (material state changed since last presented" "first drain presents the programme once"
+  assert_contains "$out" "next action slice-a" "the presentation carries the typed next action"
+  assert_contains "$out" "presented identity ${first:0:12} (acknowledged with this presentation" "a no-ack turn commits at presentation"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$first" ] || fail "the presented record carries the exact identity"
+  out=$(run_drain "$home" 2>/dev/null) || fail "second drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "an unchanged poll must stay quiet: $out"
+  out=$(run_drain "$home" 2>/dev/null) || fail "third drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "a restart over unchanged state must stay quiet"
+  pass "unchanged programme state is presented once and then stays quiet across polls and restarts"
+
+  # The snapshot, view, and away digest read the same presented identity.
+  snap=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$SNAPSHOT" --json) || fail "snapshot failed"
+  [ "$(field "$snap" '.programme_continuation.presentation.state')" = unchanged ] || fail "snapshot marks the presented state unchanged"
+  [ "$(field "$snap" '.programme_continuation.presentation.presented_identity')" = "$first" ] || fail "snapshot carries the presented identity"
+  view=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$VIEW") || fail "view failed"
+  assert_contains "$view" "Binding: grant 5554812621 commission cleanroom-af-package." "view prints the binding"
+  assert_contains "$view" "Presentation: unchanged since last presented (identity ${first:0:12}); not news." "view marks unchanged state as not news"
+  token=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '. "$1"; programme_digest_token "$2"' _ "$ROOT/bin/fm-supervise-daemon.sh" "$home/state")
+  [ -z "$token" ] || fail "the away digest must not re-announce presented state: $token"
+  pass "status and away-digest readers key on the presented identity and do not recap unchanged state"
+
+  # A material change with a queued wake: presented as pending, acknowledged
+  # only by the printed ack, and the identity acknowledged is the one
+  # presented even when state moves again in between (the race).
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"1111111111111111111111111111111111111111"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]}'
+  second=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$second" != "$first" ] || fail "fixture: qualification must change the identity"
+  token=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '. "$1"; programme_digest_token "$2"' _ "$ROOT/bin/fm-supervise-daemon.sh" "$home/state")
+  assert_contains "$token" "next=pilot-f SELF_HANDLE/AUTHORIZED" "the away digest announces a material change"
+  queue_wake "$home"
+  out=$(run_drain "$home" 2>"$home/drain.err") || fail "wake drain failed"
+  ack=$(sed -n 's/^WAKE_ACK_REQUIRED: after handling completes run bin\/fm-wake-drain.sh //p' "$home/drain.err")
+  [ -n "$ack" ] || fail "the wake drain must print its acknowledgement command"
+  assert_contains "$out" "next action pilot-f" "the changed state is presented with the wake"
+  assert_contains "$out" "presented identity ${second:0:12}; it is acknowledged by the WAKE_ACK_REQUIRED command" "an ack turn records a pending identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$second" ] || fail "the pending record carries the presented identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$first" ] || fail "the acknowledged record is untouched until the ack"
+  out=$(run_drain "$home" 2>/dev/null) || fail "re-drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "a duplicate drain before the ack must not re-present the pending identity"
+  # State moves again between presentation and acknowledgement.
+  bound_hold "$home" pilot-wait external pilot-f '' cleanroom-af-package external
+  third=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$third" != "$second" ] || fail "fixture: the hold must change the identity"
+  # shellcheck disable=SC2086
+  run_drain "$home" $ack >/dev/null 2>&1 || fail "ack failed"
+  presented=$(jq -r '.material_identity' "$home/state/.programme-presented")
+  [ "$presented" = "$second" ] || fail "the ack must acknowledge exactly the presented identity, not the newer state"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the pending record is consumed by the ack"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-ack drain failed"
+  assert_contains "$out" "PROGRAMME CONTINUATION (material state changed" "state that moved between presentation and ack surfaces at the next drain"
+  assert_contains "$out" "EXTERNAL_DEPENDENCY / WAITING_EXTERNAL" "the newer state is what surfaces"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$third" ] || fail "the newer identity is committed by the no-ack drain"
+  pass "a material change is presented once per identity, acknowledged only as presented, and state that moves between presentation and acknowledgement surfaces again instead of being swallowed"
+
+  # A pending record whose acknowledgement never ran: a later no-ack turn over
+  # the same identity stays quiet and promotes exactly that pending identity,
+  # so the readers converge on unchanged.
+  local fourth fifth sixth
+  tasks_in "$home" unhold pilot-wait >/dev/null
+  fourth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$fourth" != "$third" ] || fail "fixture: lifting the hold must change the identity"
+  out=$(present_pending "$home") || fail "pending presentation failed"
+  assert_contains "$out" "presented identity ${fourth:0:12}; it is acknowledged by the WAKE_ACK_REQUIRED command" "the lingering pending record is presented as pending"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$fourth" ] || fail "the lingering pending record carries the presented identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$third" ] || fail "the acknowledged record is untouched by a pending presentation"
+  snap=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$SNAPSHOT" --json) || fail "pending snapshot failed"
+  [ "$(field "$snap" '.programme_continuation.presentation.state')" = pending-ack ] || fail "snapshot labels the lingering record pending-ack before a no-ack turn"
+  out=$(run_drain "$home" 2>/dev/null) || fail "converging drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "a no-ack turn over the pending identity must stay quiet: $out"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$fourth" ] || fail "the no-ack turn promotes exactly the pending identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the promoted pending record is removed"
+  snap=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$SNAPSHOT" --json) || fail "converged snapshot failed"
+  [ "$(field "$snap" '.programme_continuation.presentation.state')" = unchanged ] || fail "snapshot converges on unchanged after the no-ack turn"
+  [ "$(field "$snap" '.programme_continuation.presentation.presented_identity')" = "$fourth" ] || fail "snapshot carries the promoted identity"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-convergence drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "converged state stays quiet"
+  pass "a no-ack turn over a lingering pending identity stays quiet, promotes exactly that identity, and the readers converge on unchanged"
+
+  # The race on a no-ack turn: the pending identity is never acknowledged
+  # when the state has moved on; the newer state is presented once and
+  # committed, and the superseded pending identity is never written as presented.
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"1111111111111111111111111111111111111111"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .generation = 2'
+  fifth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$fifth" != "$fourth" ] || fail "fixture: a re-issued record must change the identity"
+  out=$(present_pending "$home") || fail "second pending presentation failed"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$fifth" ] || fail "the pending record carries the re-issued identity"
+  bound_hold "$home" pilot-wait-2 external pilot-f '' cleanroom-af-package external
+  sixth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$sixth" != "$fifth" ] && [ "$sixth" != "$fourth" ] || fail "fixture: the new hold must change the identity again"
+  out=$(run_drain "$home" 2>/dev/null) || fail "race drain failed"
+  [ "$(printf '%s\n' "$out" | grep -c "PROGRAMME CONTINUATION (material state changed")" = 1 ] || fail "the newer state is presented exactly once: $out"
+  assert_contains "$out" "presented identity ${sixth:0:12} (acknowledged with this presentation" "the no-ack turn commits the newer identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$sixth" ] || fail "the committed record is the newer identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the superseded pending record is discarded, never promoted"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-race drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "the committed newer state stays quiet"
+  pass "a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once"
+}
+
 timed() {  # <test-function>
   local start=$SECONDS
   "$1"
@@ -933,5 +1496,11 @@ timed test_completion_and_configuration
 timed test_render_and_check_prose
 timed test_captain_hold_binding_mechanics
 timed test_consumers_project_the_typed_result
+timed test_af_accepted_owner_evidence_yields_f
+timed test_af_landing_without_qualification_cannot_yield_f
+timed test_af_refusal_matrix
+timed test_af_structure_and_binding_refusals
+timed test_af_applicability_invalidation
+timed test_af_presentation_quiet_and_ack_race
 
 echo "# fm-continuation-resolve.test.sh: all assertions passed"

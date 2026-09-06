@@ -22,6 +22,9 @@ function runProcess(command, args, input = "") {
     });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    // A guard that exits before reading its payload closes the pipe under our
+    // write; that EPIPE is the child's verdict, not a host crash.
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }

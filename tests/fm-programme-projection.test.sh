@@ -450,6 +450,60 @@ test_not_configured_and_summary() {
   pass "with no programme configured the substrate exits 3 silently, mirroring the resolver"
 }
 
+# --- owner-evidence steps compose unchanged -----------------------------------------
+
+# A programme whose A-E steps are bound to accepted owner records (the A-F
+# package shape): the substrate's authority fields are still the resolver's
+# verbatim, owner-evidence steps count no attempts, and the pilot's ceiling
+# is the configured rung.
+test_owner_evidence_programme_composes() {
+  local home out prog
+  home=$(make_home owner-evidence)
+  prog="$home/cleanroom/programme.json"
+  mkdir -p "$home/cleanroom/evidence" "$home/cleanroom/artifacts/proofs/proof-b/attempt-3"
+  jq -n '{schema:"fm-proof-disposition/v1", outcome:"CNO_AT_B-S9"}' > "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json"
+  local psha
+  psha=$(shasum -a 256 "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json" 2>/dev/null | awk '{print $1}' || sha256sum "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json" | awk '{print $1}')
+  jq -n --arg psha "$psha" '{schema:"fm-accepted-owner-evidence/v1", evidence_id:"ev-ruling", programme_id:"cleanroom-af-package", step:"ruling",
+    work_id:"cleanroom-af-package", owner:{kind:"control_ruling", ref:"control#3#issuecomment-5554585623"}, outcome:"PROCEED_WITH_CONDITIONS",
+    sources:[{kind:"local_file", path:"artifacts/proofs/proof-b/attempt-3/disposition.json", sha256:$psha, outcome:"CNO_AT_B-S9"}]}' > "$home/cleanroom/evidence/ruling.json"
+  jq -n '{schema:"fm-accepted-owner-evidence/v1", evidence_id:"ev-slice-c", programme_id:"cleanroom-af-package", step:"slice-c",
+    work_id:"cleanroom-af-package", owner:{kind:"pull_request_merge", ref:"sbracewell64/firstmate-cleanroom#5"}, outcome:"MERGED_QUALIFIED",
+    candidate:{merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"}, qualification:{pipeline:"no-mistakes", evidence_refs:["x"]}}' > "$home/cleanroom/evidence/slice-c.json"
+  jq -n '{schema:"fm-af-programme/v1", programme_id:"cleanroom-af-package",
+    authorization_basis:{kind:"standing_sequence_grant", refs:["grant"]},
+    binding:{commission:{work_id:"cleanroom-af-package", work_generation:1}, grant:{owner:"control_grant", ref:"control#3#issuecomment-5554812621", id:5554812621},
+             consumer:{contract:"fm-continuation-resolution/v1"}, evidence_kinds:["latest_attempt_disposition_outcome_in","accepted_owner_evidence"],
+             programme_generation:"fm-af-programme/v1"},
+    reserved_axes:["new_paid_spend"],
+    steps:[
+      {id:"ruling", phase:"predecessor-obligations", terminal_predicate:{kind:"accepted_owner_evidence", evidence:"evidence/ruling.json", accept:["PROCEED_WITH_CONDITIONS"]}, classification_when_next:"BROWSER_SOL"},
+      {id:"slice-c", phase:"package-qualification", depends_on:["ruling"], terminal_predicate:{kind:"accepted_owner_evidence", evidence:"evidence/slice-c.json", accept:["MERGED_QUALIFIED"]}, classification_when_next:"SELF_HANDLE"},
+      {id:"slice-a", phase:"package-qualification", depends_on:["ruling"], terminal_predicate:{kind:"accepted_owner_evidence", evidence:"evidence/slice-a.json", accept:["MERGED_QUALIFIED"]}, classification_when_next:"SELF_HANDLE"},
+      {id:"pilot-f", phase:"pilot", depends_on:["slice-c","slice-a"], artifact_root:"artifacts/proofs/af-pilot-f", terminal_predicate:{kind:"latest_attempt_disposition_outcome_in", accept:["PROVED"]}, classification_when_next:"SELF_HANDLE", delegation:{max_concurrency:2}}]}' > "$prog"
+
+  out=$(assert_composed "$home" "owner-evidence programme, slice-a unbound")
+  [ "$(field "$out" '.next_action')" = slice-a ] && [ "$(field "$out" '.authority_state')" = CNO ] && [ "$(field "$out" '.reason_code')" = REQUIRED_BINDING_MISSING ] \
+    || fail "an unbound slice projects as REQUIRED_BINDING_MISSING/CNO: $(field "$out" '{next_action, authority_state, reason_code}')"
+  [ "$(field "$out" '.phase')" = package-qualification ] && [ "$(field "$out" '.phase_generation')" = 0 ] || fail "owner-evidence steps count no attempts"
+  [ "$(field "$out" '.applicability.predecessor_disposition.id')" = slice-c ] && [ "$(field "$out" '.applicability.predecessor_disposition.attempt')" = null ] \
+    || fail "the predecessor identity is the accepted owner record"
+  [ "$(field "$out" '.resolver.cno.reason_code')" = REQUIRED_BINDING_MISSING ] || fail "the resolver's CNO is carried for traceability"
+  [ "$(field "$out" '.delegation.concurrency.ceiling')" = 2 ] || fail "the package phase returns the ladder floor"
+  pass "the substrate composes an owner-evidence programme unchanged: authority fields equal the resolver's and an unbound slice is REQUIRED_BINDING_MISSING/CNO"
+
+  jq -n '{schema:"fm-accepted-owner-evidence/v1", evidence_id:"ev-slice-a", programme_id:"cleanroom-af-package", step:"slice-a",
+    work_id:"cleanroom-af-package", owner:{kind:"pull_request_merge", ref:"sbracewell64/firstmate-cleanroom#9"}, outcome:"MERGED_QUALIFIED",
+    qualification:{pipeline:"no-mistakes", evidence_refs:["x"]}}' > "$home/cleanroom/evidence/slice-a.json"
+  out=$(assert_composed "$home" "owner-evidence programme, pilot next")
+  [ "$(field "$out" '.next_action')" = pilot-f ] && [ "$(field "$out" '.authority_state')" = AUTHORIZED ] || fail "the pilot is projected as the authorized next action"
+  [ "$(field "$out" '.phase')" = pilot ] && [ "$(field "$out" '.delegation.concurrency.ceiling')" = 2 ] && [ "$(field "$out" '.delegation.concurrency.source')" = 'programme:steps[3].delegation.max_concurrency' ] \
+    || fail "the pilot phase returns the pre-frozen concurrency-2 bound: $(field "$out" '.delegation.concurrency | tojson')"
+  [ "$(field "$out" '.delegation.enforces')" = false ] || fail "the substrate never enforces or launches"
+  [ -z "$(ls -A "$home/state")" ] || fail "projecting the pilot writes nothing"
+  pass "with A-E accepted the substrate projects the pilot with its concurrency-2 bound returned, not enforced, and launches nothing"
+}
+
 timed() {  # <test-function>
   local start=$SECONDS
   "$1"
@@ -462,5 +516,6 @@ timed test_uncomposable_records_refused
 timed test_deterministic_and_side_effect_free
 timed test_delegation_bounds
 timed test_not_configured_and_summary
+timed test_owner_evidence_programme_composes
 
 echo "# fm-programme-projection.test.sh: all assertions passed"

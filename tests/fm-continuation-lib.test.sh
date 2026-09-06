@@ -88,17 +88,100 @@ fm_continuation_is_wait external || fail "external is a wait token"
 fm_continuation_is_wait captain && fail "captain is not a wait token"
 pass "the binding line round-trips through build, body extraction, and field access with slug-only values"
 
+# --- the closed completion-evidence and owner vocabularies -------------------
+
+for k in latest_attempt_disposition_outcome_in accepted_owner_evidence; do
+  fm_continuation_is_evidence_kind "$k" || fail "$k must be a completion-evidence kind"
+done
+for k in shell_predicate arbitrary_command '' accepted_owner; do
+  fm_continuation_is_evidence_kind "$k" && fail "'$k' must not be a completion-evidence kind"
+done
+[ "$(printf '%s' "$FM_CONTINUATION_EVIDENCE_KINDS" | wc -w | tr -d ' ')" = 2 ] || fail "the completion-evidence vocabulary is exactly two kinds"
+pass "the completion-evidence vocabulary is closed to the two kinds the resolver represents"
+
+for k in control_ruling control_report pull_request_merge; do
+  fm_continuation_is_owner_kind "$k" || fail "$k must be an owner kind"
+  [ -n "$(fm_continuation_owner_outcomes "$k")" ] || fail "$k must carry an outcome vocabulary"
+done
+for k in shell_command captain_word '' control; do
+  fm_continuation_is_owner_kind "$k" && fail "'$k' must not be an owner kind"
+  fm_continuation_owner_outcomes "$k" >/dev/null 2>&1 && fail "'$k' must have no outcome vocabulary"
+  fm_continuation_owner_outcome_supported "$k" MERGED_QUALIFIED && fail "an unknown owner kind supports no outcome"
+done
+[ "$(printf '%s' "$FM_CONTINUATION_OWNER_KINDS" | wc -w | tr -d ' ')" = 3 ] || fail "the owner vocabulary is exactly three kinds"
+pass "the owner vocabulary is closed to the three governed owner kinds"
+
+for o in PROCEED_WITH_CONDITIONS ADOPT_OPTION REFUSED OUT_OF_SCOPE_CAPTAIN_RESERVED NO_ANSWER; do
+  fm_continuation_owner_outcome_supported control_ruling "$o" || fail "control_ruling supports $o"
+done
+for o in REPORTED REPORTED_SELF_TESTED; do
+  fm_continuation_owner_outcome_supported control_report "$o" || fail "control_report supports $o"
+done
+for o in OPEN CLOSED_UNMERGED MERGED MERGED_QUALIFIED; do
+  fm_continuation_owner_outcome_supported pull_request_merge "$o" || fail "pull_request_merge supports $o"
+done
+fm_continuation_owner_outcome_supported control_report MERGED_QUALIFIED && fail "a self-report can never claim MERGED_QUALIFIED"
+fm_continuation_owner_outcome_supported control_report PROCEED_WITH_CONDITIONS && fail "a self-report can never rule"
+fm_continuation_owner_outcome_supported pull_request_merge PROCEED_WITH_CONDITIONS && fail "a merge record can never rule"
+fm_continuation_owner_outcome_supported control_ruling MERGED_QUALIFIED && fail "a ruling can never qualify a landing"
+fm_continuation_owner_outcome_supported pull_request_merge MERGED_QUALIFIE && fail "an outcome prefix is not an outcome"
+fm_continuation_owner_outcome_supported pull_request_merge '' && fail "an empty outcome is never supported"
+pass "each owner kind's outcome vocabulary is closed, exact-token, and disjoint from the others' authority tokens"
+
+# --- the accountable-owner projection ------------------------------------------
+
+owner_of() { fm_continuation_accountable_owner "$@"; }
+for code in REQUIRED_BINDING_MISSING OWNER_EVIDENCE_MALFORMED OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH OWNER_EVIDENCE_CONTRADICTORY; do
+  text=$(owner_of BROWSER_SOL CNO "$code")
+  printf '%s' "$text" | grep -q '^engineering: the qualification or landing owner' || fail "$code names the evidence owner: $text"
+done
+printf '%s' "$(owner_of BROWSER_SOL CNO GRANT_SUPERSEDED)" | grep -q '^engineering: the programme owner' || fail "GRANT_* names the programme owner"
+printf '%s' "$(owner_of BROWSER_SOL CNO HOLD_STORE_UNREADABLE)" | grep -q '^engineering: the backlog store owner' || fail "HOLD_STORE_UNREADABLE names the backlog owner"
+printf '%s' "$(owner_of BROWSER_SOL CNO PREDECESSOR_DISPOSITION_UNREADABLE)" | grep -q '^engineering: the proof-attempt owner' || fail "an unreadable disposition names the proof-attempt owner"
+for code in REQUIRED_BINDING_MISSING OWNER_EVIDENCE_MALFORMED GRANT_SUPERSEDED HOLD_STORE_UNREADABLE NEWER_ATTEMPT_WITHOUT_DISPOSITION; do
+  text=$(owner_of BROWSER_SOL CNO "$code")
+  printf '%s' "$text" | grep -q 'never the captain' || fail "CNO owner $code must say never the captain: $text"
+  printf '%s' "$text" | grep -qi '^captain' && fail "CNO must never name the captain as owner: $text"
+done
+pass "every CNO names an engineering owner and never the captain"
+for code in HOLD_RESERVED_AXIS STEP_RESERVED_AXIS; do
+  printf '%s' "$(owner_of CAPTAIN REQUIRES_CAPTAIN "$code")" | grep -qi 'captain' || fail "$code is the captain's own"
+done
+printf '%s' "$(owner_of BROWSER_SOL REQUIRES_RULING STEP_REQUIRES_RULING)" | grep -qi 'browser sol' || fail "a ruling wait names Browser Sol"
+printf '%s' "$(owner_of BROWSER_SOL REQUIRES_RULING STEP_REQUIRES_RULING)" | grep -qi 'captain' && fail "a ruling wait never names the captain"
+printf '%s' "$(owner_of EXTERNAL_DEPENDENCY WAITING_EXTERNAL HOLD_EXTERNAL_WAIT)" | grep -qi 'captain' && fail "an external wait never names the captain"
+[ -n "$(owner_of SELF_HANDLE AUTHORIZED STANDING_GRANT)" ] || fail "an authorized step still names its owner"
+printf '%s' "$(owner_of SELF_HANDLE AUTHORIZED STANDING_GRANT)" | grep -qi 'captain' && fail "an authorized step never names the captain"
+pass "the accountable owner follows classification and authority: the captain only for a CAPTAIN result"
+
 # --- presentation never asserts a captain gate for a non-captain reason -------
 
 for code in STANDING_GRANT FIRST_STEP_STANDING_GRANT PROGRAMME_COMPLETE CAPTAIN_CLAIM_WITHOUT_RESERVED_AXIS \
             STEP_CLASSIFICATION_REFUSED STEP_REQUIRES_RULING HOLD_RULING_WAIT HOLD_EXTERNAL_WAIT HOLD_DATE_GATE \
             GRANT_SUPERSEDED GRANT_GENERATION_MISMATCH GRANT_KIND_UNKNOWN HOLD_STORE_UNREADABLE PREDECESSOR_DISPOSITION_UNREADABLE \
-            NEWER_ATTEMPT_WITHOUT_DISPOSITION; do
+            NEWER_ATTEMPT_WITHOUT_DISPOSITION REQUIRED_BINDING_MISSING OWNER_EVIDENCE_UNREADABLE OWNER_EVIDENCE_SOURCE_UNREADABLE \
+            OWNER_EVIDENCE_CONTRADICTORY OWNER_EVIDENCE_MALFORMED OWNER_EVIDENCE_STEP_MISMATCH OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH; do
   text=$(fm_continuation_render_reason "$code" proof-b 'proof-a attempt 3 PROVED' 'detail')
   [ -n "$text" ] || fail "$code renders a sentence"
   printf '%s' "$text" | grep -qiE "$FM_CONTINUATION_GATE_PHRASE_RE" && fail "$code rendered a captain-gate phrase: $text"
 done
 pass "no non-captain reason code renders captain-gate phrasing"
+
+text=$(fm_continuation_render_reason REQUIRED_BINDING_MISSING slice-a '' 'no record at evidence/slice-a.json')
+printf '%s' "$text" | grep -q 'never treated as complete' || fail "REQUIRED_BINDING_MISSING says a landing is never complete: $text"
+printf '%s' "$text" | grep -q 'no record at evidence/slice-a.json' || fail "REQUIRED_BINDING_MISSING carries the detail"
+for code in OWNER_EVIDENCE_UNREADABLE OWNER_EVIDENCE_SOURCE_UNREADABLE; do
+  text=$(fm_continuation_render_reason "$code" slice-c '' 'bytes')
+  printf '%s' "$text" | grep -q 'could not be read (bytes)' || fail "$code renders as unreadable: $text"
+done
+text=$(fm_continuation_render_reason OWNER_EVIDENCE_CONTRADICTORY slice-c '' 'observed-bad')
+printf '%s' "$text" | grep -q 'adverse record is preserved' || fail "OWNER_EVIDENCE_CONTRADICTORY preserves the adverse record: $text"
+text=$(fm_continuation_render_reason OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH ruling '' 'moved bytes')
+printf '%s' "$text" | grep -q 'refused (OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH: moved bytes)' || fail "an OWNER_EVIDENCE_* refusal names its code and detail: $text"
+for code in REQUIRED_BINDING_MISSING OWNER_EVIDENCE_UNREADABLE OWNER_EVIDENCE_CONTRADICTORY OWNER_EVIDENCE_POLICY_MISMATCH; do
+  printf '%s' "$(fm_continuation_render_reason "$code" x '' d)" | grep -q 'Browser Sol' || fail "$code routes to Browser Sol"
+done
+pass "the owner-evidence reason codes render the refusal, its detail, and the Browser Sol route, never a captain gate"
 
 for code in HOLD_RESERVED_AXIS STEP_RESERVED_AXIS; do
   text=$(fm_continuation_render_reason "$code" proof-b '' new_paid_spend)

@@ -57,6 +57,19 @@
 #      reading of the resolution record bin/fm-captain-hold.sh `answer` writes,
 #      shared by that writer and by the resolver's fact retirement so the two
 #      cannot drift.
+#  11. The CLOSED completion-evidence vocabulary (FM_CONTINUATION_EVIDENCE_KINDS):
+#      the terminal_predicate kinds the resolver can represent, and for the
+#      accepted_owner_evidence kind the closed owner kinds
+#      (FM_CONTINUATION_OWNER_KINDS) with each owner kind's closed observed-
+#      outcome vocabulary (fm_continuation_owner_outcomes). An evidence record
+#      is owner-produced machine-readable data the resolver reads and binds;
+#      it never names a command, predicate, plugin, or workflow, and an owner
+#      kind or outcome outside these tables is refused, never interpreted.
+#  12. The accountable-owner projection (fm_continuation_accountable_owner):
+#      the one owner a typed result names as accountable for the next action,
+#      derived from classification, authority state, and reason code only. It
+#      is PRESENTATION and identity material, never authority: CNO names the
+#      engineering owner of the unobservable input, never the captain.
 #
 # Every consumer reads these tables; none re-encodes them. Adding or changing a
 # rule is a one-line edit here and changes every consumer at once.
@@ -65,6 +78,10 @@ FM_CONTINUATION_CLASSIFICATIONS='SELF_HANDLE BROWSER_SOL CAPTAIN EXTERNAL_DEPEND
 FM_CONTINUATION_AUTHORITY_STATES='AUTHORIZED REQUIRES_RULING REQUIRES_CAPTAIN WAITING_EXTERNAL CNO'
 FM_CONTINUATION_HOLD_WAITS='ruling external'
 FM_CONTINUATION_BINDING_KEY='Continuation-binding:'
+FM_CONTINUATION_EVIDENCE_KINDS='latest_attempt_disposition_outcome_in accepted_owner_evidence'
+# shellcheck disable=SC2034  # consumed by fm-continuation-resolve.sh's evidence adapter
+FM_CONTINUATION_EVIDENCE_SCHEMA='fm-accepted-owner-evidence/v1'
+FM_CONTINUATION_OWNER_KINDS='control_ruling control_report pull_request_merge'
 
 # Phrases that assert a captain gate. Matched case-insensitively against
 # captain-facing prose by check-prose; a match is refused unless the typed
@@ -82,6 +99,62 @@ fm_continuation_is_authority_state() {  # <token>
 
 fm_continuation_is_wait() {  # <token>
   case " $FM_CONTINUATION_HOLD_WAITS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+fm_continuation_is_evidence_kind() {  # <terminal_predicate.kind>
+  case " $FM_CONTINUATION_EVIDENCE_KINDS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+fm_continuation_is_owner_kind() {  # <owner.kind>
+  case " $FM_CONTINUATION_OWNER_KINDS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# THE closed observed-outcome vocabulary per owner kind, space-separated. An
+# evidence record whose outcome is not in its owner kind's vocabulary is a
+# forged or unsupported receipt and is refused; a programme step's accept[]
+# then names which of these count as terminal-good for that step.
+#   control_ruling      the decision token a Browser Sol ruling comment records
+#   control_report      a self-report posted on the control venue; it can never
+#                       say it is qualified, so a step that accepts only a
+#                       qualification outcome cannot be completed by one
+#   pull_request_merge  a forge pull-request record; MERGED_QUALIFIED requires
+#                       the record to bind its qualification evidence, else the
+#                       resolver refuses it as malformed
+fm_continuation_owner_outcomes() {  # <owner.kind>
+  case "$1" in
+    control_ruling) printf 'PROCEED_WITH_CONDITIONS ADOPT_OPTION REFUSED OUT_OF_SCOPE_CAPTAIN_RESERVED NO_ANSWER' ;;
+    control_report) printf 'REPORTED REPORTED_SELF_TESTED' ;;
+    pull_request_merge) printf 'OPEN CLOSED_UNMERGED MERGED MERGED_QUALIFIED' ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_continuation_owner_outcome_supported() {  # <owner.kind> <outcome>
+  local vocab
+  vocab=$(fm_continuation_owner_outcomes "$1") || return 1
+  case " $vocab " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# The accountable owner for a typed result, by fixed precedence. Presentation
+# and identity material only.
+fm_continuation_accountable_owner() {  # <classification> <authority-state> <reason-code>
+  local cls=$1 authority=$2 reason=$3
+  if [ "$authority" = CNO ]; then
+    case "$reason" in
+      REQUIRED_BINDING_MISSING|OWNER_EVIDENCE_*) printf 'engineering: the qualification or landing owner that produces the bound completion evidence (no-mistakes, the exact-head merge owner, or the control ruling owner); never the captain' ;;
+      GRANT_*) printf 'engineering: the programme owner that records the grant and its generation; never the captain' ;;
+      HOLD_STORE_UNREADABLE) printf 'engineering: the backlog store owner (tasks-axi in this home); never the captain' ;;
+      *) printf 'engineering: the proof-attempt owner whose newest disposition is unreadable; never the captain' ;;
+    esac
+    return 0
+  fi
+  case "$cls" in
+    SELF_HANDLE) printf 'firstmate under the standing programme grant (delegated engineering)' ;;
+    BROWSER_SOL) printf 'Browser Sol (engineering ruling through the control plane)' ;;
+    CAPTAIN) printf 'the captain (reserved axis)' ;;
+    EXTERNAL_DEPENDENCY) printf 'the external dependency named by the bound hold' ;;
+    *) return 1 ;;
+  esac
 }
 
 # The one classification -> authority-state mapping. CNO is never produced
@@ -280,6 +353,14 @@ fm_continuation_render_reason() {  # <reason-code> <next-action> <predecessor-su
       printf 'The predecessor disposition for %s could not be read (%s); the continuation is unproven and goes to Browser Sol.' "$action" "$detail" ;;
     NEWER_ATTEMPT_WITHOUT_DISPOSITION)
       printf 'The newest attempt of %s has no terminal disposition yet (%s), so no older attempt can stand for it; the continuation is unproven and goes to Browser Sol.' "$action" "$detail" ;;
+    REQUIRED_BINDING_MISSING)
+      printf 'The completion evidence %s requires is not bound (%s); a landing or report without its bound qualification record is never treated as complete, the continuation is unproven and goes to Browser Sol, and no captain word is involved.' "$action" "$detail" ;;
+    OWNER_EVIDENCE_UNREADABLE|OWNER_EVIDENCE_SOURCE_UNREADABLE)
+      printf 'The completion evidence bound to %s could not be read (%s); the continuation is unproven and goes to Browser Sol, never the captain.' "$action" "$detail" ;;
+    OWNER_EVIDENCE_CONTRADICTORY)
+      printf 'The completion evidence bound to %s records an observed-bad contradiction (%s); the adverse record is preserved as it stands, the step is not complete, and the continuation goes to Browser Sol, never the captain.' "$action" "$detail" ;;
+    OWNER_EVIDENCE_*)
+      printf 'The completion evidence bound to %s was refused (%s: %s); nothing is accepted from a record that does not bind this exact work, and the continuation goes to Browser Sol, never the captain.' "$action" "$code" "$detail" ;;
     *)
       printf '%s: %s (%s).' "$code" "$action" "$detail" ;;
   esac

@@ -167,6 +167,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"  # presented-identity read for the programme row
 
 usage() {
   cat <<'EOF'
@@ -1406,11 +1409,20 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # schema fm-continuation-resolution/v1) when this home pins a programme, else
 # {configured:false}. A resolver failure is reported, never replaced by a guess,
 # so no projection over this snapshot can derive programme authority itself.
+# The `presentation` member reads the drain's presented-identity records
+# (bin/fm-programme-presentation-lib.sh) so a status projection can say whether
+# the typed row is already presented, pending acknowledgement, or new, and never
+# recap unchanged state as progress. The binding member is the resolver's own;
+# a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
-  local out rc=0
+  local out rc=0 identity verdict
   out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>&1) || rc=$?
   case "$rc" in
-    0) printf '%s' "$out" | jq -c '. + {configured:true}' ;;
+    0)
+      identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')
+      verdict=$(fm_programme_presentation_state "$STATE" "$identity")
+      printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
+        '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
     3) jq -n '{configured:false}' ;;
     *) jq -n --arg err "$out" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
   esac

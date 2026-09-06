@@ -338,6 +338,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -524,13 +526,27 @@ print_backlog_compact() {
 # reads continuation authority from typed state rather than inferring it from
 # the held rows above or from prose. Exit 3 means no programme is configured
 # and the subsection stays silent; any other failure is shown, never guessed.
+# The wake drain in section 3 already presented any material change once and
+# recorded its identity (bin/fm-programme-presentation-lib.sh); this digest
+# re-reads the typed result for the fresh session and labels whether that
+# state is already acknowledged, pending acknowledgement, or new, so a restart
+# over unchanged state is not mistaken for news. A missing commission/grant
+# binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
+# optional N/A.
 print_programme_continuation() {
-  local out rc=0
+  local out rc=0 identity verdict
   out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$out"
+    identity=$(fm_programme_identity_from_render "$out")
+    verdict=$(fm_programme_presentation_state "$STATE" "$identity")
+    case "$verdict" in
+      unchanged) printf 'Presentation: unchanged since it was last presented and acknowledged (identity %s); not news.\n' "${identity:0:12}" ;;
+      pending-ack) printf 'Presentation: presented by the wake drain above, acknowledgement pending (identity %s).\n' "${identity:0:12}" ;;
+      *) printf 'Presentation: new material state (identity %s); the next wake drain presents it once.\n' "${identity:0:12}" ;;
+    esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
     printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"

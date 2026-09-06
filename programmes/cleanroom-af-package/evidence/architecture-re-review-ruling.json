@@ -1,0 +1,90 @@
+{
+  "schema": "fm-accepted-owner-evidence/v1",
+  "programme_id": "cleanroom-af-package",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "work_id": "cleanroom-af-package",
+  "generation": 1,
+  "evidence_id": "architecture-re-review-ruling-5554585623",
+  "step": "architecture-re-review-ruling",
+  "owner": {
+    "kind": "control_ruling",
+    "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+    "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554585623",
+    "ruler": "browser-sol (captain-delegated)",
+    "posted_at": "2026-09-05T20:30:43Z"
+  },
+  "outcome": "PROCEED_WITH_CONDITIONS",
+  "ruling": {
+    "authority": "captain-delegated-browser-sol",
+    "decision": "PROCEED_WITH_CONDITIONS",
+    "architecture_status": "APPROVED_IN_PRINCIPLE_WITH_REVISIONS",
+    "implementation_authorized": false,
+    "captain_required_for_next_transition": true,
+    "next_transition_answered_by": {
+      "kind": "control_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554812621",
+      "authority": "CAPTAIN",
+      "statement": "I authorize the bounded A-F implementation and concurrency-2 pilot package in control #3 comment 5554585623."
+    }
+  },
+  "accepts": {
+    "proof_id": "proof-b",
+    "attempt": 3,
+    "outcome": "CNO_AT_B-S9",
+    "observed_good": 39,
+    "observed_bad": 0,
+    "could_not_observe": 1,
+    "gating_cno": "V7 maker/checker independence at the forge-principal level (B-S9)",
+    "grade_cap": "principal independence remains a standing grade cap, not a blocker",
+    "statement": "Proof B attempt-3 is terminal NON-FAIL at #28 comment 5554311598: CNO_AT_B-S9, 39 observed-good, one standing principal-independence CNO, zero observed-bad. This satisfies #27's prerequisite for architecture re-review.",
+    "preservation": "the adverse Proof-B evidence is bound below by exact bytes and outcome and is not rewritten; this record accepts that one specific CNO transition through the ruling owner, never CNO in general"
+  },
+  "candidate": {
+    "proof_b_landing": "sbracewell64/fm-cleanroom-proof-b3 PR #1 merged",
+    "proof_b_head": "bcf23f03c2da9e9788578b3751075ae5be018a27"
+  },
+  "policy": {
+    "id": "architecture-review-acceptance-v1",
+    "digest": "42042e4d1385fae2a239283312e819bc04ce4867a44ccf5faa0113a9f5d2a852",
+    "path": "artifacts/control/policy/architecture-review-acceptance-v1.md"
+  },
+  "verifier": {
+    "tool": "gh api (GitHub REST) read by the bounded worker af-programme-binding; digests recomputed with sha256sum over the fetched bytes",
+    "observed_at": "2026-09-06T20:05:00Z",
+    "observation_class": "read-only capture; no ruling, hold, merge, or acceptance was produced by this record"
+  },
+  "captures": [
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554585623",
+      "sha256": "dde295b1a85d1242e523be9121449093db4bf93f1b406ae077540c49183a3469",
+      "bytes": 11949,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    },
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554812621",
+      "sha256": "eef4ec22989763682538cc56259cd3f129631c43d59e3695f17a37e20caf1900",
+      "bytes": 6989,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    }
+  ],
+  "sources": [
+    {
+      "kind": "local_file",
+      "path": "artifacts/proofs/proof-b/attempt-3/disposition.json",
+      "sha256": "619f6bfd82ae8916cdbfcb38da68d662527b21a3bdf3996257c2e62d2c16ef11",
+      "outcome": "CNO_AT_B-S9"
+    },
+    {
+      "kind": "local_file",
+      "path": "artifacts/control/policy/architecture-review-acceptance-v1.md",
+      "sha256": "42042e4d1385fae2a239283312e819bc04ce4867a44ccf5faa0113a9f5d2a852"
+    }
+  ],
+  "observed_bad": [],
+  "superseded_by": null
+}

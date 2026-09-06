@@ -1,0 +1,379 @@
+{
+  "schema": "fm-af-programme/v1",
+  "programme_id": "cleanroom-af-package",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "title": "Bounded A-F implementation package and concurrency-2 pilot",
+  "authorization_basis": {
+    "kind": "standing_sequence_grant",
+    "programme_generation": "fm-af-programme/v1",
+    "refs": [
+      "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621 (Captain: bounded A-F implementation authorization)",
+      "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623 (Browser Sol: post-Proof-B architecture re-review final disposition; A-F packet)",
+      "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)"
+    ],
+    "rule": "Each step is pre-authorized by the standing A-F grant on its predecessor's terminal-good evidence; no further captain approval is required for ordinary reversible implementation inside the bounded package (5554812621). A step is CAPTAIN only when a typed reserved axis gates it; material architecture or acceptance change outside the frozen package routes to Browser Sol."
+  },
+  "invariant": "A continuation or stop decision that depends on authority MUST be derived from current typed authority, hold, and bound completion-evidence state for the exact next action and generation. A landing or report without its bound qualification record is never complete; a missing record is CNO and a contradiction is a refusal, and neither is a captain gate.",
+  "binding": {
+    "commission": {
+      "work_id": "cleanroom-af-package",
+      "work_generation": 1,
+      "parent": "FM-PROGRAMME-BINDING-20260906 under FM-HANDOFF-LIVENESS-2026-09-06 / FM-CONTROL-REQUEST-REPAIR-2026-09-06"
+    },
+    "grant": {
+      "owner": "control_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554812621",
+      "id": 5554812621,
+      "authority": "CAPTAIN",
+      "posted_at": "2026-09-05T21:11:42Z",
+      "capture": {
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554812621",
+        "sha256": "eef4ec22989763682538cc56259cd3f129631c43d59e3695f17a37e20caf1900",
+        "bytes": 6989,
+        "digest_basis": "fetched_bytes",
+        "captured_at": "2026-09-06T20:05:00Z"
+      }
+    },
+    "ruling": {
+      "owner": "control_ruling",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554585623",
+      "id": 5554585623,
+      "decision": "PROCEED_WITH_CONDITIONS",
+      "capture": {
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554585623",
+        "sha256": "dde295b1a85d1242e523be9121449093db4bf93f1b406ae077540c49183a3469",
+        "bytes": 11949,
+        "digest_basis": "fetched_bytes",
+        "captured_at": "2026-09-06T20:05:00Z"
+      }
+    },
+    "repair_authorization": [
+      {
+        "kind": "direction",
+        "ref": "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/31#issuecomment-5561595302",
+        "id": 5561595302,
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561595302",
+          "sha256": "595f0ff7f043b78860c78e74b558b0254f6cc78a514c18a98f20d20b3feb2561",
+          "bytes": 10515,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        }
+      },
+      {
+        "kind": "acceptance-clarification",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5561657082",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5561657082",
+        "id": 5561657082,
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561657082",
+          "sha256": "8cd335587d5a49f45948daab5ca2fdf69682808eee1b191db58777233052b86e",
+          "bytes": 5739,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        }
+      }
+    ],
+    "published_rulings_pending_consumption": [
+      {
+        "ref": "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561634429",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/31#issuecomment-5561634429",
+        "id": 5561634429,
+        "ruling_id": "sol-ruling-f-programme-binding-20260906-b",
+        "in_reply_to": "fscr2-b52a749156e3fc9a2dadd126a08af682",
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561634429",
+          "sha256": "8c09a6722077840185959f9f25745d35a70ad698ad3d3fa6f6644ae306f55bd7",
+          "bytes": 9496,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        },
+        "state": "published on the venue; consumption through the fm-sol-control/v2 consume path, its receipt, and its applicability are a separate observation this programme does not assert"
+      }
+    ],
+    "consumer": {
+      "contract": "fm-continuation-resolution/v1",
+      "projection": "fm-programme-projection/v1"
+    },
+    "evidence_kinds": [
+      "latest_attempt_disposition_outcome_in",
+      "accepted_owner_evidence"
+    ],
+    "programme_generation": "fm-af-programme/v1",
+    "supersedes_for_this_use": [
+      {
+        "programme_id": "cleanroom-requalification",
+        "path": "artifacts/control/programme-recommendation/programme.json",
+        "sha256": "8f2b203bb1d70fdb862ed037dc9ad02f3ea1eba7970f8d7be7bf7d93e922a1c2",
+        "role": "historical recommendation programme retained unchanged as evidence; its proof-a -> proof-b -> architecture-re-review -> phase-manager-pilot representation is superseded for the A-F package by this programme, and its adverse Proof-B evidence stays where it is"
+      }
+    ]
+  },
+  "reserved_axes": [
+    "new_paid_spend",
+    "security_control_weakening",
+    "privacy_exposure",
+    "credential_or_identity_provisioning",
+    "destructive_or_irreversible",
+    "personal_or_product_preference"
+  ],
+  "delegation": {
+    "max_concurrency": 2
+  },
+  "steps": [
+    {
+      "id": "architecture-re-review-ruling",
+      "title": "completed post-Proof-B architecture re-review (predecessor obligation)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/architecture-re-review-ruling.json",
+        "accept": [
+          "PROCEED_WITH_CONDITIONS"
+        ],
+        "evidence_sha256": "2f14efa3cc887f19503daa68545d8b1f867e8b06f0a54bbf10acd9ba9e826efa",
+        "evidence_generation": 1,
+        "owner_ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+        "policy_digest": "42042e4d1385fae2a239283312e819bc04ce4867a44ccf5faa0113a9f5d2a852",
+        "candidate": {
+          "proof_b_head": "bcf23f03c2da9e9788578b3751075ae5be018a27"
+        }
+      },
+      "phase": "predecessor-obligations",
+      "classification_when_next": "BROWSER_SOL",
+      "notes": "Represents the completed architecture ruling through its governed owner (5554585623) and preserves Proof-B attempt-3 CNO_AT_B-S9 by exact bytes. It is not a proof attempt and no proof attempt is fabricated for it; if this record were absent the step would wait on a Browser Sol ruling, never the captain."
+    },
+    {
+      "id": "slice-c-s3-changed-owner-evidence",
+      "title": "C / S3 - hardened changed-owner evidence view (bin/fm-review-diff.sh)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/slice-c-s3-pr5-landing.json",
+        "accept": [
+          "MERGED_QUALIFIED"
+        ],
+        "evidence_sha256": "2c732e9721109e25ba7f2e990b57c59e688099cefa4a4e0425384a3a2199af44",
+        "evidence_generation": 1,
+        "owner_ref": "sbracewell64/firstmate-cleanroom#5",
+        "candidate": {
+          "head": "9ce75aa2edcea3e94981c35fd217102a8fe26585",
+          "merge_commit": "dc66ba5ce35be4917424a529a45e61f4a9fa556c"
+        }
+      },
+      "phase": "package-qualification",
+      "depends_on": [
+        "architecture-re-review-ruling"
+      ],
+      "classification_when_next": "SELF_HANDLE"
+    },
+    {
+      "id": "slice-e-projection-substrate",
+      "title": "E - read-only programme projection substrate (bin/fm-programme-projection.sh)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/slice-e-pr6-landing.json",
+        "accept": [
+          "MERGED_QUALIFIED"
+        ],
+        "evidence_sha256": "a9d5faf7ca74b12a6a739c578fa52fe79c3b00cb1f30690f333e423dc5a1761e",
+        "evidence_generation": 1,
+        "owner_ref": "sbracewell64/firstmate-cleanroom#6",
+        "candidate": {
+          "head": "a5c08ba75817eccb8a9ed98dd616134d09be894a",
+          "merge_commit": "9783fc78f0873ec436c32268ec0f10f42366033f"
+        }
+      },
+      "phase": "package-qualification",
+      "depends_on": [
+        "architecture-re-review-ruling"
+      ],
+      "classification_when_next": "SELF_HANDLE"
+    },
+    {
+      "id": "slice-a-s1-publication-integrity",
+      "title": "A / S1 - coherent publication/exporter integrity (exchange/bin/render-manifest.py, exchange-current.py)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/slice-a-s1-qualification.json",
+        "accept": [
+          "MERGED_QUALIFIED",
+          "ADOPT_OPTION"
+        ]
+      },
+      "phase": "package-qualification",
+      "depends_on": [
+        "architecture-re-review-ruling"
+      ],
+      "classification_when_next": "SELF_HANDLE",
+      "reported": {
+        "owner": "control_report",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554936473",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554936473",
+        "outcome": "REPORTED_SELF_TESTED",
+        "slice": "A / S1",
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554936473",
+          "sha256": "d82f34cdaef6b925c5d0f2c584c3b0e0d20dab8cdd8ec3d98a94c5e8c8afe960",
+          "bytes": 3473,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        },
+        "deliverables": [
+          "exchange/bin/render-manifest.py",
+          "exchange/bin/exchange-current.py",
+          "exchange/tests/test_render_manifest_s1.py",
+          "exchange/tests/test_exchange_s1_integrity.py"
+        ],
+        "note": "a self-report on the control venue; it is NOT qualification evidence and does not complete this step"
+      },
+      "related": {
+        "reference_closure": "FM-REFERENCE-CLOSURE-20260906",
+        "trace": {
+          "kind": "local_file",
+          "path": "artifacts/diagnostics/fm-handoff-liveness/trace-20260906.md",
+          "sha256": "d3d776443de7500eb7574215b3a53ca3c5f749a9a29d6d165582a96d4da510d1"
+        },
+        "note": "the publication handoff traced there (edges 4-9 pending on the interactive publisher and Browser Sol read-back) is S1 delivery evidence, not a prerequisite manufactured for the pilot"
+      },
+      "qualification_required": "independent qualification of the S1 deliverables through the normal gates (5554812621 F: after A-E independently qualify); the deliverables live outside a git repository, so the accepted record is either a pull_request_merge MERGED_QUALIFIED once they land through a qualified path or a control_ruling ADOPT_OPTION on a request that binds their exact bytes"
+    },
+    {
+      "id": "slice-b-s2-reference-catalog",
+      "title": "B / S2 - generated reference/check catalog plus role-selective context (exchange/bin/render-check-catalog.py)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/slice-b-s2-qualification.json",
+        "accept": [
+          "MERGED_QUALIFIED",
+          "ADOPT_OPTION"
+        ]
+      },
+      "phase": "package-qualification",
+      "depends_on": [
+        "architecture-re-review-ruling"
+      ],
+      "classification_when_next": "SELF_HANDLE",
+      "reported": {
+        "owner": "control_report",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554986399",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554986399",
+        "outcome": "REPORTED_SELF_TESTED",
+        "slice": "B / S2",
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554986399",
+          "sha256": "0d90d23d5e0d9c6b75d18405bc8823a329cdfc15912a1235a6ceeaa1bc4b827e",
+          "bytes": 3827,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        },
+        "deliverables": [
+          "exchange/bin/render-check-catalog.py",
+          "exchange/reference/checks.registry.tsv",
+          "exchange/tests/test_check_catalog.py"
+        ],
+        "note": "a self-report on the control venue; it is NOT qualification evidence and does not complete this step"
+      },
+      "qualification_required": "as for slice A"
+    },
+    {
+      "id": "slice-d-s4-synthesis-integrity",
+      "title": "D / S4 - synthesis-integrity stable keys plus bounded semantic-diff (artifacts/synthesis/bin/synthesis-integrity.py)",
+      "terminal_predicate": {
+        "kind": "accepted_owner_evidence",
+        "evidence": "evidence/slice-d-s4-qualification.json",
+        "accept": [
+          "MERGED_QUALIFIED",
+          "ADOPT_OPTION"
+        ]
+      },
+      "phase": "package-qualification",
+      "depends_on": [
+        "architecture-re-review-ruling"
+      ],
+      "classification_when_next": "SELF_HANDLE",
+      "reported": {
+        "owner": "control_report",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5555075358",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5555075358",
+        "outcome": "REPORTED_SELF_TESTED",
+        "slice": "D / S4",
+        "capture": {
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5555075358",
+          "sha256": "5fe95fd82a277bdeb039fbe75f25d5a96cc09c16b435a90a72801b3a17778e5d",
+          "bytes": 3860,
+          "digest_basis": "fetched_bytes",
+          "captured_at": "2026-09-06T20:05:00Z"
+        },
+        "deliverables": [
+          "artifacts/synthesis/bin/synthesis-integrity.py",
+          "artifacts/synthesis/synthesis-keys.tsv",
+          "artifacts/synthesis/tests"
+        ],
+        "note": "a self-report on the control venue; it is NOT qualification evidence and does not complete this step"
+      },
+      "qualification_required": "as for slice A"
+    },
+    {
+      "id": "pilot-f-concurrency-2",
+      "title": "F - ONE two-independent-assignment pilot at concurrency 2 under the pre-frozen measurement contract",
+      "phase": "pilot",
+      "depends_on": [
+        "architecture-re-review-ruling",
+        "slice-c-s3-changed-owner-evidence",
+        "slice-e-projection-substrate",
+        "slice-a-s1-publication-integrity",
+        "slice-b-s2-reference-catalog",
+        "slice-d-s4-synthesis-integrity"
+      ],
+      "artifact_root": "artifacts/proofs/af-pilot-f",
+      "terminal_predicate": {
+        "kind": "latest_attempt_disposition_outcome_in",
+        "accept": [
+          "PROVED",
+          "COMPLETE"
+        ]
+      },
+      "classification_when_next": "SELF_HANDLE",
+      "delegation": {
+        "max_concurrency": 2
+      },
+      "pilot_contract": {
+        "source": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623 (F) and sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621 (F)",
+        "assignments": 2,
+        "independent_assignments": true,
+        "concurrency": 2,
+        "automatic_ramp": false,
+        "stop_after_one_pilot": true,
+        "requires": [
+          "two genuinely independent ordinary assignments with exact candidate and worker identity",
+          "replacement rejects stale worker effects",
+          "a waiting lane must not block an independent lane",
+          "hidden fan-out counts under the ceiling of 2"
+        ],
+        "measurements": [
+          "qualified-landed throughput",
+          "cycle time",
+          "rework/recurrence",
+          "check overhead and false alarms",
+          "context bytes/tokens and missing-reference events",
+          "source/read-back failures",
+          "Browser Sol wait time",
+          "hidden fan-out",
+          "captain interventions"
+        ],
+        "launch": "a later protected effect with immediate applicability revalidation; never launched by this programme file, the resolver, or the projection"
+      },
+      "notes": "Distinct from the historical requalification programme's phase-manager-pilot step; a hold or record bound to that id never gates this step."
+    }
+  ]
+}

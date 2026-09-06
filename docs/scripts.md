@@ -33,6 +33,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-continuation-resolve.sh` | Single deterministic owner of a pinned programme's next action and its typed authority, with a presentation renderer and a captain-gate prose check |
 | `fm-continuation-lib.sh` | Single owner of the programme continuation vocabulary, hold-effect and step-default tables, binding line, and reason-code presentation |
 | `fm-programme-projection.sh` | Stateless read-only projection tuple composed over `fm-continuation-resolve.sh`, adding phase and worker generations, an applicability tuple, and returned-not-enforced delegation bounds |
+| `fm-programme-presentation-lib.sh` | Single owner of the programme continuation's quiet presentation: present a material identity once, stay quiet on unchanged state, and acknowledge only the identity actually presented |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
 | `fm-dod-lib.sh`          | One owner of the ship task's mode-specific definition of done, rendered by both the brief scaffold and a scout promotion |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
@@ -105,7 +106,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor and quota snapshot schema validation           |
 | `fm-quota-choose.sh`     | Choose the first candidate with known positive quota from an ordered harness:model list |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
-| `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, decision, divergence, recovery, and supervision checks |
+| `fm-wake-drain.sh`       | Present and acknowledge the current actor's claimed wake rows alongside status, decision, divergence, programme-continuation, recovery, and supervision checks |
 | `fm-wake-grant.sh`       | Serialize Pi supervision-branch wake-row claim activation, publication, release, and deactivation |
 | `fm-wake-lib.sh`         | Shared durable wake queue, recovery generations, portable locks, and watcher identity/health helpers |
 | `fm-classify-lib.sh`     | Shared wake-classification vocabulary, durable keyed-decision folds and scans, and unread informational status-line selection |

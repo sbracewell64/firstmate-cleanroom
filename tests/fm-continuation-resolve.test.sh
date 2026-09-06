@@ -1354,6 +1354,17 @@ queue_wake() {  # <home>
   ' _ "$ROOT/bin/fm-wake-lib.sh"
 }
 
+# present_pending <home>: the presenter the drain calls on a WAKE_ACK_REQUIRED
+# turn, run through the library's own interface so a pending record can be
+# left behind exactly as a turn whose acknowledgement never ran leaves it.
+present_pending() {  # <home>
+  FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$1" FM_CONFIG_OVERRIDE="$1/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_programme_present "$2" pending
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$1/state"
+}
+
 test_af_presentation_quiet_and_ack_race() {
   local home out ack first second third presented snap view token
   home=$(make_af_home af-present)
@@ -1418,6 +1429,51 @@ test_af_presentation_quiet_and_ack_race() {
   assert_contains "$out" "EXTERNAL_DEPENDENCY / WAITING_EXTERNAL" "the newer state is what surfaces"
   [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$third" ] || fail "the newer identity is committed by the no-ack drain"
   pass "a material change is presented once per identity, acknowledged only as presented, and state that moves between presentation and acknowledgement surfaces again instead of being swallowed"
+
+  # A pending record whose acknowledgement never ran: a later no-ack turn over
+  # the same identity stays quiet and promotes exactly that pending identity,
+  # so the readers converge on unchanged.
+  local fourth fifth sixth
+  tasks_in "$home" unhold pilot-wait >/dev/null
+  fourth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$fourth" != "$third" ] || fail "fixture: lifting the hold must change the identity"
+  out=$(present_pending "$home") || fail "pending presentation failed"
+  assert_contains "$out" "presented identity ${fourth:0:12}; it is acknowledged by the WAKE_ACK_REQUIRED command" "the lingering pending record is presented as pending"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$fourth" ] || fail "the lingering pending record carries the presented identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$third" ] || fail "the acknowledged record is untouched by a pending presentation"
+  snap=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$SNAPSHOT" --json) || fail "pending snapshot failed"
+  [ "$(field "$snap" '.programme_continuation.presentation.state')" = pending-ack ] || fail "snapshot labels the lingering record pending-ack before a no-ack turn"
+  out=$(run_drain "$home" 2>/dev/null) || fail "converging drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "a no-ack turn over the pending identity must stay quiet: $out"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$fourth" ] || fail "the no-ack turn promotes exactly the pending identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the promoted pending record is removed"
+  snap=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$SNAPSHOT" --json) || fail "converged snapshot failed"
+  [ "$(field "$snap" '.programme_continuation.presentation.state')" = unchanged ] || fail "snapshot converges on unchanged after the no-ack turn"
+  [ "$(field "$snap" '.programme_continuation.presentation.presented_identity')" = "$fourth" ] || fail "snapshot carries the promoted identity"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-convergence drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "converged state stays quiet"
+  pass "a no-ack turn over a lingering pending identity stays quiet, promotes exactly that identity, and the readers converge on unchanged"
+
+  # The race on a no-ack turn: the pending identity is never acknowledged
+  # when the state has moved on; the newer state is presented once and
+  # committed, and the superseded pending identity is never written as presented.
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED \
+    '.candidate = {merge_commit:"1111111111111111111111111111111111111111"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .generation = 2'
+  fifth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$fifth" != "$fourth" ] || fail "fixture: a re-issued record must change the identity"
+  out=$(present_pending "$home") || fail "second pending presentation failed"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$fifth" ] || fail "the pending record carries the re-issued identity"
+  bound_hold "$home" pilot-wait-2 external pilot-f '' cleanroom-af-package external
+  sixth=$(run_resolve "$home" resolve | jq -r '.material_identity')
+  [ "$sixth" != "$fifth" ] && [ "$sixth" != "$fourth" ] || fail "fixture: the new hold must change the identity again"
+  out=$(run_drain "$home" 2>/dev/null) || fail "race drain failed"
+  [ "$(printf '%s\n' "$out" | grep -c "PROGRAMME CONTINUATION (material state changed")" = 1 ] || fail "the newer state is presented exactly once: $out"
+  assert_contains "$out" "presented identity ${sixth:0:12} (acknowledged with this presentation" "the no-ack turn commits the newer identity"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$sixth" ] || fail "the committed record is the newer identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the superseded pending record is discarded, never promoted"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-race drain failed"
+  printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "the committed newer state stays quiet"
+  pass "a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once"
 }
 
 timed() {  # <test-function>

@@ -34,7 +34,13 @@
 #      digest of its exit code and message, so a broken pin surfaces once and
 #      then stays quiet until it changes.
 #   2. Compare the identity with the acknowledged record AND the pending
-#      record: equal to either is unchanged -> print nothing, return 0.
+#      record: equal to either is unchanged -> print nothing, return 0. When
+#      it equals the pending record and the mode is `commit` (a no-ack turn
+#      has observed the same state again), the pending record is promoted to
+#      the acknowledged record exactly as fm_programme_ack_pending would, so
+#      readers converge on "unchanged" instead of labelling the state
+#      pending-ack forever; the identity promoted is still only the one that
+#      was presented, never a current identity that differs from it.
 #   3. Otherwise print the PROGRAMME CONTINUATION section once and record the
 #      identity: mode `pending` writes .programme-presented.pending for a
 #      later acknowledgement; mode `commit` (a turn that prints no
@@ -126,7 +132,14 @@ $out"
       ;;
   esac
   verdict=$(fm_programme_presentation_state "$state" "$identity")
-  [ "$verdict" = changed ] || return 0
+  case "$verdict" in
+    unchanged) return 0 ;;
+    pending-ack)
+      [ "$mode" = commit ] || return 0
+      fm_programme_ack_pending "$state"
+      return $?
+      ;;
+  esac
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
   printf '%s\n' "$out"
   if [ "$mode" = pending ]; then

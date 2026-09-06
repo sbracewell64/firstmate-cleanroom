@@ -473,7 +473,8 @@ test_owner_evidence_programme_composes() {
   jq -n '{schema:"fm-af-programme/v1", programme_id:"cleanroom-af-package",
     authorization_basis:{kind:"standing_sequence_grant", refs:["grant"]},
     binding:{commission:{work_id:"cleanroom-af-package", work_generation:1}, grant:{owner:"control_grant", ref:"control#3#issuecomment-5554812621", id:5554812621},
-             consumer:{contract:"fm-continuation-resolution/v1"}, evidence_kinds:["latest_attempt_disposition_outcome_in","accepted_owner_evidence"]},
+             consumer:{contract:"fm-continuation-resolution/v1"}, evidence_kinds:["latest_attempt_disposition_outcome_in","accepted_owner_evidence"],
+             programme_generation:"fm-af-programme/v1"},
     reserved_axes:["new_paid_spend"],
     steps:[
       {id:"ruling", phase:"predecessor-obligations", terminal_predicate:{kind:"accepted_owner_evidence", evidence:"evidence/ruling.json", accept:["PROCEED_WITH_CONDITIONS"]}, classification_when_next:"BROWSER_SOL"},

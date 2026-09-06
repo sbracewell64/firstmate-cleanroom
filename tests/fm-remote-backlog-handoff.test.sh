@@ -18,35 +18,127 @@ SSH_COUNT="$TMP_ROOT/ssh.count"
 WAKE_LOG="$TMP_ROOT/wake.log"
 mkdir -p "$PARENT/data" "$PARENT/state" "$REMOTE_ROOT/bin" \
   "$REMOTE/data" "$REMOTE/state" "$REMOTE/config" "$REMOTE/projects" "$REMOTE/bin"
-# Tear down deterministically. Releasing the blocked stages and killing the
-# detached remote worker is not enough on its own: kill only signals, so the
-# worker (and this shell's own background stages) could still be writing into
-# $TMP_ROOT when rm -rf ran, which surfaced as a real CI flake:
+
+# Every sentinel wait in this fixture shares one hang guard, so a stranded gate
+# or a wedged background handoff becomes a prompt failure instead of holding a
+# CI shard to its job cap. The guard is not a timing assertion: each wait
+# returns the instant its event lands, and a healthy run never pays it. The old
+# per-wait budget of 250 x 20ms was a timing assertion in disguise. A healthy
+# first serialized handoff consumed about 210 of those ticks locally, because
+# reaching receipt costs three tasks-axi invocations plus one remote job round
+# trip before the receive call, and on CI run 34000833102 (2026-09-06) a slower
+# runner outran it. The receipt wait has its own override so
+# tests/fm-remote-backlog-handoff-failfast.test.sh can force that exact failure
+# and prove the fixture terminates promptly.
+GATE_SECONDS=${FM_REMOTE_HANDOFF_GATE_SECONDS:-60}
+RECEIPT_GATE_SECONDS=${FM_REMOTE_HANDOFF_RECEIPT_GATE_SECONDS:-$GATE_SECONDS}
+
+# fixture_deadline <seconds>: an epoch-second deadline that far ahead.
+fixture_deadline() { printf '%s\n' "$(( $(date +%s) + $1 ))"; }
+
+# fixture_expired <deadline>: 0 once the deadline has passed.
+fixture_expired() { [ "$(date +%s)" -ge "$1" ]; }
+
+# fixture_descendants <pid>: every live descendant of <pid>, deepest first.
+fixture_descendants() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    fixture_descendants "$child"
+    printf '%s\n' "$child"
+  done
+}
+
+fixture_any_alive() {
+  local pid
+  for pid in "$@"; do
+    kill -0 "$pid" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# fixture_stop_tree <pid>...: terminate each process and its whole descendant
+# tree, wait a bounded moment for them to exit, then kill whatever remains. A
+# background handoff parked inside fake-ssh is a bash process blocked on a
+# foreground sleep, so signalling only the job's own pid would be deferred
+# until that gate released; the tree walk reaches the gate itself.
+fixture_stop_tree() {
+  local pid i
+  local -a pids=()
+  for pid in "$@"; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    while IFS= read -r child; do
+      [ -n "$child" ] && pids+=("$child")
+    done < <(fixture_descendants "$pid")
+    pids+=("$pid")
+  done
+  [ "${#pids[@]}" -gt 0 ] || return 0
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] && fixture_any_alive "${pids[@]}"; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  fixture_any_alive "${pids[@]}" || return 0
+  kill -KILL "${pids[@]}" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] && fixture_any_alive "${pids[@]}"; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+}
+
+# fixture_stop_worker: stop the detached remote worker through the remote job
+# library's own owner of that contract. worker.pid names the serving child,
+# whose Linux restart supervisor is its parent rather than a descendant, so a
+# descendant walk from that pid would leave the supervisor alive to respawn a
+# fresh worker over the tree about to be removed. The library signals the
+# worker's isolated process group, supervisor and child together, TERM then
+# KILL, each bounded.
+fixture_stop_worker() {
+  local lib="$REMOTE_ROOT/bin/fm-remote-job-lib.sh"
+  [ -f "$lib" ] || lib="$ROOT/bin/fm-remote-job-lib.sh"
+  (
+    # shellcheck source=bin/fm-remote-job-lib.sh
+    . "$lib"
+    export FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
+    fm_remote_job_prepare_state "$REMOTE" || exit 0
+    worker_pid=$(cat "$(fm_remote_job_worker_pid_path)" 2>/dev/null || true)
+    [ -n "$worker_pid" ] || exit 0
+    fm_remote_job_stop_worker_tree "$worker_pid"
+  ) 2>/dev/null || true
+}
+
+# Tear down deterministically and promptly, on success and on a failed
+# assertion alike. Stop each still-running background stage with its whole
+# process tree first (a stage parked in a fake-ssh gate is otherwise reaped
+# only when that gate releases, which is the hang CI run 34000833102 sat in
+# for 19 minutes), then stop the remote worker tree, and only then release
+# every gate this fixture can park a stage behind: releasing first would let a
+# parked stage submit one more job to the worker in the moment before its
+# signal lands. Then wait for the shell's background jobs, which now all exit
+# promptly, before removing the tree: kill only signals, so a worker or stage
+# still writing into $TMP_ROOT surfaced as a real CI flake once:
 #   rm: cannot remove '/tmp/fm-remote-handoff.XXXXXX': Directory not empty
-# So wait for the worker to actually exit and drain the shell's background jobs
-# before removing the tree, then retry rm -rf until the now-quiesced tree is gone.
+# Retry rm -rf until the now-quiesced tree is gone, then run the shared
+# lib.sh cleanup so its registry file does not outlive the fixture.
 fm_remote_handoff_teardown() {
-  local worker_pid i
-  touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" 2>/dev/null || true
-  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
-    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
-    if [ -n "$worker_pid" ]; then
-      kill "$worker_pid" 2>/dev/null || true
-      i=0
-      while [ "$i" -lt 500 ] && kill -0 "$worker_pid" 2>/dev/null; do
-        sleep 0.01
-        i=$((i + 1))
-      done
-    fi
-  fi
+  local job i
+  local -a jobs=()
+  while IFS= read -r job; do
+    [ -n "$job" ] && jobs+=("$job")
+  done < <(jobs -p)
+  [ "${#jobs[@]}" -eq 0 ] || fixture_stop_tree "${jobs[@]}"
+  if [ -d "$TMP_ROOT/remote-jobs" ]; then fixture_stop_worker; fi
+  touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" "$TMP_ROOT/serialize.release" 2>/dev/null || true
   wait 2>/dev/null || true
   i=0
   while [ "$i" -lt 50 ]; do
-    rm -rf -- "$TMP_ROOT" 2>/dev/null && return 0
+    rm -rf -- "$TMP_ROOT" 2>/dev/null && break
     sleep 0.02
     i=$((i + 1))
   done
   rm -rf -- "$TMP_ROOT" 2>/dev/null || true
+  fm_test_cleanup
 }
 trap fm_remote_handoff_teardown EXIT
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
@@ -109,7 +201,14 @@ case "${FM_FAKE_SSH_MODE:-normal}:$command_name" in
   serialize:fm-backlog-receive.sh)
     if mkdir "$FM_FAKE_SERIALIZE_ONCE" 2>/dev/null; then
       touch "$FM_FAKE_SERIALIZE_ENTERED"
-      while [ ! -f "$FM_FAKE_SERIALIZE_RELEASE" ]; do sleep 0.02; done
+      gate_deadline=$(( $(date +%s) + FM_FAKE_SERIALIZE_GATE_SECONDS ))
+      while [ ! -f "$FM_FAKE_SERIALIZE_RELEASE" ]; do
+        if [ "$(date +%s)" -ge "$gate_deadline" ]; then
+          printf 'fake-ssh: serialize gate was never released within %ss\n' "$FM_FAKE_SERIALIZE_GATE_SECONDS" >&2
+          exit 93
+        fi
+        sleep 0.02
+      done
     fi
     exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@"
     ;;
@@ -136,6 +235,7 @@ handoff_env() {
   FM_FAKE_SERIALIZE_ONCE="$TMP_ROOT/serialize.once" \
   FM_FAKE_SERIALIZE_ENTERED="$TMP_ROOT/serialize.entered" \
   FM_FAKE_SERIALIZE_RELEASE="$TMP_ROOT/serialize.release" \
+  FM_FAKE_SERIALIZE_GATE_SECONDS="$GATE_SECONDS" \
   FM_FAKE_REMOTE_ENTRYPOINT="$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
   FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" \
@@ -177,17 +277,23 @@ race_hash=$(sha256_file "$TMP_ROOT/race-payload")
 (
   set -o pipefail
   (
-    while [ ! -f "$TMP_ROOT/put.release" ]; do sleep 0.02; done
+    put_gate_deadline=$(fixture_deadline "$GATE_SECONDS")
+    while [ ! -f "$TMP_ROOT/put.release" ]; do
+      if fixture_expired "$put_gate_deadline"; then
+        printf 'put gate was never released within %ss\n' "$GATE_SECONDS" >&2
+        exit 93
+      fi
+      sleep 0.02
+    done
     cat "$TMP_ROOT/race-payload"
   ) | FM_HOME="$REMOTE" "$REMOTE_ROOT/bin/fm-remote-file.sh" \
     put state/handoff/race.outbox.md 1024 "$race_bytes" "$race_hash" 1
 ) > "$TMP_ROOT/put-race.out" 2>&1 &
 put_race_pid=$!
-put_wait=0
+put_deadline=$(fixture_deadline "$GATE_SECONDS")
 while ! find "$REMOTE/state/handoff" -maxdepth 1 -name '.put.*' -print -quit | grep -q .; do
   kill -0 "$put_race_pid" 2>/dev/null || fail "confined put exited before staging input"
-  put_wait=$((put_wait + 1))
-  [ "$put_wait" -le 250 ] || fail "confined put never staged input"
+  fixture_expired "$put_deadline" && fail "confined put never staged input within ${GATE_SECONDS}s"
   sleep 0.02
 done
 mv "$REMOTE/state/handoff" "$TMP_ROOT/pinned-handoff"
@@ -280,11 +386,12 @@ write_backlog '- [ ] serialized-a - first concurrent handoff (repo: alpha)'
 FM_FAKE_SSH_MODE=serialize handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios serialized-a \
   > "$TMP_ROOT/serialized-a.out" 2>&1 &
 handoff_a=$!
-wait_for_serialization=0
+receipt_deadline=$(fixture_deadline "$RECEIPT_GATE_SECONDS")
 while [ ! -f "$TMP_ROOT/serialize.entered" ]; do
-  kill -0 "$handoff_a" 2>/dev/null || fail "first serialized handoff exited before receipt"
-  wait_for_serialization=$((wait_for_serialization + 1))
-  [ "$wait_for_serialization" -le 250 ] || fail "first serialized handoff never reached receipt"
+  kill -0 "$handoff_a" 2>/dev/null \
+    || fail "first serialized handoff exited before receipt"$'\n'"--- handoff output ---"$'\n'"$(cat "$TMP_ROOT/serialized-a.out")"
+  fixture_expired "$receipt_deadline" \
+    && fail "first serialized handoff never reached receipt within ${RECEIPT_GATE_SECONDS}s"$'\n'"--- handoff output ---"$'\n'"$(cat "$TMP_ROOT/serialized-a.out")"
   sleep 0.02
 done
 write_backlog '- [ ] serialized-b - second concurrent handoff (repo: alpha)'
@@ -409,20 +516,29 @@ FM_HOME="$PARENT" /bin/bash -c '
   fm_lock_acquire_wait "$2"
   fm_lock_acquire_wait "$3"
   touch "$4"
-  while [ ! -f "$5" ]; do sleep 0.02; done
+  gate_deadline=$(( $(date +%s) + $7 ))
+  while [ ! -f "$5" ]; do
+    if [ "$(date +%s)" -ge "$gate_deadline" ]; then
+      printf "route gate was never released within %ss\n" "$7" >&2
+      fm_lock_release "$3"
+      fm_lock_release "$2"
+      exit 93
+    fi
+    sleep 0.02
+  done
   tmp="$6.tmp.$$"
   grep -vE "^- ios( |$)" "$6" > "$tmp" || true
   mv -f -- "$tmp" "$6"
   fm_lock_release "$3"
   fm_lock_release "$2"
 ' _ "$ROOT/bin/fm-wake-lib.sh" "$registry_lock" "$handoff_lock" \
-  "$TMP_ROOT/route.entered" "$TMP_ROOT/route.release" "$PARENT/data/secondmates.md" &
+  "$TMP_ROOT/route.entered" "$TMP_ROOT/route.release" "$PARENT/data/secondmates.md" \
+  "$GATE_SECONDS" &
 route_holder_pid=$!
-route_wait=0
+route_deadline=$(fixture_deadline "$GATE_SECONDS")
 while [ ! -f "$TMP_ROOT/route.entered" ]; do
   kill -0 "$route_holder_pid" 2>/dev/null || fail "route lock holder exited before acquiring lifecycle locks"
-  route_wait=$((route_wait + 1))
-  [ "$route_wait" -le 250 ] || fail "route lock holder never acquired lifecycle locks"
+  fixture_expired "$route_deadline" && fail "route lock holder never acquired lifecycle locks within ${GATE_SECONDS}s"
   sleep 0.02
 done
 handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios route-race \

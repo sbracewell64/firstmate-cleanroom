@@ -54,8 +54,10 @@
 #      itself, or a LATER step (the pinned order is the sequence; a dependency
 #      on a later step is an order contradiction and a cycle is impossible
 #      once every dependency points earlier); a `terminal_predicate.candidate`
-#      pin that is not an object. The walk itself stays sequential: the next
-#      action is the first step in pinned order that is not terminal-good.
+#      pin that is not an object; a `terminal_predicate.accept` that is not a
+#      non-empty array of outcome strings (membership is exact, never a
+#      substring). The walk itself stays sequential: the next action is the
+#      first step in pinned order that is not terminal-good.
 #      The optional top-level `project` (forge slug) and `binding` object are
 #      data the evidence adapter and the callers consume (see 2b and BINDING).
 #   2. Proof dispositions: <root>/<artifact_root>/attempt-<n>/disposition.json,
@@ -344,9 +346,10 @@ validate_structure() {
   # under a whitespace IFS and shift the columns.
   rows=$(jq -r '.steps[] | [(.id // ""), (.terminal_predicate.kind // ""), (.artifact_root // "" | tostring), (.terminal_predicate.evidence // "" | tostring),
                             ((.terminal_predicate.candidate // {}) | type),
+                            (.terminal_predicate.accept | if type == "array" and length > 0 and all(type == "string") then "ok" elif type == "array" then "array of " + (length | tostring) + " non-string or no entries" else type end),
                             ((.depends_on // []) | if type == "string" then [.] elif type == "array" then . else ["<invalid>"] end | map(tostring) | join(" "))] | join("\u001f")' "$PROGRAMME")
   i=0
-  while IFS=$'\x1f' read -r sid kind root evidence cand_type deps; do
+  while IFS=$'\x1f' read -r sid kind root evidence cand_type accept_shape deps; do
     fm_continuation_is_slug "$sid" || fail "steps[$i].id must be a slug"
     fm_continuation_is_evidence_kind "$kind" \
       || fail "steps[$i] ($sid) terminal_predicate.kind must be one of: $FM_CONTINUATION_EVIDENCE_KINDS (got ${kind:-absent})"
@@ -355,6 +358,7 @@ validate_structure() {
       "$OWNER_KIND") [ -n "$evidence" ] || fail "steps[$i] ($sid) names no terminal_predicate.evidence record" ;;
     esac
     [ "$cand_type" = object ] || fail "steps[$i] ($sid) terminal_predicate.candidate must be an object of exact identities (got $cand_type)"
+    [ "$accept_shape" = ok ] || fail "steps[$i] ($sid) terminal_predicate.accept must be a non-empty array of outcome strings (got $accept_shape)"
     for dep in $deps; do
       [ "$dep" != '<invalid>' ] || fail "steps[$i] ($sid) depends_on must be a step id or an array of step ids"
       fm_continuation_is_slug "$dep" || fail "steps[$i] ($sid) depends_on entry '$dep' is not a step id slug"
@@ -570,7 +574,7 @@ read_owner_evidence() {  # <step-index> <step-id>
     fi
   done
   accept=$(jq -c ".steps[$i].terminal_predicate.accept // []" "$PROGRAMME")
-  if [ "$(jq -n --argjson a "$accept" --arg o "$outcome" '($a | index($o)) != null')" = true ]; then status=ACCEPTED; else status=NOT_ACCEPTED; fi
+  if [ "$(jq -n --argjson a "$accept" --arg o "$outcome" 'any($a[]; . == $o)')" = true ]; then status=ACCEPTED; else status=NOT_ACCEPTED; fi
   emit "$status" '' '' "$doc" "$sha" "$outcome"
 }
 
@@ -796,7 +800,7 @@ resolve_json() {
     accept=$(jq -c ".steps[$i].terminal_predicate.accept // []" "$PROGRAMME")
     good=0
     if [ -n "${pred_outcome:-}" ]; then
-      good=$(jq -n --argjson a "$accept" --arg o "$pred_outcome" '($a | index($o)) != null' | sed 's/true/1/; s/false/0/')
+      good=$(jq -n --argjson a "$accept" --arg o "$pred_outcome" 'any($a[]; . == $o)' | sed 's/true/1/; s/false/0/')
     fi
     if [ "$good" = 1 ]; then
       completed=$(jq -n --argjson c "$completed" --arg id "$sid" --argjson attempt "$pred_attempt" \

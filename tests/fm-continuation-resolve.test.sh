@@ -1090,6 +1090,28 @@ test_af_landing_without_qualification_cannot_yield_f() {
   [ "$(field "$out" '.cno')" = null ] || fail "landing: an observed landing is not CNO"
   pass "a mere landing without its bound qualification record leaves the slice as the next action and cannot yield F"
 
+  # Membership is exact: an outcome that is a substring of every accepted
+  # token (MERGED inside MERGED_QUALIFIED and CLOSED_UNMERGED) is not accepted,
+  # on the owner path and on the proof path alike.
+  write_af_programme "$home" '.steps[2].terminal_predicate.accept = ["CLOSED_UNMERGED", "MERGED_QUALIFIED"] | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "substring accept resolve failed: $out"
+  expect_typed "$out" slice-a SELF_HANDLE AUTHORIZED STANDING_GRANT "substring outcome"
+  [ "$(field "$out" '.evidence.status')" = NOT_ACCEPTED ] || fail "MERGED is not a member of [CLOSED_UNMERGED, MERGED_QUALIFIED]"
+  write_af_programme "$home" '.steps[2].terminal_predicate.accept = ["MERGED"] | .steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  out=$(run_resolve "$home" resolve) || fail "exact accept resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] && [ "$(field "$out" '.completed | length')" = 3 ] || fail "an exactly listed outcome is accepted"
+  local dir="$home/cleanroom/artifacts/proofs/af-pilot-f/attempt-1"
+  mkdir -p "$dir"
+  jq -n '{schema:"fm-proof-disposition/v1", proof_id:"pilot-f", attempt:1, outcome:"PROVE"}' > "$dir/disposition.json"
+  out=$(run_resolve "$home" resolve) || fail "proof substring resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] && [ "$(field "$out" '.action_generation')" = 2 ] || fail "PROVE is not a member of [PROVED, COMPLETE] on the proof path"
+  jq -n '{schema:"fm-proof-disposition/v1", proof_id:"pilot-f", attempt:1, outcome:"PROVED"}' > "$dir/disposition.json"
+  out=$(run_resolve "$home" resolve) || fail "proof exact resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = null ] || fail "an exactly listed proof outcome completes the step"
+  write_af_programme "$home" '.steps[0].terminal_predicate.policy_digest = "'"$(sha_of "$home/cleanroom/policy.md")"'"'
+  rm -r "$home/cleanroom/artifacts/proofs/af-pilot-f"
+  pass "accept membership is exact on both evidence paths: a substring of an accepted token is never accepted"
+
   # Claiming qualification without binding it is malformed, and a self-report
   # cannot claim a qualification outcome at all (forged receipt).
   write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED
@@ -1236,6 +1258,10 @@ test_af_structure_and_binding_refusals() {
   refuse_load "regex-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice-[ce]"]' "is not a step id slug"
   refuse_load "dot-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice.c"]' "depends on an unknown step slice.c"
   refuse_load "pinned candidate that is not an object" '.steps[1].terminal_predicate.candidate = "dc66ba5ce35be4917424a529a45e61f4a9fa556c"' "terminal_predicate.candidate must be an object"
+  refuse_load "accept list that is a string" '.steps[1].terminal_predicate.accept = "MERGED_QUALIFIED"' "(slice-c) terminal_predicate.accept must be a non-empty array of outcome strings (got string)"
+  refuse_load "accept list that is empty" '.steps[1].terminal_predicate.accept = []' "terminal_predicate.accept must be a non-empty array"
+  refuse_load "accept list with a non-string entry" '.steps[3].terminal_predicate.accept = ["PROVED", 1]' "(pilot-f) terminal_predicate.accept must be a non-empty array"
+  refuse_load "accept list absent" 'del(.steps[3].terminal_predicate.accept)' "terminal_predicate.accept must be a non-empty array of outcome strings (got null)"
   refuse_load "missing required binding" 'del(.binding)' "REQUIRED_BINDING_MISSING"
   refuse_load "consumer contract mismatch" '.binding.consumer.contract = "fm-continuation-resolution/v2"' "binding.consumer.contract must name"
   refuse_load "unsupported bound evidence kind" '.binding.evidence_kinds += ["arbitrary_command"]' "unsupported completion-evidence kind arbitrary_command"

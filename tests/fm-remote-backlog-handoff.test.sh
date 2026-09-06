@@ -87,30 +87,49 @@ fixture_stop_tree() {
   done
 }
 
+# fixture_stop_worker: stop the detached remote worker through the remote job
+# library's own owner of that contract. worker.pid names the serving child,
+# whose Linux restart supervisor is its parent rather than a descendant, so a
+# descendant walk from that pid would leave the supervisor alive to respawn a
+# fresh worker over the tree about to be removed. The library signals the
+# worker's isolated process group, supervisor and child together, TERM then
+# KILL, each bounded.
+fixture_stop_worker() {
+  local lib="$REMOTE_ROOT/bin/fm-remote-job-lib.sh"
+  [ -f "$lib" ] || lib="$ROOT/bin/fm-remote-job-lib.sh"
+  (
+    # shellcheck source=bin/fm-remote-job-lib.sh
+    . "$lib"
+    export FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
+    fm_remote_job_prepare_state "$REMOTE" || exit 0
+    worker_pid=$(cat "$(fm_remote_job_worker_pid_path)" 2>/dev/null || true)
+    [ -n "$worker_pid" ] || exit 0
+    fm_remote_job_stop_worker_tree "$worker_pid"
+  ) 2>/dev/null || true
+}
+
 # Tear down deterministically and promptly, on success and on a failed
-# assertion alike. Release every gate this fixture can park a stage behind,
-# stop each still-running background stage with its whole process tree (a
-# stage parked in a fake-ssh gate is otherwise reaped only when that gate
-# releases, which is the hang CI run 34000833102 sat in for 19 minutes), and
-# stop the detached remote worker tree. Only then wait for the shell's
-# background jobs, which now all exit promptly, before removing the tree: kill
-# only signals, so a worker or stage still writing into $TMP_ROOT surfaced as a
-# real CI flake once:
+# assertion alike. Stop each still-running background stage with its whole
+# process tree first (a stage parked in a fake-ssh gate is otherwise reaped
+# only when that gate releases, which is the hang CI run 34000833102 sat in
+# for 19 minutes), then stop the remote worker tree, and only then release
+# every gate this fixture can park a stage behind: releasing first would let a
+# parked stage submit one more job to the worker in the moment before its
+# signal lands. Then wait for the shell's background jobs, which now all exit
+# promptly, before removing the tree: kill only signals, so a worker or stage
+# still writing into $TMP_ROOT surfaced as a real CI flake once:
 #   rm: cannot remove '/tmp/fm-remote-handoff.XXXXXX': Directory not empty
 # Retry rm -rf until the now-quiesced tree is gone, then run the shared
 # lib.sh cleanup so its registry file does not outlive the fixture.
 fm_remote_handoff_teardown() {
-  local worker_pid job i
+  local job i
   local -a jobs=()
-  touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" "$TMP_ROOT/serialize.release" 2>/dev/null || true
   while IFS= read -r job; do
     [ -n "$job" ] && jobs+=("$job")
   done < <(jobs -p)
   [ "${#jobs[@]}" -eq 0 ] || fixture_stop_tree "${jobs[@]}"
-  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
-    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
-    [ -z "$worker_pid" ] || fixture_stop_tree "$worker_pid"
-  fi
+  if [ -d "$TMP_ROOT/remote-jobs" ]; then fixture_stop_worker; fi
+  touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" "$TMP_ROOT/serialize.release" 2>/dev/null || true
   wait 2>/dev/null || true
   i=0
   while [ "$i" -lt 50 ]; do

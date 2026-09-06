@@ -1145,6 +1145,8 @@ unsupported schema|OWNER_EVIDENCE_SCHEMA_UNSUPPORTED|.schema = "fm-accepted-owne
 malformed record|OWNER_EVIDENCE_MALFORMED|del(.owner.ref)
 sources not an array|OWNER_EVIDENCE_MALFORMED|.sources = "nope"
 source entry not an object|OWNER_EVIDENCE_MALFORMED|.sources = ["x"]
+string candidate against a pinned candidate|OWNER_EVIDENCE_MALFORMED|.candidate = "x"
+array candidate against a pinned candidate|OWNER_EVIDENCE_MALFORMED|.candidate = ["dc66ba5ce35be4917424a529a45e61f4a9fa556c"]
 ROWS
   # The two malformed source shapes are refused with their precise detail and
   # a typed result (exit 0), never a resolver crash.
@@ -1231,6 +1233,9 @@ test_af_structure_and_binding_refusals() {
   refuse_load "dependency on a later step (order contradiction)" '.steps[1].depends_on = ["pilot-f"]' "depends on a LATER step pilot-f"
   refuse_load "dependency on itself (cycle)" '.steps[1].depends_on = ["slice-c"]' "depends on itself"
   refuse_load "dependency on an unknown step" '.steps[1].depends_on = ["slice-z"]' "depends on an unknown step slice-z"
+  refuse_load "regex-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice-[ce]"]' "is not a step id slug"
+  refuse_load "dot-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice.c"]' "depends on an unknown step slice.c"
+  refuse_load "pinned candidate that is not an object" '.steps[1].terminal_predicate.candidate = "dc66ba5ce35be4917424a529a45e61f4a9fa556c"' "terminal_predicate.candidate must be an object"
   refuse_load "missing required binding" 'del(.binding)' "REQUIRED_BINDING_MISSING"
   refuse_load "consumer contract mismatch" '.binding.consumer.contract = "fm-continuation-resolution/v2"' "binding.consumer.contract must name"
   refuse_load "unsupported bound evidence kind" '.binding.evidence_kinds += ["arbitrary_command"]' "unsupported completion-evidence kind arbitrary_command"

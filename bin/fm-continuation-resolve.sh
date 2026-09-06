@@ -49,10 +49,12 @@
 #      Structure refused at load (exit 1, naming the defect): a duplicated
 #      step id; a `terminal_predicate.kind` outside the closed vocabulary
 #      bin/fm-continuation-lib.sh owns (FM_CONTINUATION_EVIDENCE_KINDS); a
-#      step `depends_on` (string or array) naming an unknown step, itself, or
-#      a LATER step (the pinned order is the sequence; a dependency on a later
-#      step is an order contradiction and a cycle is impossible once every
-#      dependency points earlier). The walk itself stays sequential: the next
+#      step `depends_on` (string or array) whose entry is not a step id slug
+#      (matched as an exact string, never a pattern) or names an unknown step,
+#      itself, or a LATER step (the pinned order is the sequence; a dependency
+#      on a later step is an order contradiction and a cycle is impossible
+#      once every dependency points earlier); a `terminal_predicate.candidate`
+#      pin that is not an object. The walk itself stays sequential: the next
 #      action is the first step in pinned order that is not terminal-good.
 #      The optional top-level `project` (forge slug) and `binding` object are
 #      data the evidence adapter and the callers consume (see 2b and BINDING).
@@ -341,9 +343,10 @@ validate_structure() {
   # step has no evidence path, an owner step no artifact root) would collapse
   # under a whitespace IFS and shift the columns.
   rows=$(jq -r '.steps[] | [(.id // ""), (.terminal_predicate.kind // ""), (.artifact_root // "" | tostring), (.terminal_predicate.evidence // "" | tostring),
+                            ((.terminal_predicate.candidate // {}) | type),
                             ((.depends_on // []) | if type == "string" then [.] elif type == "array" then . else ["<invalid>"] end | map(tostring) | join(" "))] | join("\u001f")' "$PROGRAMME")
   i=0
-  while IFS=$'\x1f' read -r sid kind root evidence deps; do
+  while IFS=$'\x1f' read -r sid kind root evidence cand_type deps; do
     fm_continuation_is_slug "$sid" || fail "steps[$i].id must be a slug"
     fm_continuation_is_evidence_kind "$kind" \
       || fail "steps[$i] ($sid) terminal_predicate.kind must be one of: $FM_CONTINUATION_EVIDENCE_KINDS (got ${kind:-absent})"
@@ -351,10 +354,12 @@ validate_structure() {
       "$PROOF_KIND") [ -n "$root" ] || fail "steps[$i] ($sid) has no artifact_root" ;;
       "$OWNER_KIND") [ -n "$evidence" ] || fail "steps[$i] ($sid) names no terminal_predicate.evidence record" ;;
     esac
+    [ "$cand_type" = object ] || fail "steps[$i] ($sid) terminal_predicate.candidate must be an object of exact identities (got $cand_type)"
     for dep in $deps; do
       [ "$dep" != '<invalid>' ] || fail "steps[$i] ($sid) depends_on must be a step id or an array of step ids"
+      fm_continuation_is_slug "$dep" || fail "steps[$i] ($sid) depends_on entry '$dep' is not a step id slug"
       [ "$dep" != "$sid" ] || fail "steps[$i] ($sid) depends on itself (cycle)"
-      j=$(printf '%s\n' "$seen" | grep -nx -- "$dep" | head -1 | cut -d: -f1) || true
+      j=$(printf '%s\n' "$seen" | grep -nxF -- "$dep" | head -1 | cut -d: -f1) || true
       if [ -z "$j" ]; then
         if jq -e --arg d "$dep" '[.steps[] | .id] | index($d) != null' "$PROGRAMME" >/dev/null; then
           fail "steps[$i] ($sid) depends on a LATER step $dep; the pinned order is the sequence, so this is an order contradiction (or a cycle)"
@@ -450,7 +455,7 @@ latest_disposition() {  # <artifact-root>
 # executed or interpreted.
 read_owner_evidence() {  # <step-index> <step-id>
   local i=$1 sid=$2 rel path sha doc status='' reason='' detail='' outcome=''
-  local kind ref accept pin_ref pin_cand pin_policy pin_sha pin_gen work_id prog_project ev_project ev_work
+  local kind ref accept pin_ref pin_cand pin_policy pin_sha pin_gen work_id prog_project ev_project ev_work cand_type
   local sources n j src spath ssha sout sfile fsha fout
   rel=$(jq -r ".steps[$i].terminal_predicate.evidence // \"\"" "$PROGRAMME")
   case "$rel" in
@@ -510,9 +515,16 @@ read_owner_evidence() {  # <step-index> <step-id>
   if [ -n "$pin_ref" ] && [ "$pin_ref" != "$ref" ]; then
     refuse OWNER_EVIDENCE_OWNER_MISMATCH "record owner $ref is not the pinned owner $pin_ref"; return 0
   fi
+  cand_type=$(printf '%s' "$doc" | jq -r '.candidate | type')
+  case "$cand_type" in
+    object|null) ;;
+    *) refuse OWNER_EVIDENCE_MALFORMED "candidate must be an object of exact identities (got $cand_type)"; return 0 ;;
+  esac
   pin_cand=$(jq -c ".steps[$i].terminal_predicate.candidate // {}" "$PROGRAMME")
   if [ "$pin_cand" != '{}' ]; then
-    detail=$(printf '%s' "$doc" | jq -r --argjson pin "$pin_cand" '(.candidate // {}) as $c | [$pin | to_entries[] | select((.value | tostring) != (($c[.key] // null) | tostring)) | .key + "=" + (.value | tostring) + " (record " + (($c[.key] // "absent") | tostring) + ")"] | join(", ")')
+    if ! detail=$(printf '%s' "$doc" | jq -r --argjson pin "$pin_cand" '(.candidate // {}) as $c | [$pin | to_entries[] | select((.value | tostring) != (($c[.key] // null) | tostring)) | .key + "=" + (.value | tostring) + " (record " + (($c[.key] // "absent") | tostring) + ")"] | join(", ")' 2>/dev/null); then
+      refuse OWNER_EVIDENCE_CANDIDATE_MISMATCH "pinned candidate identity could not be compared against the record's candidate"; return 0
+    fi
     if [ -n "$detail" ]; then refuse OWNER_EVIDENCE_CANDIDATE_MISMATCH "pinned candidate identity differs: $detail"; return 0; fi
   fi
   pin_policy=$(jq -r ".steps[$i].terminal_predicate.policy_digest // \"\"" "$PROGRAMME")

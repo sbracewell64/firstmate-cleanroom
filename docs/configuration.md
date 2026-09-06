@@ -207,7 +207,7 @@ The artifact root is paired with whichever source located the programme: `--root
 The config `root=` line never pairs with a programme located through the flag or the environment, so an override never reads dispositions from the pinned tree.
 The programme file is a data input, never executable authority; the resolver's header owns its exact schema and the result contract, including the closed owner-evidence records a step may bind, which are authored beside the programme file and resolved against its directory rather than the artifact root.
 `programmes/cleanroom-af-package/README.md` owns the exact pin lines for the bounded A-F programme candidate this repository carries.
-Absent, every consumer of the resolver (the session-start digest, the fleet snapshot and its bearings and view projections, and the away-mode digest) stays silent about programme authority rather than inventing a state.
+Absent, every consumer of the resolver (the session-start digest, the wake drain, the fleet snapshot and its bearings and view projections, and the away-mode digest) stays silent about programme authority rather than inventing a state.
 The file is a home-local pin and is not inherited by secondmate homes.
 `bin/fm-programme-projection.sh` reads the same pin through the resolver and composes its result into a stateless projection tuple; its header owns the optional `phase`, `task_id`, and `delegation` programme-file fields only that layer reads.
 [`programme-continuation.md`](programme-continuation.md) owns the mechanism, the invariant, the consumer census, and the projection substrate's boundary.

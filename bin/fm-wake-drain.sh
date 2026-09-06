@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Present durable watcher wake records, optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
-# informational status lines, OPEN DECISIONS, and captain-call record
-# divergence, then assert liveness.
+# informational status lines, OPEN DECISIONS, captain-call record divergence,
+# and a materially changed programme continuation, then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.

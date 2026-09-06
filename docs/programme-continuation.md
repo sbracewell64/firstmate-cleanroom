@@ -13,7 +13,7 @@ The defect this repairs was captain-facing synthesis telling the captain that an
 
 ## Canonical inputs
 
-The resolver keeps no store of its own and reads three canonical sources.
+The resolver keeps no store of its own and reads only canonical sources.
 
 - The pinned programme file, located through `config/programme` ([`configuration.md`](configuration.md)), carries the ordered sequence, the standing grant and its references, the reserved axes, and each step's typed action facts.
 - Proof dispositions under each step's artifact root are read for their outcome only; the highest-numbered attempt directory is the current one, and when it has no readable disposition the step is not terminal and resolves as CNO rather than falling back to an older attempt.
@@ -28,7 +28,7 @@ The resolver keeps no store of its own and reads three canonical sources.
 - Identity rule: a required fact's durable identity is the task `--materialize` would hold (its `decision_key` when that is a slug, else programme-action-axis), and it is injective over required facts on reserved axes (captain_axes entries and enhancements with `required_to_proceed` true, since a non-reserved fact never owns a task and keeps its typed refusal), so one required fact owns one identity and one durable binding, two required facts resolving to one identity in one step or across steps are refused at load whether keyed or keyless, and a non-required enhancement never becomes a fact or a task and so cannot overwrite, alias, or retire a required fact's binding by reusing its key.
 - An answer retires a fact only for the action it was given for: the answered task's own `Continuation-binding:` line must name this action and this programme (or no programme), so an answer bound to another action or programme, or an unbound record such as a legacy fm-decision-hold one, is listed in `basis_refs` as ignored with its reason and the fact still fires.
 
-Control rulings reach the resolver through those stores rather than through a fourth reader: a ruling that changes the sequence or the grant is a programme-file change, and a ruling that opens or closes a wait is a bound hold.
+Control rulings reach the resolver through those stores rather than through a reader of prose: a ruling that changes the sequence or the grant is a programme-file change, a ruling that opens or closes a wait is a bound hold, and a completed ruling that stands as a step's completion evidence is an owner-evidence record authored beside the programme.
 There is no second authority store, no compiled projection, and no reader of report, review, or chat prose.
 
 ## Typed result
@@ -60,7 +60,7 @@ Every tracked path that can tell firstmate to proceed, wait, escalate, or ask th
 | Wake presentation | `bin/fm-wake-drain.sh` presents a material change once through `bin/fm-programme-presentation-lib.sh` and acknowledges exactly the presented identity on `--ack-through`. |
 | Status projection | `bin/fm-fleet-snapshot.sh` embeds `resolve` verbatim under `programme_continuation` with a `presentation` member; `bin/fm-bearings-snapshot.sh` and `bin/fm-fleet-view.sh` project that field and never derive a programme state from rows. |
 | Away continuation | `bin/fm-supervise-daemon.sh` appends the `summary` token to an escalation digest only while its identity is not already presented. |
-| Control and ruling consumption | Effects land in the programme file or as bound holds, which the resolver reads; the control-plane consumer itself lives outside this repository and must record its effects through those owners rather than as prose. |
+| Control and ruling consumption | Effects land in the programme file, as bound holds, or as owner-evidence records beside the programme, which the resolver reads; the control-plane consumer itself lives outside this repository and must record its effects through those owners rather than as prose. |
 | Report synthesis | `check-prose` refuses captain-facing text that asserts a captain gate while the typed result is not CAPTAIN. |
 | Keyed status decisions | `bin/fm-wake-drain.sh`'s OPEN DECISIONS fold is an explicitly narrower owner over crewmate status keys and does not classify programme authority. |
 | Captain-hold lifecycle | `bin/fm-captain-hold.sh` remains the durability and effect owner; classification reaches it already typed through the binding and `--materialize`. |

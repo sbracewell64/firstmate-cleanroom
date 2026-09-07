@@ -511,15 +511,40 @@ SH
 # (no ambient markers) still passes.
 run_session_start() {
   local home=$1 root=$2 path=$3 pi_harness=${4:-}
+  # A test may mask a tool host-independently (see mask_tool_missing) by pointing
+  # FM_TEST_SESSION_BASH_ENV at a BASH_ENV file every bash in the session-start
+  # tree sources; when unset the assignment expands away and env is unchanged.
   if [ -n "$pi_harness" ]; then
     env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
+      ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+      ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   fi
+}
+
+# mask_tool_missing <bash_env_file> <tool>: write a BASH_ENV file that forces
+# `command -v <tool>` to fail and the bare `<tool>` call to exit 127 in every
+# bash the session-start tree spawns, so a MISSING diagnostic is host-independent
+# even when a real <tool> lives in a system BASE_PATH dir (e.g. /usr/bin/node on
+# the CI runner). Mirrors fm-bootstrap.test.sh's command()/jq() masking technique.
+mask_tool_missing() {
+  local bash_env=$1 tool=$2
+  cat > "$bash_env" <<SH
+command() {
+  if [ "\${1:-}" = -v ] && [ "\${2:-}" = $tool ]; then
+    return 1
+  fi
+  builtin command "\$@"
+}
+$tool() {
+  return 127
+}
+SH
 }
 
 run_pi_session_start() {  # <home> <root> <path> [fm-session-start args...]
@@ -987,6 +1012,7 @@ SH
 test_output_ordering_diagnostics_lead() {
   local rec root home fakebin out lock_line boot_line wake_line read_once_line
   local context_line fleet_line next_line inventory_line missing_line
+  local FM_TEST_SESSION_BASH_ENV
   rec=$(new_world ordering)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -994,7 +1020,10 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
+  # Mask node host-independently: rm alone leaks a real /usr/bin/node on some CI.
   rm -f "$fakebin/node"
+  FM_TEST_SESSION_BASH_ENV="$home/mask-node.bash"
+  mask_tool_missing "$FM_TEST_SESSION_BASH_ENV" node
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
   printf 'Captain memory that may be truncated away safely.\n' > "$home/data/captain.md"
@@ -1392,13 +1421,17 @@ EOF
 
 test_composition_invokes_real_scripts() {
   local rec root home fakebin out
+  local FM_TEST_SESSION_BASH_ENV
   rec=$(new_world composition)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
+  # Mask node host-independently: rm alone leaks a real /usr/bin/node on some CI.
   rm -f "$fakebin/node"
+  FM_TEST_SESSION_BASH_ENV="$home/mask-node.bash"
+  mask_tool_missing "$FM_TEST_SESSION_BASH_ENV" node
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"

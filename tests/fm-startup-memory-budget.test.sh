@@ -325,9 +325,51 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
   pass "budget propagation converges through config push with exact rereads, absence, and safe rejection"
 }
 
+# enforce ties the exit code to compliance so a real startup/consumption or
+# durable-memory-write boundary can gate on it - unlike report, whose exit 0
+# means only that the accounting ran. A report exit 0 is NOT compliance.
+test_budget_enforce_ties_exit_to_compliance() {
+  local home out rc
+  home="$TMP_ROOT/enforce-home"
+  mkdir -p "$home/config" "$home/data"
+  printf '10\n' > "$home/config/startup-memory-budget"
+  printf 'abc\n' > "$home/data/captain.md"
+
+  set +e
+  out=$(FM_HOME="$home" "$BUDGET" enforce); rc=$?
+  set -e
+  expect_code 0 "$rc" "enforce must exit 0 while within budget"
+  assert_contains "$out" 'budget_status=within-budget' "enforce did not print the accounting"
+
+  # report stays exit 0 even over budget (it only measures); enforce refuses.
+  printf 'abcdefabcdefabcdefabcdefabcdefabcdef\n' > "$home/data/learnings.md"
+  set +e
+  out=$(FM_HOME="$home" "$BUDGET" report); rc=$?
+  set -e
+  expect_code 0 "$rc" "report exit 0 is not compliance - it must stay 0 over budget"
+  assert_contains "$out" 'budget_status=over-budget' "report did not surface the over-budget total"
+
+  set +e
+  out=$(FM_HOME="$home" "$BUDGET" enforce 2>&1); rc=$?
+  set -e
+  expect_code 3 "$rc" "enforce must exit 3 when durable memory is over budget"
+  assert_contains "$out" 'over the startup-memory-budget budget' \
+    "enforce did not name the over-budget condition"
+
+  # An unreadable/malformed config is an accounting failure (exit 2), not a
+  # silent pass.
+  rm -f "$home/config/startup-memory-budget"
+  set +e
+  FM_HOME="$home" "$BUDGET" enforce >/dev/null 2>&1; rc=$?
+  set -e
+  expect_code 2 "$rc" "enforce must fail closed (exit 2) on an absent budget config"
+  pass "enforce ties exit to compliance (0 within, 3 over, 2 on accounting failure); report stays 0"
+}
+
 test_primary_bootstrap_materializes_visible_default
 test_safe_parser_rejects_ambiguous_and_unsafe_values
 test_budget_accounting_reports_all_three_files_and_safe_failure
 test_primary_budget_converges_with_exact_reread_and_safe_failures
+test_budget_enforce_ties_exit_to_compliance
 
 echo '# all fm-startup-memory-budget tests passed'

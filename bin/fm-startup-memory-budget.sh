@@ -3,10 +3,18 @@
 # Usage:
 #   fm-startup-memory-budget.sh read
 #   fm-startup-memory-budget.sh report
+#   fm-startup-memory-budget.sh enforce
 #
 # `read` prints the one validated effective budget from
 # config/startup-memory-budget.  `report` prints the stable local estimate for
 # data/captain.md, data/captain-shared.md, and data/learnings.md together.
+# `enforce` prints the same accounting but ties the EXIT CODE to compliance -
+# exit 0 only when within budget, exit 3 when over budget - so a caller at a
+# real startup/consumption or a durable-memory-write boundary can gate on it. A
+# `report` exit 0 alone is NOT compliance (it means the accounting merely ran);
+# `enforce` is the deterministic gate. HONEST BOUND: direct-write and raw-shell
+# paths cannot be universally intercepted - this gates only at the qualified
+# owner boundaries that call it, never a text-pattern shell blacklist.
 # Bootstrap owns default materialization; this command never creates or repairs
 # configuration, so an absent, malformed, symlinked, hardlinked, or otherwise
 # unsafe value is a concrete error rather than an inferred default.
@@ -22,7 +30,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 
 usage() {
-  sed -n '2,11{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,17{s/^# \{0,1\}//;p;}' "$0"
 }
 
 print_error() {
@@ -75,6 +83,27 @@ report() {
   fi
 }
 
+# enforce prints the accounting like report, but returns exit 3 when the total
+# is over budget so a caller can gate a real startup/consumption or a durable-
+# memory-write on compliance rather than on report's always-0 "it ran" status.
+enforce() {
+  local out status
+  if ! out=$(report); then
+    return 2
+  fi
+  printf '%s\n' "$out"
+  status=$(printf '%s\n' "$out" | sed -n 's/^budget_status=//p' | head -1)
+  case "$status" in
+    within-budget) return 0 ;;
+    over-budget)
+      print_error "durable memory is over the ${FM_STARTUP_MEMORY_BUDGET_FILE} budget; curate before the next durable-memory write (see /stow)"
+      return 3 ;;
+    *)
+      print_error "budget status could not be determined"
+      return 2 ;;
+  esac
+}
+
 case "${1:-}" in
   read)
     [ "$#" -eq 1 ] || { usage >&2; exit 2; }
@@ -83,6 +112,10 @@ case "${1:-}" in
   report)
     [ "$#" -eq 1 ] || { usage >&2; exit 2; }
     report
+    ;;
+  enforce)
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+    enforce
     ;;
   -h|--help)
     usage

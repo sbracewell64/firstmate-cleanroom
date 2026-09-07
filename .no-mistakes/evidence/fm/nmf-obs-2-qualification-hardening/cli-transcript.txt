@@ -1,0 +1,55 @@
+############################################################
+# fm-nm-assess.sh — NMF-OBS-2 qualification hardening demo
+# (standalone sandbox; fake read-only no-mistakes; throwaway git worktree)
+############################################################
+
+====================================================================
+F2 — CI-ready is NOT claimed from a normalized state with no CI evidence
+  obligation: outcome_class=ci-ready, but run_status/outcome EMPTY (CI never ran)
+====================================================================
+$ fm-nm-assess.sh assess ce --no-query
+NM_ASSESS: ASSESSED task=ce transition=ci-ready-unverified state=ci-ready-unverified findings=1 disposition=linked-existing-repair
+-- recorded: imm_state / transition / disposition --
+transition=ci-ready-unverified
+imm_state=ci-ready-unverified
+ci_ready_unverified=yes
+disposition=linked-existing-repair
+
+====================================================================
+F3 — a malformed --disposition is refused (exit 2) BEFORE anything records
+====================================================================
+$ fm-nm-assess.sh assess d1 --no-query --disposition banana ; echo rc=$?
+error: invalid --disposition: banana (one of handled-in-run, linked-existing-repair, bounded-owner-task, accepted-deferred-with-authority, no-actionable-anomaly, coverage-unperformed)
+usage: fm-nm-assess.sh assess <task-id> [flags] | receipt <task-id> | families [--task <id>] | coverage [--now <epoch>] | --help
+rc=2
+record written? -> NO
+
+====================================================================
+F4 — a malformed --now freshness epoch is refused typed & non-zero
+====================================================================
+$ fm-nm-assess.sh coverage --now abc ; echo rc=$?
+error: --now requires a non-negative integer epoch (got: abc)
+usage: fm-nm-assess.sh assess <task-id> [flags] | receipt <task-id> | families [--task <id>] | coverage [--now <epoch>] | --help
+rc=2
+$ fm-nm-assess.sh coverage --now 1000   (valid integer -> deterministic ages)
+NM_ASSESS: FRESHNESS task=ce now=1000 last_poll_age=-2000s last_event_age=-2000s last_handled_age=-1788799449s generation=4242@2026-09-06T00:00:00Z
+NM_ASSESS: FRESHNESS task=fr now=1000 last_poll_age=900s last_event_age=910s last_handled_age=920s generation=g
+
+====================================================================
+F6 — the bare hook path records an honest coverage-unperformed disposition
+====================================================================
+$ fm-nm-assess.sh assess hk --no-query   (no findings ingested, no read)
+NM_ASSESS: ASSESSED task=hk transition=routine state=active findings=0 disposition=coverage-unperformed
+coverage_performed=no
+disposition=coverage-unperformed
+-- vs --coverage-performed (an asserted investigation) --
+coverage_performed=yes
+disposition=no-actionable-anomaly
+
+====================================================================
+Negative: every verb the assessor sent to no-mistakes was read-only
+====================================================================
+$ fm-nm-assess.sh assess t1   (canonical read path — no --no-query)
+NM_ASSESS: ASSESSED task=t1 transition=routine state=active findings=0 disposition=no-actionable-anomaly
+-- verbs the assessor sent to the fake no-mistakes: --
+  sent: axi status --run 01RUN

@@ -404,7 +404,55 @@ test_genuine_parked_not_superseded() {
   assert_contains "$out" "2 finding(s)" "parked includes gate finding count"
   assert_contains "$out" "ask-user" "parked surfaces ask-user finding"
   assert_not_contains "$out" "superseded" "agreeing parked+needs-decision not flagged stale"
-  pass "genuine parked run is not flagged superseded"
+  # The pending gate decision belongs to firstmate, so the rendered label names
+  # firstmate as the owner and never the captain (AGENTS.md hard rule 4).
+  assert_contains "$out" "awaiting firstmate decision at review" "parked run is labelled as awaiting firstmate's decision"
+  assert_not_contains "$out" "aptain" "the worker-state label never names the captain"
+  pass "genuine parked run is not flagged superseded and is labelled awaiting firstmate decision"
+}
+
+# A lifecycle stage line (bin/fm-stage.sh) with no run and an idle pane maps
+# through the classifier's stage table exactly one way: progress -> working,
+# wait -> blocked, terminal -> done. The stage owner never writes prose, so the
+# detail is the receipt itself.
+test_no_run_idle_pane_stage_lines_map_by_class() {
+  reset_fakes
+  local d id verb want out
+  d=$(new_case stage-idle)
+  make_fakebin "$d" >/dev/null
+  for verb in candidate-committed:working validation-pending:blocked validation-admitted:working validation-running:working ci-ready:done landing:working activated:done; do
+    want=${verb##*:}
+    verb=${verb%%:*}
+    id="st-$verb"
+    make_repo_on_branch "$d/wt-$id" "fm/$id"
+    fm_write_meta "$d/state/$id.meta" "window=fm:fm-$id" "worktree=$d/wt-$id" "kind=ship" "harness=claude"
+    printf '%s: task=%s gen=s1 branch=fm/%s head=abc tree=def owner=worker reason=-\n' "$verb" "$id" "$id" > "$d/state/$id.status"
+    FM_FAKE_AXI_STATUS=""
+    FM_FAKE_BUSY=0
+    arm_idle_record "$d/state" "$id"
+    out=$(run_crew_state "$d" "$id")
+    assert_contains "$out" "state: $want" "$verb stage line -> $want"
+    assert_contains "$out" "source: status-log" "$verb stage line read from the status log"
+  done
+  pass "no run + idle pane maps each lifecycle stage verb exactly one way"
+}
+
+# The ci-ready stage receipt is the lifecycle's own CI-ready signal: while the
+# run is still in its ci monitor phase and the checks read green, it surfaces
+# done exactly as the legacy `done: PR <url> checks green` sentence did.
+test_ci_ready_stage_line_beats_monitoring_run() {
+  reset_fakes
+  local d; d=$(new_case ci-ready-stage)
+  make_repo_on_branch "$d/wt" fm/feat-cis
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cis.meta" "window=fm:fm-feat-cis" "worktree=$d/wt" "kind=ship"
+  printf 'ci-ready: task=feat-cis gen=s1 branch=fm/feat-cis head=abc tree=def pr=https://github.com/o/r/pull/2 owner=merge-authority reason=-\n' > "$d/state/feat-cis.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cis)"
+  FM_FAKE_CI_LOGS="checks passed; monitoring PR for merge"
+  local out; out=$(run_crew_state "$d" feat-cis)
+  assert_contains "$out" "state: done" "ci-ready stage line + monitoring run -> done"
+  assert_contains "$out" "source: status-log" "the stage receipt is the source"
+  pass "ci-ready stage line surfaces done while the run keeps monitoring"
 }
 
 test_scalar_gate_parked_not_superseded() {
@@ -418,7 +466,7 @@ test_scalar_gate_parked_not_superseded() {
   local out; out=$(run_crew_state "$d" feat-cs)
   assert_contains "$out" "state: parked" "scalar gate wait -> parked"
   assert_contains "$out" "source: run-step" "scalar gate wait -> run-step source"
-  assert_contains "$out" "parked at review" "scalar gate wait names the gate"
+  assert_contains "$out" "awaiting firstmate decision at review" "scalar gate wait names the gate and its owner"
   assert_contains "$out" "1 finding(s)" "scalar gate wait includes finding count"
   assert_not_contains "$out" "superseded" "scalar gate wait not flagged stale"
   pass "scalar gate parked run is not flagged superseded"
@@ -435,7 +483,7 @@ test_gate_block_parked_not_superseded() {
   local out; out=$(run_crew_state "$d" feat-cb)
   assert_contains "$out" "state: parked" "gate block wait -> parked"
   assert_contains "$out" "source: run-step" "gate block wait -> run-step source"
-  assert_contains "$out" "parked at review" "gate block wait names the gate"
+  assert_contains "$out" "awaiting firstmate decision at review" "gate block wait names the gate and its owner"
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
@@ -1339,7 +1387,7 @@ test_historical_same_branch_rewritten_head_not_current() {
   arm_idle_record "$d/state" wishlist
   out=$(run_crew_state "$d" wishlist)
   assert_not_contains "$out" "source: run-step" "historical rewritten head must not use run-step"
-  assert_not_contains "$out" "parked at" "historical parked run must not mask current state"
+  assert_not_contains "$out" "awaiting firstmate decision" "historical parked run must not mask current state"
   assert_contains "$out" "source: status-log" "falls back to status-log after head mismatch"
   assert_contains "$out" "state: working" "status-log working: remains current"
   pass "historical same-branch rewritten head is not attributed as current"
@@ -1552,6 +1600,8 @@ test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded
+test_no_run_idle_pane_stage_lines_map_by_class
+test_ci_ready_stage_line_beats_monitoring_run
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
 test_ci_ready_done_log_beats_monitoring_run

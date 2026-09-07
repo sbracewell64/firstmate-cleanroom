@@ -106,6 +106,78 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 
+# --- ship lifecycle stage verbs -----------------------------------------------
+#
+# bin/fm-stage.sh issues a ship task's lifecycle stage transitions and is the
+# only writer of these lines; this library owns how each stage verb classifies,
+# exactly one way, so no consumer reads a stage from prose. The note of a stage
+# line is its transition receipt: space-separated key=value fields whose values
+# are percent-encoded (bin/fm-stage.sh owns the field inventory), and
+# status_stage_field reads one field back.
+#   candidate-committed  progress  the candidate branch, head, and tree are recorded
+#   validation-pending   wait      validation is not admitted (a hold or capacity is
+#                                  missing); the worker waits and firstmate acts
+#   validation-admitted  progress  the lifecycle admitted validation on that candidate
+#   validation-running   progress  the real pipeline run is bound to the attempt
+#   ci-ready             terminal  the canonical run reads checks green; the worker stops
+#   landing              progress  the configured merge authority is landing the change
+#   activated            terminal  the landed change was read back
+# progress classifies exactly like `working:` (never captain-relevant, absorbable
+# only with provably-working evidence); wait classifies exactly like `blocked:`
+# (captain-relevant, an idle endpoint is expected, firstmate must act); terminal
+# classifies exactly like `done:`. The table decides, never the receipt text, so a
+# FM_CAPTAIN_RE override does not change how a stage line reads.
+# shellcheck disable=SC2034 # Read by consumers that enumerate the vocabulary, not this lib.
+FM_CLASSIFY_STAGE_VERBS='candidate-committed validation-pending validation-admitted validation-running ci-ready landing activated'
+
+# Print progress|wait|terminal for a stage verb; 1 (nothing printed) otherwise.
+status_stage_class() {  # <verb>
+  case "$1" in
+    candidate-committed|validation-admitted|validation-running|landing) printf 'progress' ;;
+    validation-pending) printf 'wait' ;;
+    ci-ready|activated) printf 'terminal' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Print the stage verb of a stage line; 1 (nothing printed) for any other line.
+status_line_stage() {  # <status-line>
+  local verb
+  verb=$(status_line_verb "$1")
+  status_stage_class "$verb" >/dev/null || return 1
+  printf '%s' "$verb"
+}
+
+# Decode the percent-encoding bin/fm-stage.sh applies to receipt values.
+_fm_stage_decode() {  # <encoded>
+  local s=$1 out='' hex
+  while [ -n "$s" ]; do
+    case "$s" in
+      %[0-9A-Fa-f][0-9A-Fa-f]*)
+        hex=${s:1:2}
+        out="$out$(printf '%b' "\\x$hex")"
+        s=${s:3} ;;
+      *) out="$out${s:0:1}"; s=${s:1} ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Print the decoded value of one receipt field on a stage line; 1 when the line
+# is not a stage line or carries no such field. A receipt value never contains
+# whitespace on the wire, so the note splits on it.
+status_stage_field() {  # <status-line> <field>
+  local note word
+  status_line_stage "$1" >/dev/null || return 1
+  note=$(status_line_note "$1")
+  for word in $note; do
+    case "$word" in
+      "$2"=*) _fm_stage_decode "${word#*=}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # Return the last non-blank line of a status file (empty if missing/blank).
 last_status_line() {
   local f=$1
@@ -122,6 +194,11 @@ status_is_terminal_verb() {
   verb=$(status_line_verb "$line")
   case "$verb" in
     done|needs-decision|blocked|failed) return 0 ;;
+  esac
+  # A wait or terminal stage verb ends the worker's turn the same way blocked:
+  # or done: does (bin/fm-stage.sh); a progress stage verb never does.
+  case "$(status_stage_class "$verb")" in
+    wait|terminal) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -140,6 +217,12 @@ status_is_captain_relevant() {
     working|resolved|captain-held|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}")
       return 1
       ;;
+  esac
+  # A stage line classifies by its verb's table entry alone (see the ship
+  # lifecycle stage verbs above), never by the receipt text after the colon.
+  case "$(status_stage_class "$verb")" in
+    wait|terminal) return 0 ;;
+    progress) return 1 ;;
   esac
   if [ -z "${FM_CAPTAIN_RE+x}" ]; then
     case "$verb" in

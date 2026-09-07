@@ -256,7 +256,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+  assert_grep "the command issues the validation transition itself" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
@@ -363,6 +363,72 @@ test_no_mistakes_dod_wording() {
   assert_no_grep "no-mistakes refuses" "$brief" \
     "no-mistakes DOD must not claim the tool itself refuses --yes"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
+}
+
+# The lifecycle stage contract (bin/fm-stage.sh) is rendered by one owner,
+# bin/fm-dod-lib.sh, into both scaffold paths: a generated ship brief and the
+# ship instructions a promoted scout receives. Both must carry the identical
+# Definition of done, byte for byte, for every delivery mode, so a promoted
+# worker is never handed a weaker or older stage contract than a briefed one.
+test_ship_stage_contract_identical_from_brief_and_promote() {
+  local home mode id brief_dod promote_dod stage_cmd
+  home="$TMP_ROOT/identical-contract-home"
+  mkdir -p "$home/data" "$home/state"
+  for mode in no-mistakes direct-PR local-only; do
+    id="ident-${mode%%-*}"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode: brief scaffold failed"
+    printf 'window=fm:fm-%s\nkind=scout\nworktree=/tmp/wt\n' "$id" > "$home/state/$id.meta"
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+      "$ROOT/bin/fm-promote.sh" "$id" --mode "$mode" --yolo off >/dev/null 2>&1 \
+      || fail "$mode: promotion failed"
+    brief_dod=$(sed -n '/^# Definition of done$/,$p' "$home/data/$id/brief.md")
+    promote_dod=$(sed -n '/^# Definition of done$/,$p' "$home/data/$id/ship-instructions.md")
+    [ -n "$brief_dod" ] || fail "$mode: brief has no Definition of done"
+    [ "$brief_dod" = "$promote_dod" ] || fail "$mode: the promoted contract differs from the briefed one"$'\n'"--- brief ---"$'\n'"$brief_dod"$'\n'"--- promote ---"$'\n'"$promote_dod"
+    stage_cmd="FM_HOME=$home $ROOT/bin/fm-stage.sh $id committed"
+    assert_contains "$brief_dod" "\`$stage_cmd\`" "$mode: the stage command carries this home and task"
+    assert_contains "$brief_dod" "Delivery contract: mode=$mode" "$mode: contract line retained"
+  done
+  # The no-mistakes contract hands the worker the whole stage sequence and no
+  # first done: milestone; the other modes record the candidate and keep theirs.
+  brief_dod=$(sed -n '/^# Definition of done$/,$p' "$home/data/ident-no/brief.md")
+  assert_contains "$brief_dod" "committed\`." "no-mistakes: committed stage command"
+  assert_contains "$brief_dod" "running\` (add \`--run <run-id>\`" "no-mistakes: running stage command"
+  assert_contains "$brief_dod" "ci-ready --pr {url}\` and stop" "no-mistakes: ci-ready stage command"
+  assert_contains "$brief_dod" "show\` first and continue from the recorded stage" "no-mistakes: restart resumes from the recorded stage"
+  assert_contains "$brief_dod" "do not append \`done:\` for this task" "no-mistakes: the first done: milestone is gone"
+  assert_not_contains "$brief_dod" "append \`done: {summary}\`" "no-mistakes: overloaded first done: must not be rendered"
+  assert_contains "$brief_dod" "written by the stage command, never by hand" "no-mistakes: stage lines are code-issued"
+  assert_contains "$(sed -n '/^# Definition of done$/,$p' "$home/data/ident-direct/brief.md")" "then append \`done: PR {url}\`" "direct-PR keeps its PR done: signal"
+  assert_contains "$(sed -n '/^# Definition of done$/,$p' "$home/data/ident-local/brief.md")" "then append \`done: ready in branch fm/ident-local\`" "local-only keeps its ready-branch done: signal"
+  pass "fm-brief.sh/fm-promote.sh: both scaffold paths render the identical stage contract"
+}
+
+# When firstmate owns the pending decision the worker is "awaiting firstmate
+# decision"; crewmates never address the captain (AGENTS.md hard rule 4), so
+# no generated crewmate text may address them or say the worker stopped for
+# the captain's decision.
+test_crewmate_text_awaits_firstmate_never_addresses_captain() {
+  local home brief kind
+  home="$TMP_ROOT/awaiting-firstmate-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" await-ship some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" await-scout some-proj --scout >/dev/null 2>&1
+  for kind in await-ship await-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_no_grep "Captain," "$brief" "$kind: crewmate text addresses the captain"
+    assert_no_grep "captain," "$brief" "$kind: crewmate text addresses the captain"
+    assert_no_grep "your decision" "$brief" "$kind: crewmate text speaks to the decision owner as a reader"
+    assert_no_grep "waiting on the captain" "$brief" "$kind: crewmate text describes the stop as waiting on the captain"
+  done
+  brief="$home/data/await-ship/brief.md"
+  assert_grep "you are awaiting firstmate's decision" "$brief" "ship brief labels the wait as awaiting firstmate's decision"
+  assert_grep "never address the captain" "$brief" "ship brief states the no-captain-address rule"
+  assert_grep "awaiting firstmate decision - step=<step> finding=<finding-id> action=ask-user" "$brief" \
+    "no-mistakes DOD puts the finding identity, owner, and applicability on the needs-decision record"
+  pass "fm-brief.sh: crewmate text labels waits as awaiting firstmate's decision and never addresses the captain"
 }
 
 test_ship_project_memory_wording() {
@@ -771,6 +837,8 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_ship_stage_contract_identical_from_brief_and_promote
+test_crewmate_text_awaits_firstmate_never_addresses_captain
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

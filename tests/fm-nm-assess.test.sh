@@ -314,6 +314,166 @@ out=$(fresh coverage --now 2>&1); rc=$?
 expect_code 2 "$rc" "a bare --now with no value is rejected"
 pass "coverage: --now deterministically overrides the clock and the freshness dimension is always emitted"
 
+# =============================================================================
+# NMF-OBS-2 qualification hardening (2026-09-07): seven qualification blockers
+# reproduced by isolated fixtures on the merged OBS-2 code. Each case pins the
+# fixed behavior so removing the fix turns the case red, with a positive control
+# proving the good path still passes, and sibling refresh/transition paths.
+# =============================================================================
+
+# --- F1: an ordinary/default refresh PRESERVES provider/carried findings --------
+# Pre-fix: a bare `assess --no-query` (the hook shape) rewrote the record from
+# scratch and CLEARED the recorded provider block and its finding.
+
+make_task rf "$WT"
+write_obligation rf run-bound \
+  "run_id=F1RUN" "run_branch=fm/rf" "run_head=$HEAD" \
+  "run_status=running" "outcome_class=active" "outcome_epoch=1000"
+"$ASSESS" assess rf --no-query --provider-capacity "out of usage credits" --repair-attempts 2 --gate ci >/dev/null 2>&1
+[ "$(assess_get rf provider_capacity)" = "out of usage credits" ] || fail "F1 precondition: provider block recorded"
+[ "$(assess_get rf finding_count)" -ge 1 ] || fail "F1 precondition: provider finding recorded"
+# Ordinary refresh with no new findings must PRESERVE the block, not clear it.
+"$ASSESS" assess rf --no-query >/dev/null 2>&1
+[ "$(assess_get rf provider_capacity)" = "out of usage credits" ] || fail "F1: refresh preserved the provider block"
+[ "$(assess_get rf gate_paused)" = ci ] || fail "F1: refresh preserved the paused gate"
+[ "$(assess_get rf finding_count)" -ge 1 ] || fail "F1: refresh preserved the provider finding"
+[ "$(assess_get rf provider_completed_repair)" = false ] || fail "F1: carried provider block still has no completed repair"
+# Positive control: a typed --supersede provider is the only thing that closes it.
+"$ASSESS" assess rf --no-query --supersede provider >/dev/null 2>&1
+[ -z "$(assess_get rf provider_capacity)" ] || fail "F1 control: --supersede provider closed the block"
+[ "$(assess_get rf finding_count)" = 0 ] || fail "F1 control: --supersede provider dropped the finding"
+pass "F1: an ordinary refresh preserves provider findings; only a typed supersede closes them"
+
+# --- F7/F1b: a carried residual finding is carried by identity across refresh ----
+# Pre-fix: a refresh reset imm_carried_finding to none, silently dropping the
+# residual the review carried (e.g. the malformed-epoch residual).
+
+make_task rc "$WT"
+write_obligation rc run-bound \
+  "run_id=F7RUN" "run_branch=fm/rc" "run_head=$HEAD" \
+  "run_status=completed" "run_outcome=checks-passed" "outcome_class=ci-ready" "outcome_epoch=3000"
+"$ASSESS" assess rc --no-query --carried-finding nmf-malformed-epoch-residual >/dev/null 2>&1
+[ "$(assess_get rc imm_carried_finding)" = nmf-malformed-epoch-residual ] || fail "F7 precondition: residual recorded"
+# Ordinary refresh must carry the residual forward by identity.
+"$ASSESS" assess rc --no-query >/dev/null 2>&1
+[ "$(assess_get rc imm_carried_finding)" = nmf-malformed-epoch-residual ] || fail "F7: refresh carried the residual by identity"
+# Sibling transition path: a later terminal transition still carries it.
+"$ASSESS" assess rc --no-query --transition terminal >/dev/null 2>&1
+[ "$(assess_get rc imm_carried_finding)" = nmf-malformed-epoch-residual ] || fail "F7: terminal completion carried the residual, not dropped"
+# Positive control: a typed --supersede carried is the only thing that clears it.
+"$ASSESS" assess rc --no-query --supersede carried >/dev/null 2>&1
+[ "$(assess_get rc imm_carried_finding)" = none ] || fail "F7 control: --supersede carried cleared the residual"
+pass "F7: a carried residual finding survives refresh and terminal completion by identity"
+
+# --- F2: CI-ready needs source-applicable evidence, never a normalized state ----
+# Pre-fix: outcome_class=ci-ready with no checks-passed outcome was reported as a
+# clean ci-ready, claiming CI reached readiness when CI never started.
+
+make_task ce "$WT"
+write_obligation ce run-bound \
+  "run_id=F2RUN" "run_branch=fm/ce" "run_head=$HEAD" \
+  "run_status=" "run_outcome=" "outcome_class=ci-ready" "outcome_epoch=3000"
+out=$("$ASSESS" assess ce --no-query 2>&1); rc=$?
+expect_code 0 "$rc" "assess a normalized ci-ready with no evidence"
+[ "$(assess_get ce imm_state)" = ci-ready-unverified ] || fail "F2: ci-ready without evidence is reported unverified, not clean"
+[ "$(assess_get ce transition)" = ci-ready-unverified ] || fail "F2: transition is ci-ready-unverified"
+[ "$(assess_get ce ci_ready_unverified)" = yes ] || fail "F2: unverified flag set"
+[ "$(assess_get ce disposition)" != no-actionable-anomaly ] || fail "F2: an unevidenced ci-ready is never a clean no-actionable-anomaly"
+assert_grep "ci-ready-requires-source-applicable-ci-evidence" "$DATA/ce/nm-assessment-receipt.md" "F2: a check-normalization finding is raised"
+assert_grep "## CI-ready evidence (unverified)" "$DATA/ce/nm-assessment-receipt.md" "F2: the receipt names the unverified ci-ready"
+# Positive control (obligation-only path): a checks-passed outcome IS the evidence.
+make_task cv "$WT"
+write_obligation cv run-bound \
+  "run_id=F2OK" "run_branch=fm/cv" "run_head=$HEAD" \
+  "run_status=completed" "run_outcome=checks-passed" "outcome_class=ci-ready" "outcome_epoch=3000"
+"$ASSESS" assess cv --no-query >/dev/null 2>&1
+[ "$(assess_get cv imm_state)" = ci-ready ] || fail "F2 control: evidenced ci-ready reported clean"
+[ "$(assess_get cv ci_ready_unverified)" = no ] || fail "F2 control: evidenced ci-ready is verified"
+[ "$(assess_get cv transition)" = ci-ready ] || fail "F2 control: evidenced ci-ready transition"
+pass "F2: ci-ready needs a checks-passed verdict; a normalized/absent state is reported unverified"
+
+# --- F3: a malformed disposition is refused before it can reach a record --------
+# Pre-fix: --disposition banana was recorded verbatim and PASSED coverage.
+
+make_task d1 "$WT"
+write_obligation d1 run-bound "run_id=F3RUN" "run_branch=fm/d1" "run_head=$HEAD" \
+  "outcome_class=active" "outcome_epoch=1000"
+out=$("$ASSESS" assess d1 --no-query --disposition banana 2>&1); rc=$?
+expect_code 2 "$rc" "F3: a malformed disposition is refused typed and non-zero"
+[ ! -f "$STATE/d1.nm-assessment" ] || fail "F3: nothing was recorded for a refused disposition"
+# Positive control: a valid disposition is accepted.
+out=$("$ASSESS" assess d1 --no-query --disposition no-actionable-anomaly 2>&1); rc=$?
+expect_code 0 "$rc" "F3 control: a valid disposition is accepted"
+[ "$(assess_get d1 disposition)" = no-actionable-anomaly ] || fail "F3 control: valid disposition recorded"
+# Sibling path: coverage flags a pre-existing malformed disposition as a gap.
+DH="$TMP_ROOT/disp-home"
+mkdir -p "$DH/state" "$DH/data"
+printf 'record=fm-nm-assessment/v1\ntask=dm\ndisposition=banana\n' > "$DH/state/dm.nm-assessment"
+out=$(FM_HOME="$DH" FM_STATE_OVERRIDE="$DH/state" FM_DATA_OVERRIDE="$DH/data" "$ASSESS" coverage 2>&1)
+assert_contains "$out" "COVERAGE_GAP task=dm reason=assessment has a malformed disposition" "F3: coverage catches a malformed disposition on an existing record"
+pass "F3: a malformed disposition is refused at input and caught by coverage"
+
+# --- F4: a malformed --now epoch fails typed, never exit-0-with-error ------------
+# Pre-fix: `coverage --now abc` produced arithmetic errors / empty ages while
+# still exiting 0 with COVERAGE ok.
+
+out=$(fresh coverage --now abc 2>&1); rc=$?
+expect_code 2 "$rc" "F4: a non-numeric --now is refused typed and non-zero"
+case "$out" in *"COVERAGE ok"*) fail "F4: a malformed --now must never report COVERAGE ok" ;; esac
+out=$(fresh coverage --now 12.5 2>&1); rc=$?
+expect_code 2 "$rc" "F4: a decimal --now is refused (epoch is a non-negative integer)"
+out=$(fresh coverage --now -5 2>&1); rc=$?
+expect_code 2 "$rc" "F4: a negative --now is refused"
+# Positive control: a valid integer --now still works (deterministic ages).
+out=$(fresh coverage --now 1000 2>&1); rc=$?
+expect_code 0 "$rc" "F4 control: a valid --now is accepted"
+assert_contains "$out" "last_poll_age=900s" "F4 control: a valid --now yields real ages"
+pass "F4: a malformed --now fails typed and non-zero; only a valid integer epoch is accepted"
+
+# --- F5: occurrence history is immutable across head revisions -------------------
+# Pre-fix: the same task/run/transition at a SECOND head overwrote (deleted) the
+# first occurrence, because occurrence identity omitted the head.
+
+make_task hv "$WT"
+write_obligation hv run-bound \
+  "run_id=HVRUN" "run_branch=fm/hv" "run_head=HEADA" \
+  "run_status=running" "outcome_class=active" "outcome_epoch=1000"
+"$ASSESS" assess hv --no-query --provider-capacity "out of usage credits" --gate ci >/dev/null 2>&1
+# Same task/run/transition, a DISTINCT head: an ordinary refresh carries the
+# provider finding forward and records a NEW occurrence without losing the first.
+sed -i 's/^run_head=HEADA/run_head=HEADB/' "$STATE/hv.nm-observe"
+"$ASSESS" assess hv --no-query >/dev/null 2>&1
+hv_occ=$(grep -h $'\thv\tHVRUN\t' "$FAMDIR"/provider-capacity-* 2>/dev/null | grep -c '^occurrence')
+[ "$hv_occ" = 2 ] || fail "F5: a second head is a new occurrence, first preserved (got $hv_occ)"
+grep -hq $'\thv\tHVRUN\tHEADA\t' "$FAMDIR"/provider-capacity-* || fail "F5: the first head's occurrence survives"
+grep -hq $'\thv\tHVRUN\tHEADB\t' "$FAMDIR"/provider-capacity-* || fail "F5: the second head's occurrence recorded"
+# Positive control: re-assessing the IDENTICAL task/run/transition/head replaces
+# in place (idempotent), never a third occurrence.
+"$ASSESS" assess hv --no-query >/dev/null 2>&1
+hv_occ=$(grep -h $'\thv\tHVRUN\t' "$FAMDIR"/provider-capacity-* 2>/dev/null | grep -c '^occurrence')
+[ "$hv_occ" = 2 ] || fail "F5 control: identical occurrence replaces in place (got $hv_occ)"
+pass "F5: a distinct head is a new occurrence; identity across head revisions is immutable"
+
+# --- F6: the default/hook path marks coverage UNPERFORMED, never a clean PASS ----
+# Pre-fix: a bare `assess --no-query` (the observation owner's hook) recorded
+# existence and reported no-actionable-anomaly, treating existence as a performed
+# investigation with active runtime coverage.
+
+make_task hk "$WT"
+write_obligation hk run-bound "run_id=F6RUN" "run_branch=fm/hk" "run_head=$HEAD" \
+  "outcome_class=active" "outcome_epoch=1000"
+"$ASSESS" assess hk --no-query >/dev/null 2>&1
+[ "$(assess_get hk coverage_performed)" = no ] || fail "F6: the bare hook path is coverage-unperformed"
+[ "$(assess_get hk disposition)" = coverage-unperformed ] || fail "F6: existence is disposed coverage-unperformed, not no-actionable-anomaly"
+assert_grep "coverage UNPERFORMED" "$DATA/hk/nm-assessment-receipt.md" "F6: the receipt says coverage was not performed"
+# Positive control: an explicit clean investigation is performed and clean.
+"$ASSESS" assess hk --no-query --coverage-performed >/dev/null 2>&1
+[ "$(assess_get hk coverage_performed)" = yes ] || fail "F6 control: an asserted investigation is performed"
+[ "$(assess_get hk disposition)" = no-actionable-anomaly ] || fail "F6 control: an asserted clean investigation is no-actionable-anomaly"
+# Sibling path: the canonical-query path (a real read) also counts as performed.
+[ "$(assess_get t1 coverage_performed)" = yes ] || fail "F6 sibling: a real canonical read is performed coverage"
+pass "F6: recording existence is coverage-unperformed; a real read or asserted investigation is performed"
+
 # --- negative: the observer never mutates a pipeline or manufactures a PASS -----
 
 : > "$NM_LOG"
@@ -330,12 +490,12 @@ while IFS= read -r line; do
 done < "$NM_LOG"
 [ -s "$NM_LOG" ] || fail "negative case checked nothing"
 # The assessor never records a manufactured PASS: a disposition is one of the
-# five defined values and is never a gate verdict, and the recorded state comes
-# only from the canonical read (here 'active'/'successful'/'ci-ready'), never
-# invented.
+# defined values and is never a gate verdict, and the recorded state comes only
+# from the canonical read or a carried finding, never invented. coverage-unperformed
+# is an honest "no investigation ran" verdict, the opposite of a manufactured PASS.
 for d in "$STATE"/*.nm-assessment; do
   case "$(record_get "$d" disposition)" in
-    handled-in-run|linked-existing-repair|bounded-owner-task|accepted-deferred-with-authority|no-actionable-anomaly) ;;
+    handled-in-run|linked-existing-repair|bounded-owner-task|accepted-deferred-with-authority|no-actionable-anomaly|coverage-unperformed) ;;
     *) fail "assessment $d carries a disposition outside the defined set: $(record_get "$d" disposition)" ;;
   esac
   case "$(record_get "$d" disposition)" in

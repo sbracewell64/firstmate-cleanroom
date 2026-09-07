@@ -1,0 +1,31 @@
+
+########## 1. committed on a no-mistakes task whose authority admits validation -> code issues validation-admitted
+STAGE: candidate-committed: task=demo gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=- profile=- attempt=- run=- step=- outcome=- pr=- owner=worker reason=-
+STAGE: validation-admitted: task=demo gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=/tmp/tmp.gPRqeefJXO/nm-home profile=1.61.0+0af0be6 attempt=1788779056-d61f8019 run=- step=- outcome=- pr=- owner=worker reason=-
+next: worker starts the pipeline now on head db1a832a269e: `no-mistakes axi run --intent <the accepted intent>` (never --yes); as soon as the run exists, run `FM_HOME=/tmp/tmp.gPRqeefJXO/home /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1XR2S96SBT33NR2JEKWENTE/bin/fm-stage.sh demo running`
+
+########## recorded status-log receipts (state/demo.status)
+candidate-committed: task=demo gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=- profile=- attempt=- run=- step=- outcome=- pr=- owner=worker reason=-
+validation-admitted: task=demo gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=/tmp/tmp.gPRqeefJXO/nm-home profile=1.61.0+0af0be6 attempt=1788779056-d61f8019 run=- step=- outcome=- pr=- owner=worker reason=-
+
+########## 2. duplicate delivery of committed at the same head -> no-op
+STAGE_UNCHANGED: validation-admitted task=demo gen=s1.1.1 head=db1a832a269e attempt=1788779056-d61f8019 run=-
+next: worker starts the pipeline now on head db1a832a269e: `no-mistakes axi run --intent <the accepted intent>` (never --yes); as soon as the run exists, run `FM_HOME=/tmp/tmp.gPRqeefJXO/home /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1XR2S96SBT33NR2JEKWENTE/bin/fm-stage.sh demo running`
+
+########## 3. stale candidate: history rewritten so recorded head is no longer an ancestor -> typed refusal
+STAGE_REFUSED: transition=running task=demo reason=STALE_CANDIDATE recorded candidate db1a832a269e is not an ancestor of head 5e142ffa4b36
+
+########## 4. a task parked on an open needs-decision -> committed refuses validation into the explicit wait stage (validation-pending), no launch
+STAGE: candidate-committed: task=held gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=- profile=- attempt=- run=- step=- outcome=- pr=- owner=worker reason=-
+STAGE: validation-pending: task=held gen=s1.1.1 branch=fm/demo head=db1a832a269e tree=a7cf91d7cb0e intent=9fc936ad1ec2 decisions=- mode=no-mistakes yolo=off alloc=echo/default/low/tmux nm_home=- profile=- attempt=- run=- step=- outcome=- pr=- owner=firstmate reason=hold:step1-f2
+next: worker stops and waits (hold:step1-f2); firstmate clears the hold or repairs the environment, then the worker re-runs `FM_HOME=/tmp/tmp.gPRqeefJXO/home /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1XR2S96SBT33NR2JEKWENTE/bin/fm-stage.sh held committed`
+
+########## held task last receipt classifies as:
+stage verb = validation-pending
+stage class = wait
+reason field = hold:step1-f2
+no-mistakes never received a run verb: matches=0
+
+########## 5. show reports the recorded stage for a restart resume
+STAGE_RECORDED: validation-admitted task=demo gen=s1.1.1 branch=fm/demo head=db1a832a269e attempt=1788779056-d61f8019 run=- pr=- reason=-
+next: worker starts the pipeline now on head db1a832a269e: `no-mistakes axi run --intent <the accepted intent>` (never --yes); as soon as the run exists, run `FM_HOME=/tmp/tmp.gPRqeefJXO/home /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1XR2S96SBT33NR2JEKWENTE/bin/fm-stage.sh demo running`

@@ -1,0 +1,30 @@
+# fm-nmf-verify-input.sh — end-user CLI transcript of the typed-mode gate contract (PR-1 helper)
+
+## 1. classify: single owner of event-action -> mode mapping
+  opened      -> mode=historical
+  edited      -> mode=historical
+  synchronize -> mode=current
+  reopened    -> mode=current
+  labeled     -> ::error::fm-nmf-verify-input.sh classify: unrecognized event action 'labeled'.
+  (exit 2, fails closed)
+
+## 2. resolve (current): sound live subject -> emits body (random heredoc delim) + subject head
+head_sha=2222222222222222222222222222222222222222
+subject_head=2222222222222222222222222222222222222222
+subject_number=3006
+body<<NMF_BODY_c965499953daf1e590f7347654ea6b1e
+Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)
+<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"2222222222222222222222222222222222222222","steps":[{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"}]} -->
+NMF_BODY_c965499953daf1e590f7347654ea6b1e
+
+## 3. resolve fails closed on EMPTY live body (no body output => verifier cannot fall back to frozen event)
+::error::fm-nmf-verify-input.sh resolve: current-mode live body is empty or unavailable; no sound live subject established, refusing to fall back to the frozen event payload.
+  (exit 1)
+
+## 4. resolve refuses a superseded subject (live head advanced past event head)
+::error::fm-nmf-verify-input.sh resolve: subject superseded - event head 1111111111111111111111111111111111111111, live head 2222222222222222222222222222222222222222. The advanced head has its own run; this run must not publish a result for it.
+  (exit 1)
+
+## 5. readback refuses a stale verdict (subject advanced during verification)
+::error::fm-nmf-verify-input.sh readback: subject advanced during verification - verified head 1111111111111111111111111111111111111111, live head 2222222222222222222222222222222222222222. Refusing to publish a result for a superseded head.
+  (exit 1)

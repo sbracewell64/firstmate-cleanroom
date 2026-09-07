@@ -1,0 +1,18 @@
+# fm-no-mistakes-required.test.sh — full run (16 fixtures, real CLI + fetched pinned verifier)
+
+ok - shared action accepts a matching head_sha with completed required steps
+ok - shared action rejects a mismatched head_sha and names both SHAs
+ok - shared action rejects an attestation with no head_sha
+ok - opened and edited classify as historical event-snapshot mode
+ok - synchronize and reopened classify as current-state recovery mode
+ok - classify fails closed on an unrecognized event action
+ok - resolve binds a matching subject and emits the live body and subject head
+ok - resolve refuses a superseded subject so an old-head run cannot publish for a newer head
+ok - resolve fails closed when the live read is a different PR than the event subject
+ok - resolve fails closed on a missing required input
+ok - resolve fails closed on an empty live body so it cannot pass via the frozen event
+ok - read-back passes when the verified subject is still current
+ok - read-back refuses to publish a result after the subject advanced during verification
+ok - current mode passes a stale-event PR whose live body is soundly attested to the live head
+ok - current mode still fails a genuinely stale live attestation
+ok - a historically invalid opened/edited body stays invalid under the event snapshot

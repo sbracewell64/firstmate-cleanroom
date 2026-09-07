@@ -12,7 +12,7 @@
 #                            [--disposition <d>] [--accepted-authority <ref>]
 #   fm-nm-assess.sh receipt  <task-id>
 #   fm-nm-assess.sh families [--task <task-id>]
-#   fm-nm-assess.sh coverage [--now]
+#   fm-nm-assess.sh coverage [--now <epoch>]
 #   fm-nm-assess.sh --help
 #
 # Why. NMF-OBS-1 records WHICH run a managed launch became and its canonical
@@ -101,12 +101,21 @@ usage() {
 
 die_usage() {
   echo "error: $1" >&2
-  echo "usage: fm-nm-assess.sh assess <task-id> [flags] | receipt <task-id> | families [--task <id>] | coverage [--now] | --help" >&2
+  echo "usage: fm-nm-assess.sh assess <task-id> [flags] | receipt <task-id> | families [--task <id>] | coverage [--now <epoch>] | --help" >&2
   exit 2
 }
 
 now_epoch() { date +%s; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Age in seconds from <now> to <epoch-field>, or `unknown` when the field is
+# empty or non-numeric (never a negative or garbage number).
+age_of() {  # <now> <epoch-field>
+  case "$2" in
+    ''|*[!0-9]*) printf 'unknown' ;;
+    *) printf '%ss' "$(( $1 - $2 ))" ;;
+  esac
+}
 
 valid_task_id() {
   case "${1:-}" in
@@ -376,7 +385,9 @@ do_assess() {  # many positional args, see dispatch
     prov_attempts=${attempts:-0}
     prov_cost=${usage:-unknown}
     [ -n "$prov_cost" ] || prov_cost=unknown
-    case "$prov_cost" in 0|0.0|0.00) prov_cost=unknown ;; esac
+    if awk -v v="$prov_cost" 'BEGIN{ if (v ~ /^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)$/ && v+0==0) exit 0; exit 1 }'; then
+      prov_cost=unknown
+    fi
     findings+=("$(route_owner_for_family provider-capacity):provider-capacity-is-not-a-candidate-repair:provider-capacity:profile=${nm_ver:-unobserved}/${nm_build:-unobserved}")
   fi
 
@@ -651,8 +662,9 @@ do_families() {  # <task-id-or-empty>
 # line per gap: every admitted launch has an observation-or-error; every
 # assessment has a disposition; every finding family (remediation) has an owner
 # and a next gate. Read-only; prints nothing when everything holds.
-do_coverage() {  # <now 0|1>
-  local obl id stage class preflight record disp file owner gate any=0
+do_coverage() {  # <now-epoch-or-empty>
+  local now=$1 obl id stage class preflight record disp file owner gate any=0
+  now=${now:-$(now_epoch)}
   for obl in "$STATE"/*.nm-observe; do
     [ -f "$obl" ] || continue
     [ "$(record_get "$obl" record)" = "$OBLIGATION_SCHEMA" ] || continue
@@ -699,6 +711,19 @@ do_coverage() {  # <now 0|1>
       fi
     done
   fi
+  # Freshness dimension: additive, always emitted, never part of the gap/ok
+  # accounting. One line per assessment record, ages resolved against <now>.
+  for record in "$STATE"/*.nm-assessment; do
+    [ -f "$record" ] || continue
+    [ "$(record_get "$record" record)" = "$ASSESS_SCHEMA" ] || continue
+    id=$(basename "$record" .nm-assessment)
+    printf 'NM_ASSESS: FRESHNESS task=%s now=%s last_poll_age=%s last_event_age=%s last_handled_age=%s generation=%s\n' \
+      "$id" "$now" \
+      "$(age_of "$now" "$(record_get "$record" last_poll_epoch)")" \
+      "$(age_of "$now" "$(record_get "$record" last_material_epoch)")" \
+      "$(age_of "$now" "$(record_get "$record" last_handled_epoch)")" \
+      "$(record_get "$record" runtime_generation)"
+  done
   [ "$any" -eq 1 ] || printf 'NM_ASSESS: COVERAGE ok (every admitted launch observed, every assessment disposed, every remediation owned)\n'
   return 0
 }
@@ -713,13 +738,16 @@ case "$VERB" in
 esac
 
 if [ "$VERB" = coverage ]; then
-  NOW=0
+  NOW=
+  want=
   for a in "$@"; do
+    if [ -n "$want" ]; then NOW=$a; want=; continue; fi
     case "$a" in
-      --now) NOW=1 ;;
+      --now) want=now ;;
       *) die_usage "unknown coverage flag $a" ;;
     esac
   done
+  [ -z "$want" ] || die_usage "--now requires a value"
   mkdir -p "$STATE"
   do_coverage "$NOW"
   exit 0

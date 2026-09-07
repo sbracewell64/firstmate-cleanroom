@@ -167,6 +167,14 @@ assert_grep "UNKNOWN is never fabricated to zero" "$RPC" "unknown cost stated"
 # A usage cost of literal zero is treated as unknown, never as a real zero.
 "$ASSESS" assess pc --no-query --provider-capacity "out of usage credits" --usage-cost 0 --gate ci >/dev/null 2>&1
 [ "$(assess_get pc provider_usage_cost)" = unknown ] || fail "a zero usage cost is not trusted as measured zero"
+# A numerically-zero value in ANY encoding normalizes to unknown, not just 0/0.0/0.00.
+"$ASSESS" assess pc --no-query --provider-capacity "out of usage credits" --usage-cost 0.000 --gate ci >/dev/null 2>&1
+[ "$(assess_get pc provider_usage_cost)" = unknown ] || fail "a non-enumerated zero encoding (0.000) normalizes to unknown"
+"$ASSESS" assess pc --no-query --provider-capacity "out of usage credits" --usage-cost .0 --gate ci >/dev/null 2>&1
+[ "$(assess_get pc provider_usage_cost)" = unknown ] || fail "a bare .0 zero normalizes to unknown"
+# A genuine nonzero cost is preserved verbatim; only zero is unknown.
+"$ASSESS" assess pc --no-query --provider-capacity "out of usage credits" --usage-cost 12.50 --gate ci >/dev/null 2>&1
+[ "$(assess_get pc provider_usage_cost)" = 12.50 ] || fail "a genuine nonzero cost is preserved verbatim"
 pass "assess: provider-capacity is typed, paused, budget-separate, and never fabricates zero cost"
 
 # --- finding families: dedup by owner+invariant+family+applicability, attach -----
@@ -285,6 +293,26 @@ mkdir -p "$CLEAN/state" "$CLEAN/data"
 out=$(FM_HOME="$CLEAN" FM_STATE_OVERRIDE="$CLEAN/state" FM_DATA_OVERRIDE="$CLEAN/data" "$ASSESS" coverage 2>&1)
 assert_contains "$out" "COVERAGE ok" "a clean home reports coverage ok"
 pass "coverage: launch-without-observation, assessment-without-disposition, remediation-without-owner all caught"
+
+# --- coverage freshness: --now deterministically overrides the ambient clock ----
+
+FH="$TMP_ROOT/fresh-home"
+mkdir -p "$FH/state" "$FH/data"
+fresh() { FM_HOME="$FH" FM_STATE_OVERRIDE="$FH/state" FM_DATA_OVERRIDE="$FH/data" "$ASSESS" "$@"; }
+printf 'record=fm-nm-assessment/v1\ntask=fr\ndisposition=no-actionable-anomaly\nlast_poll_epoch=100\nlast_material_epoch=90\nlast_handled_epoch=80\nruntime_generation=4242@gen\n' > "$FH/state/fr.nm-assessment"
+out=$(fresh coverage --now 1000 2>&1)
+assert_contains "$out" "NM_ASSESS: FRESHNESS task=fr now=1000 last_poll_age=900s last_event_age=910s last_handled_age=920s generation=4242@gen" "coverage --now emits the deterministic freshness line"
+# A non-numeric source epoch renders its age as unknown, never a garbage number.
+printf 'record=fm-nm-assessment/v1\ntask=fu\ndisposition=no-actionable-anomaly\nlast_poll_epoch=\nlast_material_epoch=nope\nlast_handled_epoch=50\nruntime_generation=g\n' > "$FH/state/fu.nm-assessment"
+out=$(fresh coverage --now 1000 2>&1)
+assert_contains "$out" "NM_ASSESS: FRESHNESS task=fu now=1000 last_poll_age=unknown last_event_age=unknown last_handled_age=950s generation=g" "empty/non-numeric epochs render age as unknown"
+# Without --now the freshness dimension is still present (ages from the clock).
+out=$(fresh coverage 2>&1)
+assert_contains "$out" "NM_ASSESS: FRESHNESS task=fr now=" "coverage without --now still carries the freshness dimension"
+# A bare --now with no value is rejected, consistent with the other value flags.
+out=$(fresh coverage --now 2>&1); rc=$?
+expect_code 2 "$rc" "a bare --now with no value is rejected"
+pass "coverage: --now deterministically overrides the clock and the freshness dimension is always emitted"
 
 # --- negative: the observer never mutates a pipeline or manufactures a PASS -----
 

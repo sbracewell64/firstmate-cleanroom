@@ -1,0 +1,18 @@
+## base commit 9b6ef3d (seams absent): new cases must fail
+$ watcher case
+not ok - the observation finding was not raised as the nm-observe check: stale: firstmate:fm-nm1
+EXIT=1
+$ session-start case
+
+The digest above is complete for this session start. The READ-ONCE CONTRACT
+section near the top of it governs what may still be read from disk.
+EXIT=1
+
+## target commit c8b7795: same cases
+$ watcher case
+ok - the watcher's nm-observe peek wakes firstmate and leaves the finding for reconcile --now
+EXIT=0
+$ session-start case
+# fm-session-start.test.sh: all assertions passed
+ok - locked session start presents observation findings once and commits the cursor
+EXIT=0

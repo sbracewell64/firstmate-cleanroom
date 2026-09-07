@@ -1,0 +1,16 @@
+ok - pins and floors are projected from their owners
+ok - --pin tasks-axi refuses a pin below the floor or a pin the owner no longer defines
+ok - a qualified profile passes and reports every tool
+ok - a missing actionlint fails naming the owner action
+ok - a non-pinned actionlint is a PINNED_MISMATCH
+ok - suffixed shellcheck and actionlint builds are PINNED_MISMATCH exactly as the gates judge them
+ok - a below-floor tasks-axi is refused
+ok - a tasks-axi that advertises the pin but lacks a probed feature is refused
+ok - --strict-pin catches a tasks-axi that drifted from the CI pin
+ok - a node that reports a version but cannot execute .ts is CAPABILITY_MISSING
+ok - node-ts is proved by executing a .ts file, not by the feature flag
+ok - no-mistakes is always observed and required only on request
+ok - an expected NM_HOME or PATH[0] that diverges is a PROFILE_MISMATCH
+ok - a legacy-shaped login shell is reported as the legacy selection (negative control)
+ok - --json carries the same verdict, rows, and typed lines
+ok - unknown tools and arguments are usage errors

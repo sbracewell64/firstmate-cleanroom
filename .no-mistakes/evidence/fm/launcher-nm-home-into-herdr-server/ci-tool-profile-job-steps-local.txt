@@ -1,0 +1,50 @@
+### ci.yml tool-profile job steps, extracted with a YAML parser and executed locally (npm stubbed, RUNNER_TEMP=/tmp/fm-ci-steps.bYGbK5/runner-temp)
+
+--- step 'Install pinned tasks-axi' against the real owner
+npm(stub) install -g tasks-axi@0.2.5
+0.2.5
+exit=0
+
+--- same step against a fixture repo whose owner pins 0.0.1 (below the floor): must fail BEFORE npm
+fm-tool-profile.sh: FM_TASKS_AXI_PIN 0.0.1 is below FM_TASKS_AXI_MIN 0.2.4; raise the pin in bin/fm-tasks-axi-lib.sh
+exit=2
+
+--- same step against a fixture whose owner no longer defines the pin: must fail BEFORE npm
+fm-tool-profile.sh: the pin for tasks-axi could not be projected from its owner
+exit=2
+
+--- step 'Observe the qualified profile from every consumer shell'
+--- direct shell (a session start or worker command)
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/tmp/fm-ci-steps.bYGbK5/runner-temp/bin parent=bash profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/tasks-axi  floor and feature probe satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/node  executes .ts (process.features.typescript=strip)
+--- deterministic lint shell (commands.lint runs under sh -c)
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/tmp/fm-ci-steps.bYGbK5/runner-temp/bin parent=sh profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/tasks-axi  floor and feature probe satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/node  executes .ts (process.features.typescript=strip)
+--- login shell with the profile re-selected after shell initialization
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/tmp/fm-ci-steps.bYGbK5/runner-temp/bin parent=bash profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/tasks-axi  floor and feature probe satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/node  executes .ts (process.features.typescript=strip)
+exit=0
+
+--- step 'Login-shell negative control (legacy tool root re-prepended)'
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/tmp/fm-ci-steps.bYGbK5/runner-temp/tool-profile-home-legacy/.local/bin parent=bash profile=PROFILE_MISMATCH (PATH[0] is /tmp/fm-ci-steps.bYGbK5/runner-temp/tool-profile-home-legacy/.local/bin, expected /tmp/fm-ci-steps.bYGbK5/runner-temp/bin)
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=no  /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=no  /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/actionlint  exact pin
+PRESENT_BELOW_FLOOR tasks-axi    0.2.3      floor=0.2.4 pin=0.2.5        required=yes /tmp/fm-ci-steps.bYGbK5/runner-temp/tool-profile-home-legacy/.local/bin/tasks-axi  found 0.2.3, floor 0.2.4 or its feature probe not satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=no  /tmp/fm-ci-steps.bYGbK5/runner-temp/bin/node  executes .ts (process.features.typescript=strip)
+ENVIRONMENT_UNREADY: tasks-axi PRESENT_BELOW_FLOOR (found 0.2.3, floor 0.2.4 or its feature probe not satisfied); owner: install tasks-axi 0.2.5 ahead of any older copy on PATH (bin/fm-bootstrap.sh install tasks-axi, or the environment's scoped pin owner)
+ENVIRONMENT_UNREADY: profile PROFILE_MISMATCH (PATH[0] is /tmp/fm-ci-steps.bYGbK5/runner-temp/tool-profile-home-legacy/.local/bin, expected /tmp/fm-ci-steps.bYGbK5/runner-temp/bin); owner: the launcher or environment that exports NM_HOME and PATH (export both before starting the session server and re-select them after any login-shell initialization)
+negative control reported the legacy selection as required
+exit=0

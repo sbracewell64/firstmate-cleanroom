@@ -1,0 +1,21 @@
+### Lint gates refuse with the typed line at column 0 when the linter is absent (PATH=/usr/bin:/bin has neither)
+$ PATH=/usr/bin:/bin bin/fm-lint-workflows.sh
+ENVIRONMENT_UNREADY: actionlint ABSENT (actionlint not found); owner: install actionlint 1.7.12 with bin/fm-install-actionlint.sh <destination-directory> and put that directory on PATH.
+exit=1
+line-anchored match: yes
+
+$ PATH=/usr/bin:/bin bin/fm-lint.sh
+ENVIRONMENT_UNREADY: shellcheck ABSENT (ShellCheck not found); owner: install ShellCheck 0.11.0 with bin/fm-install-shellcheck.sh <destination-directory> and put that directory on PATH.
+exit=1
+line-anchored match: yes
+
+### Pinned-mismatch shape via a stub actionlint 1.7.12-dev (what the gate compares: whole first line)
+fm-lint-workflows.sh: actionlint 1.7.12-dev (pinned 1.7.12)
+ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH (actionlint 1.7.12 required for CI parity, found 1.7.12-dev); owner: install 1.7.12 with bin/fm-install-actionlint.sh <destination-directory> and put that directory ahead of the found copy on PATH.
+exit=1
+--- and the probe judges the same stub identically:
+PINNED_MISMATCH     actionlint   1.7.12-dev pin=1.7.12                   required=yes /tmp/fm-stub.NzR0uT/actionlint  found 1.7.12-dev, pinned 1.7.12
+ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH (found 1.7.12-dev, pinned 1.7.12); owner: bin/fm-install-actionlint.sh <destination-directory> (installs actionlint 1.7.12; put that directory ahead of any other copy on PATH)
+
+### .no-mistakes.yaml parsed: ci.revalidate_repairs =
+True

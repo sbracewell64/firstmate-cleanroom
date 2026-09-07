@@ -1,0 +1,115 @@
+### 1. Probe from THIS gate-agent shell as-is (PATH[0]=~/.local/bin, the audit shape)
+$ bin/fm-tool-profile.sh --expect-nm-home $NM_HOME --expect-path0 /mnt/e/FirstMate-Cleanroom/tools/bin --strict-pin
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/home/shane/.local/bin parent=bash profile=PROFILE_MISMATCH (PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin)
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /home/shane/.local/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/actionlint  exact pin
+PRESENT_BELOW_FLOOR tasks-axi    0.2.3      floor=0.2.4 pin=0.2.5        required=yes /home/shane/.local/bin/tasks-axi  found 0.2.3, floor 0.2.4 or its feature probe not satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/node  executes .ts (process.features.typescript=strip)
+ENVIRONMENT_UNREADY: tasks-axi PRESENT_BELOW_FLOOR (found 0.2.3, floor 0.2.4 or its feature probe not satisfied); owner: install tasks-axi 0.2.5 ahead of any older copy on PATH (bin/fm-bootstrap.sh install tasks-axi, or the environment's scoped pin owner)
+ENVIRONMENT_UNREADY: profile PROFILE_MISMATCH (PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin); owner: the launcher or environment that exports NM_HOME and PATH (export both before starting the session server and re-select them after any login-shell initialization)
+exit=1
+
+### 2. Same shell, profile re-selected (PATH=/mnt/e/FirstMate-Cleanroom/tools/bin:$PATH), the consumer-entrypoint pattern
+$ PATH=/mnt/e/FirstMate-Cleanroom/tools/bin:$PATH bin/fm-tool-profile.sh --expect-nm-home $NM_HOME --expect-path0 /mnt/e/FirstMate-Cleanroom/tools/bin --strict-pin --require shellcheck,actionlint,tasks-axi,node-ts,no-mistakes
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/mnt/e/FirstMate-Cleanroom/tools/bin parent=bash profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /home/shane/.local/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/tasks-axi  floor and feature probe satisfied
+QUALIFIED           no-mistakes  1.61.0     floor=1.46.0                 required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/no-mistakes  build 0af0be6
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/node  executes .ts (process.features.typescript=strip)
+exit=0
+
+### 3. Deterministic lint shell (sh -c), profile re-selected
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/mnt/e/FirstMate-Cleanroom/tools/bin parent=sh profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /home/shane/.local/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/tasks-axi  floor and feature probe satisfied
+QUALIFIED           no-mistakes  1.61.0     floor=1.46.0                 required=no  /mnt/e/FirstMate-Cleanroom/tools/bin/no-mistakes  build 0af0be6
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/node  executes .ts (process.features.typescript=strip)
+exit=0
+
+### 4. REAL login shell on this host (bash -lc, real ~/.profile), profile exported before but NOT re-selected
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/home/shane/.local/bin parent=bash profile=PROFILE_MISMATCH (PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin)
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /home/shane/.local/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/actionlint  exact pin
+PRESENT_BELOW_FLOOR tasks-axi    0.2.3      floor=0.2.4 pin=0.2.5        required=yes /home/shane/.local/bin/tasks-axi  found 0.2.3, floor 0.2.4 or its feature probe not satisfied
+PRESENT_BELOW_FLOOR no-mistakes  1.40.3     floor=1.46.0                 required=no  /home/shane/.local/bin/no-mistakes  found 1.40.3 build d873960, floor 1.46.0
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/node  executes .ts (process.features.typescript=strip)
+ENVIRONMENT_UNREADY: tasks-axi PRESENT_BELOW_FLOOR (found 0.2.3, floor 0.2.4 or its feature probe not satisfied); owner: install tasks-axi 0.2.5 ahead of any older copy on PATH (bin/fm-bootstrap.sh install tasks-axi, or the environment's scoped pin owner)
+ENVIRONMENT_UNREADY: profile PROFILE_MISMATCH (PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin); owner: the launcher or environment that exports NM_HOME and PATH (export both before starting the session server and re-select them after any login-shell initialization)
+exit=1
+
+### 5. REAL login shell, profile re-selected inside bash -lc
+fm-tool-profile: NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes PATH[0]=/mnt/e/FirstMate-Cleanroom/tools/bin parent=bash profile=OBSERVED
+QUALIFIED           shellcheck   0.11.0     pin=0.11.0                   required=yes /home/shane/.local/bin/shellcheck  exact pin
+QUALIFIED           actionlint   1.7.12     pin=1.7.12                   required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/actionlint  exact pin
+QUALIFIED           tasks-axi    0.2.5      floor=0.2.4 pin=0.2.5        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/tasks-axi  floor and feature probe satisfied
+QUALIFIED           no-mistakes  1.61.0     floor=1.46.0                 required=no  /mnt/e/FirstMate-Cleanroom/tools/bin/no-mistakes  build 0af0be6
+QUALIFIED           node-ts      24.20.0    capability=execute-ts        required=yes /mnt/e/FirstMate-Cleanroom/tools/bin/node  executes .ts (process.features.typescript=strip)
+exit=0
+
+### 6. --json from the as-is shell
+{
+  "record": "fm-tool-profile/v1",
+  "profile": {
+    "nm_home": "/home/shane/.firstmate-cleanroom/no-mistakes",
+    "path0": "/home/shane/.local/bin",
+    "parent": "bash",
+    "state": "PROFILE_MISMATCH",
+    "detail": "PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin"
+  },
+  "tools": [
+    {
+      "state": "QUALIFIED",
+      "tool": "shellcheck",
+      "version": "0.11.0",
+      "bound": "pin=0.11.0",
+      "path": "/home/shane/.local/bin/shellcheck",
+      "required": true,
+      "detail": "exact pin"
+    },
+    {
+      "state": "QUALIFIED",
+      "tool": "actionlint",
+      "version": "1.7.12",
+      "bound": "pin=1.7.12",
+      "path": "/mnt/e/FirstMate-Cleanroom/tools/bin/actionlint",
+      "required": true,
+      "detail": "exact pin"
+    },
+    {
+      "state": "PRESENT_BELOW_FLOOR",
+      "tool": "tasks-axi",
+      "version": "0.2.3",
+      "bound": "floor=0.2.4 pin=0.2.5",
+      "path": "/home/shane/.local/bin/tasks-axi",
+      "required": true,
+      "detail": "found 0.2.3, floor 0.2.4 or its feature probe not satisfied"
+    },
+    {
+      "state": "PRESENT_BELOW_FLOOR",
+      "tool": "no-mistakes",
+      "version": "1.40.3",
+      "bound": "floor=1.46.0",
+      "path": "/home/shane/.local/bin/no-mistakes",
+      "required": false,
+      "detail": "found 1.40.3 build d873960, floor 1.46.0"
+    },
+    {
+      "state": "QUALIFIED",
+      "tool": "node-ts",
+      "version": "24.20.0",
+      "bound": "capability=execute-ts",
+      "path": "/mnt/e/FirstMate-Cleanroom/tools/bin/node",
+      "required": true,
+      "detail": "executes .ts (process.features.typescript=strip)"
+    }
+  ],
+  "unready": [
+    "ENVIRONMENT_UNREADY: tasks-axi PRESENT_BELOW_FLOOR (found 0.2.3, floor 0.2.4 or its feature probe not satisfied); owner: install tasks-axi 0.2.5 ahead of any older copy on PATH (bin/fm-bootstrap.sh install tasks-axi, or the environment's scoped pin owner)",
+    "ENVIRONMENT_UNREADY: profile PROFILE_MISMATCH (PATH[0] is /home/shane/.local/bin, expected /mnt/e/FirstMate-Cleanroom/tools/bin); owner: the launcher or environment that exports NM_HOME and PATH (export both before starting the session server and re-select them after any login-shell initialization)"
+  ],
+  "ready": false
+}
+exit=1

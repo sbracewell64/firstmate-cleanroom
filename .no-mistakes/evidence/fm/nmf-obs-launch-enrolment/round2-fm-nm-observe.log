@@ -1,0 +1,31 @@
+ok - enrol: managed tasks only, idempotent, receipt rendered
+ok - launch: obligation bound before admission, identity recorded, duplicate launch is idempotent
+ok - preflight refusal: attempt identity kept, no run id
+ok - bind: launch accepted with no run is MISSING_BINDING and records nothing
+ok - bind: actual run id bound once, duplicates and reordering create no second obligation
+ok - launch: a resumed run keeps its identity
+ok - refresh: outcome comes from the canonical record only; PASS cannot be manufactured
+ok - refresh: later head change and late merge are bound from this home's records
+ok - retry: new attempt linked to predecessor attempt and run
+ok - reconcile: baseline seeded once, unchanged state prints nothing
+ok - reconcile: orphan and unmanaged runs reported once as explicit coverage gaps
+ok - reconcile: crash between run creation and binding reported, quiet after heal
+ok - reconcile: crash between launch acceptance and run creation is typed and reported once
+ok - bind --run: the head rule applies to an explicit run id; a reused branch name never binds
+ok - reconcile: repair run and outcome change surfaced with heals
+ok - daemon reset: detected, reported, bound only on explicit acceptance
+ok - reconcile/refresh: failed, timed-out, or over-budget reads keep the obligation pending
+ok - reconcile/refresh: a run the daemon reports as not found is RUN_VANISHED
+ok - finalize: durable receipt outlives the runtime record
+ok - reconcile: a detached-HEAD task is skipped for branch ownership and the pass completes
+ok - reconcile: branch ownership comes only from a task's own existing worktree
+ok - retry: the predecessor run is never rebound; only a strictly newer run attributes
+ok - retry chain: an attempt that bound nothing never lets an earlier attempt's run be rebound
+ok - launch: JSON null profile identities are recorded as unset, never as the string null
+ok - reconcile: unavailable inventory is a typed, once-reported gap that keeps the run memory
+ok - reconcile: a home with an unenrolled managed task reports it and never queries
+ok - reconcile: a home with neither obligation nor managed task is silent and never queries
+ok - reconcile: the runs table of a real axi status capture parses in both head shapes
+ok - reconcile: cadence gate honoured, with and without --peek
+ok - reconcile: rows served to several worktrees of one repository are reported once per run id
+ok - negative: only read-only status reads were ever sent; no gate, abort, sync, rerun, or run

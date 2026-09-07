@@ -1,0 +1,7 @@
+# HEAD tests (817ea6e) run against pre-fix scripts (93a21cd) — expect the new regressions to FAIL
+=== tests/fm-nm-observe.test.sh
+not ok - bound runs carry the first attempt's run: 
+exit=1
+=== tests/fm-teardown.test.sh
+not ok - squash-merged: the surviving receipt binds the publication the marker carried
+exit=1

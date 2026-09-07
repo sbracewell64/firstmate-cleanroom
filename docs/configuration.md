@@ -215,6 +215,7 @@ The file is a home-local pin and is not inherited by secondmate homes.
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` sets `test.evidence.store_in_repo: true` and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
+It also carries trusted `review.path_instructions` for the programme-continuation resolver and presentation owner, so the review gate treats a change to those machine boundaries as a complete negative-input matrix; the file's own comment records the pinned-runtime support evidence, the guidance is honored only from the default-branch copy, and it never replaces the colocated tests.
 Storing evidence in the repo publishes each run's test artifacts to the orphan `no-mistakes/evidence` branch and links them from the PR body, instead of keeping them on local disk under the no-mistakes home.
 That branch shares no history with code branches, so evidence never enters a pushed feature branch or the default branch; the worktree's `.no-mistakes/` stays local and CI rejects tracked entries under that path.
 It does not set `commands.test` to a complete `tests/*.test.sh` walk.

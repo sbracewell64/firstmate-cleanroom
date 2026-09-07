@@ -46,18 +46,27 @@
 #      programme then uses the config file's `root=` line; the fallback is the
 #      programme file's own directory. The config `root=` never pairs with a
 #      programme located elsewhere.
-#      Structure refused at load (exit 1, naming the defect): a duplicated
-#      step id; a `terminal_predicate.kind` outside the closed vocabulary
-#      bin/fm-continuation-lib.sh owns (FM_CONTINUATION_EVIDENCE_KINDS); a
-#      step `depends_on` (string or array) whose entry is not a step id slug
-#      (matched as an exact string, never a pattern) or names an unknown step,
-#      itself, or a LATER step (the pinned order is the sequence; a dependency
-#      on a later step is an order contradiction and a cycle is impossible
-#      once every dependency points earlier); a `terminal_predicate.candidate`
-#      pin that is not an object; a `terminal_predicate.accept` that is not a
-#      non-empty array of outcome strings (membership is exact, never a
-#      substring). The walk itself stays sequential: the next action is the
-#      first step in pinned order that is not terminal-good.
+#      Structure refused at load (exit 1, naming the defect): a programme
+#      file that does not parse (the parser's own error is propagated, never
+#      folded into a missing-members refusal); a `steps[]` entry that is not
+#      an object; a duplicated step id; a `terminal_predicate.kind` outside
+#      the closed vocabulary bin/fm-continuation-lib.sh owns
+#      (FM_CONTINUATION_EVIDENCE_KINDS); a step `depends_on` that is neither
+#      a string, an array, nor null/absent (both mean no dependency), or whose
+#      entry is not exactly one step id: a non-string entry, an empty or
+#      whitespace-only entry, an entry containing whitespace (two ids in one
+#      entry never split into two dependencies), an entry that is not a slug
+#      (matched as an exact string, never a pattern), or one that names an
+#      unknown step, itself, or a LATER step (the pinned order is the
+#      sequence; a dependency on a later step is an order contradiction and a
+#      cycle is impossible once every dependency points earlier); each refusal
+#      names the step and the offending entry's index and value; a
+#      `terminal_predicate.candidate` pin that is not an object; a
+#      `terminal_predicate.accept` that is not a non-empty array of outcome
+#      strings, or whose entry is empty, whitespace-only, or contains
+#      whitespace (membership is exact, never a substring, so one entry names
+#      exactly one outcome). The walk itself stays sequential: the next
+#      action is the first step in pinned order that is not terminal-good.
 #      The optional top-level `project` (forge slug) and `binding` object are
 #      data the evidence adapter and the callers consume (see 2b and BINDING).
 #   2. Proof dispositions: <root>/<artifact_root>/attempt-<n>/disposition.json,
@@ -292,7 +301,7 @@ config_value() {  # <key>
 PROGRAMME=''
 ROOT=''
 locate_programme() {
-  local root_default='' prog_id reserved facts shared
+  local root_default='' prog_id reserved facts shared parse_err
   if [ -n "$PROGRAMME_OPT" ]; then
     PROGRAMME=$PROGRAMME_OPT; root_default=${FM_PROGRAMME_ROOT:-}
   elif [ -n "${FM_PROGRAMME:-}" ]; then
@@ -309,6 +318,9 @@ locate_programme() {
   ROOT=${ROOT_OPT:-$root_default}
   [ -n "$ROOT" ] || ROOT=$(cd "$(dirname "$PROGRAMME")" && pwd)
   [ -d "$ROOT" ] || fail "programme root does not exist: $ROOT"
+  # A parse failure is the parser's own error, never folded into the
+  # missing-members refusal below.
+  parse_err=$(jq empty "$PROGRAMME" 2>&1 >/dev/null) || fail "programme file is not valid JSON: $PROGRAMME: $parse_err"
   jq -e '.programme_id and .schema and (.steps | type == "array" and length > 0)' "$PROGRAMME" >/dev/null 2>&1 \
     || fail "programme file is not a valid programme (programme_id, schema, steps[] required): $PROGRAMME"
   prog_id=$(jq -r '.programme_id' "$PROGRAMME")
@@ -337,19 +349,37 @@ EOF
 PROGRAMME_DIR=''
 # Step ids, predicate kinds, per-kind required fields, and explicit dependencies.
 validate_structure() {
-  local dup rows i sid kind dep deps j seen=''
+  local dup shape rows i sid kind dep deps j seen='' accept_defect dep_defect
   PROGRAMME_DIR=$(cd "$(dirname "$PROGRAMME")" && pwd)
-  dup=$(jq -r '[.steps[] | select(type == "object") | .id | select(type == "string")] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$PROGRAMME")
+  shape=$(jq -r '.steps | to_entries[] | select(.value | type != "object") | "steps[\(.key)] must be an object (got \(.value | type))"' "$PROGRAMME" | head -1)
+  [ -z "$shape" ] || fail "$shape in $PROGRAMME"
+  dup=$(jq -r '[.steps[] | .id | select(type == "string")] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$PROGRAMME")
   [ -z "$dup" ] || fail "step ids must be unique in $PROGRAMME; duplicated: $dup"
   # Joined on the unit separator, not a tab: an empty middle field (a proof
   # step has no evidence path, an owner step no artifact root) would collapse
-  # under a whitespace IFS and shift the columns.
-  rows=$(jq -r '.steps[] | [(.id // ""), (.terminal_predicate.kind // ""), (.artifact_root // "" | tostring), (.terminal_predicate.evidence // "" | tostring),
-                            ((.terminal_predicate.candidate // {}) | type),
-                            (.terminal_predicate.accept | if type == "array" and length > 0 and all(type == "string") then "ok" elif type == "array" then "array of " + (length | tostring) + " non-string or no entries" else type end),
-                            ((.depends_on // []) | if type == "string" then [.] elif type == "array" then . else ["<invalid>"] end | map(tostring) | join(" "))] | join("\u001f")' "$PROGRAMME")
+  # under a whitespace IFS and shift the columns. The entry columns (accept
+  # outcomes, dependencies) carry the FIRST defective entry as a typed defect
+  # sentence; only when there is none is the list emitted, and then every
+  # entry is a non-empty string without whitespace, so the whitespace join
+  # below cannot split one entry into several or lose an empty one.
+  rows=$(jq -r '
+    def entry_defect($unit):
+      to_entries | map(
+        if (.value | type) != "string" then "entry \(.key) must be a \($unit) string (got \(if (.value | type) == "null" then "null" else (.value | type) + " " + (.value | tojson) end))"
+        elif .value == "" then "entry \(.key) is an empty string; each entry names exactly one \($unit)"
+        elif (.value | test("^\\s+$")) then "entry \(.key) \u0027\(.value | gsub("\n"; "\\n") | gsub("\r"; "\\r"))\u0027 is whitespace-only; each entry names exactly one \($unit)"
+        elif (.value | test("\\s")) then "entry \(.key) \u0027\(.value | gsub("\n"; "\\n") | gsub("\r"; "\\r"))\u0027 contains whitespace and so does not name exactly one \($unit)"
+        else empty end) | first // "";
+    .steps[] | [(.id // ""), (.terminal_predicate.kind // ""), (.artifact_root // "" | tostring), (.terminal_predicate.evidence // "" | tostring),
+                ((.terminal_predicate.candidate // {}) | type),
+                (.terminal_predicate.accept | if type == "array" and length > 0 and all(type == "string") then "ok" elif type == "array" then "array of " + (length | tostring) + " non-string or no entries" else type end),
+                (.terminal_predicate.accept | if type == "array" then entry_defect("outcome") else "" end),
+                (.depends_on | if . == null then "" elif type == "string" or type == "array" then "" else "must be a step id or an array of step ids (got \(type))" end),
+                (.depends_on | if type == "string" then [.] elif type == "array" then . else [] end) as $deps
+                  | ($deps | entry_defect("step id")) as $defect
+                  | if $defect != "" then $defect else "ok " + ($deps | join(" ")) end] | join("\u001f")' "$PROGRAMME")
   i=0
-  while IFS=$'\x1f' read -r sid kind root evidence cand_type accept_shape deps; do
+  while IFS=$'\x1f' read -r sid kind root evidence cand_type accept_shape accept_defect dep_defect deps; do
     fm_continuation_is_slug "$sid" || fail "steps[$i].id must be a slug"
     fm_continuation_is_evidence_kind "$kind" \
       || fail "steps[$i] ($sid) terminal_predicate.kind must be one of: $FM_CONTINUATION_EVIDENCE_KINDS (got ${kind:-absent})"
@@ -359,8 +389,13 @@ validate_structure() {
     esac
     [ "$cand_type" = object ] || fail "steps[$i] ($sid) terminal_predicate.candidate must be an object of exact identities (got $cand_type)"
     [ "$accept_shape" = ok ] || fail "steps[$i] ($sid) terminal_predicate.accept must be a non-empty array of outcome strings (got $accept_shape)"
+    [ -z "$accept_defect" ] || fail "steps[$i] ($sid) terminal_predicate.accept $accept_defect"
+    [ -z "$dep_defect" ] || fail "steps[$i] ($sid) depends_on $dep_defect"
+    case "$deps" in
+      'ok '*|ok) deps=${deps#ok} ;;
+      *) fail "steps[$i] ($sid) depends_on $deps" ;;
+    esac
     for dep in $deps; do
-      [ "$dep" != '<invalid>' ] || fail "steps[$i] ($sid) depends_on must be a step id or an array of step ids"
       fm_continuation_is_slug "$dep" || fail "steps[$i] ($sid) depends_on entry '$dep' is not a step id slug"
       [ "$dep" != "$sid" ] || fail "steps[$i] ($sid) depends on itself (cycle)"
       j=$(printf '%s\n' "$seen" | grep -nxF -- "$dep" | head -1 | cut -d: -f1) || true

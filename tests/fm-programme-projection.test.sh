@@ -502,6 +502,23 @@ test_owner_evidence_programme_composes() {
   [ "$(field "$out" '.delegation.enforces')" = false ] || fail "the substrate never enforces or launches"
   [ -z "$(ls -A "$home/state")" ] || fail "projecting the pilot writes nothing"
   pass "with A-E accepted the substrate projects the pilot with its concurrency-2 bound returned, not enforced, and launches nothing"
+
+  # The same sibling fixture under the resolver's dependency-entry law: a pilot
+  # whose one dependency entry names two steps is refused by the resolver, and
+  # the substrate propagates that refusal (exit 1, the entry named, nothing on
+  # stdout) rather than projecting an empty or partial tuple.
+  local err rc
+  jq '.steps[3].depends_on = ["slice-c slice-a"]' "$prog" > "$prog.tmp" && mv "$prog.tmp" "$prog"
+  err=$(run_project "$home" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "a dependency entry naming two steps is refused through the projection"
+  assert_contains "$err" "depends_on entry 0 'slice-c slice-a' contains whitespace" "the projection carries the resolver's refusal naming the entry"
+  out=$(run_project "$home" project 2>/dev/null); rc=$?
+  [ "$rc" = 1 ] && [ -z "$out" ] || fail "a refused programme must print no projection on stdout"
+  jq '.steps[3].depends_on = [""]' "$prog" > "$prog.tmp" && mv "$prog.tmp" "$prog"
+  err=$(run_project "$home" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "an empty dependency entry is refused through the projection"
+  assert_contains "$err" "depends_on entry 0 is an empty string" "the projection carries the empty-entry refusal"
+  pass "the sibling owner-evidence fixture is refused through the projection when a dependency entry is malformed, never composed to an empty tuple"
 }
 
 timed() {  # <test-function>

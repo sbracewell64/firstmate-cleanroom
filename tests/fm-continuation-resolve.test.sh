@@ -1257,6 +1257,26 @@ test_af_structure_and_binding_refusals() {
   refuse_load "dependency on an unknown step" '.steps[1].depends_on = ["slice-z"]' "depends on an unknown step slice-z"
   refuse_load "regex-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice-[ce]"]' "is not a step id slug"
   refuse_load "dot-shaped dependency never matches a real step" '.steps[3].depends_on = ["slice.c"]' "depends on an unknown step slice.c"
+  # The dependency-entry boundary: one entry names exactly one existing earlier
+  # step, so an entry that would word-split into several ids, an empty or
+  # whitespace-only entry, and a non-string entry are refused naming the entry
+  # (the retained PR #8 finding depends-on-whitespace-and-empty-entry-bypass).
+  refuse_load "dependency entry naming two steps" '.steps[3].depends_on = ["slice-c slice-a"]' "(pilot-f) depends_on entry 0 'slice-c slice-a' contains whitespace"
+  refuse_load "dependency entry that is an empty string" '.steps[3].depends_on = [""]' "(pilot-f) depends_on entry 0 is an empty string"
+  refuse_load "dependency entry that is whitespace-only" '.steps[3].depends_on = ["   "]' "(pilot-f) depends_on entry 0 '   ' is whitespace-only"
+  refuse_load "dependency entry joined by a tab" '.steps[3].depends_on = ["slice-c\tslice-a"]' "depends_on entry 0 'slice-c	slice-a' contains whitespace"
+  refuse_load "bare-string dependency naming two steps" '.steps[3].depends_on = "slice-c slice-a"' "depends_on entry 0 'slice-c slice-a' contains whitespace"
+  refuse_load "bare-string dependency that is empty" '.steps[3].depends_on = ""' "depends_on entry 0 is an empty string"
+  refuse_load "dependency entry that is a number" '.steps[3].depends_on = ["slice-c", 42]' "(pilot-f) depends_on entry 1 must be a step id string (got number 42)"
+  refuse_load "dependency entry that is null" '.steps[3].depends_on = ["slice-c", null]' "depends_on entry 1 must be a step id string (got null)"
+  refuse_load "dependency entry that is an object" '.steps[3].depends_on = [{"id": "slice-c"}]' "depends_on entry 0 must be a step id string (got object"
+  refuse_load "dependency member that is a boolean" '.steps[3].depends_on = false' "(pilot-f) depends_on must be a step id or an array of step ids (got boolean)"
+  refuse_load "dependency member that is a number" '.steps[3].depends_on = 7' "depends_on must be a step id or an array of step ids (got number)"
+  refuse_load "dependency member that is an object" '.steps[3].depends_on = {"on": "slice-c"}' "depends_on must be a step id or an array of step ids (got object)"
+  refuse_load "step that is not an object" '.steps[1] = "slice-c"' "steps[1] must be an object (got string)"
+  refuse_load "accept entry that is an empty string" '.steps[3].terminal_predicate.accept = [""]' "(pilot-f) terminal_predicate.accept entry 0 is an empty string"
+  refuse_load "accept entry naming two outcomes" '.steps[3].terminal_predicate.accept = ["PROVED COMPLETE"]' "(pilot-f) terminal_predicate.accept entry 0 'PROVED COMPLETE' contains whitespace"
+  refuse_load "accept entry that is whitespace-only" '.steps[3].terminal_predicate.accept = [" "]' "terminal_predicate.accept entry 0 ' ' is whitespace-only"
   refuse_load "pinned candidate that is not an object" '.steps[1].terminal_predicate.candidate = "dc66ba5ce35be4917424a529a45e61f4a9fa556c"' "terminal_predicate.candidate must be an object"
   refuse_load "accept list that is a string" '.steps[1].terminal_predicate.accept = "MERGED_QUALIFIED"' "(slice-c) terminal_predicate.accept must be a non-empty array of outcome strings (got string)"
   refuse_load "accept list that is empty" '.steps[1].terminal_predicate.accept = []' "terminal_predicate.accept must be a non-empty array"
@@ -1269,6 +1289,38 @@ test_af_structure_and_binding_refusals() {
   refuse_load "binding generation mismatch" '.binding.programme_generation = "fm-af-programme/v0"' "does not match the programme schema"
   refuse_load "binding without a programme generation" 'del(.binding.programme_generation)' "binding.programme_generation is required"
   refuse_load "owner step without an evidence path" 'del(.steps[2].terminal_predicate.evidence)' "names no terminal_predicate.evidence record"
+
+  # A programme file that does not parse propagates the parser's own error
+  # rather than folding into the missing-members refusal.
+  printf '{"schema": "fm-af-programme/v1", "steps": [' > "$(af_programme_path "$home")"
+  err=$(run_resolve "$home" resolve 2>&1 >/dev/null); rc=$?
+  [ "$rc" = 1 ] || fail "unparseable programme: expected refusal exit 1, got $rc"
+  assert_contains "$err" "programme file is not valid JSON" "unparseable programme refusal names the parse failure"
+  assert_contains "$err" "$(af_programme_path "$home")" "unparseable programme refusal names the file"
+  assert_not_contains "$err" "programme_id, schema, steps[] required" "a parse failure is not reported as missing members"
+  pass "refused at load: a programme file that does not parse, with the parser error propagated"
+
+  # Golden: every accepted dependency spelling of one unchanged sequence resolves
+  # to the same typed result, so the tightened entry check changes nothing for a
+  # valid programme. The programme digest and everything derived from it are
+  # excluded because the spellings are different bytes by construction.
+  local golden variant label
+  golden_view() { jq -S -c 'del(.runtime, .material_identity, .applicability_digest, .programme.sha256, .applicability.programme_sha256)'; }
+  write_af_programme "$home" ".steps[0].terminal_predicate.policy_digest = \"$(sha_of "$home/cleanroom/policy.md")\""
+  golden=$(run_resolve "$home" resolve | golden_view) || fail "golden resolve failed"
+  [ "$(printf '%s' "$golden" | jq -r '.next_action')" = pilot-f ] || fail "golden: the accepted A-E shape yields pilot-f"
+  for label in 'string spelling=.steps[3].depends_on = "slice-c"' \
+               'array of one=.steps[3].depends_on = ["slice-c"]' \
+               'empty array=.steps[3].depends_on = []' \
+               'absent=del(.steps[3].depends_on)' \
+               'null=.steps[3].depends_on = null' \
+               'repeated entry=.steps[3].depends_on = ["slice-c", "slice-c", "slice-a"]' \
+               'every earlier step=.steps[3].depends_on = ["architecture-re-review-ruling", "slice-c", "slice-a"]'; do
+    write_af_programme "$home" "${label#*=} | .steps[0].terminal_predicate.policy_digest = \"$(sha_of "$home/cleanroom/policy.md")\""
+    variant=$(run_resolve "$home" resolve | golden_view) || fail "golden variant ${label%%=*}: resolve failed"
+    [ "$variant" = "$golden" ] || fail "golden variant ${label%%=*}: typed result diverges"$'\n'"$(diff <(printf '%s\n' "$golden" | jq .) <(printf '%s\n' "$variant" | jq .) || true)"
+  done
+  pass "accepted: every valid dependency spelling (string, one-element array, empty array, absent, null, repeated entry, every earlier step) resolves to the same typed result"
 
   # A legacy proof-only programme still resolves, and every reader sees the
   # missing binding loudly rather than as an optional N/A.

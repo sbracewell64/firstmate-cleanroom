@@ -67,7 +67,9 @@
 #             no-mistakes, run from THIS shell unless --profile-json supplies a
 #             capture taken from the real consumer shell), the daemon epoch
 #             read from <nm_home>/daemon.pid, and the repository policy digest
-#             (.no-mistakes.yaml). An unready profile is recorded as
+#             (.no-mistakes.yaml). A JSON null in the profile is an unset
+#             identity: nm_home and path0 record empty, nm_version and
+#             nm_build record `unobserved`. An unready profile is recorded as
 #             stage=launch-refused with outcome_class=preflight-refused, keeps
 #             the attempt id, never fabricates a run id, prints one typed
 #             PREFLIGHT_REFUSED line, and exits 1. A second launch while the
@@ -82,7 +84,10 @@
 #             active run. An explicit --run id is held to the same rule, so a
 #             same-branch run left by earlier work on a reused branch name is
 #             refused, never bound. No matching run is MISSING_BINDING (exit
-#             1, nothing written, the reason named on the line). A daemon
+#             1, nothing written, the reason named on the line). A retry
+#             attempt never rebinds its predecessor run: the run id the
+#             previous attempt bound is refused as MISSING_BINDING whether it
+#             was named with --run or attributed from the inventory. A daemon
 #             epoch that differs from the one recorded at
 #             launch is DAEMON_RESET: the bind is refused rather than silently
 #             rebound unless --accept-daemon-reset records the new epoch. A
@@ -120,7 +125,9 @@
 #                                 between acceptance and run creation)
 #               UNBOUND_RUN       a run exists for the accepted branch and head
 #                                 but the obligation holds no run id (crash or
-#                                 omission between run creation and binding)
+#                                 omission between run creation and binding);
+#                                 for a retry attempt only rows strictly newer
+#                                 than its predecessor run count
 #               SUPERSEDED_RUN    a newer run on the bound branch than the one
 #                                 bound (a retry or repair run to link)
 #               OUTCOME_CHANGED   the bound run's canonical status or outcome
@@ -562,6 +569,10 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
   ver=$(profile_tool_field "$json" no-mistakes version)
   build=$(profile_tool_field "$json" no-mistakes detail)
   build=${build#build }
+  [ "$nm_home" != null ] || nm_home=
+  [ "$path0" != null ] || path0=
+  [ "$ver" != null ] || ver=
+  [ "$build" != null ] || build=
   [ "$(profile_tool_field "$json" no-mistakes state)" = QUALIFIED ] || ready=false
   epoch=$(daemon_epoch "$nm_home")
   seq=$(( ${seq:-0} + 1 ))
@@ -638,7 +649,7 @@ attributed_run_toon() {  # <dir> <branch> <run-id-or-empty> <timeout> <check-hea
 }
 
 do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
-  local id=$1 want=$2 accept=$3 meta record dir wt branch out run status outcome class have epoch recorded
+  local id=$1 want=$2 accept=$3 meta record dir wt branch out run status outcome class have pred epoch recorded
   meta=$(meta_path "$id")
   record_load_or_die "$id"
   record=$RECORD
@@ -648,7 +659,12 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   [ -n "$branch" ] || { wt=$(task_worktree "$meta"); [ -z "$wt" ] || branch=$(candidate_branch "$wt"); }
   [ -n "$branch" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no candidate branch recorded and the task worktree is gone\n' "$id"; return 1; }
   have=$(record_get "$record" run_id)
+  pred=$(record_get "$record" predecessor_run_id)
   nm_available || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no-mistakes not on PATH\n' "$id"; return 1; }
+  if [ -z "$have" ] && [ -n "$pred" ] && [ "$want" = "$pred" ]; then
+    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$want" "$pred"
+    return 1
+  fi
   if [ -n "$have" ] && [ -n "$want" ] && [ "$want" != "$have" ]; then
     printf 'NM_OBSERVE: RUN_BOUND task=%s run=%s refused=%s (one attempt binds one run; heal: bin/fm-nm-observe.sh launch %s --retry && bin/fm-nm-observe.sh bind %s --run %s)\n' \
       "$id" "$have" "$want" "$id" "$id" "$want"
@@ -662,6 +678,10 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   out=$ATTR_TOON
   run=$(run_field "$out" id)
   [ -n "$run" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=canonical record carries no run id\n' "$id"; return 1; }
+  if [ -z "$have" ] && [ -n "$pred" ] && [ "$run" = "$pred" ]; then
+    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$run" "$pred"
+    return 1
+  fi
   if [ -n "$have" ] && [ "$have" != "$run" ]; then
     printf 'NM_OBSERVE: RUN_BOUND task=%s run=%s refused=%s (one attempt binds one run; heal: bin/fm-nm-observe.sh launch %s --retry && bin/fm-nm-observe.sh bind %s --run %s)\n' \
       "$id" "$have" "$run" "$id" "$id" "$run"
@@ -1013,7 +1033,7 @@ reconcile_task() {  # <id> <meta> <record> <dir>
   fi
   rows=${INVENTORY_BY_DIR[$dir]}
   if [ "$stage" = launch-accepted ]; then
-    row=$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch" '$2 == b { print; exit }')
+    row=$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch" -v p="$(record_get "$record" predecessor_run_id)" 'p != "" && $1 == p { exit } $2 == b { print; exit }')
     if [ -n "$row" ]; then
       rid=$(printf '%s' "$row" | cut -f1)
       rhead=$(printf '%s' "$row" | cut -f4)

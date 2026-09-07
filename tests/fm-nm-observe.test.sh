@@ -88,6 +88,10 @@ profile_json() {  # <ready true|false> -> file path
 }
 PROFILE_OK=$(profile_json true)
 PROFILE_BAD=$(profile_json false)
+# A capture from a shell with NM_HOME unset and no version answer: the emitter
+# writes JSON null for those identities.
+PROFILE_NULL="$TMP_ROOT/profile-null.json"
+printf '{"record":"fm-tool-profile/v1","profile":{"nm_home":null,"path0":null,"parent":"bash","state":"OBSERVED","detail":""},"tools":[{"state":"QUALIFIED","tool":"no-mistakes","version":null,"bound":"floor=1.46.0","path":"/opt/tools/bin/no-mistakes","required":true,"detail":null}],"unready":[],"ready":true}\n' > "$PROFILE_NULL"
 
 make_worktree() {  # <dir> <branch>
   mkdir -p "$1"
@@ -499,6 +503,60 @@ assert_not_contains "$out" "UNMANAGED_RUN" "a gone worktree never lends the proj
 assert_not_contains "$out" "task=g1" "the scout with a gone worktree is not named as an owner"
 rm -f "$STATE/g1.meta" "$STATE/g2.meta" "$STATE/g2.nm-observe"
 pass "reconcile: branch ownership comes only from a task's own existing worktree"
+
+# --- a retry attempt never rebinds its predecessor run ---------------------------------
+
+WT7="$TMP_ROOT/wt-t6"
+make_worktree "$WT7" fm/t6
+HEAD6=$(git -C "$WT7" rev-parse HEAD)
+SHORT6=${HEAD6:0:8}
+make_task t6 ship no-mistakes "$WT7"
+"$OBSERVE" launch t6 --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "t6 launch"
+RUN6A=01RUN6AGGGGGGGGGGGGGGGGGGG
+RUN6B=01RUN6BHHHHHHHHHHHHHHHHHHH
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon "$RUN6A" fm/t6 running "$SHORT6" "")
+"$OBSERVE" bind t6 --run "$RUN6A" >/dev/null 2>&1 || fail "t6 first run bound"
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon "$RUN6A" fm/t6 failed "$SHORT6" failed)
+"$OBSERVE" refresh t6 >/dev/null 2>&1 || fail "t6 refresh"
+[ "$(record_get t6 outcome_class)" = failed ] || fail "t6 first attempt terminal"
+FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/t6\nrun:\n  id: "%s"\n  branch: fm/t6\n  status: failed\n  head: %s\n' "$RUN6A" "$SHORT6"; axi_status_toon fm/t6 "$(printf '%s\tfm/t6\tfailed\t%s\t' "$RUN6A" "$SHORT6")")
+out=$("$OBSERVE" launch t6 --profile-json "$PROFILE_OK" 2>&1); rc=$?
+expect_code 0 "$rc" "retry on an unchanged head opens attempt 2"
+[ "$(record_get t6 predecessor_run_id)" = "$RUN6A" ] || fail "t6 predecessor linked"
+"$OBSERVE" reconcile --now >/dev/null 2>&1
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_not_contains "$out" "UNBOUND_RUN task=t6" "the predecessor run is never an unbound run of the retry"
+out=$("$OBSERVE" bind t6 2>&1); rc=$?
+expect_code 1 "$rc" "plain bind refuses the predecessor run on an unchanged head"
+assert_contains "$out" "MISSING_BINDING task=t6 branch=fm/t6 run=$RUN6A reason=predecessor run $RUN6A is not a new run" "refusal names the predecessor"
+out=$("$OBSERVE" bind t6 --run "$RUN6A" 2>&1); rc=$?
+expect_code 1 "$rc" "explicit --run of the predecessor is refused"
+assert_contains "$out" "predecessor run $RUN6A is not a new run" "explicit refusal names the predecessor"
+[ -z "$(record_get t6 run_id)" ] || fail "retry attempt stays unbound after the refusals"
+FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/t6\nrun:\n  id: "%s"\n  branch: fm/t6\n  status: running\n  head: %s\n' "$RUN6B" "$SHORT6"; axi_status_toon fm/t6 "$(printf '%s\tfm/t6\trunning\t%s\t\n%s\tfm/t6\tfailed\t%s\t' "$RUN6B" "$SHORT6" "$RUN6A" "$SHORT6")")
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "UNBOUND_RUN task=t6 run=$RUN6B" "a run newer than the predecessor is the retry's unbound run"
+out=$("$OBSERVE" bind t6 2>&1); rc=$?
+expect_code 0 "$rc" "plain bind attributes the newer run"
+[ "$(record_get t6 run_id)" = "$RUN6B" ] || fail "retry bound to the newer run: $(record_get t6 run_id)"
+pass "retry: the predecessor run is never rebound; only a strictly newer run attributes"
+rm -f "$STATE/t6.meta" "$STATE/t6.nm-observe"
+
+# --- a profile capture with JSON null identities records them as unset ------------
+
+WT8="$TMP_ROOT/wt-t7"
+make_worktree "$WT8" fm/t7
+make_task t7 ship no-mistakes "$WT8"
+out=$("$OBSERVE" launch t7 --profile-json "$PROFILE_NULL" 2>&1); rc=$?
+expect_code 0 "$rc" "a qualified profile with null identities still admits the launch"
+[ -z "$(record_get t7 nm_home)" ] || fail "null nm_home records empty: $(record_get t7 nm_home)"
+[ -z "$(record_get t7 path0)" ] || fail "null path0 records empty: $(record_get t7 path0)"
+[ "$(record_get t7 nm_version)" = unobserved ] || fail "null version records unobserved: $(record_get t7 nm_version)"
+[ "$(record_get t7 nm_build)" = unobserved ] || fail "null build records unobserved: $(record_get t7 nm_build)"
+[ "$(record_get t7 daemon_epoch)" = unobserved ] || fail "no NM_HOME means no daemon epoch"
+assert_no_grep "null" "$DATA/t7/nm-observation-receipt.md" "receipt never prints the literal null"
+rm -f "$STATE/t7.meta" "$STATE/t7.nm-observe"
+pass "launch: JSON null profile identities are recorded as unset, never as the string null"
 
 # --- inventory unavailable: obligations stay pending, reported once ---------------
 

@@ -1,0 +1,54 @@
+== 1. Semantic model assertions (parsed YAML, not substring grep) ==
+  [PASS] permissions grants pull-requests: read for the live PR read
+  [PASS] permissions still restricts contents to read
+  [PASS] gate helper checked out from PR BASE sha (a PR cannot supply its own guard)
+  [PASS] checkout uses persist-credentials: false
+  [PASS] classify is the single owner of the event->mode mapping (calls helper classify)
+  [PASS] classify feeds github.event.action to the helper
+  [PASS] resolve runs ONLY in current mode
+  [PASS] resolve does the one live read via gh api repos/OWNER/REPO/pulls/N
+  [PASS] resolve hands live number/head/body to the helper resolve subcommand
+  [PASS] resolve uses github.token for GH_TOKEN
+  [PASS] action is the pinned require-no-mistakes @32d396a (unchanged)
+  [PASS] action pr-body is bound to resolve output (empty in historical when step skipped)
+  [PASS] action pr-head-sha is bound to resolve output
+  [PASS] pr-head-ref left on action event-payload default (exempt-branch unchanged)
+  [PASS] pr-author left on action event-payload default (fork-approval unchanged)
+  [PASS] readback runs ONLY in current mode
+  [PASS] readback re-reads live subject and calls helper readback
+  [PASS] readback is ordered AFTER the verify (action) step
+
+== 2. Executed workflow orchestration: HISTORICAL event (edited) ==
+  [PASS] classify(edited) => mode=historical
+  [PASS] resolve step is SKIPPED in historical mode (no live read)
+  [PASS] action pr-body input is EMPTY (action falls back to frozen event payload)
+  [PASS] action pr-head-sha input is EMPTY (frozen event fallback)
+  [PASS] watched-red (a): historically-invalid frozen body stays RED even with a later clean live body
+    verifier(frozen event payload) rc=1 :: PR author: regression
+
+== 3. Executed workflow orchestration: CURRENT event (synchronize), sound ==
+  [PASS] classify(synchronize) => mode=current
+  [PASS] resolve step RUNS in current mode
+  [PASS] resolve binds subject and emits head_sha=live head
+  [PASS] resolve emits subject_number/subject_head for readback
+  [PASS] resolve emits the live body carrying the current-head attestation
+  [PASS] watched-red (c): current-mode matching live body/head/identity VERIFIES green
+    verifier(live subject) rc=0 :: ::warning::PR-body attestation is author-editable and is not cryptographic proof that no-mistakes produced it.
+  [PASS] readback passes when head did not advance during verification
+
+== 4. Executed workflow orchestration: CURRENT event, head advanced (readback) ==
+  [PASS] watched-red (b): readback REFUSES green after head advanced during verification
+    readback rc=1 :: ::error::fm-nmf-verify-input.sh readback: subject advanced during verification - verified head 2222222222222222222222222
+
+== 5. Executed workflow orchestration: CURRENT event, superseded subject ==
+  [PASS] watched-red (d): resolve FAILS CLOSED on a superseded subject (old event, advanced live head)
+    resolve rc=1 :: ::error::fm-nmf-verify-input.sh resolve: subject superseded - event head 1111111111111111111111111111111111111111, live 
+  [PASS] resolve FAILS CLOSED on empty live body (no silent frozen-event fallback)
+
+== 6. Executed workflow orchestration: CURRENT event, genuinely stale live body ==
+  [PASS] resolve binds the matching subject before body is judged
+  [PASS] governance NOT weakened: genuinely stale live attestation still FAILS at the verifier
+    verifier(stale live body) rc=1 :: PR author: regression
+
+================ RESULT ================
+ALL WORKFLOW-WIRING ASSERTIONS PASSED

@@ -1,0 +1,24 @@
+### Fixture: CI download directory layout (7 lanes / 180 scripts, Herdr nested like its diagnostics bundle)
+fm-test-aggregate/fm-herdr/default-server.log
+fm-test-aggregate/fm-test-timing-portable-parallel-1.json
+fm-test-aggregate/fm-test-timing-portable-parallel-2.json
+fm-test-aggregate/fm-test-timing-portable-serial-1of4.json
+fm-test-aggregate/fm-test-timing-portable-serial-2of4.json
+fm-test-aggregate/fm-test-timing-portable-serial-3of4.json
+fm-test-aggregate/fm-test-timing-portable-serial-4of4.json
+fm-test-aggregate/fm-test/fm-test-timing-herdr.json
+
+### BEFORE (main 9b6ef3d): ci.yml root-level glob + old aggregator
+$ inputs=($RUNNER_TEMP/fm-test-aggregate/fm-test-timing-*.json)  # 6 files matched
+$ fm-test-run.sh(base) --aggregate-json out.json "${inputs[@]}"
+FM_TEST_AGGREGATE lanes=6 total=168 failed=0 skipped_gate=0 critical_path_duration_ms=14400
+exit=0
+lanes in aggregate: ['run-portable-parallel-1', 'run-portable-parallel-2', 'run-portable-serial-1of4', 'run-portable-serial-2of4', 'run-portable-serial-3of4', 'run-portable-serial-4of4']
+complete field present: False
+
+### AFTER (92a8c60): whole directory + manifest from --list-ci-lanes
+$ bin/fm-test-run.sh --aggregate-json out.json --expect-lane portable-parallel-1 --expect-lane portable-parallel-2 --expect-lane portable-serial-1of4 --expect-lane portable-serial-2of4 --expect-lane portable-serial-3of4 --expect-lane portable-serial-4of4 --expect-lane real-herdr-gated $RUNNER_TEMP/fm-test-aggregate
+FM_TEST_AGGREGATE lanes=7 expected=7 total=180 executed=180 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=true missing_lanes=
+exit=0
+lanes in aggregate: ['portable-parallel-1', 'portable-parallel-2', 'portable-serial-1of4', 'portable-serial-2of4', 'portable-serial-3of4', 'portable-serial-4of4', 'real-herdr-gated']
+{'lanes': 7, 'total': 180, 'executed': 180, 'skipped_gate': 0, 'complete': True, 'missing_lanes': [], 'expected_lanes': ['portable-parallel-1', 'portable-parallel-2', 'portable-serial-1of4', 'portable-serial-2of4', 'portable-serial-3of4', 'portable-serial-4of4', 'real-herdr-gated']}

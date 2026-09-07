@@ -1,0 +1,69 @@
+### ci.yml 'Build aggregate timing summary' step, extracted via YAML parse and executed locally
+--- step script ---
+set -eu
+mkdir -p "$RUNNER_TEMP/fm-test" "$RUNNER_TEMP/fm-test-aggregate"
+# The download directory is passed whole: the aggregator resolves
+# every fm-test-timing-*.json beneath it, including the Herdr lane's
+# file nested inside its diagnostics bundle, validates each lane's
+# identity, and refuses duplicates. A lane with no artifact (a
+# cancelled job, a failed upload) fails this step by name.
+rc=0
+lanes=$(bin/fm-test-run.sh --list-ci-lanes) || rc=$?
+if [ "$rc" -ne 0 ] || [ -z "$lanes" ]; then
+  echo "::error::could not build the expected-lane manifest from bin/fm-test-run.sh --list-ci-lanes (exit $rc)"
+  exit 1
+fi
+expect=()
+while IFS= read -r lane; do
+  [ -n "$lane" ] || continue
+  expect+=(--expect-lane "$lane")
+done <<< "$lanes"
+[ "${#expect[@]}" -gt 0 ] || { echo "::error::the expected-lane manifest is empty"; exit 1; }
+bin/fm-test-run.sh --aggregate-json \
+  "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
+  "${expect[@]}" "$RUNNER_TEMP/fm-test-aggregate" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit $rc"
+  exit "$rc"
+fi
+
+-------------------
+
+$ RUNNER_TEMP=/tmp/fmtr-before.u83BS5/rt-complete bash ci-step.sh   # all 7 lane artifacts downloaded (Herdr nested)
+FM_TEST_AGGREGATE lanes=7 expected=7 total=180 executed=180 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=true missing_lanes=
+step exit=0
+  written: fm-test-timing-aggregate.json
+
+$ RUNNER_TEMP=/tmp/fmtr-before.u83BS5/rt-missing-herdr bash ci-step.sh   # Herdr lane artifact absent (cancelled/failed lane job)
+FM_TEST_AGGREGATE INCOMPLETE: missing expected lanes real-herdr-gated; this aggregate is not a complete cost or coverage report
+FM_TEST_AGGREGATE lanes=6 expected=7 total=168 executed=168 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=false missing_lanes=real-herdr-gated
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 1
+step exit=1
+  written: fm-test-timing-aggregate.json
+
+$ RUNNER_TEMP=/tmp/fmtr-before.u83BS5/rt-none bash ci-step.sh   # no artifacts downloaded at all (download dir does not pre-exist)
+fm-test-run: no fm-test-timing-*.json found under /tmp/fmtr-before.u83BS5/rt-none/fm-test-aggregate; every expected lane is missing: portable-parallel-1, portable-parallel-2, portable-serial-1of4, portable-serial-2of4, portable-serial-3of4, portable-serial-4of4, real-herdr-gated
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 2
+step exit=2
+
+$ RUNNER_TEMP=/tmp/fmtr-before.u83BS5/rt-rerun bash ci-step.sh   # re-run job: previous attempt's aggregate downloaded beside the lanes
+fm-test-run: skipping prior aggregate /tmp/fmtr-before.u83BS5/rt-rerun/fm-test-aggregate/fm-test-timing-aggregate.json
+FM_TEST_AGGREGATE lanes=7 expected=7 total=180 executed=180 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=true missing_lanes=
+step exit=0
+  written: fm-test-timing-aggregate.json
+
+/tmp/fmtr-before.u83BS5/after.json /tmp/fmtr-before.u83BS5/rt-rerun/fm-test/fm-test-timing-aggregate.json differ: byte 166, line 7
+$ RUNNER_TEMP=/tmp/fmtr-before.u83BS5/rt-dup bash ci-step.sh   # two artifacts claiming lane portable-parallel-1
+fm-test-run: duplicate lane id 'portable-parallel-1': /tmp/fmtr-before.u83BS5/rt-dup/fm-test-aggregate/fm-test-timing-portable-parallel-1.json and /tmp/fmtr-before.u83BS5/rt-dup/fm-test-aggregate/fm-test/fm-test-timing-copy.json both claim it; refusing to sum them
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 2
+step exit=2
+
+
+### Determinism re-check (the cmp above differed only because the fixture was copied to another directory, so the recorded lane 'path' fields differ)
+FM_TEST_AGGREGATE lanes=7 expected=7 total=180 executed=180 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=true missing_lanes=
+FM_TEST_AGGREGATE lanes=7 expected=7 total=180 executed=180 failed=0 skipped_gate=0 critical_path_duration_ms=14400 complete=true missing_lanes=
+$ cmp <dir-resolved, with prior aggregate beside lanes> <same 7 files listed explicitly in reverse order>
+byte-identical
+69ea20eec513a12a70c9bbdb932d6b4ca5205a9f90363c381d02a5899a79c502  fm-test-timing-aggregate.json
+69ea20eec513a12a70c9bbdb932d6b4ca5205a9f90363c381d02a5899a79c502  det1.json
+69ea20eec513a12a70c9bbdb932d6b4ca5205a9f90363c381d02a5899a79c502  det2.json

@@ -1,0 +1,36 @@
+### New regression cases in tests/fm-test-run.test.sh, run against the BASE runner (main 9b6ef3d) and the HEAD runner (92a8c60)
+case                                                           base     head
+test_aggregate_resolves_nested_lane_members                    FAIL     pass
+test_aggregate_refuses_duplicate_lane_ids                      FAIL     pass
+test_aggregate_requires_lane_identity                          FAIL     pass
+test_aggregate_refuses_missing_input                           pass     pass
+test_aggregate_refuses_empty_resolution_without_manifest       FAIL     pass
+test_aggregate_refuses_invalid_lane_json                       FAIL     pass
+test_aggregate_marks_missing_expected_lanes_incomplete         FAIL     pass
+test_aggregate_counts_gate_skips_apart_from_executed           FAIL     pass
+test_aggregate_is_deterministic_for_unchanged_input            FAIL     pass
+test_timing_json_records_lane_identity                         FAIL     pass
+test_list_ci_lanes_matches_the_lane_inventory                  FAIL     pass
+
+### First failure line of each case on the BASE runner
+-- test_aggregate_resolves_nested_lane_members
+fm-test-run: unknown option: --expect-lane
+-- test_aggregate_refuses_duplicate_lane_ids
+not ok - two artifacts claiming the same lane must be refused, not summed: FM_TEST_AGGREGATE lanes=2 total=3 failed=0 skipped_gate=0 critical_path_duration_ms=2000
+-- test_aggregate_requires_lane_identity
+not ok - an artifact with no lane identity must be refused: FM_TEST_AGGREGATE lanes=1 total=1 failed=0 skipped_gate=0 critical_path_duration_ms=1000
+-- test_aggregate_refuses_missing_input
+-- test_aggregate_refuses_empty_resolution_without_manifest
+not ok - empty resolution refusal is typed and names the input (missing: 'fm-test-run: no fm-test-timing-*.json found under /tmp/fm-test-run-aggempty.iOm1vp/in')
+-- test_aggregate_refuses_invalid_lane_json
+not ok - a truncated lane file must be refused with exit 2 (got 1): Traceback (most recent call last):
+-- test_aggregate_marks_missing_expected_lanes_incomplete
+not ok - incomplete aggregate says so (missing: 'INCOMPLETE')
+-- test_aggregate_counts_gate_skips_apart_from_executed
+not ok - executed excludes gate skips (missing: ' executed=5 ')
+-- test_aggregate_is_deterministic_for_unchanged_input
+not ok - directory aggregate must succeed: 
+-- test_timing_json_records_lane_identity
+not ok - empty family run must pass:  
+-- test_list_ci_lanes_matches_the_lane_inventory
+fm-test-run: unknown option: --list-ci-lanes

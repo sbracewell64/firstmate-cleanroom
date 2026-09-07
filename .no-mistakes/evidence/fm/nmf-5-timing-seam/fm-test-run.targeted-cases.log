@@ -1,0 +1,22 @@
+ok - timing markers and JSON artifact are valid
+ok - aggregate exit reflects any script failure
+ok - empty changed selection emits deterministic text and JSON summaries
+ok - portable serial shards are a deterministic disjoint cover of the serial lane
+ok - portable serial shard lanes refuse mismatched, out-of-range, and countless names
+ok - portable serial shard hints are budgeted against the job cap and the guard fails on drift
+ok - portable serial CI job cap (30 min) matches the runner's shard budget cap
+ok - aggregate-json merges lane timing artifacts
+ok - aggregate-json resolves a nested lane member from a directory input
+ok - aggregate-json refuses duplicate lane ids instead of summing them
+ok - aggregate-json refuses an input that carries no lane identity
+ok - aggregate-json refuses a nonexistent input from the main process without writing output
+ok - aggregate-json refuses a resolution that yields no lane, with or without a manifest
+ok - aggregate-json refuses a truncated lane file with a typed message and no traceback
+ok - aggregate-json lists missing expected lanes and marks the aggregate INCOMPLETE
+ok - aggregate-json keeps gate skips distinct from executed tests
+fm-test-run: skipping prior aggregate /tmp/fm-test-run-aggdet.YpUVlU/in/fm-test-timing-aggregate.json
+ok - unchanged input yields a byte-identical aggregate regardless of input order, resolution, or a prior aggregate beside it
+ok - timing JSON records the lane identity of lane and family runs only
+ok - --list-ci-lanes is the lane inventory minus the unsharded serial umbrella
+ok - the timing aggregate job depends on exactly the jobs that upload lane timing
+rc=0

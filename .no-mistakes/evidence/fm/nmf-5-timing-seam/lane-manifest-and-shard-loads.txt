@@ -1,0 +1,56 @@
+$ bin/fm-test-run.sh --list-ci-lanes
+portable-parallel-1
+portable-parallel-2
+portable-serial-1of4
+portable-serial-2of4
+portable-serial-3of4
+portable-serial-4of4
+real-herdr-gated
+exit=0
+
+$ bin/fm-test-run.sh --list-lanes
+portable-parallel-1
+portable-parallel-2
+portable-serial
+portable-serial-1of4
+portable-serial-2of4
+portable-serial-3of4
+portable-serial-4of4
+real-herdr-gated
+
+$ bin/fm-test-run.sh --serial-shard-loads   # lane<TAB>scripts<TAB>summed hint ms
+portable-serial-1of4	36	917206
+portable-serial-2of4	36	917197
+portable-serial-3of4	36	917195
+portable-serial-4of4	36	917194
+
+$ bin/fm-test-run.sh --check-coverage
+FM_TEST_COVERAGE ok total=180 parallel=24 serial=144 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=917206
+exit=0
+
+$ bin/fm-test-run.sh --help | sed -n '/Aggregation/,/^# Options/p'
+Aggregation (no suite execution):
+  fm-test-run.sh --aggregate-json <out.json> [--expect-lane <lane>]... <input>...
+                  Each <input> is a lane timing JSON or a directory searched
+                  recursively for fm-test-timing-*.json, so a lane whose CI
+                  artifact nests its file (the Herdr lane's diagnostics
+                  bundle) is still resolved. A nonexistent input, an input
+                  that is not valid JSON, and a resolution that yields no
+                  lane at all (no timing file, or only prior aggregates)
+                  are each refused (exit 2, nothing written), with or
+                  without a manifest. Every input must carry the
+                  "lane" identity --json records; an input without one is
+                  refused, two inputs claiming one lane are refused rather
+                  than summed, and a prior aggregate (kind=aggregate) found
+                  beside the lanes is skipped, never summed.
+                  --expect-lane <lane> (repeatable) declares the expected-lane
+                  manifest: a missing lane is listed in summary.missing_lanes,
+                  summary.complete is false, the summary line says
+                  INCOMPLETE, and the exit status is 1 after the marked
+                  aggregate is still written. Without a manifest
+                  summary.complete is null ("undeclared"), never true.
+                  summary.executed is total minus skipped_gate, so gate
+                  skips never count as executed tests. The output is
+                  byte-deterministic for the same inputs in any order.
+
+Options:

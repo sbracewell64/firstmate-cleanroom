@@ -22,6 +22,30 @@ document:
     evidence destination, and unique safety facts, then review the complete
     branch diff again after every documentation or lint fix.
 
+# Trusted review guidance scoped to the programme-continuation boundary.
+# Support evidence for the pinned runtime (no-mistakes v1.61.0, build 0af0be6):
+# the pinned source's docs/src/content/docs/reference/repo-config.md documents
+# `review.path_instructions` as a trusted default-branch-only field, and
+# internal/config/config.go validateReviewRaw enforces its shape (non-empty
+# path and instructions, a path.Match glob, at most 32 entries / 16384 bytes).
+# Like the rest of this file it is honored only from the default-branch copy,
+# so it steers review only after it lands. It is guidance for the reviewer,
+# never a substitute for the colocated tests; `auto_fix.review` stays at 0.
+review:
+  path_instructions:
+    - path: "bin/fm-continuation*.sh"
+      instructions: |
+        Review changed machine inputs as a complete boundary: required members,
+        value types, exact membership and identity, empty/whitespace values,
+        malformed nested objects and parser failures. Check that producers,
+        consumer fixtures and examples follow the same contract. Keep CNO,
+        rejection and accepted evidence distinct. Do not broaden authority.
+    - path: "bin/fm-programme-presentation-lib.sh"
+      instructions: |
+        Check presented versus acknowledged identity, crash/restart recovery,
+        same-state convergence, and new-state-between-present-and-ack races.
+        Assess the existing ownership contract; add no scheduler or authority.
+
 # Pin lint to the same owner CI runs instead of leaving it to no-mistakes'
 # default handling, which does not invoke the repository's canonical lint gate.
 # `bin/fm-lint.sh` owns the complete lint definition, including GitHub workflow

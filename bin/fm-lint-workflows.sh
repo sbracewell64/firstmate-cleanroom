@@ -111,7 +111,7 @@ fi
 # verdict: it is reported as one typed ENVIRONMENT_UNREADY line naming the
 # owner action (the same line bin/fm-tool-profile.sh emits) and the gate fails.
 if ! command -v actionlint >/dev/null 2>&1; then
-  printf 'fm-lint-workflows.sh: ENVIRONMENT_UNREADY: actionlint ABSENT (actionlint not found); owner: install actionlint %s with bin/fm-install-actionlint.sh <destination-directory> and put that directory on PATH.\n' \
+  printf 'ENVIRONMENT_UNREADY: actionlint ABSENT (actionlint not found); owner: install actionlint %s with bin/fm-install-actionlint.sh <destination-directory> and put that directory on PATH.\n' \
     "$REQUIRED_ACTIONLINT" >&2
   exit 1
 fi
@@ -119,7 +119,7 @@ ACTIONLINT_BIN=$(command -v actionlint)
 resolved=$("$ACTIONLINT_BIN" -version | awk 'NR==1 {print; exit}')
 printf 'fm-lint-workflows.sh: actionlint %s (pinned %s)\n' "$resolved" "$REQUIRED_ACTIONLINT" >&2
 if [ "$resolved" != "$REQUIRED_ACTIONLINT" ]; then
-  printf 'fm-lint-workflows.sh: ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH (actionlint %s required for CI parity, found %s); owner: install %s with bin/fm-install-actionlint.sh <destination-directory> and put that directory ahead of the found copy on PATH.\n' \
+  printf 'ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH (actionlint %s required for CI parity, found %s); owner: install %s with bin/fm-install-actionlint.sh <destination-directory> and put that directory ahead of the found copy on PATH.\n' \
     "$REQUIRED_ACTIONLINT" "$resolved" "$REQUIRED_ACTIONLINT" >&2
   exit 1
 fi

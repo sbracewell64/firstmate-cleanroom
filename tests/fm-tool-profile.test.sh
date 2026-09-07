@@ -165,17 +165,43 @@ test_pins_are_projected_from_their_owners() {
   pass "pins and floors are projected from their owners"
 }
 
-test_tasks_axi_pin_is_at_or_above_its_floor() {
-  # The CI install pin can never be a version the local floor refuses.
-  local have_major have_minor have_patch min_major min_minor min_patch
-  IFS=. read -r have_major have_minor have_patch <<< "$PIN_TASKS_AXI"
-  IFS=. read -r min_major min_minor min_patch <<< "$FLOOR_TASKS_AXI"
-  if [ "$have_major" -lt "$min_major" ] \
-    || { [ "$have_major" -eq "$min_major" ] && [ "$have_minor" -lt "$min_minor" ]; } \
-    || { [ "$have_major" -eq "$min_major" ] && [ "$have_minor" -eq "$min_minor" ] && [ "$have_patch" -lt "$min_patch" ]; }; then
-    fail "FM_TASKS_AXI_PIN $PIN_TASKS_AXI is below FM_TASKS_AXI_MIN $FLOOR_TASKS_AXI"
-  fi
-  pass "the tasks-axi CI pin is at or above the local floor ($PIN_TASKS_AXI >= $FLOOR_TASKS_AXI)"
+# fixture_probe <dir> <lib-body>: a copy of the probe whose bin/ holds a
+# tasks-axi owner that first loads the real lib and then applies <lib-body>, so
+# the probe's own owner projection can be exercised against a broken owner
+# without touching the real one.
+fixture_probe() {
+  mkdir -p "$1/bin"
+  cp "$PROFILE" "$1/bin/fm-tool-profile.sh"
+  printf '. %q\n%s\n' "$ROOT/bin/fm-tasks-axi-lib.sh" "$2" > "$1/bin/fm-tasks-axi-lib.sh"
+}
+
+test_pin_below_floor_or_missing_is_refused_by_the_owner_projection() {
+  # The CI install pin can never be a version the local floor refuses, and a
+  # pin the owner no longer defines must fail the projection loudly instead of
+  # letting a consumer install `tasks-axi@` (latest).
+  local fixture out err rc
+  fixture="$TMP_ROOT/pin-below-floor"
+  fixture_probe "$fixture" 'FM_TASKS_AXI_PIN=0.0.1'
+  rc=0
+  out=$("$fixture/bin/fm-tool-profile.sh" --pin tasks-axi 2>"$fixture/err") || rc=$?
+  err=$(cat "$fixture/err")
+  [ "$rc" -eq 2 ] || fail "--pin tasks-axi below the floor must exit 2, got $rc"$'\n'"$out$err"
+  [ -z "$out" ] || fail "--pin tasks-axi below the floor must print nothing on stdout, got '$out'"
+  assert_contains "$err" "FM_TASKS_AXI_PIN 0.0.1 is below FM_TASKS_AXI_MIN $FLOOR_TASKS_AXI" \
+    "the refusal must name the pin, the floor, and their owner variables"
+  fixture="$TMP_ROOT/pin-missing"
+  fixture_probe "$fixture" 'unset FM_TASKS_AXI_PIN'
+  rc=0
+  out=$("$fixture/bin/fm-tool-profile.sh" --pin tasks-axi 2>"$fixture/err") || rc=$?
+  err=$(cat "$fixture/err")
+  [ "$rc" -eq 2 ] || fail "--pin tasks-axi with no owned pin must exit 2, got $rc"$'\n'"$out$err"
+  [ -z "$out" ] || fail "--pin tasks-axi with no owned pin must print nothing on stdout, got '$out'"
+  assert_contains "$err" "could not be projected from its owner" "the refusal must name the projection failure"
+  rc=0
+  out=$("$PROFILE" --pin tasks-axi 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "the real owner's pin must be accepted, got $rc"$'\n'"$out"
+  [ "$out" = "$PIN_TASKS_AXI" ] || fail "the real owner's pin must be printed unchanged, got '$out'"
+  pass "--pin tasks-axi refuses a pin below the floor or a pin the owner no longer defines"
 }
 
 test_qualified_profile_passes_and_reports_every_tool() {
@@ -223,6 +249,32 @@ test_wrong_actionlint_version_is_a_pinned_mismatch() {
   assert_contains "$OUT" "found 1.6.0, pinned $PIN_ACTIONLINT" \
     "the mismatch must name both versions"
   pass "a non-pinned actionlint is a PINNED_MISMATCH"
+}
+
+test_suffixed_pinned_builds_are_judged_as_the_gates_judge_them() {
+  # bin/fm-lint.sh compares the `version:` line and bin/fm-lint-workflows.sh
+  # the whole first line, so a suffixed build carrying the pinned triple is
+  # refused by the gate and must be refused by the probe too.
+  local bin="$TMP_ROOT/suffixed"
+  qualified_bin "$bin"
+  write_shellcheck "$bin" "$PIN_SHELLCHECK-1-gabc"
+  write_actionlint "$bin" "$PIN_ACTIONLINT-dev"
+  run_probe "$bin"
+  [ "$RC" -eq 1 ] || fail "suffixed pinned builds expected exit 1, got $RC"$'\n'"$OUT"
+  assert_contains "$OUT" "ENVIRONMENT_UNREADY: shellcheck PINNED_MISMATCH (found $PIN_SHELLCHECK-1-gabc, pinned $PIN_SHELLCHECK" \
+    "a suffixed shellcheck build must be PINNED_MISMATCH with the gate's own version string"
+  assert_contains "$OUT" "ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH (found $PIN_ACTIONLINT-dev, pinned $PIN_ACTIONLINT" \
+    "a suffixed actionlint build must be PINNED_MISMATCH with the gate's own version string"
+  cat > "$bin/shellcheck" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = --version ] && printf 'ShellCheck %s\n' '$PIN_SHELLCHECK'
+exit 0
+SH
+  chmod +x "$bin/shellcheck"
+  run_probe "$bin"
+  assert_contains "$OUT" "ENVIRONMENT_UNREADY: shellcheck PINNED_MISMATCH (version unreadable, pinned $PIN_SHELLCHECK" \
+    "a shellcheck without a version: line is unreadable to the gate and must be unreadable to the probe"
+  pass "suffixed shellcheck and actionlint builds are PINNED_MISMATCH exactly as the gates judge them"
 }
 
 test_below_floor_tasks_axi_is_refused() {
@@ -415,10 +467,11 @@ test_unknown_tool_and_missing_jq_are_usage_errors() {
 }
 
 test_pins_are_projected_from_their_owners
-test_tasks_axi_pin_is_at_or_above_its_floor
+test_pin_below_floor_or_missing_is_refused_by_the_owner_projection
 test_qualified_profile_passes_and_reports_every_tool
 test_missing_actionlint_fails_naming_the_owner
 test_wrong_actionlint_version_is_a_pinned_mismatch
+test_suffixed_pinned_builds_are_judged_as_the_gates_judge_them
 test_below_floor_tasks_axi_is_refused
 test_tasks_axi_at_floor_without_feature_probe_is_below_floor
 test_strict_pin_catches_a_drifted_tasks_axi

@@ -81,9 +81,23 @@ fm_tool_profile_ver_ge() {
   [ "$c" -ge "$z" ]
 }
 
-# First x.y.z triple in a tool's --version output, or nothing.
+# First x.y.z triple in a tool's --version output, or nothing. Used only for
+# the floor-based tools (tasks-axi, no-mistakes, node); the exact-pin tools are
+# read exactly as their gate reads them so the probe can never pass a version
+# the gate refuses.
 fm_tool_profile_semver_of() {
   printf '%s\n' "$1" | sed -nE 's/.*[^0-9.]([0-9]+\.[0-9]+\.[0-9]+).*/\1/p; s/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1
+}
+
+# The version string bin/fm-lint.sh compares to its pin: the `version:` line.
+fm_tool_profile_shellcheck_version_of() {
+  printf '%s\n' "$1" | awk '/^version:/ {print $2; exit}'
+}
+
+# The version string bin/fm-lint-workflows.sh compares to its pin: the whole
+# first line of `actionlint -version`.
+fm_tool_profile_actionlint_version_of() {
+  printf '%s\n' "$1" | awk 'NR==1 {print; exit}'
 }
 
 pin_of() {  # <tool> -> exact pin, projected from the owner
@@ -199,7 +213,11 @@ observe_pinned() {  # <tool> <pin> <version-flag>
     STATE=ABSENT; VERSION=; PATHV=; DETAIL="no $tool on PATH"; return
   fi
   output=$("$PATHV" "$flag" 2>/dev/null </dev/null || true)
-  VERSION=$(fm_tool_profile_semver_of "$output")
+  case "$tool" in
+    shellcheck) VERSION=$(fm_tool_profile_shellcheck_version_of "$output") ;;
+    actionlint) VERSION=$(fm_tool_profile_actionlint_version_of "$output") ;;
+    *) VERSION=$(fm_tool_profile_semver_of "$output") ;;
+  esac
   if [ -z "$VERSION" ]; then
     STATE=PINNED_MISMATCH; DETAIL="version unreadable, pinned $pin"
   elif [ "$VERSION" != "$pin" ]; then

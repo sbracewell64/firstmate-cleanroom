@@ -58,7 +58,9 @@ jobs:
       - name: Install pinned tasks-axi
         run: |
           set -eu
-          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
+          pin=$(bin/fm-tool-profile.sh --pin tasks-axi)
+          [ -n "$pin" ] || { echo "::error::the tasks-axi pin could not be projected from bin/fm-tasks-axi-lib.sh"; exit 1; }
+          npm install -g "tasks-axi@$pin"
           tasks-axi --version
       - name: Observe the qualified profile from every consumer shell
         env:
@@ -130,7 +132,9 @@ jobs:
       - name: Install pinned tasks-axi
         run: |
           set -eu
-          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
+          pin=$(bin/fm-tool-profile.sh --pin tasks-axi)
+          [ -n "$pin" ] || { echo "::error::the tasks-axi pin could not be projected from bin/fm-tasks-axi-lib.sh"; exit 1; }
+          npm install -g "tasks-axi@$pin"
           tasks-axi --version
       - name: Run portable parallel shard 1
         run: |
@@ -167,7 +171,9 @@ jobs:
       - name: Install pinned tasks-axi
         run: |
           set -eu
-          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
+          pin=$(bin/fm-tool-profile.sh --pin tasks-axi)
+          [ -n "$pin" ] || { echo "::error::the tasks-axi pin could not be projected from bin/fm-tasks-axi-lib.sh"; exit 1; }
+          npm install -g "tasks-axi@$pin"
           tasks-axi --version
       - name: Run portable parallel shard 2
         run: |
@@ -224,7 +230,9 @@ jobs:
       - name: Install pinned tasks-axi for backlog-handoff delegation
         run: |
           set -eu
-          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
+          pin=$(bin/fm-tool-profile.sh --pin tasks-axi)
+          [ -n "$pin" ] || { echo "::error::the tasks-axi pin could not be projected from bin/fm-tasks-axi-lib.sh"; exit 1; }
+          npm install -g "tasks-axi@$pin"
           tasks-axi --version
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
@@ -452,7 +460,9 @@ jobs:
           }
 
           command -v npm >/dev/null || { echo "::error::npm is required to install tasks-axi"; exit 1; }
-          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)" >/dev/null
+          pin=$(bin/fm-tool-profile.sh --pin tasks-axi)
+          [ -n "$pin" ] || { echo "::error::the tasks-axi pin could not be projected from bin/fm-tasks-axi-lib.sh"; exit 1; }
+          npm install -g "tasks-axi@$pin" >/dev/null
           PATH="$(npm prefix -g)/bin:$PATH"
           export PATH
           command -v tasks-axi >/dev/null || { echo "::error::tasks-axi is required for the public-followup bash 3.2 register regression"; exit 1; }

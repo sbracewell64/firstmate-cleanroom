@@ -128,6 +128,7 @@ test_each_stage_verb_classifies_exactly_one_way() {
   status_line_stage "working: candidate-committed soon" >/dev/null && fail "prose mentioning a stage is not a stage line"
   status_stage_field "done: PR x checks green task=t" task >/dev/null && fail "a non-stage line has no receipt fields"
   # The progress/wait/terminal split covers the vocabulary completely.
+  # shellcheck disable=SC2086 # deliberate word-split: one verb per line so wc -l counts the vocabulary
   [ "$(printf '%s\n' $FM_CLASSIFY_STAGE_VERBS | wc -l | tr -d ' ')" = 7 ] || fail "stage vocabulary size changed; update this table"
   pass "classify: each stage verb classifies exactly one way and its receipt decodes"
 }
@@ -451,6 +452,7 @@ test_direct_pr_and_local_only_record_candidate_only() {
     assert_contains "$out" "reason=NOT_ADMITTED" "$mode: typed refusal"
   done
   assert_contains "$("$STAGE" e-direct show)" 'next: worker pushes the branch and opens the PR' "direct-PR next step"
+  # shellcheck disable=SC2016 # literal assertion text: backticks are part of the expected next: line
   assert_contains "$("$STAGE" e-local show)" 'next: worker appends `done: ready in branch fm/e-local`' "local-only next step"
   pass "fm-stage: direct-PR and local-only record the candidate and keep their own definition of done"
 }

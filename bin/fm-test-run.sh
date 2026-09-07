@@ -1901,6 +1901,9 @@ if [ "${MODE:-}" = "aggregate" ]; then
     AGGREGATE_INPUTS+=("$s")
   done < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
   if [ "${#AGGREGATE_INPUTS[@]}" -eq 0 ]; then
+    if [ "${#EXPECT_LANES[@]}" -gt 0 ]; then
+      die "no fm-test-timing-*.json found under ${SCRIPTS[*]}; every expected lane is missing: $(IFS=,; printf '%s' "${EXPECT_LANES[*]}" | sed 's/,/, /g')"
+    fi
     die "no fm-test-timing-*.json found under ${SCRIPTS[*]}; refusing to write an empty aggregate"
   fi
   aggregate_timing_json "$AGGREGATE_OUT" "${AGGREGATE_INPUTS[@]+"${AGGREGATE_INPUTS[@]}"}"

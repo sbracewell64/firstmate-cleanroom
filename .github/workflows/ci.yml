@@ -425,7 +425,7 @@ jobs:
             "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
             "${expect[@]}" "$RUNNER_TEMP/fm-test-aggregate" || rc=$?
           if [ "$rc" -ne 0 ]; then
-            echo "::error::the timing aggregate is INCOMPLETE or invalid (exit $rc); see the FM_TEST_AGGREGATE lines above"
+            echo "::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit $rc"
             exit "$rc"
           fi
       - name: Upload aggregate timing artifact

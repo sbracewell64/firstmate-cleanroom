@@ -32,6 +32,11 @@ export function encodeFirstmateOperationalInput(root, kind, content) {
       }
       reject(new Error(stderr.trim() || `operational-input encoder exited ${code ?? "unknown"}`));
     });
+    // An encoder that exits before draining its payload closes the pipe under
+    // our write, raising EPIPE on child.stdin; swallow it here so it is not an
+    // uncaught host crash. The encoder's real verdict rides on close, which
+    // rejects on a non-zero exit or empty stdout, so a lost payload still fails.
+    child.stdin.on("error", () => {});
     child.stdin.end(content);
   });
 }

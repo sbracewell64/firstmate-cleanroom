@@ -10,6 +10,8 @@ OWNER="$ROOT/bin/fm-operational-input.sh"
 # shellcheck source=/dev/null
 . "$OWNER"
 
+TMP_ROOT=$(fm_test_tmproot fm-operational-input)
+
 cleanup() {
   fm_test_cleanup
 }
@@ -152,10 +154,59 @@ test_invalid_current_encodings_are_rejected() {
   pass "operational input: current construction rejects legacy kinds and empty bodies"
 }
 
+# The OpenCode adapter writes the payload to the encoder child's stdin. When the
+# encoder exits before draining a payload larger than the pipe buffer, the read
+# end closes under a still-pending write and EPIPE is raised on child.stdin. An
+# unlistened 'error' on that writable would become an uncaught exception and
+# crash the host, so the adapter attaches child.stdin.on("error") before the
+# write and lets the child's real verdict ride on its exit code and stderr. This
+# forces that race deterministically with a >64 KiB payload against a fixture
+# encoder that never reads stdin: the adapter must reject with the child's
+# verdict, and the host must not crash. Remove the handler and this same call
+# aborts the node process with an uncaught EPIPE instead of rejecting.
+test_cross_language_adapter_swallows_child_stdin_epipe() {
+  local fixture out status
+  fixture="$TMP_ROOT/opencode-encoder-epipe"
+  mkdir -p "$fixture/bin"
+  cat > "$fixture/bin/fm-operational-input.sh" <<'SH'
+#!/usr/bin/env bash
+# Exits without reading stdin, so a large parent write hits a closed pipe.
+printf 'fixture encoder refused to read stdin\n' >&2
+exit 7
+SH
+  chmod +x "$fixture/bin/fm-operational-input.sh"
+  out=$(FM_TEST_ROOT="$fixture" HELPER="$ROOT/.opencode/plugins/lib/fm-operational-input.js" \
+    node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+const { encodeFirstmateOperationalInput } = await import(pathToFileURL(process.env.HELPER).href);
+const payload = "x".repeat(200 * 1024); // larger than the 64 KiB pipe buffer
+let rejected = "";
+try {
+  await encodeFirstmateOperationalInput(process.env.FM_TEST_ROOT, "watcher", payload);
+  console.error("adapter resolved despite an encoder that refused the payload");
+  process.exit(1);
+} catch (err) {
+  rejected = String(err && err.message);
+}
+await new Promise((resolve) => setTimeout(resolve, 50));
+if (!rejected.includes("fixture encoder refused to read stdin")) {
+  console.error(`rejection lost the child verdict: ${rejected}`);
+  process.exit(1);
+}
+console.log("SURVIVED");
+JS
+  )
+  status=$?
+  expect_code 0 "$status" "OpenCode adapter must survive a child-stdin EPIPE and preserve the verdict: $out"
+  assert_contains "$out" "SURVIVED" "OpenCode adapter did not complete after the child-stdin EPIPE"
+  pass "operational input: the OpenCode adapter swallows a child-stdin EPIPE without crashing the host"
+}
+
 test_current_generic_matrix
 test_current_from_firstmate_carrier
 test_landed_untyped_prefix_is_explicitly_legacy
 test_isolated_legacy_matrix
 test_genuine_near_misses_remain_unclassified
 test_cross_language_adapter_uses_the_owner
+test_cross_language_adapter_swallows_child_stdin_epipe
 test_invalid_current_encodings_are_rejected

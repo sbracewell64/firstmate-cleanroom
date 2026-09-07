@@ -1330,6 +1330,24 @@ p=sys.argv[1]; doc=json.load(open(p)); del doc["lane"]; json.dump(doc, open(p,"w
   pass "aggregate-json refuses an input that carries no lane identity"
 }
 
+test_aggregate_refuses_missing_input() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggmiss.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/nope.json" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "a good lane plus a nonexistent input must refuse the whole aggregate: $out"; }
+  assert_contains "$out" "aggregate input not found" "missing input refusal names the defect"
+  assert_contains "$out" "$tmp/nope.json" "missing input refusal names the path"
+  [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rc=0
+  out=$("$RUNNER" --aggregate-json "$tmp/out2.json" "$tmp/nope-only.json" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "a sole nonexistent input must refuse the aggregate: $out"; }
+  assert_contains "$out" "aggregate input not found" "sole missing input refusal names the defect"
+  [ ! -e "$tmp/out2.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate-json refuses a nonexistent input from the main process without writing output"
+}
+
 test_aggregate_marks_missing_expected_lanes_incomplete() {
   local tmp out rc=0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggmiss.XXXXXX")
@@ -1528,6 +1546,7 @@ test_aggregate_json
 test_aggregate_resolves_nested_lane_members
 test_aggregate_refuses_duplicate_lane_ids
 test_aggregate_requires_lane_identity
+test_aggregate_refuses_missing_input
 test_aggregate_marks_missing_expected_lanes_incomplete
 test_aggregate_counts_gate_skips_apart_from_executed
 test_aggregate_is_deterministic_for_unchanged_input

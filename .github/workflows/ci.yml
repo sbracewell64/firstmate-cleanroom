@@ -409,12 +409,18 @@ jobs:
           # file nested inside its diagnostics bundle, validates each lane's
           # identity, and refuses duplicates. A lane with no artifact (a
           # cancelled job, a failed upload) fails this step by name.
+          rc=0
+          lanes=$(bin/fm-test-run.sh --list-ci-lanes) || rc=$?
+          if [ "$rc" -ne 0 ] || [ -z "$lanes" ]; then
+            echo "::error::could not build the expected-lane manifest from bin/fm-test-run.sh --list-ci-lanes (exit $rc)"
+            exit 1
+          fi
           expect=()
           while IFS= read -r lane; do
             [ -n "$lane" ] || continue
             expect+=(--expect-lane "$lane")
-          done < <(bin/fm-test-run.sh --list-ci-lanes)
-          rc=0
+          done <<< "$lanes"
+          [ "${#expect[@]}" -gt 0 ] || { echo "::error::the expected-lane manifest is empty"; exit 1; }
           bin/fm-test-run.sh --aggregate-json \
             "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
             "${expect[@]}" "$RUNNER_TEMP/fm-test-aggregate" || rc=$?

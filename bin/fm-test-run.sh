@@ -1019,17 +1019,16 @@ run_coverage_guard() {
 }
 
 # Resolve --aggregate-json inputs: a file is taken as given, a directory is
-# searched recursively for fm-test-timing-*.json (deterministic order). A
+# searched recursively for fm-test-timing-*.json (deterministic order). Every
+# input is checked for existence in the main shell before this runs, so a
 # missing input is refused up front rather than reported as a missing lane.
 resolve_aggregate_inputs() {
   local s
   for s in "$@"; do
     if [ -d "$s" ]; then
       find "$s" -type f -name 'fm-test-timing-*.json' | LC_ALL=C sort
-    elif [ -f "$s" ]; then
-      printf '%s\n' "$s"
     else
-      die "aggregate input not found: $s"
+      printf '%s\n' "$s"
     fi
   done
 }
@@ -1879,7 +1878,13 @@ if [ "${MODE:-}" = "aggregate" ]; then
       ''|*,*) die "--expect-lane names one lane with no comma (got '$e')" ;;
     esac
   done
-  mapfile -t AGGREGATE_INPUTS < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
+  for s in "${SCRIPTS[@]}"; do
+    [ -f "$s" ] || [ -d "$s" ] || die "aggregate input not found: $s"
+  done
+  AGGREGATE_INPUTS=()
+  while IFS= read -r s; do
+    AGGREGATE_INPUTS+=("$s")
+  done < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
   aggregate_timing_json "$AGGREGATE_OUT" "${AGGREGATE_INPUTS[@]+"${AGGREGATE_INPUTS[@]}"}"
   exit $?
 fi

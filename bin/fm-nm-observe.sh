@@ -127,8 +127,9 @@
 #                                 differs from what the obligation recorded; a
 #                                 runs-table row carries status only, so its
 #                                 canonical class prints as `unread`
-#               RUN_VANISHED      a successful canonical read no longer names
-#                                 the bound run id
+#               RUN_VANISHED      the daemon answers that the bound run id is
+#                                 not found, or a successful canonical read no
+#                                 longer names it
 #               DAEMON_RESET      <nm_home>/daemon.pid names a different daemon
 #                                 than the watermark or an obligation recorded
 #               UNMANAGED_RUN     an inventory run whose branch is owned by a
@@ -272,6 +273,15 @@ meta_path() { printf '%s/%s.meta\n' "$STATE" "$1"; }
 task_managed() {  # <meta> -> 0 when kind=ship and mode=no-mistakes
   [ -f "$1" ] || return 1
   [ "$(fm_meta_get "$1" kind)" = ship ] && [ "$(fm_meta_get "$1" mode)" = no-mistakes ]
+}
+
+# The task's own worktree, only while it exists: the sole source of a task's
+# branch ownership and candidate identity. The project checkout is never a
+# task's branch; it is only a place to run the read-only inventory query.
+task_worktree() {  # <meta>
+  local wt
+  wt=$(fm_meta_get "$1" worktree)
+  [ -n "$wt" ] && [ -d "$wt" ] && printf '%s' "$wt" || true
 }
 
 task_dir() {  # <meta> -> worktree when it exists, else project, else empty
@@ -490,7 +500,7 @@ do_enrol() {  # <task-id> <entrypoint>
 
 do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-nm-home> <expect-path0>
   local id=$1 entry=$2 retry=$3 profile_file=$4 expect_home=$5 expect_path0=$6
-  local meta record dir stage run class attempt seq pred_a pred_r json rc=0 ready nm_home path0 ver build unready branch head epoch
+  local meta record dir wt stage run class attempt seq pred_a pred_r json rc=0 ready nm_home path0 ver build unready branch head epoch
   meta=$(meta_path "$id")
   [ -f "$meta" ] || { echo "error: no task record for $id ($meta)" >&2; exit 2; }
   task_managed "$meta" || { do_enrol "$id" "$entry" || return 1; }
@@ -520,8 +530,9 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
     pred_r=$run
   fi
   dir=$(task_dir "$meta")
-  branch=$([ -n "$dir" ] && candidate_branch "$dir" || true)
-  head=$([ -n "$dir" ] && candidate_head "$dir" || true)
+  wt=$(task_worktree "$meta")
+  branch=$([ -n "$wt" ] && candidate_branch "$wt" || true)
+  head=$([ -n "$wt" ] && candidate_head "$wt" || true)
   if [ -n "$profile_file" ]; then
     json=$(cat "$profile_file") || { echo "error: unreadable --profile-json $profile_file" >&2; exit 2; }
   else
@@ -613,14 +624,15 @@ attributed_run_toon() {  # <dir> <branch> <run-id-or-empty> <timeout> <check-hea
 }
 
 do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
-  local id=$1 want=$2 accept=$3 meta record dir branch out run status outcome class have epoch recorded
+  local id=$1 want=$2 accept=$3 meta record dir wt branch out run status outcome class have epoch recorded
   meta=$(meta_path "$id")
   record_load_or_die "$id"
   record=$RECORD
   dir=$(task_dir "$meta")
   [ -n "$dir" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no worktree or project directory to query\n' "$id"; return 1; }
   branch=$(record_get "$record" candidate_branch)
-  [ -n "$branch" ] || branch=$(candidate_branch "$dir")
+  [ -n "$branch" ] || { wt=$(task_worktree "$meta"); [ -z "$wt" ] || branch=$(candidate_branch "$wt"); }
+  [ -n "$branch" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no candidate branch recorded and the task worktree is gone\n' "$id"; return 1; }
   have=$(record_get "$record" run_id)
   nm_available || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no-mistakes not on PATH\n' "$id"; return 1; }
   if [ -n "$have" ] && [ -n "$want" ] && [ "$want" != "$have" ]; then
@@ -680,7 +692,7 @@ merge_marker_identity() {  # <marker> -> provider:host:path:number
 # PR, publication, head-change, and superseding-run facts read from this home's
 # own records and from the inventory table already captured in <toon>.
 refresh_side_facts() {  # <task-id> <meta> <record> <dir> <toon>
-  local id=$1 meta=$2 record=$3 dir=$4 toon=$5 pr pr_head marker ident cand cur run rows newer
+  local id=$1 meta=$2 record=$3 dir=$4 toon=$5 pr pr_head marker ident cand cur run rows newer wt
   pr=$(fm_meta_get "$meta" pr)
   pr_head=$(fm_meta_get "$meta" pr_head)
   [ -z "$pr" ] || record_set "$record" "pr=$pr" "pr_head=$pr_head"
@@ -689,7 +701,8 @@ refresh_side_facts() {  # <task-id> <meta> <record> <dir> <toon>
     ident=$(merge_marker_identity "$marker") && record_set "$record" "publication=merged:$ident"
   fi
   cand=$(record_get "$record" candidate_head)
-  cur=$([ -n "$dir" ] && candidate_head "$dir" || true)
+  wt=$(task_worktree "$meta")
+  cur=$([ -n "$wt" ] && candidate_head "$wt" || true)
   if [ -n "$cand" ] && [ -n "$cur" ] && [ "$cand" != "$cur" ]; then
     record_set "$record" "head_change=$cur"
   fi
@@ -730,6 +743,11 @@ do_refresh() {  # <task-id> <accept-reset 0|1>
     printf 'NM_OBSERVE: DAEMON_RESET task=%s recorded=%s observed=%s (outcome read by run id, not rebound)\n' "$id" "$recorded" "$epoch"
   fi
   out=$(fm_nm_run_checked "$dir" "$CALL_TIMEOUT" axi status --run "$run") || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && fm_nm_status_is_run_not_found "$out" "$run"; then
+    render_receipt "$id"
+    printf 'NM_OBSERVE: RUN_VANISHED task=%s run=%s (the daemon reports this run as not found; recorded class %s kept)\n' "$id" "$run" "$(record_get "$record" outcome_class)"
+    return 0
+  fi
   if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
     render_receipt "$id"
     printf 'NM_OBSERVE: INVENTORY_UNAVAILABLE task=%s run=%s reason=query failed or timed out (recorded class %s kept)\n' "$id" "$run" "$(record_get "$record" outcome_class)"
@@ -800,7 +818,7 @@ worker_alive() {  # <meta> -> alive|dead|unknown
 }
 
 do_reconcile() {  # <startup 0|1> <now 0|1>
-  local startup=$1 force=$2 deadline meta id record dir rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
+  local startup=$1 force=$2 deadline meta id record dir wt rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
   local any=0 reads_ok=0
   for record in "$STATE"/*.nm-observe; do
     [ -f "$record" ] || continue
@@ -828,12 +846,15 @@ do_reconcile() {  # <startup 0|1> <now 0|1>
   INV_FAILED=0
   # Pass 1: every task record. Each branch remembers its owning task for pass
   # 2 (a managed owner always wins a shared branch); only managed tasks are
-  # reconciled. An empty branch (detached HEAD, no directory) owns nothing.
+  # reconciled. Ownership comes from the task's own worktree alone: a detached
+  # HEAD or a gone worktree owns nothing, and the project checkout's branch is
+  # never a task's branch.
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
     dir=$(task_dir "$meta")
-    branch=$([ -n "$dir" ] && candidate_branch "$dir" || true)
+    wt=$(task_worktree "$meta")
+    branch=$([ -n "$wt" ] && candidate_branch "$wt" || true)
     if task_managed "$meta"; then
       owner="managed $id"
     else
@@ -996,6 +1017,10 @@ reconcile_task() {  # <id> <meta> <record> <dir>
       rc=1
     else
       out=$(fm_nm_run_checked "$dir" "$(( CALL_TIMEOUT < remaining ? CALL_TIMEOUT : remaining ))" axi status --run "$run") || rc=$?
+    fi
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && fm_nm_status_is_run_not_found "$out" "$run"; then
+      recon_emit "task:$id" "NM_OBSERVE: RUN_VANISHED task=$id run=$run (the daemon reports the bound run as not found; recorded class ${class:-unread} kept; heal: bin/fm-nm-observe.sh refresh $id)"
+      return 0
     fi
     if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
       INV_FAILED=1

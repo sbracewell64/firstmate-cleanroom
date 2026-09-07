@@ -51,6 +51,16 @@ fm_nm_strip_quotes() {
   fm_nm_trim "$s"
 }
 
+# 0 when captured `axi status --run <id>` output $1 is the daemon's own answer
+# that run $2 does not exist (exit 1 with exactly this line on stdout). Any
+# other failure is a query that could not complete, not a missing run.
+fm_nm_status_is_run_not_found() {  # <status-output> <run-id>
+  local actual expected
+  actual=$(fm_nm_trim "$1")
+  expected=$(printf 'error: "run \\"%s\\" not found"' "$2")
+  [ "$actual" = "$expected" ]
+}
+
 # Scalar value of a TOON key in captured `axi status` output $1.
 fm_nm_field() {  # <toon-output> <key>
   printf '%s\n' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" | head -1

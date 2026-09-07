@@ -15,6 +15,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$ROOT/bin/fm-pr-lib.sh"
 
 OBSERVE="$ROOT/bin/fm-nm-observe.sh"
 TMP_ROOT=$(fm_test_tmproot fm-nm-observe)
@@ -44,6 +46,10 @@ case "${1:-}" in
       status)
         shift
         if [ "${1:-}" = --run ]; then
+          if [ -n "${FM_FAKE_AXI_STATUS_RUN_NOT_FOUND:-}" ]; then
+            printf 'error: "run \\"%s\\" not found"\n' "${2:-}"
+            exit 1
+          fi
           [ "${FM_FAKE_AXI_STATUS_RUN_RC:-0}" = 0 ] || exit "$FM_FAKE_AXI_STATUS_RUN_RC"
           printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
         else
@@ -259,16 +265,15 @@ printf 'pr=https://example.invalid/pr/7\npr_head=%s\n' "$HEAD1B" >> "$STATE/t1.m
 "$OBSERVE" refresh t1 >/dev/null 2>&1
 [ "$(record_get t1 head_change)" = "$HEAD1B" ] || fail "later head change recorded"
 [ "$(record_get t1 pr)" = https://example.invalid/pr/7 ] || fail "pr bound from the task record"
-# The marker in the exact shape bin/fm-pr-lib.sh's fm_pr_poll_merge_mark_notified
-# writes: the version tag, then provider, host, path, and number.
-printf '%s\n' fm-pr-poll-merge-notified-v1 github example.invalid example/repo 7 > "$STATE/t1.pr-poll-merge-notified"
-chmod 0600 "$STATE/t1.pr-poll-merge-notified"
+# The marker is written by its owner, bin/fm-pr-lib.sh's fm_pr_poll_merge_mark_notified.
+fm_pr_poll_merge_mark_notified "$STATE" t1 github example.invalid example/repo 7 || fail "owner writer marks the merge notification"
 "$OBSERVE" refresh t1 >/dev/null 2>&1
 [ "$(record_get t1 publication)" = "merged:github:example.invalid:example/repo:7" ] || fail "publication bound by the marker's PR identity: $(record_get t1 publication)"
 printf 'https://example.invalid/pr/7\n' > "$STATE/t1.pr-poll-merge-notified"
 "$OBSERVE" refresh t1 >/dev/null 2>&1
 [ "$(record_get t1 publication)" = "merged:github:example.invalid:example/repo:7" ] || fail "a marker without the owned identity binds nothing new"
-printf '%s\n' fm-pr-poll-merge-notified-v1 github example.invalid example/repo 7 > "$STATE/t1.pr-poll-merge-notified"
+rm -f "$STATE/t1.pr-poll-merge-notified"
+fm_pr_poll_merge_mark_notified "$STATE" t1 github example.invalid example/repo 7 || fail "owner writer rewrites the marker"
 assert_grep "later head change" "$DATA/t1/nm-observation-receipt.md" "receipt names the head change"
 assert_grep "publication: merged" "$DATA/t1/nm-observation-receipt.md" "receipt names the publication"
 pass "refresh: later head change and late merge are bound from this home's records"
@@ -422,6 +427,20 @@ assert_not_contains "$out" "RUN_VANISHED" "exhausted budget never claims a run v
 assert_not_contains "$out" "ORPHAN_RUN" "exhausted budget reports no orphans"
 pass "reconcile/refresh: failed, timed-out, or over-budget reads keep the obligation pending"
 
+# --- the daemon's own not-found answer (exit 1) is a vanished run, not an outage ----
+
+out=$(FM_FAKE_AXI_STATUS_RUN_NOT_FOUND=1 "$OBSERVE" refresh t5 2>&1); rc=$?
+expect_code 0 "$rc" "refresh survives a not-found answer"
+assert_contains "$out" "RUN_VANISHED task=t5 run=$RUN5" "the daemon's not-found answer is a vanished run"
+assert_contains "$out" "not found" "vanished line names the daemon's answer"
+assert_not_contains "$out" "INVENTORY_UNAVAILABLE" "a not-found answer is not an outage"
+[ "$(record_get t5 outcome_class)" = active ] || fail "recorded class kept after a not-found answer: $(record_get t5 outcome_class)"
+out=$(FM_FAKE_AXI_STATUS_RUN_NOT_FOUND=1 "$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "RUN_VANISHED task=t1 run=$RUN2" "reconcile reports the not-found answer as a vanished run"
+assert_contains "$out" "refresh t1" "vanished run names the refresh heal"
+assert_not_contains "$out" "INVENTORY_UNAVAILABLE task=t1" "reconcile does not call a not-found answer an outage"
+pass "reconcile/refresh: a run the daemon reports as not found is RUN_VANISHED"
+
 # --- finalize: receipt survives the runtime record --------------------------------
 
 out=$("$OBSERVE" finalize t3 2>&1); rc=$?
@@ -448,6 +467,26 @@ assert_not_contains "$out" "bad array subscript" "no bash error leaks as a findi
 out=$(timeout 60 "$OBSERVE" reconcile --now 2>&1); rc=$?
 expect_code 0 "$rc" "a second pass acquires the watermark lock again"
 pass "reconcile: a detached-HEAD task is skipped for branch ownership and the pass completes"
+
+# --- a gone worktree claims no branch; the project checkout is never a task's branch --
+
+PROJ="$TMP_ROOT/project-main"
+mkdir -p "$PROJ"
+git -C "$PROJ" init -q -b main
+git -C "$PROJ" commit -q --allow-empty -m init
+GONE="$TMP_ROOT/wt-gone"
+make_worktree "$GONE" fm/gone
+fm_write_meta "$STATE/g1.meta" "window=firstmate:fm-g1" "endpoint_task_id=g1" "worktree=$GONE" "project=$PROJ" "harness=echo" "kind=scout" "mode=" "yolo=off"
+fm_write_meta "$STATE/g2.meta" "window=firstmate:fm-g2" "endpoint_task_id=g2" "worktree=$GONE" "project=$PROJ" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+"$OBSERVE" enrol g2 >/dev/null 2>&1 || fail "enrol g2"
+rm -rf "$GONE"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t5 "$(printf '01MAINRUN\tmain\trunning\t12345678\t\n%s\tfm/t5\trunning\t%s\t' "$RUN5" "${HEAD5:0:8}")")
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "ORPHAN_RUN run=01MAINRUN branch=main" "a run on the project checkout's branch has no owner"
+assert_not_contains "$out" "UNMANAGED_RUN" "a gone worktree never lends the project's branch to a task"
+assert_not_contains "$out" "task=g1" "the scout with a gone worktree is not named as an owner"
+rm -f "$STATE/g1.meta" "$STATE/g2.meta" "$STATE/g2.nm-observe"
+pass "reconcile: branch ownership comes only from a task's own existing worktree"
 
 # --- inventory unavailable: obligations stay pending, reported once ---------------
 

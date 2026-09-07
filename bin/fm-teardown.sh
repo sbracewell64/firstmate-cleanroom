@@ -1531,10 +1531,7 @@ task_status_is_terminal_run() {  # <axi-status-output> <run-id>
 }
 
 task_status_is_run_not_found() {  # <status-error> <run-id>
-  local actual expected
-  actual=$(fm_nm_trim "$1")
-  expected=$(printf 'error: "run \\"%s\\" not found"' "$2")
-  [ "$actual" = "$expected" ]
+  fm_nm_status_is_run_not_found "$1" "$2"
 }
 
 # Abort THIS task's own parked no-mistakes run before the worker that would

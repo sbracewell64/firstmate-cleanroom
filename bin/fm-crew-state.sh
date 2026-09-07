@@ -29,7 +29,9 @@
 #   2. Attribute an active or terminal no-mistakes run under the branch, head,
 #      pipeline-custody, and newest-first rules owned by bin/fm-nm-run-lib.sh.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with gate findings), terminal
+#      awaiting_approval/fix_review -> parked, rendered as "awaiting firstmate
+#      decision" because firstmate owns the pending gate decision (never the
+#      captain), with the gate findings; terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
@@ -41,8 +43,10 @@
 #      agree, and are reported as parked.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
-#      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail.
+#      when its verb maps to a recognized run-state. A lifecycle stage line
+#      (bin/fm-stage.sh) maps by bin/fm-classify-lib.sh's stage table: progress
+#      -> working, wait -> blocked, terminal -> done. Decision-only events such
+#      as `resolved` never become current state or detail.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -134,7 +138,14 @@ map_log_state() {  # <line>
     blocked)        echo blocked ;;
     done)           echo "done" ;;
     failed)         echo failed ;;
-    *)              echo unknown ;;
+    *)
+      # A lifecycle stage verb classifies exactly one way (fm-classify-lib.sh).
+      case "$(status_stage_class "$(status_line_verb "$1")")" in
+        progress) echo working ;;
+        wait)     echo blocked ;;
+        terminal) echo "done" ;;
+        *)        echo unknown ;;
+      esac ;;
   esac
 }
 
@@ -284,6 +295,9 @@ nm_gate_findings_count() {
   printf '%s' "$rest"
 }
 log_reports_ci_ready() {
+  # The ci-ready stage line is the lifecycle's own CI-ready receipt
+  # (bin/fm-stage.sh); the legacy done: sentence is still recognised.
+  [ "$LOG_VERB" != ci-ready ] || return 0
   [ "$LOG_VERB" = "done" ] || return 1
   case "$(status_line_note "$LOG_LINE")" in
     *PR*"checks green"*|*"checks green"*PR*) return 0 ;;
@@ -514,7 +528,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       [ -n "$gate" ] || gate=$status
       [ -n "$gate" ] || gate=gate
       RUN_STATE=parked
-      RUN_DETAIL="parked at $gate"
+      RUN_DETAIL="awaiting firstmate decision at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then

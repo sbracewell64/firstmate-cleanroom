@@ -349,8 +349,9 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 
 ### Validate
 
-For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
-Admit that launch first with `bin/fm-nm-observe.sh launch <id>`, and bind the run it becomes with `bin/fm-nm-observe.sh bind <id>` once the worker reports it started; `docs/no-mistakes-observation.md` owns the coverage census, and a launch the observer refused is an environment blocker, not a reason to skip the step.
+A ship task moves through explicit lifecycle stages that only `bin/fm-stage.sh` issues, each as a distinct status verb with a transition receipt: `candidate-committed`, then `validation-pending` or `validation-admitted`, `validation-running`, `ci-ready`, `landing`, and `activated`; `bin/fm-classify-lib.sh` owns how each verb classifies.
+For a no-mistakes ship, the worker's own stage command admits validation after its implementation commit when the task's delivery contract and recorded dispatch already admit it, admitting the launch through the observer and binding the run it becomes, so the worker starts the pipeline without a steer; a `validation-pending` receipt names the open hold or missing capacity that stopped it, and firstmate clears that rather than sending the invocation.
+`docs/no-mistakes-observation.md` owns the coverage census, and a launch the observer refused is an environment blocker, not a reason to skip the step.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.
 Firstmate never invokes `no-mistakes axi respond` for a crew-owned run.
 Once validation starts, prefer routing new requirements to follow-up work rather than expanding the current task, unless a new requirement completely invalidates the work being validated; however, the smallest downstream changes needed to keep already accepted product or engineering behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within the current task even when they touch files not named at intake, and corrections required to satisfy already accepted intent are not new requirements.
@@ -374,7 +375,8 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 
 ### PR ready, landing, and teardown
 
-For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
+For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports the `ci-ready` stage receipt, carrying `pr=<url>` and issued only from the canonical checks-green verdict, while `direct-PR` reports `done: PR <url>` after opening the PR.
+Record the landing and its read-back with `bin/fm-stage.sh <id> landing` and `activated` so the sequence closes on evidence; neither merges anything.
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.

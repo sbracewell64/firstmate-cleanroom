@@ -36,6 +36,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-programme-presentation-lib.sh` | Single owner of the programme continuation's quiet presentation: present a material identity once, stay quiet on unchanged state, and acknowledge only the identity actually presented |
 | `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
 | `fm-dod-lib.sh`          | One owner of the ship task's mode-specific definition of done, rendered by both the brief scaffold and a scout promotion |
+| `fm-stage.sh`            | One owner of the ship task's lifecycle stage transitions, their receipts, and the code-issued validation admission |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |

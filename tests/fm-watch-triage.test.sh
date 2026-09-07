@@ -174,7 +174,23 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Stop a background watcher and collect it. TERM first so its EXIT trap can
+# release the lock, but never block on that: bash 5.2 (CI's ubuntu-latest) can
+# fail to run a trap that lands while it is expanding a command substitution
+# ("trap: unexpected EOF while looking for matching `)'"), and a watcher that
+# swallowed its TERM that way loops on until the job timeout. After a bounded
+# grace, KILL it; the lock library reclaims a dead holder's lock, so the next
+# watcher a case launches still starts.
+reap() {  # <pid>
+  local pid=$1 i=0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -2277,7 +2293,10 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "authoritative working state did not start wedge tracking"; }
   since=$(cat "$state/.stale-since-$key")
-  sleep 2
+  # One more completed poll is the repeat recheck; wait for that observable
+  # cycle rather than a fixed pause that may or may not contain one.
+  wait_poll_cycle "$state" "$pid" \
+    || { reap "$pid"; fail "the watcher exited before a repeat authoritative working recheck"; }
   [ "$(cat "$state/.stale-since-$key" 2>/dev/null || true)" = "$since" ] \
     || { reap "$pid"; fail "repeat authoritative working recheck reset the wedge timer"; }
   reap "$pid"

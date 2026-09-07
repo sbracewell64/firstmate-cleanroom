@@ -31,7 +31,10 @@
 #                   Each <input> is a lane timing JSON or a directory searched
 #                   recursively for fm-test-timing-*.json, so a lane whose CI
 #                   artifact nests its file (the Herdr lane's diagnostics
-#                   bundle) is still resolved. Every input must carry the
+#                   bundle) is still resolved. A nonexistent input, an input
+#                   that is not valid JSON, and a resolution that finds no
+#                   timing file while no manifest is declared are each refused
+#                   (exit 2, nothing written). Every input must carry the
 #                   "lane" identity --json records; an input without one is
 #                   refused, two inputs claiming one lane are refused rather
 #                   than summed, and a prior aggregate (kind=aggregate) found
@@ -1054,7 +1057,12 @@ def refuse(msg):
 
 lanes = {}
 for path in inputs:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        refuse(f"aggregate input {path} is not valid JSON: {e}")
+    if not isinstance(doc, dict):
+        refuse(f"aggregate input {path} is not a timing artifact object")
     if doc.get("kind") == "aggregate":
         # A re-run job can download the previous attempt's aggregate next to
         # the lane artifacts; it is a report, never a lane.
@@ -1885,6 +1893,9 @@ if [ "${MODE:-}" = "aggregate" ]; then
   while IFS= read -r s; do
     AGGREGATE_INPUTS+=("$s")
   done < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
+  if [ "${#AGGREGATE_INPUTS[@]}" -eq 0 ] && [ "${#EXPECT_LANES[@]}" -eq 0 ]; then
+    die "no fm-test-timing-*.json found under ${SCRIPTS[*]}; declare --expect-lane to report the missing lanes instead"
+  fi
   aggregate_timing_json "$AGGREGATE_OUT" "${AGGREGATE_INPUTS[@]+"${AGGREGATE_INPUTS[@]}"}"
   exit $?
 fi

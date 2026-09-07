@@ -1335,17 +1335,50 @@ test_aggregate_refuses_missing_input() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggmiss.XXXXXX")
   aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
   out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/nope.json" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "a good lane plus a nonexistent input must refuse the whole aggregate: $out"; }
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a good lane plus a nonexistent input must refuse the whole aggregate with exit 2 (got $rc): $out"; }
   assert_contains "$out" "aggregate input not found" "missing input refusal names the defect"
   assert_contains "$out" "$tmp/nope.json" "missing input refusal names the path"
   [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
   rc=0
   out=$("$RUNNER" --aggregate-json "$tmp/out2.json" "$tmp/nope-only.json" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "a sole nonexistent input must refuse the aggregate: $out"; }
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a sole nonexistent input must refuse the aggregate with exit 2 (got $rc): $out"; }
   assert_contains "$out" "aggregate input not found" "sole missing input refusal names the defect"
   [ ! -e "$tmp/out2.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
   rm -rf "$tmp"
   pass "aggregate-json refuses a nonexistent input from the main process without writing output"
+}
+
+test_aggregate_refuses_empty_resolution_without_manifest() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggempty.XXXXXX")
+  mkdir -p "$tmp/in/nested"
+  printf '{}\n' >"$tmp/in/nested/not-a-timing-file.json"
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/in" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a directory holding no fm-test-timing-*.json and no manifest must be refused with exit 2 (got $rc): $out"; }
+  assert_contains "$out" "fm-test-run: no fm-test-timing-*.json found under $tmp/in" "empty resolution refusal is typed and names the input"
+  [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rc=0
+  out=$("$RUNNER" --aggregate-json "$tmp/out2.json" --expect-lane portable-parallel-1 "$tmp/in" 2>&1) || rc=$?
+  [ "$rc" -eq 1 ] || { rm -rf "$tmp"; fail "the same empty directory under a manifest must report every lane missing with exit 1 (got $rc): $out"; }
+  assert_contains "$out" "missing_lanes=portable-parallel-1" "manifest path still lists the missing lane"
+  [ -f "$tmp/out2.json" ] || { rm -rf "$tmp"; fail "the incomplete aggregate under a manifest must still be written"; }
+  rm -rf "$tmp"
+  pass "aggregate-json refuses an empty resolution without a manifest and keeps the manifest path"
+}
+
+test_aggregate_refuses_invalid_lane_json() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggbadjson.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  aggregate_lane_fixture "$tmp/b.json" portable-parallel-2 1 0 0 1000
+  head -c 120 "$tmp/b.json" >"$tmp/truncated.json"
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/truncated.json" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a truncated lane file must be refused with exit 2 (got $rc): $out"; }
+  assert_contains "$out" "fm-test-run: aggregate input $tmp/truncated.json is not valid JSON" "invalid JSON refusal is typed and names the file"
+  printf '%s\n' "$out" | grep -q "Traceback" && { rm -rf "$tmp"; fail "invalid JSON must be refused without a traceback: $out"; }
+  [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate-json refuses a truncated lane file with a typed message and no traceback"
 }
 
 test_aggregate_marks_missing_expected_lanes_incomplete() {
@@ -1547,6 +1580,8 @@ test_aggregate_resolves_nested_lane_members
 test_aggregate_refuses_duplicate_lane_ids
 test_aggregate_requires_lane_identity
 test_aggregate_refuses_missing_input
+test_aggregate_refuses_empty_resolution_without_manifest
+test_aggregate_refuses_invalid_lane_json
 test_aggregate_marks_missing_expected_lanes_incomplete
 test_aggregate_counts_gate_skips_apart_from_executed
 test_aggregate_is_deterministic_for_unchanged_input

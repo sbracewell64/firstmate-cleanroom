@@ -44,6 +44,7 @@ case "${1:-}" in
       status)
         shift
         if [ "${1:-}" = --run ]; then
+          [ "${FM_FAKE_AXI_STATUS_RUN_RC:-0}" = 0 ] || exit "$FM_FAKE_AXI_STATUS_RUN_RC"
           printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
         else
           printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"
@@ -258,9 +259,16 @@ printf 'pr=https://example.invalid/pr/7\npr_head=%s\n' "$HEAD1B" >> "$STATE/t1.m
 "$OBSERVE" refresh t1 >/dev/null 2>&1
 [ "$(record_get t1 head_change)" = "$HEAD1B" ] || fail "later head change recorded"
 [ "$(record_get t1 pr)" = https://example.invalid/pr/7 ] || fail "pr bound from the task record"
+# The marker in the exact shape bin/fm-pr-lib.sh's fm_pr_poll_merge_mark_notified
+# writes: the version tag, then provider, host, path, and number.
+printf '%s\n' fm-pr-poll-merge-notified-v1 github example.invalid example/repo 7 > "$STATE/t1.pr-poll-merge-notified"
+chmod 0600 "$STATE/t1.pr-poll-merge-notified"
+"$OBSERVE" refresh t1 >/dev/null 2>&1
+[ "$(record_get t1 publication)" = "merged:github:example.invalid:example/repo:7" ] || fail "publication bound by the marker's PR identity: $(record_get t1 publication)"
 printf 'https://example.invalid/pr/7\n' > "$STATE/t1.pr-poll-merge-notified"
 "$OBSERVE" refresh t1 >/dev/null 2>&1
-case "$(record_get t1 publication)" in merged:*) ;; *) fail "late merge publication recorded" ;; esac
+[ "$(record_get t1 publication)" = "merged:github:example.invalid:example/repo:7" ] || fail "a marker without the owned identity binds nothing new"
+printf '%s\n' fm-pr-poll-merge-notified-v1 github example.invalid example/repo 7 > "$STATE/t1.pr-poll-merge-notified"
 assert_grep "later head change" "$DATA/t1/nm-observation-receipt.md" "receipt names the head change"
 assert_grep "publication: merged" "$DATA/t1/nm-observation-receipt.md" "receipt names the publication"
 pass "refresh: later head change and late merge are bound from this home's records"
@@ -301,14 +309,21 @@ pass "reconcile: baseline seeded once, unchanged state prints nothing"
 
 # --- reconcile: orphan run appears -> reported once ------------------------------
 
-FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t1 "$(printf '01ORPHAN\tfm/unknown-home\trunning\tabcdef12\t\n%s\tfm/t1\trunning\t%s\t\n%s\tfm/t1\tcompleted\t%s\t\n01AAA\tfm/other\tcompleted\tdeadbee1\thttps://example.invalid/pr/1' "$RUN2" "$SHORT1B" "$RUN1" "$SHORT1")")
+WT6="$TMP_ROOT/wt-dpr2"
+make_worktree "$WT6" fm/dpr2
+make_task dpr2 ship direct-PR "$WT6"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t1 "$(printf '01ORPHAN\tfm/unknown-home\trunning\tabcdef12\t\n01DPRRUN\tfm/dpr2\trunning\tabcd1234\t\n%s\tfm/t1\trunning\t%s\t\n%s\tfm/t1\tcompleted\t%s\t\n01AAA\tfm/other\tcompleted\tdeadbee1\thttps://example.invalid/pr/1' "$RUN2" "$SHORT1B" "$RUN1" "$SHORT1")")
 out=$("$OBSERVE" reconcile --now 2>&1)
 assert_contains "$out" "ORPHAN_RUN run=01ORPHAN branch=fm/unknown-home" "new orphan reported"
+assert_contains "$out" "no task record in this home owns this branch" "orphan text is true for an unowned branch"
 assert_contains "$out" "explicit coverage gap, not adopted" "orphan is a coverage gap"
 assert_not_contains "$out" "ORPHAN_RUN run=01AAA" "baseline row stays quiet"
+assert_contains "$out" "UNMANAGED_RUN run=01DPRRUN branch=fm/dpr2 status=running head=abcd1234 pr=none task=dpr2 kind=ship mode=direct-PR" "a run on a direct-PR task's branch is an unmanaged run naming its owner"
+assert_contains "$out" "uncovered entrypoint" "unmanaged run is an uncovered entrypoint"
+assert_not_contains "$out" "ORPHAN_RUN run=01DPRRUN" "an owned branch is never called an orphan"
 out=$("$OBSERVE" reconcile --now 2>&1)
-[ -z "$out" ] || fail "orphan reported once only, got:"$'\n'"$out"
-pass "reconcile: orphan run reported once as an explicit coverage gap"
+[ -z "$out" ] || fail "orphan and unmanaged runs reported once only, got:"$'\n'"$out"
+pass "reconcile: orphan and unmanaged runs reported once as explicit coverage gaps"
 
 # --- reconcile: crash between run creation and binding (UNBOUND_RUN) ------------
 
@@ -344,12 +359,24 @@ assert_contains "$out" "MISSING_BINDING task=t4" "alive worker past grace is mis
 assert_contains "$out" "worker=alive" "missing binding reports the live worker"
 pass "reconcile: crash between launch acceptance and run creation is typed and reported once"
 
+# --- bind --run: a same-branch run with an unrelated head is never bound ----------
+
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01OLDRUNFFFFFFFFFFFFFFFFFF fm/t4 completed 0badc0de passed)
+before=$(cat "$STATE/t4.nm-observe")
+out=$("$OBSERVE" bind t4 --run 01OLDRUNFFFFFFFFFFFFFFFFFF 2>&1); rc=$?
+expect_code 1 "$rc" "explicit --run for a same-branch run with an unrelated head is refused"
+assert_contains "$out" "MISSING_BINDING task=t4 branch=fm/t4 run=01OLDRUNFFFFFFFFFFFFFFFFFF" "refusal names the run"
+assert_contains "$out" "head 0badc0de matches neither the worktree head nor a pipeline-owned active run" "refusal names the reason"
+[ "$(cat "$STATE/t4.nm-observe")" = "$before" ] || fail "refused explicit --run wrote nothing"
+[ -z "$(record_get t4 run_id)" ] || fail "no run id bound after the refusal"
+pass "bind --run: the head rule applies to an explicit run id; a reused branch name never binds"
+
 # --- reconcile: superseding run and outcome change ------------------------------
 
 FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t3 "$(printf '01RUN3NEWDDDDDDDDDDDDDDDDD\tfm/t3\trunning\t%s\t\n%s\tfm/t3\tfailed\t%s\t\n%s\tfm/t1\trunning\t%s\t\n%s\tfm/t1\tcompleted\t%s\t\n01AAA\tfm/other\tcompleted\tdeadbee1\thttps://example.invalid/pr/1' "${HEAD3:0:8}" "$RUN3" "${HEAD3:0:8}" "$RUN2" "$SHORT1B" "$RUN1" "$SHORT1")")
 out=$("$OBSERVE" reconcile --now 2>&1)
 assert_contains "$out" "SUPERSEDED_RUN task=t3 run=$RUN3 newer=01RUN3NEWDDDDDDDDDDDDDDDDD" "newer run on the bound branch reported"
-assert_contains "$out" "OUTCOME_CHANGED task=t3 run=$RUN3" "canonical status change reported"
+assert_contains "$out" "OUTCOME_CHANGED task=t3 run=$RUN3 recorded=running/active canonical=failed/unread" "canonical status change from a table row claims no class"
 assert_contains "$out" "refresh t3" "outcome change names the refresh heal"
 pass "reconcile: repair run and outcome change surfaced with heals"
 
@@ -369,6 +396,7 @@ assert_contains "$out" "DAEMON_RESET task=t5 recorded=4242@2026-09-06T00:00:00Z 
 [ -z "$(record_get t5 run_id)" ] || fail "reset did not silently rebind"
 out=$("$OBSERVE" reconcile --now 2>&1)
 assert_contains "$out" "DAEMON_RESET task=t5" "reconcile reports the reset"
+assert_contains "$out" "RUN_VANISHED task=t1 run=$RUN2" "a successful per-run read naming another run is a vanished run"
 out=$("$OBSERVE" bind t5 --accept-daemon-reset 2>&1); rc=$?
 expect_code 0 "$rc" "explicit acceptance binds"
 [ "$(record_get t5 run_id)" = "$RUN5" ] || fail "bound after explicit acceptance"
@@ -376,6 +404,23 @@ expect_code 0 "$rc" "explicit acceptance binds"
 assert_grep "daemon identity changed" "$DATA/t5/nm-observation-receipt.md" "receipt names the reset"
 write_daemon_pid 4242 2026-09-06T00:00:00Z
 pass "daemon reset: detected, reported, bound only on explicit acceptance"
+
+# --- failed or budget-exhausted reads are INVENTORY_UNAVAILABLE, never vanished ----
+
+out=$(FM_FAKE_AXI_STATUS_RUN_RC=1 "$OBSERVE" refresh t5 2>&1); rc=$?
+expect_code 0 "$rc" "refresh survives a failed canonical read"
+assert_contains "$out" "INVENTORY_UNAVAILABLE task=t5 run=$RUN5" "failed per-run read is unavailable, not vanished"
+assert_not_contains "$out" "RUN_VANISHED" "failed read never claims the run vanished"
+[ "$(record_get t5 outcome_class)" = active ] || fail "recorded class kept across a failed read: $(record_get t5 outcome_class)"
+out=$(FM_FAKE_AXI_STATUS_RUN_RC=1 "$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "INVENTORY_UNAVAILABLE task=t1 run=$RUN2" "reconcile reports a failed per-run read as unavailable"
+assert_contains "$out" "query failed or timed out" "unavailable line names the failed query"
+assert_not_contains "$out" "RUN_VANISHED" "reconcile never calls a failed read a vanished run"
+out=$(FM_NM_OBSERVE_BUDGET_SECS=0 "$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "INVENTORY_UNAVAILABLE task=" "exhausted budget is unavailable"
+assert_not_contains "$out" "RUN_VANISHED" "exhausted budget never claims a run vanished"
+assert_not_contains "$out" "ORPHAN_RUN" "exhausted budget reports no orphans"
+pass "reconcile/refresh: failed, timed-out, or over-budget reads keep the obligation pending"
 
 # --- finalize: receipt survives the runtime record --------------------------------
 
@@ -389,26 +434,97 @@ assert_grep "finalized at" "$DATA/t3/nm-observation-receipt.md" "receipt marks f
 assert_grep "captured eval cases are review evidence, never launch coverage" "$DATA/t3/nm-observation-receipt.md" "receipt never counts eval capture as coverage"
 pass "finalize: durable receipt outlives the runtime record"
 
+# --- a detached-HEAD managed task never aborts the pass ------------------------------
+
+WTD="$TMP_ROOT/wt-detached"
+make_worktree "$WTD" fm/detached
+git -C "$WTD" checkout -q --detach
+make_task d1 ship no-mistakes "$WTD"
+"$OBSERVE" enrol d1 >/dev/null 2>&1 || fail "enrol d1"
+out=$(timeout 60 "$OBSERVE" reconcile --now 2>&1); rc=$?
+expect_code 0 "$rc" "reconcile completes with a detached-HEAD managed task"
+assert_not_contains "$out" "bad array subscript" "no bash error leaks as a finding"
+[ ! -L "$STATE/.nm-observe-watermark.lock" ] && [ ! -e "$STATE/.nm-observe-watermark.lock" ] || fail "watermark lock released after the pass"
+out=$(timeout 60 "$OBSERVE" reconcile --now 2>&1); rc=$?
+expect_code 0 "$rc" "a second pass acquires the watermark lock again"
+pass "reconcile: a detached-HEAD task is skipped for branch ownership and the pass completes"
+
 # --- inventory unavailable: obligations stay pending, reported once ---------------
 
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t5 "$(printf '%s\tfm/t5\trunning\t%s\t\n01ORPHAN\tfm/unknown-home\trunning\tabcdef12\t\n%s\tfm/t1\trunning\t%s\t\n%s\tfm/t1\tcompleted\t%s\t\n01AAA\tfm/other\tcompleted\tdeadbee1\thttps://example.invalid/pr/1' "$RUN5" "${HEAD5:0:8}" "$RUN2" "$SHORT1B" "$RUN1" "$SHORT1")")
+"$OBSERVE" reconcile --now >/dev/null 2>&1
+out=$("$OBSERVE" reconcile --now 2>&1)
+[ -z "$out" ] || fail "settled inventory prints nothing before the outage, got:"$'\n'"$out"
 out=$(PATH="$TMP_ROOT/emptybin:/usr/bin:/bin" "$OBSERVE" reconcile --now 2>&1)
 assert_contains "$out" "INVENTORY_UNAVAILABLE task=" "missing CLI is a typed gap"
 assert_contains "$out" "no-mistakes not on PATH" "gap names the reason"
 out=$(PATH="$TMP_ROOT/emptybin:/usr/bin:/bin" "$OBSERVE" reconcile --now 2>&1)
 [ -z "$out" ] || fail "unavailable inventory reported once, got:"$'\n'"$out"
-pass "reconcile: unavailable inventory is a typed, once-reported gap"
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_not_contains "$out" "ORPHAN_RUN" "recovery never re-reports the baseline or an already-reported orphan"
+assert_not_contains "$out" "BASELINE" "recovery is not a new baseline"
+out=$("$OBSERVE" reconcile --now 2>&1)
+[ -z "$out" ] || fail "recovered inventory is quiet again, got:"$'\n'"$out"
+pass "reconcile: unavailable inventory is a typed, once-reported gap that keeps the run memory"
 
-# --- a home with no obligation never queries and prints nothing -------------------
+# --- a home with a managed task but no obligation reports it without querying -----
 
 EMPTY="$TMP_ROOT/empty-home"
 mkdir -p "$EMPTY/state" "$EMPTY/data"
 fm_write_meta "$EMPTY/state/z.meta" "window=firstmate:fm-z" "endpoint_task_id=z" "worktree=$WT1" "project=$WT1" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
 : > "$NM_LOG"
 out=$(FM_HOME="$EMPTY" FM_STATE_OVERRIDE="$EMPTY/state" FM_DATA_OVERRIDE="$EMPTY/data" "$OBSERVE" reconcile --startup 2>&1); rc=$?
+expect_code 0 "$rc" "reconcile in a home whose only managed task is unenrolled"
+assert_contains "$out" "UNENROLLED task=z" "the first managed task in a home is reported when its enrolment is missing"
+assert_not_contains "$out" "BASELINE" "no baseline is claimed without an inventory read"
+[ ! -s "$NM_LOG" ] || fail "a home with no obligation never queried no-mistakes"
+out=$(FM_HOME="$EMPTY" FM_STATE_OVERRIDE="$EMPTY/state" FM_DATA_OVERRIDE="$EMPTY/data" "$OBSERVE" reconcile --startup 2>&1)
+[ -z "$out" ] || fail "unenrolled task reported once, got:"$'\n'"$out"
+pass "reconcile: a home with an unenrolled managed task reports it and never queries"
+
+# --- a home with neither obligation nor managed task never queries, prints nothing --
+
+SILENT="$TMP_ROOT/silent-home"
+mkdir -p "$SILENT/state" "$SILENT/data"
+fm_write_meta "$SILENT/state/s.meta" "window=firstmate:fm-s" "endpoint_task_id=s" "worktree=$WT1" "project=$WT1" "harness=echo" "kind=scout" "mode=" "yolo=off"
+: > "$NM_LOG"
+out=$(FM_HOME="$SILENT" FM_STATE_OVERRIDE="$SILENT/state" FM_DATA_OVERRIDE="$SILENT/data" "$OBSERVE" reconcile --startup 2>&1); rc=$?
 expect_code 0 "$rc" "reconcile in an unadopted home"
 [ -z "$out" ] || fail "unadopted home prints nothing, got:"$'\n'"$out"
 [ ! -s "$NM_LOG" ] || fail "unadopted home never queried no-mistakes"
-pass "reconcile: a home with no obligation is silent and never queries"
+assert_absent "$SILENT/state/.nm-observe-watermark" "unadopted home writes no watermark"
+pass "reconcile: a home with neither obligation nor managed task is silent and never queries"
+
+# --- parser against a real `axi status` capture --------------------------------------
+# Captured read-only on 2026-09-07 from the cleanroom home
+# (NM_HOME=/home/shane/.firstmate-cleanroom/no-mistakes, no-mistakes 1.61.0
+# build 0af0be6): the header lines below are verbatim, the first row is
+# verbatim, and the second row reproduces the shape of a row whose
+# numeric-looking head the CLI double-quotes ("60395817"); the remaining rows
+# of the ten-row capture are elided. Rows are indented by one space.
+CAP="$TMP_ROOT/capture-home"
+mkdir -p "$CAP/state" "$CAP/data"
+WTC="$TMP_ROOT/wt-c1"
+make_worktree "$WTC" fm/c1
+fm_write_meta "$CAP/state/c1.meta" "window=firstmate:fm-c1" "endpoint_task_id=c1" "worktree=$WTC" "project=$WTC" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+cap_observe() { FM_HOME="$CAP" FM_STATE_OVERRIDE="$CAP/state" FM_DATA_OVERRIDE="$CAP/data" "$OBSERVE" "$@"; }
+cap_observe launch c1 --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "c1 launch"
+FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/nmf-obs-launch-enrolment\nruns_on_current_branch: 0\ncount: 0 of 0 total\nruns[0]{id,branch,status,head,pr}:\n')
+out=$(cap_observe reconcile --now 2>&1)
+assert_contains "$out" "BASELINE runs=0" "empty real-shaped inventory is an empty baseline"
+FM_FAKE_AXI_STATUS=$(cat <<'TOON'
+current_branch: fm/nmf-obs-launch-enrolment
+runs_on_current_branch: 0
+count: 10 of 10 total
+runs[10]{id,branch,status,head,pr}:
+ "01M1WNEF1D2RX62H6VFQXNH7K1",fm/launcher-nm-home-into-herdr-server,completed,3a2f68e8,"https://github.com/sbracewell64/firstmate-cleanroom/pull/9"
+ "01M1WK7Q0N3F8Z5R2T9V4X6B1C",fm/quoted-numeric-head,completed,"60395817","https://github.com/sbracewell64/firstmate-cleanroom/pull/8"
+TOON
+)
+out=$(cap_observe reconcile --now 2>&1)
+assert_contains "$out" "ORPHAN_RUN run=01M1WNEF1D2RX62H6VFQXNH7K1 branch=fm/launcher-nm-home-into-herdr-server status=completed head=3a2f68e8 pr=https://github.com/sbracewell64/firstmate-cleanroom/pull/9" "real capture row parses id, branch, status, head, and pr"
+assert_contains "$out" "ORPHAN_RUN run=01M1WK7Q0N3F8Z5R2T9V4X6B1C branch=fm/quoted-numeric-head status=completed head=60395817 pr=https://github.com/sbracewell64/firstmate-cleanroom/pull/8" "a quoted numeric head parses unquoted"
+pass "reconcile: the runs table of a real axi status capture parses in both head shapes"
 
 # --- cadence: without --now or --startup the watermark gates the scan ----------------
 

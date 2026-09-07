@@ -3152,6 +3152,17 @@ if [ "$SPAWN_BACKLOG_COMMIT_STATUS" -ne 0 ]; then
 fi
 fm_lock_release "$SPAWN_META_LOCK"
 SPAWN_META_LOCK_HELD=0
+# A fresh no-mistakes ship task carries its observation obligation from its
+# first record (bin/fm-nm-observe.sh). A relaunch keeps the existing record.
+# Enrolment failing never undoes a delivered spawn; the reconcile pass reports
+# the task as UNENROLLED until it is healed. It runs before the deferred-signal
+# exit below, so an interrupted spawn whose record was preserved is enrolled too.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" enrol "$ID" --entrypoint spawn >/dev/null 2>&1 \
+    || echo "warning: observation obligation for $ID was not enrolled; run bin/fm-nm-observe.sh enrol $ID" >&2
+fi
+
 if [ -n "$SPAWN_DEFERRED_SIGNAL" ]; then
   case "$SPAWN_DEFERRED_SIGNAL" in
     HUP) SPAWN_DEFERRED_SIGNAL_STATUS=129 ;;
@@ -3160,16 +3171,6 @@ if [ -n "$SPAWN_DEFERRED_SIGNAL" ]; then
   esac
   echo "error: spawn of $ID was interrupted after launch delivery began; its paired task record and In-flight backlog state were preserved" >&2
   exit "$SPAWN_DEFERRED_SIGNAL_STATUS"
-fi
-
-# A fresh no-mistakes ship task carries its observation obligation from its
-# first record (bin/fm-nm-observe.sh). A relaunch keeps the existing record.
-# Enrolment failing never undoes a delivered spawn; the reconcile pass reports
-# the task as UNENROLLED until it is healed.
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    "$SCRIPT_DIR/fm-nm-observe.sh" enrol "$ID" --entrypoint spawn >/dev/null 2>&1 \
-    || echo "warning: observation obligation for $ID was not enrolled; run bin/fm-nm-observe.sh enrol $ID" >&2
 fi
 
 SPAWN_DELIVERY=

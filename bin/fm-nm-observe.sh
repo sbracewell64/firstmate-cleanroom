@@ -79,8 +79,11 @@
 #             `axi status` (or `axi status --run <id>` with --run) under
 #             bin/fm-nm-run-lib.sh's attribution rules: same branch, and the
 #             head matches the worktree or the pipeline owns the branch of an
-#             active run. No matching run is MISSING_BINDING (exit 1, nothing
-#             written). A daemon epoch that differs from the one recorded at
+#             active run. An explicit --run id is held to the same rule, so a
+#             same-branch run left by earlier work on a reused branch name is
+#             refused, never bound. No matching run is MISSING_BINDING (exit
+#             1, nothing written, the reason named on the line). A daemon
+#             epoch that differs from the one recorded at
 #             launch is DAEMON_RESET: the bind is refused rather than silently
 #             rebound unless --accept-daemon-reset records the new epoch. A
 #             different run id while one is already bound is refused with the
@@ -89,10 +92,15 @@
 #   refresh   Re-read the bound run's canonical record and update run_status,
 #             run_outcome, outcome_class, head_change (the worktree moved off
 #             the candidate head), superseding_run (a newer run on the same
-#             branch), pr/pr_head from the task record, and publication=merged
-#             from the merge-notification marker owned by bin/fm-pr-lib.sh.
-#             Never manufactures an outcome: with no bound run it records
-#             nothing but the head and PR facts. Rewrites the receipt.
+#             branch), pr/pr_head from the task record, and
+#             publication=merged:<provider>:<host>:<path>:<number> from the
+#             merge-notification marker owned by bin/fm-pr-lib.sh (its version
+#             tag on line 1, then provider, host, path, number); a marker that
+#             does not carry that identity records no publication. Never
+#             manufactures an outcome: with no bound run it records nothing
+#             but the head and PR facts, and a query that fails or times out is
+#             INVENTORY_UNAVAILABLE with the recorded class kept. Rewrites the
+#             receipt.
 #   receipt   Render data/<id>/nm-observation-receipt.md from the obligation.
 #   finalize  Best-effort refresh plus receipt, marking stage=finalized; called
 #             by bin/fm-teardown.sh before it removes the runtime record. Exit
@@ -116,23 +124,39 @@
 #               SUPERSEDED_RUN    a newer run on the bound branch than the one
 #                                 bound (a retry or repair run to link)
 #               OUTCOME_CHANGED   the bound run's canonical status or outcome
-#                                 differs from what the obligation recorded
-#               RUN_VANISHED      the bound run id is no longer readable
+#                                 differs from what the obligation recorded; a
+#                                 runs-table row carries status only, so its
+#                                 canonical class prints as `unread`
+#               RUN_VANISHED      a successful canonical read no longer names
+#                                 the bound run id
 #               DAEMON_RESET      <nm_home>/daemon.pid names a different daemon
 #                                 than the watermark or an obligation recorded
-#               ORPHAN_RUN        an inventory run whose branch matches no task
-#                                 in this home (another home, a manual launch,
-#                                 or an entrypoint this census does not cover):
-#                                 an explicit coverage gap, never adopted
-#               INVENTORY_UNAVAILABLE  the read-only query failed or exceeded
-#                                 the budget; obligations stay pending
+#               UNMANAGED_RUN     an inventory run whose branch is owned by a
+#                                 task record in this home that is not a
+#                                 managed no-mistakes task (a direct-PR ship, a
+#                                 scout, a hand-run): an uncovered entrypoint,
+#                                 explicit coverage gap, never adopted
+#               ORPHAN_RUN        an inventory run whose branch no task record
+#                                 in this home owns (another home, a manual
+#                                 launch, or an entrypoint this census does not
+#                                 cover): an explicit coverage gap, never adopted
+#               INVENTORY_UNAVAILABLE  the read-only query failed, timed out,
+#                                 or exceeded the budget; obligations stay
+#                                 pending with their recorded class, and the
+#                                 watermark's run marks are carried forward so
+#                                 a transient outage never re-reports a
+#                                 baseline or already-reported row
 #               PREFLIGHT_REFUSED a launch this home refused before any run
 #               BASELINE          first reconcile in a home: pre-existing
 #                                 inventory rows are recorded as uncovered
 #                                 history, not adopted
 #             Each line ends with the exact heal command when one exists.
-#             A home with no obligation record stays completely silent: it has
-#             not adopted observation, so nothing there can be a divergence.
+#             A home with neither an obligation record nor a managed task
+#             record stays completely silent and never queries: it has not
+#             adopted observation, so nothing there can be a divergence. A
+#             home whose only managed tasks are unenrolled reports them as
+#             UNENROLLED without querying the inventory; the BASELINE is
+#             recorded on the first pass that actually read the inventory.
 #             Cadence: at most once per FM_NM_OBSERVE_SECS (default 900) per
 #             home unless --startup or --now; aggregate budget
 #             FM_NM_OBSERVE_BUDGET_SECS (default 10) across every query, each
@@ -550,25 +574,42 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
     "$([ -n "$pred_r" ] && printf ' predecessor_run=%s' "$pred_r" || true)"
 }
 
-# Print the canonical record for the run bin/fm-nm-run-lib.sh attributes to
-# <dir>'s branch, else nothing. With <run-id>, that exact run when it belongs
-# to <branch>.
-attributed_run_toon() {  # <dir> <branch> <run-id-or-empty> <timeout>
-  local dir=$1 branch=$2 want=$3 t=$4 out rb
+# Leave in ATTR_TOON the canonical record for the run bin/fm-nm-run-lib.sh
+# attributes to <dir>'s branch, else return 1 with the typed reason in
+# ATTR_REASON (both globals, so the caller never needs a subshell). With
+# <run-id>, that exact run when it belongs to <branch>; <check-head> 1 holds
+# it to the head rule too (a fresh binding), 0 re-reads an already bound run.
+ATTR_REASON=
+ATTR_TOON=
+attributed_run_toon() {  # <dir> <branch> <run-id-or-empty> <timeout> <check-head 0|1>
+  local dir=$1 branch=$2 want=$3 t=$4 check=$5 out rb rh
+  ATTR_REASON=
+  ATTR_TOON=
   if [ -n "$want" ]; then
-    out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$want") || return 1
-    [ "$(run_field "$out" id)" = "$want" ] || return 1
+    out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$want") \
+      || { ATTR_REASON="run $want is not readable from the canonical inventory"; return 1; }
+    [ "$(run_field "$out" id)" = "$want" ] \
+      || { ATTR_REASON="the canonical record does not name run $want"; return 1; }
     rb=$(run_field "$out" branch)
-    [ "$rb" = "$branch" ] || return 1
-    printf '%s\n' "$out"
+    [ "$rb" = "$branch" ] \
+      || { ATTR_REASON="run $want is on branch ${rb:-none}, not $branch"; return 1; }
+    if [ "$check" -eq 1 ]; then
+      rh=$(run_field "$out" head)
+      fm_nm_head_matches_worktree "$dir" "$rh" || fm_nm_run_is_pipeline_owned_active "$out" \
+        || { ATTR_REASON="run $want head ${rh:-none} matches neither the worktree head nor a pipeline-owned active run; a same-branch run is never bound by name alone"; return 1; }
+    fi
+    ATTR_TOON=$out
     return 0
   fi
-  out=$(fm_nm_run_checked "$dir" "$t" axi status) || return 1
+  out=$(fm_nm_run_checked "$dir" "$t" axi status) \
+    || { ATTR_REASON="the canonical inventory is not readable"; return 1; }
   rb=$(run_field "$out" branch)
-  [ -n "$rb" ] && [ "$rb" = "$branch" ] || return 1
-  fm_nm_head_matches_worktree "$dir" "$(run_field "$out" head)" \
-    || fm_nm_run_is_pipeline_owned_active "$out" || return 1
-  printf '%s\n' "$out"
+  [ -n "$rb" ] && [ "$rb" = "$branch" ] \
+    || { ATTR_REASON="no run on branch $branch"; return 1; }
+  rh=$(run_field "$out" head)
+  fm_nm_head_matches_worktree "$dir" "$rh" || fm_nm_run_is_pipeline_owned_active "$out" \
+    || { ATTR_REASON="run head ${rh:-none} matches neither the worktree head nor a pipeline-owned active run"; return 1; }
+  ATTR_TOON=$out
 }
 
 do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
@@ -587,11 +628,12 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
       "$id" "$have" "$want" "$id" "$id" "$want"
     return 1
   fi
-  if ! out=$(attributed_run_toon "$dir" "$branch" "${want:-$have}" "$CALL_TIMEOUT"); then
-    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s%s (no run attributed to this branch and head; nothing recorded)\n' \
-      "$id" "$branch" "$([ -n "$want" ] && printf ' run=%s' "$want" || true)"
+  if ! attributed_run_toon "$dir" "$branch" "${want:-$have}" "$CALL_TIMEOUT" "$([ -z "$have" ] && printf 1 || printf 0)"; then
+    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s%s reason=%s (nothing recorded)\n' \
+      "$id" "$branch" "$([ -n "$want" ] && printf ' run=%s' "$want" || true)" "$ATTR_REASON"
     return 1
   fi
+  out=$ATTR_TOON
   run=$(run_field "$out" id)
   [ -n "$run" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=canonical record carries no run id\n' "$id"; return 1; }
   if [ -n "$have" ] && [ "$have" != "$run" ]; then
@@ -622,16 +664,29 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   printf 'NM_OBSERVE: %s task=%s run=%s status=%s class=%s\n' "$([ -z "$have" ] && printf 'RUN_BOUND' || printf 'REFRESHED')" "$id" "$run" "$status" "$class"
 }
 
+# The PR identity carried by the merge-notification marker bin/fm-pr-lib.sh
+# writes (fm_pr_poll_merge_mark_notified): the version tag on line 1, then
+# provider, host, path, and number, nothing after. Any other shape carries no
+# identity and binds nothing.
+merge_marker_identity() {  # <marker> -> provider:host:path:number
+  local version provider host path number extra
+  { IFS= read -r version && IFS= read -r provider && IFS= read -r host \
+      && IFS= read -r path && IFS= read -r number && ! IFS= read -r extra; } < "$1" || return 1
+  [ "$version" = fm-pr-poll-merge-notified-v1 ] && [ -n "$provider" ] && [ -n "$host" ] \
+    && [ -n "$path" ] && [ -n "$number" ] || return 1
+  printf '%s:%s:%s:%s' "$provider" "$host" "$path" "$number"
+}
+
 # PR, publication, head-change, and superseding-run facts read from this home's
 # own records and from the inventory table already captured in <toon>.
 refresh_side_facts() {  # <task-id> <meta> <record> <dir> <toon>
-  local id=$1 meta=$2 record=$3 dir=$4 toon=$5 pr pr_head marker cand cur run rows newer
+  local id=$1 meta=$2 record=$3 dir=$4 toon=$5 pr pr_head marker ident cand cur run rows newer
   pr=$(fm_meta_get "$meta" pr)
   pr_head=$(fm_meta_get "$meta" pr_head)
   [ -z "$pr" ] || record_set "$record" "pr=$pr" "pr_head=$pr_head"
   marker="$STATE/$id.pr-poll-merge-notified"
-  if [ -f "$marker" ]; then
-    record_set "$record" "publication=merged:$(head -1 "$marker" 2>/dev/null | tr -d '\r\n' | cut -c1-200)"
+  if [ -f "$marker" ] && [ ! -L "$marker" ]; then
+    ident=$(merge_marker_identity "$marker") && record_set "$record" "publication=merged:$ident"
   fi
   cand=$(record_get "$record" candidate_head)
   cur=$([ -n "$dir" ] && candidate_head "$dir" || true)
@@ -650,7 +705,7 @@ refresh_side_facts() {  # <task-id> <meta> <record> <dir> <toon>
 }
 
 do_refresh() {  # <task-id> <accept-reset 0|1>
-  local id=$1 accept=$2 meta record dir run out status outcome class epoch recorded
+  local id=$1 accept=$2 meta record dir run out status outcome class epoch recorded rc=0
   meta=$(meta_path "$id")
   record_load_or_die "$id"
   record=$RECORD
@@ -674,9 +729,15 @@ do_refresh() {  # <task-id> <accept-reset 0|1>
     [ "$accept" -eq 0 ] || record_set "$record" "daemon_epoch=$epoch"
     printf 'NM_OBSERVE: DAEMON_RESET task=%s recorded=%s observed=%s (outcome read by run id, not rebound)\n' "$id" "$recorded" "$epoch"
   fi
-  if ! out=$(fm_nm_run_checked "$dir" "$CALL_TIMEOUT" axi status --run "$run") || [ "$(run_field "$out" id)" != "$run" ]; then
+  out=$(fm_nm_run_checked "$dir" "$CALL_TIMEOUT" axi status --run "$run") || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
     render_receipt "$id"
-    printf 'NM_OBSERVE: RUN_VANISHED task=%s run=%s (canonical record unreadable; recorded class %s kept)\n' "$id" "$run" "$(record_get "$record" outcome_class)"
+    printf 'NM_OBSERVE: INVENTORY_UNAVAILABLE task=%s run=%s reason=query failed or timed out (recorded class %s kept)\n' "$id" "$run" "$(record_get "$record" outcome_class)"
+    return 0
+  fi
+  if [ "$(run_field "$out" id)" != "$run" ]; then
+    render_receipt "$id"
+    printf 'NM_OBSERVE: RUN_VANISHED task=%s run=%s (a successful canonical read no longer names this run; recorded class %s kept)\n' "$id" "$run" "$(record_get "$record" outcome_class)"
     return 0
   fi
   status=$(run_field "$out" status)
@@ -705,10 +766,11 @@ RECON_MARKS=
 # Record <line> under <key> in this pass's watermark and print it only when the
 # watermark did not already hold the same key and digest. "silent" records the
 # mark without ever printing (the baseline), so an unchanged row stays quiet on
-# every later pass and a changed one is printed once.
+# every later pass and a changed one is printed once. An age is presentation,
+# not a change, so it is left out of the digest.
 recon_emit() {  # <key> <line> [silent]
   local key=$1 line=$2 digest
-  digest=$(printf '%s' "$line" | cksum | awk '{print $1}')
+  digest=$(printf '%s' "$line" | sed 's/ age=[0-9]*s//' | cksum | awk '{print $1}')
   RECON_MARKS="${RECON_MARKS}${key}"$'\t'"${digest}"$'\n'
   [ "${3:-}" != silent ] || return 0
   if ! printf '%s' "$WM_OLD" | grep -qxF "${key}"$'\t'"${digest}"; then
@@ -738,45 +800,75 @@ worker_alive() {  # <meta> -> alive|dead|unknown
 }
 
 do_reconcile() {  # <startup 0|1> <now 0|1>
-  local startup=$1 force=$2 deadline meta id record dir rows line first=0 rid rbranch rstatus rhead rpr n
-  local any=0
+  local startup=$1 force=$2 deadline meta id record dir rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
+  local any=0 reads_ok=0
   for record in "$STATE"/*.nm-observe; do
     [ -f "$record" ] || continue
     any=1
     break
   done
+  if [ "$any" -eq 0 ]; then
+    for meta in "$STATE"/*.meta; do
+      [ -f "$meta" ] || continue
+      task_managed "$meta" || continue
+      any=1
+      break
+    done
+  fi
   [ "$any" -eq 1 ] || return 0
   recon_due "$startup" "$force" || return 0
   fm_lock_acquire_wait "$WATERMARK_LOCK"
   WM_OLD=$(cat "$WATERMARK" 2>/dev/null || true)
-  [ -n "$WM_OLD" ] || first=1
+  # The baseline is the first pass that actually read the inventory; the
+  # `inventory` mark records that it happened.
+  printf '%s\n' "$WM_OLD" | grep -q '^inventory'$'\t' || first=1
   deadline=$(( $(now_epoch) + BUDGET_SECS ))
   local nm_ok=1
   nm_available || nm_ok=0
-  # Pass 1: every managed task record, enrolled or not.
+  INV_FAILED=0
+  # Pass 1: every task record. Each branch remembers its owning task for pass
+  # 2 (a managed owner always wins a shared branch); only managed tasks are
+  # reconciled. An empty branch (detached HEAD, no directory) owns nothing.
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
-    task_managed "$meta" || continue
     id=$(basename "$meta" .meta)
-    record=$(record_path "$id")
     dir=$(task_dir "$meta")
-    TASK_BRANCHES["$([ -n "$dir" ] && candidate_branch "$dir" || printf 'none')"]=$id
+    branch=$([ -n "$dir" ] && candidate_branch "$dir" || true)
+    if task_managed "$meta"; then
+      owner="managed $id"
+    else
+      owner="unmanaged $id kind=$(fm_meta_get "$meta" kind || true) mode=$(fm_meta_get "$meta" mode || true)"
+    fi
+    if [ -n "$branch" ]; then
+      case "${TASK_BRANCHES[$branch]:-}" in managed*) ;; *) TASK_BRANCHES[$branch]=$owner ;; esac
+    fi
+    task_managed "$meta" || continue
+    record=$(record_path "$id")
     if [ ! -f "$record" ]; then
       recon_emit "task:$id" "NM_OBSERVE: UNENROLLED task=$id (managed no-mistakes task with no observation obligation; heal: bin/fm-nm-observe.sh enrol $id)"
       continue
     fi
-    [ -z "$(record_get "$record" candidate_branch)" ] || TASK_BRANCHES["$(record_get "$record" candidate_branch)"]=$id
+    branch=$(record_get "$record" candidate_branch)
+    [ -z "$branch" ] || TASK_BRANCHES[$branch]="managed $id"
     reconcile_task "$id" "$meta" "$record" "$dir"
   done
-  # Pass 2: orphan inventory rows and the daemon identity.
+  # Pass 2: inventory rows no obligation covers, and the daemon identity.
   for dir in "${!INVENTORY_BY_DIR[@]}"; do
     [ "${INV_OK_BY_DIR[$dir]}" = 1 ] || continue
+    reads_ok=1
     rows=${INVENTORY_BY_DIR[$dir]}
     [ -n "$rows" ] || continue
     while IFS=$'\t' read -r rid rbranch rstatus rhead rpr; do
       [ -n "$rid" ] || continue
-      if [ -n "${TASK_BRANCHES[$rbranch]:-}" ]; then continue; fi
-      line="NM_OBSERVE: ORPHAN_RUN run=$rid branch=$rbranch status=$rstatus head=$rhead pr=${rpr:-none} (no task in this home owns this branch: another home, a manual launch, or an uncovered entrypoint; explicit coverage gap, not adopted)"
+      owner=
+      [ -z "$rbranch" ] || owner=${TASK_BRANCHES[$rbranch]:-}
+      case "$owner" in
+        managed*) continue ;;
+        unmanaged*)
+          line="NM_OBSERVE: UNMANAGED_RUN run=$rid branch=$rbranch status=$rstatus head=$rhead pr=${rpr:-none} task=${owner#unmanaged } (this branch belongs to a task record in this home that is not a managed no-mistakes task: an uncovered entrypoint; explicit coverage gap, not adopted)" ;;
+        *)
+          line="NM_OBSERVE: ORPHAN_RUN run=$rid branch=${rbranch:-none} status=$rstatus head=$rhead pr=${rpr:-none} (no task record in this home owns this branch: another home, a manual launch, or an uncovered entrypoint; explicit coverage gap, not adopted)" ;;
+      esac
       if [ "$first" -eq 1 ]; then
         recon_emit "run:$rid" "$line" silent
       else
@@ -784,9 +876,23 @@ do_reconcile() {  # <startup 0|1> <now 0|1>
       fi
     done <<< "$rows"
   done
-  if [ "$first" -eq 1 ]; then
-    n=$(printf '%s' "$RECON_MARKS" | grep -c '^run:' || true)
-    RECON_LINES="${RECON_LINES}NM_OBSERVE: BASELINE runs=$n (pre-existing inventory rows recorded as uncovered history, not adopted)"$'\n'
+  if [ "$reads_ok" -eq 1 ]; then
+    if [ "$first" -eq 1 ]; then
+      n=$(printf '%s' "$RECON_MARKS" | grep -c '^run:' || true)
+      RECON_LINES="${RECON_LINES}NM_OBSERVE: BASELINE runs=$n (pre-existing inventory rows recorded as uncovered history, not adopted)"$'\n'
+    fi
+    recon_emit inventory "inventory read" silent
+  fi
+  # A pass that could not read every inventory carries the previous run marks
+  # forward, so a transient outage never re-reports a baseline or an
+  # already-reported row once the inventory is readable again.
+  if [ "$INV_FAILED" -eq 1 ] || [ "$reads_ok" -eq 0 ]; then
+    keys=$(printf '%s' "$RECON_MARKS" | cut -f1)
+    while IFS= read -r line; do
+      key=${line%%$'\t'*}
+      case "$key" in run:*|inventory) ;; *) continue ;; esac
+      printf '%s\n' "$keys" | grep -qxF -- "$key" || RECON_MARKS="${RECON_MARKS}${line}"$'\n'
+    done <<< "$WM_OLD"
   fi
   reconcile_daemon_identity
   printf '%s' "$RECON_MARKS" > "$WATERMARK.tmp.$$"
@@ -797,7 +903,7 @@ do_reconcile() {  # <startup 0|1> <now 0|1>
   return 0
 }
 
-# Query <dir>'s inventory once per pass into the three tables (never through a
+# Query <dir>'s inventory once per pass into the two tables (never through a
 # command substitution, which would lose the assignments in a subshell). 0 when
 # the inventory for <dir> is readable.
 inventory_for_dir() {  # <dir>
@@ -808,9 +914,9 @@ inventory_for_dir() {  # <dir>
   fi
   remaining=$(( deadline - $(now_epoch) ))
   if [ "$nm_ok" -ne 1 ] || [ "$remaining" -lt 1 ]; then
+    INV_FAILED=1
     INV_OK_BY_DIR[$dir]=0
     INVENTORY_BY_DIR[$dir]=
-    INVENTORY_TOON_BY_DIR[$dir]=
     return 1
   fi
   t=$CALL_TIMEOUT
@@ -818,21 +924,22 @@ inventory_for_dir() {  # <dir>
   if out=$(fm_nm_run_checked "$dir" "$t" axi status); then
     INV_OK_BY_DIR[$dir]=1
     INVENTORY_BY_DIR[$dir]=$(inventory_rows "$out")
-    INVENTORY_TOON_BY_DIR[$dir]=$out
     return 0
   fi
+  INV_FAILED=1
   INV_OK_BY_DIR[$dir]=0
   INVENTORY_BY_DIR[$dir]=
-  INVENTORY_TOON_BY_DIR[$dir]=
   return 1
 }
-declare -A INVENTORY_TOON_BY_DIR=() INVENTORY_BY_DIR=() INV_OK_BY_DIR=() TASK_BRANCHES=()
+declare -A INVENTORY_BY_DIR=() INV_OK_BY_DIR=() TASK_BRANCHES=()
+INV_FAILED=0
 
 reconcile_task() {  # <id> <meta> <record> <dir>
-  local id=$1 meta=$2 record=$3 dir=$4 stage run branch rows row rid rhead rstatus class age alive newer out status now_class remaining
+  local id=$1 meta=$2 record=$3 dir=$4 stage run branch rows row rid rhead rstatus class age alive newer out status now_class remaining rc
   stage=$(record_get "$record" stage)
   run=$(record_get "$record" run_id)
   branch=$(record_get "$record" candidate_branch)
+  class=$(record_get "$record" outcome_class)
   case "$stage" in
     enrolled|finalized) return 0 ;;
     launch-refused)
@@ -840,6 +947,7 @@ reconcile_task() {  # <id> <meta> <record> <dir>
       return 0 ;;
   esac
   if [ -z "$dir" ]; then
+    INV_FAILED=1
     recon_emit "task:$id" "NM_OBSERVE: INVENTORY_UNAVAILABLE task=$id reason=no worktree or project directory to query"
     return 0
   fi
@@ -876,22 +984,33 @@ reconcile_task() {  # <id> <meta> <record> <dir>
   fi
   row=$(printf '%s\n' "$rows" | awk -F '\t' -v r="$run" '$1 == r { print; exit }')
   if [ -n "$row" ]; then
-    # The inventory row carries status only; the class is compared only when a
-    # per-run read supplied the outcome, so a row never invents one.
+    # The inventory row carries status only: its class stays unread and is
+    # never compared, so a row never invents an outcome.
     status=$(printf '%s' "$row" | cut -f3)
-    now_class=$(record_get "$record" outcome_class)
+    now_class=
   else
     remaining=$(( deadline - $(now_epoch) ))
-    if [ "$remaining" -lt 1 ] || ! out=$(fm_nm_run_checked "$dir" "$(( CALL_TIMEOUT < remaining ? CALL_TIMEOUT : remaining ))" axi status --run "$run") || [ "$(run_field "$out" id)" != "$run" ]; then
-      recon_emit "task:$id" "NM_OBSERVE: RUN_VANISHED task=$id run=$run (bound run not readable from the canonical inventory; recorded class $(record_get "$record" outcome_class) kept; heal: bin/fm-nm-observe.sh refresh $id)"
+    out=
+    rc=0
+    if [ "$remaining" -lt 1 ]; then
+      rc=1
+    else
+      out=$(fm_nm_run_checked "$dir" "$(( CALL_TIMEOUT < remaining ? CALL_TIMEOUT : remaining ))" axi status --run "$run") || rc=$?
+    fi
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+      INV_FAILED=1
+      recon_emit "task:$id" "NM_OBSERVE: INVENTORY_UNAVAILABLE task=$id run=$run reason=$([ "$remaining" -lt 1 ] && printf 'budget exhausted' || printf 'query failed or timed out') (obligation stays pending; recorded class ${class:-unread} kept)"
+      return 0
+    fi
+    if [ "$(run_field "$out" id)" != "$run" ]; then
+      recon_emit "task:$id" "NM_OBSERVE: RUN_VANISHED task=$id run=$run (a successful canonical read no longer names the bound run; recorded class ${class:-unread} kept; heal: bin/fm-nm-observe.sh refresh $id)"
       return 0
     fi
     status=$(run_field "$out" status)
     now_class=$(outcome_class_of "$status" "$(run_field "$out" outcome)")
   fi
-  class=$(record_get "$record" outcome_class)
-  if [ "$status" != "$(record_get "$record" run_status)" ] || { terminal_class "$now_class" && [ "$now_class" != "$class" ]; }; then
-    recon_emit "task:$id" "NM_OBSERVE: OUTCOME_CHANGED task=$id run=$run recorded=$(record_get "$record" run_status)/${class:-unread} canonical=$status/$now_class (heal: bin/fm-nm-observe.sh refresh $id)"
+  if [ "$status" != "$(record_get "$record" run_status)" ] || { [ -n "$now_class" ] && terminal_class "$now_class" && [ "$now_class" != "$class" ]; }; then
+    recon_emit "task:$id" "NM_OBSERVE: OUTCOME_CHANGED task=$id run=$run recorded=$(record_get "$record" run_status)/${class:-unread} canonical=$status/${now_class:-unread} (heal: bin/fm-nm-observe.sh refresh $id)"
   fi
 }
 

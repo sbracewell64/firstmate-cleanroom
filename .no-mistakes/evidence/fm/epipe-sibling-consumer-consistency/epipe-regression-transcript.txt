@@ -1,0 +1,31 @@
+=== EPIPE sibling-consumer consistency: end-to-end regression evidence ===
+
+### 1. Baseline: both new regression suites PASS with production handlers present
+$ bash tests/fm-turnend-guard-epipe.test.sh
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+ok - Pi turn-end guard swallows a child-stdin EPIPE without crashing the host
+$ bash tests/fm-operational-input.test.sh
+ok - operational input: every current generic envelope retains its exact structured kind
+ok - operational input: the established from-firstmate carrier remains structurally typed and byte-compatible
+ok - operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input
+ok - operational input: historical prose compatibility is isolated from current parsing
+ok - operational input: quoted, ASCII-only, arbitrary-U+2063, altered-legacy, and label-only near misses stay genuine
+ok - operational input: the OpenCode adapter constructs through the canonical owner
+ok - operational input: the OpenCode adapter swallows a child-stdin EPIPE without crashing the host
+ok - operational input: current construction rejects legacy kinds and empty bodies
+
+### 2. Mutation verification: each test FAILS when its production handler is removed
+
+-- Remove OpenCode guard handler (.opencode/plugins/fm-primary-turnend-guard.js:27) --
+not ok - OpenCode guard must survive a child-stdin EPIPE: node:child_process:8
+
+-- Remove Pi guard handler (.pi/extensions/fm-primary-turnend-guard.ts:454) --
+not ok - Pi guard must survive a child-stdin EPIPE: node:child_process:8
+
+-- Remove operational-input encoder handler (.opencode/plugins/lib/fm-operational-input.js:39) --
+not ok - OpenCode adapter must survive a child-stdin EPIPE and preserve the verdict: node:events:505
+
+### 3. Tree restored; handlers back in place
+.opencode/plugins/lib/fm-operational-input.js:39:    child.stdin.on("error", () => {});
+.pi/extensions/fm-primary-turnend-guard.ts:454:    child.stdin.on("error", () => {});
+.opencode/plugins/fm-primary-turnend-guard.js:27:    child.stdin.on("error", () => {});

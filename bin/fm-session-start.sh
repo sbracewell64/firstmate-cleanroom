@@ -37,8 +37,10 @@
 #                       locked; the four network sweeps run in the deferred
 #                       stage rather than this synchronous bootstrap section.
 #   3. inactive outcomes + wake-drain - runs the local bounded inactive-outcome
-#                       reconciliation before presenting durable wakes and advancing
-#                       recovery handling state, so both only run when locked.
+#                       reconciliation and the read-only no-mistakes observation
+#                       reconciliation (bin/fm-nm-observe.sh reconcile --startup)
+#                       before presenting durable wakes and advancing recovery
+#                       handling state, so all three only run when locked.
 #   4. supervision-instructions - the one emitted operating block for the
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
@@ -732,8 +734,9 @@ fi
 
 # --- 3. inactive outcomes + wake-drain -----------------------------------
 # The existing locked session-start path runs the same local inactive-outcome
-# reconciliation as the watcher poll before it presents the resulting durable
-# wake, without adding a daemon or external-network call.
+# reconciliation as the watcher poll, then the no-mistakes observation
+# reconciliation the watcher only peeks at, before it presents the resulting
+# durable wake, without adding a daemon or external-network call.
 # Presented records are this turn's first work queue and remain durable until
 # post-handling acknowledgement. The drain's separate OPEN DECISIONS section
 # remains actionable even when that queue is empty (AGENTS.md sections 3 and 8).

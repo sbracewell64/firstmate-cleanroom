@@ -79,6 +79,10 @@
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
+#   check: nm-observe      the non-consuming `bin/fm-nm-observe.sh reconcile
+#                          --peek` printed a new or changed no-mistakes coverage
+#                          finding; the cursor is left for firstmate's
+#                          `reconcile --now`, which prints the same lines
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local
 #                          secondmate home's durable wake queue exceeded

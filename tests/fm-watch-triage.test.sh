@@ -3612,6 +3612,38 @@ test_procevent_marker_failure_exits_and_replays() {
 
 # --- heartbeat: no-change absorbed, backstop surfaces a missed status --------
 
+# --- no-mistakes observation seam: the peek wakes without consuming ----------
+# The poll loop runs bin/fm-nm-observe.sh reconcile --peek beside the
+# inactive-outcome scan and raises `check: nm-observe` when it prints a line.
+# Regression origin: NMF-OBS-1 review round 3 (NMO-13, 2026-09-06): the
+# watcher's pass used to commit the owner's cursor, so firstmate's follow-up
+# `reconcile --now` printed nothing and the heal was lost. A managed
+# no-mistakes task with no obligation is the cheapest finding (UNENROLLED
+# never queries the daemon), so the fixture needs no fake `no-mistakes`.
+
+test_nm_observe_peek_wakes_without_consuming_findings() {
+  local dir state out pid now_out
+  dir=$(make_case nm-observe-peek); state="$dir/state"; out="$dir/watch.out"
+  printf 'window=firstmate:fm-nm1\nendpoint_task_id=nm1\nkind=ship\nmode=no-mistakes\nharness=echo\nworktree=%s\nproject=%s\n' \
+    "$dir/gone-worktree" "$dir/gone-worktree" > "$state/nm1.meta"
+
+  watch_bg "$state" "$dir/fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the watcher never surfaced the observation finding: $(cat "$out")"
+  grep -Fx "check: nm-observe" "$out" >/dev/null \
+    || fail "the observation finding was not raised as the nm-observe check: $(cat "$out")"
+  [ ! -e "$state/.nm-observe-watermark" ] \
+    || fail "the watcher's peek created the observation cursor, consuming the finding"
+
+  # Firstmate's handling pass prints the same finding and is the one that commits.
+  now_out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-nm-observe.sh" reconcile --now 2>&1) \
+    || fail "reconcile --now failed after the peek: $now_out"
+  grep -F "NM_OBSERVE: UNENROLLED task=nm1" <<< "$now_out" >/dev/null \
+    || fail "the consuming pass did not print the finding the peek woke for: $now_out"
+  [ -f "$state/.nm-observe-watermark" ] || fail "the consuming pass did not commit the cursor"
+  pass "the watcher's nm-observe peek wakes firstmate and leaves the finding for reconcile --now"
+}
+
 test_heartbeat_no_change_absorbed() {
   local dir state fakebin out pid i sig
   dir=$(make_case heartbeat-absorb); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
@@ -3880,6 +3912,7 @@ test_procevent_marker_keys_are_injective
 test_procevent_surface_serializes_with_drain
 test_procevent_surface_crash_boundaries
 test_procevent_marker_failure_exits_and_replays
+test_nm_observe_peek_wakes_without_consuming_findings
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_heartbeat_backstop_surfaces_a_masked_status

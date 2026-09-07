@@ -2,12 +2,14 @@
 # Shared no-mistakes axi run attribution primitives.
 #
 # ONE owner for the no-mistakes run-attribution primitives used by
-# fm-crew-state.sh (read-only current-state reporting) and fm-teardown.sh
-# (pre-teardown run abort, see its "Fix 1" header comment). Teardown uses only
-# strict branch-and-head identity; crew-state additionally permits the active
-# pipeline-owned exemption defined below. Getting this wrong in either
-# direction is unsafe: a false negative hides a genuinely parked run, and a
-# false positive lets teardown act on a run it does not own.
+# fm-crew-state.sh (read-only current-state reporting), fm-teardown.sh
+# (pre-teardown run abort, see its "Fix 1" header comment), and
+# fm-nm-observe.sh (read-only run binding and inventory reconciliation).
+# Teardown uses only strict branch-and-head identity; crew-state and the
+# observer additionally permit the active pipeline-owned exemption defined
+# below. Getting this wrong in either direction is unsafe: a false negative
+# hides a genuinely parked run, and a false positive lets teardown act on a
+# run it does not own.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards

@@ -169,7 +169,10 @@
 #             current watermark but never rewrites it (no baseline seeding, no
 #             mark advanced; only the cursor's timestamp is refreshed so the
 #             cadence gate keeps spacing the queries), so the findings are
-#             still there for the consuming pass. Wired into the locked session
+#             still there for the consuming pass. A home's first pass belongs
+#             to --startup or --now: a peek in a home with no cursor only
+#             creates an empty one to start the cadence clock, and prints and
+#             queries nothing until the cadence elapses. Wired into the locked session
 #             start (bin/fm-session-start.sh) with --startup, which commits the
 #             cursor because its lines are presented in the digest, and into
 #             the watcher's poll loop (bin/fm-watch.sh) beside the
@@ -848,6 +851,20 @@ do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
     done
   fi
   [ "$any" -eq 1 ] || return 0
+  # A home's first pass belongs to a consuming owner (--startup or --now):
+  # the watcher's peek only starts the cadence clock with an empty cursor (no
+  # mark, nothing consumed) so it cannot re-report the same finding on every
+  # poll and starve the rest of the watcher's cycle.
+  if [ "$peek" -eq 1 ] && [ "$force" -eq 0 ] && [ ! -f "$WATERMARK" ]; then
+    fm_lock_acquire_wait "$WATERMARK_LOCK"
+    if [ ! -f "$WATERMARK" ]; then
+      : > "$WATERMARK.tmp.$$"
+      chmod 0600 "$WATERMARK.tmp.$$"
+      mv -f -- "$WATERMARK.tmp.$$" "$WATERMARK"
+    fi
+    fm_lock_release "$WATERMARK_LOCK"
+    return 0
+  fi
   recon_due "$startup" "$force" || return 0
   fm_lock_acquire_wait "$WATERMARK_LOCK"
   WM_OLD=$(cat "$WATERMARK" 2>/dev/null || true)

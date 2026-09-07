@@ -3620,27 +3620,32 @@ test_procevent_marker_failure_exits_and_replays() {
 # `reconcile --now` printed nothing and the heal was lost. A managed
 # no-mistakes task with no obligation is the cheapest finding (UNENROLLED
 # never queries the daemon), so the fixture needs no fake `no-mistakes`.
+# The peek never takes a home's first pass: with no cursor it only starts the
+# cadence clock, so the fixture seeds an empty cursor older than the cadence.
 
 test_nm_observe_peek_wakes_without_consuming_findings() {
   local dir state out pid now_out
   dir=$(make_case nm-observe-peek); state="$dir/state"; out="$dir/watch.out"
   printf 'window=firstmate:fm-nm1\nendpoint_task_id=nm1\nkind=ship\nmode=no-mistakes\nharness=echo\nworktree=%s\nproject=%s\n' \
     "$dir/gone-worktree" "$dir/gone-worktree" > "$state/nm1.meta"
+  : > "$state/.nm-observe-watermark"
+  touch -d '@1000' "$state/.nm-observe-watermark" 2>/dev/null \
+    || touch -t 197001010000 "$state/.nm-observe-watermark"
 
   watch_bg "$state" "$dir/fakebin" "$out"
   pid=$!
   wait_for_exit "$pid" 100 || fail "the watcher never surfaced the observation finding: $(cat "$out")"
   grep -Fx "check: nm-observe" "$out" >/dev/null \
     || fail "the observation finding was not raised as the nm-observe check: $(cat "$out")"
-  [ ! -e "$state/.nm-observe-watermark" ] \
-    || fail "the watcher's peek created the observation cursor, consuming the finding"
+  [ ! -s "$state/.nm-observe-watermark" ] \
+    || fail "the watcher's peek recorded a mark in the observation cursor, consuming the finding"
 
   # Firstmate's handling pass prints the same finding and is the one that commits.
   now_out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-nm-observe.sh" reconcile --now 2>&1) \
     || fail "reconcile --now failed after the peek: $now_out"
   grep -F "NM_OBSERVE: UNENROLLED task=nm1" <<< "$now_out" >/dev/null \
     || fail "the consuming pass did not print the finding the peek woke for: $now_out"
-  [ -f "$state/.nm-observe-watermark" ] || fail "the consuming pass did not commit the cursor"
+  [ -s "$state/.nm-observe-watermark" ] || fail "the consuming pass did not commit the cursor"
   pass "the watcher's nm-observe peek wakes firstmate and leaves the finding for reconcile --now"
 }
 

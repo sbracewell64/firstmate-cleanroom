@@ -523,6 +523,19 @@ pass "reconcile: unavailable inventory is a typed, once-reported gap that keeps 
 EMPTY="$TMP_ROOT/empty-home"
 mkdir -p "$EMPTY/state" "$EMPTY/data"
 fm_write_meta "$EMPTY/state/z.meta" "window=firstmate:fm-z" "endpoint_task_id=z" "worktree=$WT1" "project=$WT1" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+# The watcher's peek never takes a home's first pass: with no cursor it only
+# starts the cadence clock (an empty cursor), printing and querying nothing, so
+# the same finding cannot wake the watcher on every poll; the finding stays
+# for the consuming owner pass.
+: > "$NM_LOG"
+out=$(FM_HOME="$EMPTY" FM_STATE_OVERRIDE="$EMPTY/state" FM_DATA_OVERRIDE="$EMPTY/data" "$OBSERVE" reconcile --peek 2>&1); rc=$?
+expect_code 0 "$rc" "peek in a home with no cursor"
+[ -z "$out" ] || fail "a peek with no cursor prints nothing, got:"$'\n'"$out"
+[ ! -s "$NM_LOG" ] || fail "a peek with no cursor never queried no-mistakes"
+[ -f "$EMPTY/state/.nm-observe-watermark" ] && [ ! -s "$EMPTY/state/.nm-observe-watermark" ] \
+  || fail "a peek with no cursor starts the cadence clock with an empty cursor"
+out=$(FM_HOME="$EMPTY" FM_STATE_OVERRIDE="$EMPTY/state" FM_DATA_OVERRIDE="$EMPTY/data" "$OBSERVE" reconcile --peek 2>&1)
+[ -z "$out" ] || fail "a second peek inside the cadence prints nothing, got:"$'\n'"$out"
 : > "$NM_LOG"
 out=$(FM_HOME="$EMPTY" FM_STATE_OVERRIDE="$EMPTY/state" FM_DATA_OVERRIDE="$EMPTY/data" "$OBSERVE" reconcile --startup 2>&1); rc=$?
 expect_code 0 "$rc" "reconcile in a home whose only managed task is unenrolled"

@@ -523,7 +523,7 @@ FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/t6\nrun:\n  id: "%s"\n  branch: 
 out=$("$OBSERVE" launch t6 --profile-json "$PROFILE_OK" 2>&1); rc=$?
 expect_code 0 "$rc" "retry on an unchanged head opens attempt 2"
 [ "$(record_get t6 predecessor_run_id)" = "$RUN6A" ] || fail "t6 predecessor linked"
-"$OBSERVE" reconcile --now >/dev/null 2>&1
+[ "$(record_get t6 bound_runs)" = "$RUN6A" ] || fail "bound runs carry the first attempt's run: $(record_get t6 bound_runs)"
 out=$("$OBSERVE" reconcile --now 2>&1)
 assert_not_contains "$out" "UNBOUND_RUN task=t6" "the predecessor run is never an unbound run of the retry"
 out=$("$OBSERVE" bind t6 2>&1); rc=$?
@@ -539,7 +539,39 @@ assert_contains "$out" "UNBOUND_RUN task=t6 run=$RUN6B" "a run newer than the pr
 out=$("$OBSERVE" bind t6 2>&1); rc=$?
 expect_code 0 "$rc" "plain bind attributes the newer run"
 [ "$(record_get t6 run_id)" = "$RUN6B" ] || fail "retry bound to the newer run: $(record_get t6 run_id)"
+[ "$(record_get t6 bound_runs)" = "$RUN6A $RUN6B" ] || fail "bound runs accumulate: $(record_get t6 bound_runs)"
 pass "retry: the predecessor run is never rebound; only a strictly newer run attributes"
+
+# --- a retry chain through an attempt that bound nothing still excludes every earlier run
+
+"$OBSERVE" reconcile --now >/dev/null 2>&1
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon "$RUN6B" fm/t6 failed "$SHORT6" failed)
+"$OBSERVE" refresh t6 >/dev/null 2>&1 || fail "t6 second run refresh"
+FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/t6\nrun:\n  id: "%s"\n  branch: fm/t6\n  status: failed\n  head: %s\n' "$RUN6B" "$SHORT6"; axi_status_toon fm/t6 "$(printf '%s\tfm/t6\tfailed\t%s\t\n%s\tfm/t6\tfailed\t%s\t' "$RUN6B" "$SHORT6" "$RUN6A" "$SHORT6")")
+"$OBSERVE" launch t6 --retry --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "attempt 3 opens"
+[ "$(record_get t6 attempt_seq)" = 3 ] || fail "third attempt"
+"$OBSERVE" launch t6 --retry --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "attempt 4 opens after an attempt that bound nothing"
+[ "$(record_get t6 attempt_seq)" = 4 ] || fail "fourth attempt"
+[ "$(record_get t6 predecessor_run_id)" = "$RUN6B" ] || fail "predecessor run carried across the unbound attempt: $(record_get t6 predecessor_run_id)"
+[ "$(record_get t6 bound_runs)" = "$RUN6A $RUN6B" ] || fail "launch never clears bound runs: $(record_get t6 bound_runs)"
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_not_contains "$out" "UNBOUND_RUN task=t6" "no earlier attempt's run is an unbound run of attempt 4"
+out=$("$OBSERVE" bind t6 2>&1); rc=$?
+expect_code 1 "$rc" "plain bind refuses the run bound two attempts ago"
+assert_contains "$out" "predecessor run $RUN6B is not a new run" "refusal names the earlier-bound run"
+out=$("$OBSERVE" bind t6 --run "$RUN6A" 2>&1); rc=$?
+expect_code 1 "$rc" "explicit --run of the oldest bound run is refused"
+assert_contains "$out" "predecessor run $RUN6A is not a new run" "refusal names the oldest bound run"
+[ -z "$(record_get t6 run_id)" ] || fail "attempt 4 stays unbound after the refusals"
+RUN6C=01RUN6CIIIIIIIIIIIIIIIIIII
+FM_FAKE_AXI_STATUS=$(printf 'current_branch: fm/t6\nrun:\n  id: "%s"\n  branch: fm/t6\n  status: running\n  head: %s\n' "$RUN6C" "$SHORT6"; axi_status_toon fm/t6 "$(printf '%s\tfm/t6\trunning\t%s\t\n%s\tfm/t6\tfailed\t%s\t\n%s\tfm/t6\tfailed\t%s\t' "$RUN6C" "$SHORT6" "$RUN6B" "$SHORT6" "$RUN6A" "$SHORT6")")
+out=$("$OBSERVE" reconcile --now 2>&1)
+assert_contains "$out" "UNBOUND_RUN task=t6 run=$RUN6C" "a run newer than every bound run is attempt 4's unbound run"
+out=$("$OBSERVE" bind t6 2>&1); rc=$?
+expect_code 0 "$rc" "plain bind attributes the genuinely new run"
+[ "$(record_get t6 run_id)" = "$RUN6C" ] || fail "attempt 4 bound to the new run: $(record_get t6 run_id)"
+[ "$(record_get t6 bound_runs)" = "$RUN6A $RUN6B $RUN6C" ] || fail "bound runs accumulate across the chain: $(record_get t6 bound_runs)"
+pass "retry chain: an attempt that bound nothing never lets an earlier attempt's run be rebound"
 rm -f "$STATE/t6.meta" "$STATE/t6.nm-observe"
 
 # --- a profile capture with JSON null identities records them as unset ------------

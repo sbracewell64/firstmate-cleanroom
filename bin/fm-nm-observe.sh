@@ -46,7 +46,10 @@
 #   nm_home, path0, nm_version, nm_build, profile_ready, policy, daemon_epoch,
 #   preflight_refusal, run_id, run_head, run_branch, run_bound_epoch, run_status,
 #   run_outcome, outcome_class, outcome_epoch, head_change, superseding_run,
-#   pr, pr_head, publication, daemon_reset_observed, finalized_epoch.
+#   pr, pr_head, publication, daemon_reset_observed, finalized_epoch,
+#   bound_runs (every run id any attempt of this task ever bound, oldest
+#   first, appended by bind and never cleared by launch: a later attempt never
+#   attributes or binds one of them, even across an attempt that bound nothing).
 #   stage is one of enrolled, launch-refused, launch-accepted, run-bound,
 #   finalized. outcome_class is one of active, successful, failed, cancelled,
 #   preflight-refused, ci-ready, or empty before any canonical read; the
@@ -127,7 +130,7 @@
 #                                 but the obligation holds no run id (crash or
 #                                 omission between run creation and binding);
 #                                 for a retry attempt only rows strictly newer
-#                                 than its predecessor run count
+#                                 than every run an earlier attempt bound count
 #               SUPERSEDED_RUN    a newer run on the bound branch than the one
 #                                 bound (a retry or repair run to link)
 #               OUTCOME_CHANGED   the bound run's canonical status or outcome
@@ -549,6 +552,7 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
     fi
     pred_a=$attempt
     pred_r=$run
+    [ -n "$pred_r" ] || pred_r=$(newest_bound_run "$record")
   fi
   dir=$(task_dir "$meta")
   wt=$(task_worktree "$meta")
@@ -610,6 +614,19 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
     "$([ -n "$pred_r" ] && printf ' predecessor_run=%s' "$pred_r" || true)"
 }
 
+newest_bound_run() {  # <record>
+  local list
+  list=$(record_get "$1" bound_runs)
+  printf '%s' "${list##* }"
+}
+
+run_bound_by_earlier_attempt() {  # <record> <run-id>
+  case " $(record_get "$1" bound_runs) $(record_get "$1" predecessor_run_id) " in
+    *" $2 "*) return 0 ;;
+  esac
+  return 1
+}
+
 # Leave in ATTR_TOON the canonical record for the run bin/fm-nm-run-lib.sh
 # attributes to <dir>'s branch, else return 1 with the typed reason in
 # ATTR_REASON (both globals, so the caller never needs a subshell). With
@@ -649,7 +666,7 @@ attributed_run_toon() {  # <dir> <branch> <run-id-or-empty> <timeout> <check-hea
 }
 
 do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
-  local id=$1 want=$2 accept=$3 meta record dir wt branch out run status outcome class have pred epoch recorded
+  local id=$1 want=$2 accept=$3 meta record dir wt branch out run status outcome class have epoch recorded bound
   meta=$(meta_path "$id")
   record_load_or_die "$id"
   record=$RECORD
@@ -659,10 +676,9 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   [ -n "$branch" ] || { wt=$(task_worktree "$meta"); [ -z "$wt" ] || branch=$(candidate_branch "$wt"); }
   [ -n "$branch" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no candidate branch recorded and the task worktree is gone\n' "$id"; return 1; }
   have=$(record_get "$record" run_id)
-  pred=$(record_get "$record" predecessor_run_id)
   nm_available || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=no-mistakes not on PATH\n' "$id"; return 1; }
-  if [ -z "$have" ] && [ -n "$pred" ] && [ "$want" = "$pred" ]; then
-    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$want" "$pred"
+  if [ -z "$have" ] && [ -n "$want" ] && run_bound_by_earlier_attempt "$record" "$want"; then
+    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (an earlier attempt of this task bound it; this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$want" "$want"
     return 1
   fi
   if [ -n "$have" ] && [ -n "$want" ] && [ "$want" != "$have" ]; then
@@ -678,8 +694,8 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   out=$ATTR_TOON
   run=$(run_field "$out" id)
   [ -n "$run" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=canonical record carries no run id\n' "$id"; return 1; }
-  if [ -z "$have" ] && [ -n "$pred" ] && [ "$run" = "$pred" ]; then
-    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$run" "$pred"
+  if [ -z "$have" ] && run_bound_by_earlier_attempt "$record" "$run"; then
+    printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (an earlier attempt of this task bound it; this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$run" "$run"
     return 1
   fi
   if [ -n "$have" ] && [ "$have" != "$run" ]; then
@@ -701,8 +717,10 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   outcome=$(run_field "$out" outcome)
   class=$(outcome_class_of "$status" "$outcome")
   if [ -z "$have" ]; then
+    bound=$(record_get "$record" bound_runs)
     record_set "$record" "stage=run-bound" "run_id=$run" "run_head=$(run_field "$out" head)" \
-      "run_branch=$(run_field "$out" branch)" "run_bound_epoch=$(now_epoch)"
+      "run_branch=$(run_field "$out" branch)" "run_bound_epoch=$(now_epoch)" \
+      "bound_runs=${bound:+$bound }$run"
   fi
   record_set "$record" "run_status=$status" "run_outcome=$outcome" "outcome_class=$class" "outcome_epoch=$(now_epoch)"
   refresh_side_facts "$id" "$meta" "$record" "$dir" "$out"
@@ -1033,7 +1051,7 @@ reconcile_task() {  # <id> <meta> <record> <dir>
   fi
   rows=${INVENTORY_BY_DIR[$dir]}
   if [ "$stage" = launch-accepted ]; then
-    row=$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch" -v p="$(record_get "$record" predecessor_run_id)" 'p != "" && $1 == p { exit } $2 == b { print; exit }')
+    row=$(printf '%s\n' "$rows" | awk -F '\t' -v b="$branch" -v bl=" $(record_get "$record" bound_runs) $(record_get "$record" predecessor_run_id) " 'index(bl, " " $1 " ") { exit } $2 == b { print; exit }')
     if [ -n "$row" ]; then
       rid=$(printf '%s' "$row" | cut -f1)
       rhead=$(printf '%s' "$row" | cut -f4)

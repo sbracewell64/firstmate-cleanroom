@@ -196,6 +196,22 @@ SH
   chmod +x "$fakebin/$tool"
 }
 
+# --- node TypeScript execution ----------------------------------------------
+#
+# fm_test_require_node_ts: the Pi extension tests import .ts sources through
+# plain `node`, so a node that cannot execute .ts is an environment fact, not a
+# test verdict. Fail with the typed ENVIRONMENT_UNREADY line that
+# bin/fm-tool-profile.sh (the owner of that observation) emits, so the owner
+# action is named instead of an ERR_UNKNOWN_FILE_EXTENSION stack. An absent node
+# is left to each test's own skip, exactly as before.
+fm_test_require_node_ts() {
+  local unready
+  command -v node >/dev/null 2>&1 || return 0
+  unready=$("$ROOT/bin/fm-tool-profile.sh" --require node-ts 2>&1 >/dev/null) && return 0
+  printf '%s\n' "$unready" | grep '^ENVIRONMENT_UNREADY: node-ts' >&2
+  fail "node cannot execute the .ts sources this suite imports (bin/fm-tool-profile.sh --require node-ts names the owner action)"
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so

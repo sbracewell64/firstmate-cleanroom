@@ -18,6 +18,12 @@
 #
 # This file is the single owner of FM_TASKS_AXI_MIN. bin/fm-bootstrap.sh turns a
 # failing check into the operator-facing MISSING diagnostic.
+# It is also the single owner of FM_TASKS_AXI_PIN, the exact version CI installs
+# (.github/workflows/ci.yml reads it through `bin/fm-tool-profile.sh --pin
+# tasks-axi`, which refuses a pin below the floor). The floor is what a local
+# install must satisfy; the pin is what CI and a scoped environment install, so
+# a local copy below the floor and a CI copy that drifted from the pin are both
+# caught by the same owner instead of a literal retyped in a workflow.
 #
 # COMPATIBILITY VERDICT REUSE. fm_tasks_axi_compatible costs three tasks-axi
 # subprocesses, and one session start needs the same verdict twice: once in
@@ -35,6 +41,8 @@
 # is picked up by the next process rather than being cached to disk.
 
 FM_TASKS_AXI_MIN=0.2.4
+# shellcheck disable=SC2034 # read by bin/fm-tool-profile.sh --pin tasks-axi
+FM_TASKS_AXI_PIN=0.2.5
 
 FM_TASKS_AXI_COMPATIBLE_MEMO=${FM_TASKS_AXI_COMPATIBLE:-}
 unset FM_TASKS_AXI_COMPATIBLE

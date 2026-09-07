@@ -254,6 +254,8 @@ test_missing_actionlint_fails_closed() {
   rc=0
   out=$(PATH="$fakebin" "$LINT_WF" --root "$tmp" 2>&1) || rc=$?
   [ "$rc" -eq 1 ] || fail "missing actionlint expected exit 1, got $rc"$'\n'"$out"
+  assert_contains "$out" "ENVIRONMENT_UNREADY: actionlint ABSENT" \
+    "missing actionlint must be one typed ENVIRONMENT_UNREADY line, not a lint verdict"
   assert_contains "$out" "actionlint not found" \
     "missing actionlint did not name the required linter"
   assert_contains "$out" "$REQUIRED" \
@@ -287,6 +289,9 @@ SH
   rc=0
   out=$(PATH="$fakebin:$PATH" "$LINT_WF" --root "$tmp" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "fm-lint-workflows.sh accepted an actionlint version other than the pin"$'\n'"$out"
+  assert_contains "$out" "ENVIRONMENT_UNREADY: actionlint PINNED_MISMATCH" \
+    "a non-pinned actionlint must be one typed ENVIRONMENT_UNREADY line naming the state"
+  assert_contains "$out" "fm-install-actionlint.sh" "the mismatch must name the owner action"
   assert_contains "$out" "$REQUIRED" "fm-lint-workflows.sh did not name the required version on mismatch"
   assert_contains "$out" "0.0.0" "fm-lint-workflows.sh did not report the resolved (wrong) version"
   pass "fm-lint-workflows.sh refuses to lint under a non-pinned actionlint version"

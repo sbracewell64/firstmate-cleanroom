@@ -31,6 +31,69 @@ jobs:
       # fails locally before merge.
       - run: bin/fm-lint.sh
 
+  # Observes the qualified tool profile from every real consumer shell on the
+  # runner with the pinned real tools, so a lost tool selection is caught here,
+  # named with its owner action, instead of inside a gate that already paid for
+  # agent work. bin/fm-tool-profile.sh owns the observation and
+  # tests/fm-tool-profile.test.sh pins its logic with stubs; this job is the
+  # live fixture. The login-shell negative control re-prepends a legacy tool
+  # root the way a stock ~/.profile does and must be REPORTED, so the probe can
+  # never pass vacuously.
+  tool-profile:
+    name: Tool profile fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned tasks-axi
+        run: |
+          set -eu
+          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
+          tasks-axi --version
+      - name: Observe the qualified profile from every consumer shell
+        env:
+          FM_EXPECT_PATH0: ${{ runner.temp }}/bin
+        run: |
+          set -eu
+          echo "--- direct shell (a session start or worker command)"
+          bin/fm-tool-profile.sh --expect-path0 "$FM_EXPECT_PATH0" --strict-pin
+          echo "--- deterministic lint shell (commands.lint runs under sh -c)"
+          sh -c 'bin/fm-tool-profile.sh --expect-path0 "$1" --strict-pin' _ "$FM_EXPECT_PATH0"
+          echo "--- login shell with the profile re-selected after shell initialization"
+          clean_home="$RUNNER_TEMP/tool-profile-home-clean"
+          mkdir -p "$clean_home"
+          : > "$clean_home/.profile"
+          HOME="$clean_home" bash -lc 'PATH="$1:$PATH" bin/fm-tool-profile.sh --expect-path0 "$1" --strict-pin' _ "$FM_EXPECT_PATH0"
+      - name: Login-shell negative control (legacy tool root re-prepended)
+        env:
+          FM_EXPECT_PATH0: ${{ runner.temp }}/bin
+        run: |
+          set -eu
+          legacy_home="$RUNNER_TEMP/tool-profile-home-legacy"
+          mkdir -p "$legacy_home/.local/bin"
+          printf '%s\n' '#!/usr/bin/env bash' '[ "${1:-}" != --version ] || { echo 0.2.3; exit 0; }' 'exit 0' > "$legacy_home/.local/bin/tasks-axi"
+          chmod +x "$legacy_home/.local/bin/tasks-axi"
+          printf '%s\n' 'if [ -d "$HOME/.local/bin" ] ; then' '    PATH="$HOME/.local/bin:$PATH"' 'fi' > "$legacy_home/.profile"
+          rc=0
+          out=$(HOME="$legacy_home" bash -lc 'bin/fm-tool-profile.sh --require tasks-axi --expect-path0 "$1" --strict-pin' _ "$FM_EXPECT_PATH0" 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] || { echo "::error::negative control expected exit 1, got $rc"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'ENVIRONMENT_UNREADY: tasks-axi PRESENT_BELOW_FLOOR (found 0.2.3' \
+            || { echo "::error::negative control did not report the legacy tasks-axi the login shell selected"; exit 1; }
+          printf '%s\n' "$out" | grep -q 'ENVIRONMENT_UNREADY: profile PROFILE_MISMATCH' \
+            || { echo "::error::negative control did not report the shadowed PATH[0]"; exit 1; }
+          echo "negative control reported the legacy selection as required"
+
   # Deterministic proof that portable parallel shards + portable serial + Herdr
   # equal the complete tests/*.test.sh inventory with no missing or duplicates,
   # and that the portable serial CI shards partition that serial lane exactly.
@@ -64,10 +127,10 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install tasks-axi
+      - name: Install pinned tasks-axi
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
           tasks-axi --version
       - name: Run portable parallel shard 1
         run: |
@@ -101,10 +164,10 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install tasks-axi
+      - name: Install pinned tasks-axi
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
           tasks-axi --version
       - name: Run portable parallel shard 2
         run: |
@@ -158,10 +221,10 @@ jobs:
             exit 1
           }
           tmux -V
-      - name: Install tasks-axi for backlog-handoff delegation
+      - name: Install pinned tasks-axi for backlog-handoff delegation
         run: |
           set -eu
-          npm install -g tasks-axi
+          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)"
           tasks-axi --version
       - name: Run portable serial shard ${{ matrix.shard }}
         env:
@@ -389,7 +452,7 @@ jobs:
           }
 
           command -v npm >/dev/null || { echo "::error::npm is required to install tasks-axi"; exit 1; }
-          npm install -g tasks-axi@0.2.5 >/dev/null
+          npm install -g "tasks-axi@$(bin/fm-tool-profile.sh --pin tasks-axi)" >/dev/null
           PATH="$(npm prefix -g)/bin:$PATH"
           export PATH
           command -v tasks-axi >/dev/null || { echo "::error::tasks-axi is required for the public-followup bash 3.2 register regression"; exit 1; }

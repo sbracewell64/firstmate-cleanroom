@@ -12,7 +12,7 @@
 #   fm-nm-observe.sh refresh  <task-id> [--accept-daemon-reset]
 #   fm-nm-observe.sh receipt  <task-id>
 #   fm-nm-observe.sh finalize <task-id>
-#   fm-nm-observe.sh reconcile [--startup | --now]
+#   fm-nm-observe.sh reconcile [--startup | --now] [--peek]
 #   fm-nm-observe.sh --help
 #
 # Why. Every managed no-mistakes launch in this home must carry a durable
@@ -158,14 +158,25 @@
 #             home whose only managed tasks are unenrolled reports them as
 #             UNENROLLED without querying the inventory; the BASELINE is
 #             recorded on the first pass that actually read the inventory.
+#             Every uncovered inventory row is reported once per run id even
+#             when several worktrees of one repository were queried, because
+#             the daemon's table is repository-wide.
 #             Cadence: at most once per FM_NM_OBSERVE_SECS (default 900) per
 #             home unless --startup or --now; aggregate budget
 #             FM_NM_OBSERVE_BUDGET_SECS (default 10) across every query, each
-#             bounded by FM_NM_OBSERVE_TIMEOUT (default 8). Wired into the
-#             locked session start (bin/fm-session-start.sh) with --startup and
-#             into the watcher's poll loop (bin/fm-watch.sh) beside the
-#             inactive-outcome scan, which raises `check: nm-observe` when a
-#             line is printed.
+#             bounded by FM_NM_OBSERVE_TIMEOUT (default 8).
+#             --peek computes and prints exactly what --now would against the
+#             current watermark but never rewrites it (no baseline seeding, no
+#             mark advanced; only the cursor's timestamp is refreshed so the
+#             cadence gate keeps spacing the queries), so the findings are
+#             still there for the consuming pass. Wired into the locked session
+#             start (bin/fm-session-start.sh) with --startup, which commits the
+#             cursor because its lines are presented in the digest, and into
+#             the watcher's poll loop (bin/fm-watch.sh) beside the
+#             inactive-outcome scan as the non-consuming `reconcile --peek`,
+#             which raises `check: nm-observe` when a line is printed; the
+#             `reconcile --now` firstmate then runs prints the identical lines
+#             and commits the cursor.
 #
 # Exit codes: 0 done; 1 typed refusal (NOT_MANAGED, MISSING_BINDING,
 # PREFLIGHT_REFUSED, DAEMON_RESET, RUN_BOUND); 2 usage or an unreadable record.
@@ -204,7 +215,7 @@ usage() {
 
 die_usage() {
   echo "error: $1" >&2
-  echo "usage: fm-nm-observe.sh enrol|launch|bind|refresh|receipt|finalize <task-id> [flags] | reconcile [--startup|--now] | --help" >&2
+  echo "usage: fm-nm-observe.sh enrol|launch|bind|refresh|receipt|finalize <task-id> [flags] | reconcile [--startup|--now] [--peek] | --help" >&2
   exit 2
 }
 
@@ -782,12 +793,15 @@ do_finalize() {  # <task-id>
 RECON_LINES=
 RECON_MARKS=
 # Record <line> under <key> in this pass's watermark and print it only when the
-# watermark did not already hold the same key and digest. "silent" records the
+# watermark did not already hold the same key and digest; a key already
+# recorded in this pass (the same run row read from two worktrees of one
+# repository) is not recorded or printed again. "silent" records the
 # mark without ever printing (the baseline), so an unchanged row stays quiet on
 # every later pass and a changed one is printed once. An age is presentation,
 # not a change, so it is left out of the digest.
 recon_emit() {  # <key> <line> [silent]
   local key=$1 line=$2 digest
+  ! printf '%s' "$RECON_MARKS" | cut -f1 | grep -qxF -- "$key" || return 0
   digest=$(printf '%s' "$line" | sed 's/ age=[0-9]*s//' | cksum | awk '{print $1}')
   RECON_MARKS="${RECON_MARKS}${key}"$'\t'"${digest}"$'\n'
   [ "${3:-}" != silent ] || return 0
@@ -817,8 +831,8 @@ worker_alive() {  # <meta> -> alive|dead|unknown
   fi
 }
 
-do_reconcile() {  # <startup 0|1> <now 0|1>
-  local startup=$1 force=$2 deadline meta id record dir wt rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
+do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
+  local startup=$1 force=$2 peek=$3 deadline meta id record dir wt rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
   local any=0 reads_ok=0
   for record in "$STATE"/*.nm-observe; do
     [ -f "$record" ] || continue
@@ -916,9 +930,13 @@ do_reconcile() {  # <startup 0|1> <now 0|1>
     done <<< "$WM_OLD"
   fi
   reconcile_daemon_identity
-  printf '%s' "$RECON_MARKS" > "$WATERMARK.tmp.$$"
-  chmod 0600 "$WATERMARK.tmp.$$"
-  mv -f -- "$WATERMARK.tmp.$$" "$WATERMARK"
+  if [ "$peek" -eq 1 ]; then
+    [ ! -f "$WATERMARK" ] || touch -- "$WATERMARK" 2>/dev/null || true
+  else
+    printf '%s' "$RECON_MARKS" > "$WATERMARK.tmp.$$"
+    chmod 0600 "$WATERMARK.tmp.$$"
+    mv -f -- "$WATERMARK.tmp.$$" "$WATERMARK"
+  fi
   fm_lock_release "$WATERMARK_LOCK"
   [ -z "$RECON_LINES" ] || printf '%s' "$RECON_LINES"
   return 0
@@ -1066,15 +1084,17 @@ esac
 if [ "$VERB" = reconcile ]; then
   STARTUP=0
   NOW=0
+  PEEK=0
   for a in "$@"; do
     case "$a" in
       --startup) STARTUP=1 ;;
       --now) NOW=1 ;;
+      --peek) PEEK=1 ;;
       *) die_usage "unknown reconcile flag $a" ;;
     esac
   done
   mkdir -p "$STATE"
-  do_reconcile "$STARTUP" "$NOW"
+  do_reconcile "$STARTUP" "$NOW" "$PEEK"
   exit 0
 fi
 

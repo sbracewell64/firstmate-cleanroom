@@ -40,7 +40,8 @@ COVERED means the obligation is created or advanced by the path's own owner befo
 
 - `bin/fm-session-start.sh` runs `reconcile --startup` on the locked path immediately after the inactive-outcome scan and prints any findings under a labeled line; a read-only session runs nothing.
 - Both seams scan every task record, so `UNENROLLED` is raised for a managed task with no obligation even before the home holds its first obligation, while a home with neither stays silent and never queries.
-- `bin/fm-watch.sh` runs `reconcile` on every poll beside the inactive-outcome scan; the owner's cadence and budget keep quiet cycles free, and a printed finding raises `check: nm-observe`, which AGENTS.md section 8 routes to the same command and its printed heals.
+- `bin/fm-watch.sh` runs the non-consuming `reconcile --peek` on every poll beside the inactive-outcome scan; the owner's cadence and budget keep quiet cycles free, the peek never advances the presentation cursor, and a printed finding raises `check: nm-observe`, which AGENTS.md section 8 routes to `reconcile --now`, the pass that prints the identical lines, commits the cursor, and names the heals.
+- Rows the daemon's repository-wide table serves to several worktrees of one repository are reported once per run id.
 - The captured eval corpus (`eval.capture_provenance`, `eval.auto_capture`) is review evidence and is never counted as launch coverage; every receipt says so.
 
 ## Records

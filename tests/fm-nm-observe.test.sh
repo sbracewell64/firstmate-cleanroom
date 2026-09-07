@@ -339,7 +339,19 @@ make_task t3 ship no-mistakes "$WT3"
 "$OBSERVE" launch t3 --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "t3 launch"
 RUN3=01RUN3CCCCCCCCCCCCCCCCCCCC
 FM_FAKE_AXI_STATUS=$(axi_status_toon fm/t3 "$(printf '%s\tfm/t3\trunning\t%s\t\n01ORPHAN\tfm/unknown-home\trunning\tabcdef12\t\n%s\tfm/t1\trunning\t%s\t\n%s\tfm/t1\tcompleted\t%s\t\n01AAA\tfm/other\tcompleted\tdeadbee1\thttps://example.invalid/pr/1' "$RUN3" "${HEAD3:0:8}" "$RUN2" "$SHORT1B" "$RUN1" "$SHORT1")")
+# The watcher's peek prints the finding without consuming it: the watermark
+# stays byte-identical, the consuming --now prints the identical lines, and
+# only that pass advances the cursor.
+cp "$STATE/.nm-observe-watermark" "$TMP_ROOT/wm-before-peek"
+peek=$("$OBSERVE" reconcile --peek --now 2>&1); rc=$?
+expect_code 0 "$rc" "peek runs"
+assert_contains "$peek" "UNBOUND_RUN task=t3 run=$RUN3" "peek prints the new finding"
+cmp -s "$STATE/.nm-observe-watermark" "$TMP_ROOT/wm-before-peek" || fail "peek rewrote the watermark"
+peek2=$("$OBSERVE" reconcile --peek --now 2>&1)
+[ "$peek2" = "$peek" ] || fail "a second peek prints the same lines, got:"$'\n'"$peek2"
 out=$("$OBSERVE" reconcile --now 2>&1)
+[ "$out" = "$peek" ] || fail "the consuming pass prints exactly what the peek printed, got:"$'\n'"$out"$'\n'"--- peek ---"$'\n'"$peek"
+cmp -s "$STATE/.nm-observe-watermark" "$TMP_ROOT/wm-before-peek" && fail "the consuming pass did not advance the watermark"
 assert_contains "$out" "UNBOUND_RUN task=t3 run=$RUN3" "run created but not bound is a typed gap"
 assert_contains "$out" "bind t3 --run $RUN3" "gap names the exact heal"
 FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon "$RUN3" fm/t3 running "${HEAD3:0:8}" "")
@@ -571,7 +583,33 @@ pass "reconcile: the runs table of a real axi status capture parses in both head
 out=$("$OBSERVE" reconcile 2>&1)
 [ -z "$out" ] || fail "cadence-gated reconcile prints nothing"
 [ ! -s "$NM_LOG" ] || fail "cadence-gated reconcile did not query"
-pass "reconcile: cadence gate honoured"
+out=$("$OBSERVE" reconcile --peek 2>&1)
+[ -z "$out" ] || fail "cadence-gated peek prints nothing"
+[ ! -s "$NM_LOG" ] || fail "cadence-gated peek did not query"
+pass "reconcile: cadence gate honoured, with and without --peek"
+
+# --- two worktrees of one repository read one repository-wide table ------------------
+
+MULTI="$TMP_ROOT/multi-home"
+mkdir -p "$MULTI/state" "$MULTI/data"
+REPO="$TMP_ROOT/multi-repo"
+make_worktree "$REPO" fm/ma
+git -C "$REPO" worktree add -q -b fm/mb "$TMP_ROOT/multi-wt-b" >/dev/null 2>&1 || fail "second worktree"
+fm_write_meta "$MULTI/state/ma.meta" "window=firstmate:fm-ma" "endpoint_task_id=ma" "worktree=$REPO" "project=$REPO" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+fm_write_meta "$MULTI/state/mb.meta" "window=firstmate:fm-mb" "endpoint_task_id=mb" "worktree=$TMP_ROOT/multi-wt-b" "project=$REPO" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+multi_observe() { FM_HOME="$MULTI" FM_STATE_OVERRIDE="$MULTI/state" FM_DATA_OVERRIDE="$MULTI/data" "$OBSERVE" "$@"; }
+multi_observe launch ma --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "ma launch"
+multi_observe launch mb --profile-json "$PROFILE_OK" >/dev/null 2>&1 || fail "mb launch"
+: > "$NM_LOG"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/ma "$(printf '01FOREIGN\tfm/elsewhere\trunning\tfeedface\t')")
+out=$(multi_observe reconcile --now 2>&1)
+[ "$(grep -c '^axi status$' "$NM_LOG")" = 2 ] || fail "both worktrees were queried: $(cat "$NM_LOG")"
+assert_contains "$out" "BASELINE runs=1" "the repository-wide row counts once across two worktrees"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/ma "$(printf '01FOREIGN2\tfm/elsewhere\trunning\tfeedfac2\t\n01FOREIGN\tfm/elsewhere\trunning\tfeedface\t')")
+out=$(multi_observe reconcile --now 2>&1)
+[ "$(printf '%s\n' "$out" | grep -c 'ORPHAN_RUN run=01FOREIGN2 ')" = 1 ] || fail "a new foreign row is reported exactly once across two worktrees, got:"$'\n'"$out"
+assert_not_contains "$out" "ORPHAN_RUN run=01FOREIGN " "the baseline row stays quiet"
+pass "reconcile: rows served to several worktrees of one repository are reported once per run id"
 
 # --- negative: the observer never sent a mutating verb --------------------------
 

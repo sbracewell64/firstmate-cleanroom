@@ -660,6 +660,8 @@ test_missing_shellcheck_fails_closed() {
   rc=0
   out=$(PATH="$fakebin" CI=true GITHUB_ACTIONS=true "$LINT" 2>&1) || rc=$?
   [ "$rc" -eq 1 ] || fail "missing ShellCheck expected exit 1, got $rc"$'\n'"$out"
+  assert_contains "$out" "ENVIRONMENT_UNREADY: shellcheck ABSENT" \
+    "missing ShellCheck must be one typed ENVIRONMENT_UNREADY line, not a lint verdict"
   assert_contains "$out" "ShellCheck not found" \
     "missing ShellCheck did not name the required linter"
   assert_contains "$out" "$REQUIRED" \
@@ -687,6 +689,9 @@ SH
   rc=0
   out=$(PATH="$fakebin:$PATH" "$LINT" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "fm-lint.sh accepted a shellcheck version other than the pin"$'\n'"$out"
+  assert_contains "$out" "ENVIRONMENT_UNREADY: shellcheck PINNED_MISMATCH" \
+    "a non-pinned ShellCheck must be one typed ENVIRONMENT_UNREADY line naming the state"
+  assert_contains "$out" "fm-install-shellcheck.sh" "the mismatch must name the owner action"
   assert_contains "$out" "$REQUIRED" "fm-lint.sh did not name the required version on mismatch"
   assert_contains "$out" "0.9.9" "fm-lint.sh did not report the resolved (wrong) version"
   pass "fm-lint.sh refuses to lint under a non-pinned ShellCheck version"

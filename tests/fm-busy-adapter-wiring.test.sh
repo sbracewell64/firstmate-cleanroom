@@ -14,6 +14,7 @@ set -u
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+fm_test_require_node_ts   # this suite imports .ts sources through plain node
 
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
 

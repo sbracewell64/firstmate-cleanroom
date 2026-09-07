@@ -253,8 +253,11 @@ if [ "$LIST_FILES" -eq 1 ]; then
   exit 0
 fi
 
+# A missing or wrong-version ShellCheck is an environment fact, never a lint
+# verdict: it is reported as one typed ENVIRONMENT_UNREADY line naming the
+# owner action (the same line bin/fm-tool-profile.sh emits) and the gate fails.
 if ! command -v shellcheck >/dev/null 2>&1; then
-  printf 'fm-lint.sh: ShellCheck not found; install ShellCheck %s with bin/fm-install-shellcheck.sh <destination-directory> and put that directory on PATH.\n' \
+  printf 'ENVIRONMENT_UNREADY: shellcheck ABSENT (ShellCheck not found); owner: install ShellCheck %s with bin/fm-install-shellcheck.sh <destination-directory> and put that directory on PATH.\n' \
     "$REQUIRED_SHELLCHECK" >&2
   exit 1
 fi
@@ -267,7 +270,7 @@ fi
 resolved=$("$SHELLCHECK_BIN" --version | awk '/^version:/ {print $2; exit}')
 printf 'fm-lint.sh: ShellCheck %s (pinned %s)\n' "$resolved" "$REQUIRED_SHELLCHECK" >&2
 if [ "$resolved" != "$REQUIRED_SHELLCHECK" ]; then
-  printf 'fm-lint.sh: ShellCheck %s required for CI parity, found %s. Install %s with bin/fm-install-shellcheck.sh <destination-directory>.\n' \
+  printf 'ENVIRONMENT_UNREADY: shellcheck PINNED_MISMATCH (ShellCheck %s required for CI parity, found %s); owner: install %s with bin/fm-install-shellcheck.sh <destination-directory> and put that directory ahead of the found copy on PATH.\n' \
     "$REQUIRED_SHELLCHECK" "$resolved" "$REQUIRED_SHELLCHECK" >&2
   exit 1
 fi

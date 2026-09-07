@@ -25,6 +25,7 @@ fi
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_test_require_node_ts   # this suite imports .ts sources through plain node
 
 unset NO_MISTAKES_GATE
 

@@ -1,0 +1,131 @@
+# Red-vs-green: base ae3e38e resolver vs target ab50b30 resolver, same fixture
+# (fm-continuation-resolve.sh resolve --programme <fixture> --root <fixture-dir>)
+
+[base] multi-token dependency entry
+  filter: .steps[2].depends_on = ["step-a step-b"]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] multi-token dependency entry
+  filter: .steps[2].depends_on = ["step-a step-b"]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends_on entry 0 'step-a step-b' contains whitespace and so does not name exactly one step id
+  stdout: 
+
+[base] empty-string dependency entry
+  filter: .steps[2].depends_on = [""]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] empty-string dependency entry
+  filter: .steps[2].depends_on = [""]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends_on entry 0 is an empty string; each entry names exactly one step id
+  stdout: 
+
+[base] whitespace-only dependency entry
+  filter: .steps[2].depends_on = ["   "]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] whitespace-only dependency entry
+  filter: .steps[2].depends_on = ["   "]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends_on entry 0 '   ' is whitespace-only; each entry names exactly one step id
+  stdout: 
+
+[base] unknown step (existing refusal, must stay)
+  filter: .steps[2].depends_on = ["step-z"]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends on an unknown step step-z
+  stdout: 
+[target] unknown step (existing refusal, must stay)
+  filter: .steps[2].depends_on = ["step-z"]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends on an unknown step step-z
+  stdout: 
+
+[base] non-string dependency entry (number)
+  filter: .steps[2].depends_on = ["step-a", 42]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends on an unknown step 42
+  stdout: 
+[target] non-string dependency entry (number)
+  filter: .steps[2].depends_on = ["step-a", 42]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends_on entry 1 must be a step id string (got number 42)
+  stdout: 
+
+[base] depends_on member that is a boolean
+  filter: .steps[2].depends_on = false
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] depends_on member that is a boolean
+  filter: .steps[2].depends_on = false
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) depends_on must be a step id or an array of step ids (got boolean)
+  stdout: 
+
+[base] steps[] entry that is not an object
+  filter: .steps[1] = "step-b"
+  exit=5
+  stderr: jq: error (at /tmp/nmf2-kcoJBv/fx/programme.json:41): Cannot index string with string "id"
+  stdout: 
+[target] steps[] entry that is not an object
+  filter: .steps[1] = "step-b"
+  exit=1
+  stderr: fm-continuation-resolve: steps[1] must be an object (got string) in /tmp/nmf2-kcoJBv/fx/programme.json
+  stdout: 
+
+[base] accept entry that is empty string
+  filter: .steps[2].terminal_predicate.accept = [""]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] accept entry that is empty string
+  filter: .steps[2].terminal_predicate.accept = [""]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) terminal_predicate.accept entry 0 is an empty string; each entry names exactly one outcome
+  stdout: 
+
+[base] accept entry with whitespace
+  filter: .steps[2].terminal_predicate.accept = ["PROVED COMPLETE"]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] accept entry with whitespace
+  filter: .steps[2].terminal_predicate.accept = ["PROVED COMPLETE"]
+  exit=1
+  stderr: fm-continuation-resolve: steps[2] (step-c) terminal_predicate.accept entry 0 'PROVED COMPLETE' contains whitespace and so does not name exactly one outcome
+  stdout: 
+
+[base] valid: absent depends_on (control)
+  filter: del(.steps[2].depends_on)
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] valid: absent depends_on (control)
+  filter: del(.steps[2].depends_on)
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+
+[base] valid: repeated + every earlier (control)
+  filter: .steps[2].depends_on = ["step-a","step-b","step-a"]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+[target] valid: repeated + every earlier (control)
+  filter: .steps[2].depends_on = ["step-a","step-b","step-a"]
+  exit=0
+  stderr: 
+  stdout: {"next_action":"step-a","classification":"SELF_HANDLE"}
+
+# Parser-error propagation
+[base] unparseable programme
+  exit=1
+  stderr: fm-continuation-resolve: programme file is not a valid programme (programme_id, schema, steps[] required): /tmp/nmf2-kcoJBv/fx/programme.json
+[target] unparseable programme
+  exit=1
+  stderr: fm-continuation-resolve: programme file is not valid JSON: /tmp/nmf2-kcoJBv/fx/programme.json: jq: parse error: Unfinished JSON term at EOF at line 1, column 26

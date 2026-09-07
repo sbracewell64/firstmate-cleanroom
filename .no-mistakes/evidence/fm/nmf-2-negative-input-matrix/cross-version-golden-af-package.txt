@@ -1,0 +1,239 @@
+# Cross-version golden: programmes/cleanroom-af-package/programme.json, runtime excluded
+# base ae3e38e resolver vs target ab50b30 resolver (tracked programme, root = repo)
+[base] exit=0 stderr=
+[target] exit=0 stderr=
+# diff of jq -S 'del(.runtime)' outputs (empty = identical):
+IDENTICAL
+# target typed result (runtime excluded):
+{
+  "accountable_owner": "engineering: the qualification or landing owner that produces the bound completion evidence (no-mistakes, the exact-head merge owner, or the control ruling owner); never the captain",
+  "action_generation": 1,
+  "applicability": {
+    "action": "architecture-re-review-ruling",
+    "action_generation": 1,
+    "answered_facts": [],
+    "current": null,
+    "evidence": {
+      "outcome": "PROCEED_WITH_CONDITIONS",
+      "path": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX/programmes/cleanroom-af-package/evidence/architecture-re-review-ruling.json",
+      "reason_code": "OWNER_EVIDENCE_SOURCE_UNREADABLE",
+      "sha256": "2f14efa3cc887f19503daa68545d8b1f867e8b06f0a54bbf10acd9ba9e826efa",
+      "status": "CNO"
+    },
+    "gating_holds": [],
+    "predecessor": null,
+    "programme_generation": "fm-af-programme/v1",
+    "programme_id": "cleanroom-af-package",
+    "programme_sha256": "2b46573d56a0ea1f6bc79f7072725c890c0466a61c04a3abd6c059cdc721d320",
+    "today": "2026-09-07"
+  },
+  "applicability_digest": "64a21f58560742f1dcf7337b68ecff83060410ef461c56566b81978cf443b4a3",
+  "authority_state": "CNO",
+  "basis_refs": [
+    {
+      "kind": "programme_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621 (Captain: bounded A-F implementation authorization)"
+    },
+    {
+      "kind": "programme_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623 (Browser Sol: post-Proof-B architecture re-review final disposition; A-F packet)"
+    },
+    {
+      "kind": "programme_grant",
+      "ref": "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302 (Browser Sol: FM-PROGRAMME-BINDING-20260906 captain-authorized repair direction)"
+    }
+  ],
+  "binding": {
+    "commission": {
+      "parent": "FM-PROGRAMME-BINDING-20260906 under FM-HANDOFF-LIVENESS-2026-09-06 / FM-CONTROL-REQUEST-REPAIR-2026-09-06",
+      "work_generation": 1,
+      "work_id": "cleanroom-af-package"
+    },
+    "consumer": {
+      "contract": "fm-continuation-resolution/v1",
+      "projection": "fm-programme-projection/v1"
+    },
+    "evidence_kinds": [
+      "latest_attempt_disposition_outcome_in",
+      "accepted_owner_evidence"
+    ],
+    "grant": {
+      "authority": "CAPTAIN",
+      "capture": {
+        "bytes": 6989,
+        "captured_at": "2026-09-06T20:05:00Z",
+        "digest_basis": "fetched_bytes",
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554812621",
+        "sha256": "eef4ec22989763682538cc56259cd3f129631c43d59e3695f17a37e20caf1900"
+      },
+      "id": 5554812621,
+      "owner": "control_grant",
+      "posted_at": "2026-09-05T21:11:42Z",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554812621",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554812621"
+    },
+    "present": true,
+    "programme_generation": "fm-af-programme/v1",
+    "published_rulings_pending_consumption": [
+      {
+        "capture": {
+          "bytes": 9496,
+          "captured_at": "2026-09-06T20:05:00Z",
+          "digest_basis": "fetched_bytes",
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561634429",
+          "sha256": "8c09a6722077840185959f9f25745d35a70ad698ad3d3fa6f6644ae306f55bd7"
+        },
+        "id": 5561634429,
+        "in_reply_to": "fscr2-b52a749156e3fc9a2dadd126a08af682",
+        "ref": "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561634429",
+        "ruling_id": "sol-ruling-f-programme-binding-20260906-b",
+        "state": "published on the venue; consumption through the fm-sol-control/v2 consume path, its receipt, and its applicability are a separate observation this programme does not assert",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/31#issuecomment-5561634429"
+      }
+    ],
+    "repair_authorization": [
+      {
+        "capture": {
+          "bytes": 10515,
+          "captured_at": "2026-09-06T20:05:00Z",
+          "digest_basis": "fetched_bytes",
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561595302",
+          "sha256": "595f0ff7f043b78860c78e74b558b0254f6cc78a514c18a98f20d20b3feb2561"
+        },
+        "id": 5561595302,
+        "kind": "direction",
+        "ref": "sbracewell64/firstmate-cleanroom-control#31#issuecomment-5561595302",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/31#issuecomment-5561595302"
+      },
+      {
+        "capture": {
+          "bytes": 5739,
+          "captured_at": "2026-09-06T20:05:00Z",
+          "digest_basis": "fetched_bytes",
+          "kind": "api_capture",
+          "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5561657082",
+          "sha256": "8cd335587d5a49f45948daab5ca2fdf69682808eee1b191db58777233052b86e"
+        },
+        "id": 5561657082,
+        "kind": "acceptance-clarification",
+        "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5561657082",
+        "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5561657082"
+      }
+    ],
+    "ruling": {
+      "capture": {
+        "bytes": 11949,
+        "captured_at": "2026-09-06T20:05:00Z",
+        "digest_basis": "fetched_bytes",
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554585623",
+        "sha256": "dde295b1a85d1242e523be9121449093db4bf93f1b406ae077540c49183a3469"
+      },
+      "decision": "PROCEED_WITH_CONDITIONS",
+      "id": 5554585623,
+      "owner": "control_ruling",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554585623"
+    },
+    "supersedes_for_this_use": [
+      {
+        "path": "artifacts/control/programme-recommendation/programme.json",
+        "programme_id": "cleanroom-requalification",
+        "role": "historical recommendation programme retained unchanged as evidence; its proof-a -> proof-b -> architecture-re-review -> phase-manager-pilot representation is superseded for the A-F package by this programme, and its adverse Proof-B evidence stays where it is",
+        "sha256": "8f2b203bb1d70fdb862ed037dc9ad02f3ea1eba7970f8d7be7bf7d93e922a1c2"
+      }
+    ]
+  },
+  "classification": "BROWSER_SOL",
+  "cno": {
+    "detail": "bound source artifacts/proofs/proof-b/attempt-3/disposition.json is not readable under root /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX",
+    "reason_code": "OWNER_EVIDENCE_SOURCE_UNREADABLE"
+  },
+  "completed": [],
+  "evidence": {
+    "candidate": {
+      "proof_b_head": "bcf23f03c2da9e9788578b3751075ae5be018a27",
+      "proof_b_landing": "sbracewell64/fm-cleanroom-proof-b3 PR #1 merged"
+    },
+    "captures": [
+      {
+        "bytes": 11949,
+        "captured_at": "2026-09-06T20:05:00Z",
+        "digest_basis": "fetched_bytes",
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554585623",
+        "sha256": "dde295b1a85d1242e523be9121449093db4bf93f1b406ae077540c49183a3469"
+      },
+      {
+        "bytes": 6989,
+        "captured_at": "2026-09-06T20:05:00Z",
+        "digest_basis": "fetched_bytes",
+        "kind": "api_capture",
+        "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5554812621",
+        "sha256": "eef4ec22989763682538cc56259cd3f129631c43d59e3695f17a37e20caf1900"
+      }
+    ],
+    "detail": "bound source artifacts/proofs/proof-b/attempt-3/disposition.json is not readable under root /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX",
+    "evidence_id": "architecture-re-review-ruling-5554585623",
+    "generation": 1,
+    "outcome": "PROCEED_WITH_CONDITIONS",
+    "owner": {
+      "kind": "control_ruling",
+      "posted_at": "2026-09-05T20:30:43Z",
+      "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5554585623",
+      "ruler": "browser-sol (captain-delegated)",
+      "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5554585623"
+    },
+    "path": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX/programmes/cleanroom-af-package/evidence/architecture-re-review-ruling.json",
+    "policy": {
+      "digest": "42042e4d1385fae2a239283312e819bc04ce4867a44ccf5faa0113a9f5d2a852",
+      "id": "architecture-review-acceptance-v1",
+      "path": "artifacts/control/policy/architecture-review-acceptance-v1.md"
+    },
+    "qualification": null,
+    "reason_code": "OWNER_EVIDENCE_SOURCE_UNREADABLE",
+    "sha256": "2f14efa3cc887f19503daa68545d8b1f867e8b06f0a54bbf10acd9ba9e826efa",
+    "sources": [
+      {
+        "kind": "local_file",
+        "outcome": "CNO_AT_B-S9",
+        "path": "artifacts/proofs/proof-b/attempt-3/disposition.json",
+        "sha256": "619f6bfd82ae8916cdbfcb38da68d662527b21a3bdf3996257c2e62d2c16ef11"
+      },
+      {
+        "kind": "local_file",
+        "outcome": null,
+        "path": "artifacts/control/policy/architecture-review-acceptance-v1.md",
+        "sha256": "42042e4d1385fae2a239283312e819bc04ce4867a44ccf5faa0113a9f5d2a852"
+      }
+    ],
+    "status": "CNO",
+    "verifier": {
+      "observation_class": "read-only capture; no ruling, hold, merge, or acceptance was produced by this record",
+      "observed_at": "2026-09-06T20:05:00Z",
+      "tool": "gh api (GitHub REST) read by the bounded worker af-programme-binding; digests recomputed with sha256sum over the fetched bytes"
+    }
+  },
+  "holds": {
+    "considered": 0,
+    "gating": [],
+    "ignored": []
+  },
+  "material_identity": "f0e06c44a0a8b07a066c83897ac30d772053ef59905a57ecc26c2083f0ae349d",
+  "materialize": [],
+  "next_action": "architecture-re-review-ruling",
+  "next_action_title": "completed post-Proof-B architecture re-review (predecessor obligation)",
+  "programme": {
+    "generation": "fm-af-programme/v1",
+    "id": "cleanroom-af-package",
+    "path": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX/programmes/cleanroom-af-package/programme.json",
+    "root": "/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX",
+    "sha256": "2b46573d56a0ea1f6bc79f7072725c890c0466a61c04a3abd6c059cdc721d320"
+  },
+  "reason_code": "OWNER_EVIDENCE_SOURCE_UNREADABLE",
+  "schema": "fm-continuation-resolution/v1",
+  "why": "The completion evidence bound to architecture-re-review-ruling could not be read (bound source artifacts/proofs/proof-b/attempt-3/disposition.json is not readable under root /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M1X54VJ6CGYTAKVPYMYD3KVX); the continuation is unproven and goes to Browser Sol, never the captain."
+}

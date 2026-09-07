@@ -1,0 +1,42 @@
+ok - a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once
+# fm-continuation-resolve.test.sh: all assertions passed
+FM_TEST_END 2026-09-07T05:37:55Z tests/fm-continuation-resolve.test.sh exit=0 duration_ms=611549 gate_skip=false
+FM_TEST_BEGIN 2026-09-07T05:37:55Z tests/fm-programme-projection.test.sh family=unclassified expected_gate_skip=none
+ok - an authorized continuation is composed verbatim from the resolver with its own phase fields added
+ok - a bound reserved-axis captain hold moves the resolver to CAPTAIN and the substrate follows
+ok - a bound ruling wait moves the resolver to BROWSER_SOL and the substrate follows
+ok - a complete programme composes as complete with null phase and still reports bounds
+ok - the applicability tuple binds phase, generations, worker epoch, candidate head and tree, predecessor, and hold/grant identity
+ok - a moved candidate head or tree makes the prior tuple non-matching while every other member holds
+ok - a new worker epoch makes the prior tuple non-matching
+ok - a new attempt makes the prior tuple non-matching
+ok - a gating hold changes the tuple and a lifted hold restores the never-held identity
+ok - a superseded grant makes the prior tuple non-matching and the composed authority follows the resolver
+ok - an absent worktree directory yields a null candidate head and tree
+ok - a present worktree whose head and tree git cannot read is refused rather than nulled
+ok - the same directory, once readable, binds its head and tree
+ok - a plain directory nested inside a repository is refused rather than binding the enclosing head
+ok - a linked git worktree resolves to its own head and tree
+ok - a programme carrying duplicate step ids is refused, naming the id
+ok - two calls over unchanged canonical state are identical and persist no store
+ok - every backlog access was a read (list/show); no hold, add, done, or unhold was issued
+ok - reading candidate identity leaves the worktree untouched
+ok - with no configured ceiling the ladder floor is returned with the enforcer named and no model or effort choice
+ok - a configured programme ceiling and a step override are returned as rungs with their source named
+ok - an off-ladder, over-max, or malformed ceiling is refused rather than selected around
+ok - configured dispatch profiles are reported, never resolved into a model or effort
+ok - returning delegation bounds spawns nothing
+ok - summary prints the one-line typed token
+ok - the substrate refuses --materialize because it holds no hold-creating authority
+ok - with no programme configured the substrate exits 3 silently, mirroring the resolver
+ok - the substrate composes an owner-evidence programme unchanged: authority fields equal the resolver's and an unbound slice is REQUIRED_BINDING_MISSING/CNO
+ok - with A-E accepted the substrate projects the pilot with its concurrency-2 bound returned, not enforced, and launches nothing
+ok - the sibling owner-evidence fixture is refused through the projection when a dependency entry is malformed, never composed to an empty tuple
+# fm-programme-projection.test.sh: all assertions passed
+FM_TEST_END 2026-09-07T05:39:18Z tests/fm-programme-projection.test.sh exit=0 duration_ms=82754 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=694383
+FM_TEST_SUMMARY_FAMILY family=unclassified count=2 duration_ms=694303 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-continuation-resolve.test.sh duration_ms=611549
+FM_TEST_SLOWEST rank=2 script=tests/fm-programme-projection.test.sh duration_ms=82754
+
+[exited with code 0]

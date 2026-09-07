@@ -1,0 +1,8 @@
+# .no-mistakes.yaml parsed as a typed model (python yaml), checked against the runtime constraints the intent cites
+  path='bin/fm-continuation*.sh' instructions_bytes=344
+  path='bin/fm-programme-presentation-lib.sh' instructions_bytes=210
+  entries=2 total_bytes=613 (<=32 entries, <=16384 bytes)
+  top-level keys base=['ci', 'commands', 'disable_project_settings', 'document', 'test'] target=['ci', 'commands', 'disable_project_settings', 'document', 'review', 'test']
+  auto_fix present in base: False; in target: False; equal: True
+  every non-review key identical to base: True {'test': True, 'disable_project_settings': True, 'document': True, 'commands': True, 'ci': True}
+  OK

@@ -1,0 +1,41 @@
+# tests/fm-continuation-resolve.test.sh, only test_af_structure_and_binding_refusals (the refuse_load matrix + golden), run against this branch
+ok - refused at load: duplicate step ids
+ok - refused at load: unsupported evidence kind
+ok - refused at load: dependency on a later step (order contradiction)
+ok - refused at load: dependency on itself (cycle)
+ok - refused at load: dependency on an unknown step
+ok - refused at load: regex-shaped dependency never matches a real step
+ok - refused at load: dot-shaped dependency never matches a real step
+ok - refused at load: dependency entry naming two steps
+ok - refused at load: dependency entry that is an empty string
+ok - refused at load: dependency entry that is whitespace-only
+ok - refused at load: dependency entry joined by a tab
+ok - refused at load: bare-string dependency naming two steps
+ok - refused at load: bare-string dependency that is empty
+ok - refused at load: dependency entry that is a number
+ok - refused at load: dependency entry that is null
+ok - refused at load: dependency entry that is an object
+ok - refused at load: dependency member that is a boolean
+ok - refused at load: dependency member that is a number
+ok - refused at load: dependency member that is an object
+ok - refused at load: step that is not an object
+ok - refused at load: accept entry that is an empty string
+ok - refused at load: accept entry naming two outcomes
+ok - refused at load: accept entry that is whitespace-only
+ok - refused at load: pinned candidate that is not an object
+ok - refused at load: accept list that is a string
+ok - refused at load: accept list that is empty
+ok - refused at load: accept list with a non-string entry
+ok - refused at load: accept list absent
+ok - refused at load: missing required binding
+ok - refused at load: consumer contract mismatch
+ok - refused at load: unsupported bound evidence kind
+ok - refused at load: binding does not cover a step kind
+ok - refused at load: binding generation mismatch
+ok - refused at load: binding without a programme generation
+ok - refused at load: owner step without an evidence path
+ok - refused at load: a programme file that does not parse, with the parser error propagated
+ok - accepted: every valid dependency spelling (string, one-element array, empty array, absent, null, repeated entry, every earlier step) resolves to the same typed result
+ok - a legacy proof-only programme resolves with REQUIRED_BINDING_MISSING printed by every reader, never a silent N/A
+# fm-continuation-resolve.test.sh: all assertions passed
+exit=0

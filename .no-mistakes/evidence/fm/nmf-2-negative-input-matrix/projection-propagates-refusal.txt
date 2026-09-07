@@ -1,0 +1,13 @@
+# End-to-end through the sibling consumer: bin/fm-programme-projection.sh project --programme <fixture> --root <dir>
+[valid control] exit=0
+  stderr: 
+  stdout(2335 bytes): {"schema":"fm-programme-projection/v1","next_action":"step-a"}
+
+[multi-token entry] exit=1
+  stderr: fm-programme-projection: resolver failed (exit 1): fm-continuation-resolve: steps[1] (step-b) depends_on entry 0 'step-a step-a' contains whitespace and so does not name exactly one step id
+  stdout(0 bytes): 
+
+[empty entry] exit=1
+  stderr: fm-programme-projection: resolver failed (exit 1): fm-continuation-resolve: steps[1] (step-b) depends_on entry 0 is an empty string; each entry names exactly one step id
+  stdout(0 bytes): 
+

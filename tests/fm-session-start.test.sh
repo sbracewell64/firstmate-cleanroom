@@ -744,6 +744,45 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+# --- digest: no-mistakes observation reconciliation seam --------------------
+# bin/fm-session-start.sh runs bin/fm-nm-observe.sh reconcile --startup on the
+# locked path and presents its typed lines under a labeled line. Regression
+# origin: NMF-OBS-1 (2026-09-06), the observation increment; the seam had no
+# executable proof. A managed no-mistakes ship task whose spawn never enrolled
+# an obligation is the cheapest finding (UNENROLLED never queries the daemon),
+# so the fixture needs no fake `no-mistakes` beyond the toolchain stub.
+
+test_digest_presents_nm_observation_findings_once() {
+  local rec root home fakebin out
+  rec=$(new_world nm-observe-seam)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'window=fm-sess:nm1\nendpoint_task_id=nm1\nkind=ship\nmode=no-mistakes\nharness=echo\nworktree=%s\nproject=%s\n' \
+    "$root" "$root" > "$home/state/nm1.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "no-mistakes observation reconciliation (typed owner: bin/fm-nm-observe.sh):" \
+    "the locked digest did not label the observation reconciliation section"
+  assert_contains "$out" "NM_OBSERVE: UNENROLLED task=nm1" \
+    "the digest did not report the unenrolled managed task"
+  assert_contains "$out" "heal: bin/fm-nm-observe.sh enrol nm1" \
+    "the digest line did not carry the exact enrol heal"
+  [ -f "$home/state/.nm-observe-watermark" ] \
+    || fail "the startup pass did not commit the observation cursor"
+
+  # The startup pass is the consuming one (its lines are presented here), so
+  # an unchanged finding stays quiet at the next session start.
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "NM_OBSERVE:" \
+    "an unchanged observation finding was re-reported at the next session start"
+  assert_not_contains "$out" "no-mistakes observation reconciliation" \
+    "the observation section was printed with nothing to report"
+  pass "locked session start presents observation findings once and commits the cursor"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -2529,6 +2568,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_digest_presents_nm_observation_findings_once
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock

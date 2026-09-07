@@ -173,6 +173,15 @@ TMP=
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
+# A promoted no-mistakes task now carries the observation obligation its
+# delivery contract implies (bin/fm-nm-observe.sh). Enrolment failing does not
+# undo the promotion; the reconcile pass reports the task as UNENROLLED.
+if [ "$MODE" = no-mistakes ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" enrol "$ID" --entrypoint promote >/dev/null 2>&1 \
+    || echo "warning: observation obligation for $ID was not enrolled; run bin/fm-nm-observe.sh enrol $ID" >&2
+fi
+
 HOME_Q=$(printf '%q' "$FM_HOME")
 INSTRUCTIONS_Q=$(printf '%q' "$INSTRUCTIONS")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"

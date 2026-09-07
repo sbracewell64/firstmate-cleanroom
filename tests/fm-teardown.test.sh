@@ -53,9 +53,12 @@ set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$ROOT/bin/fm-pr-lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
+OBSERVE="$ROOT/bin/fm-nm-observe.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
@@ -715,6 +718,13 @@ test_squash_merged_branch_deleted_allows() {
   append_pr_meta_for_current_head "$case_dir"
   pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  # The merged PR's poll has already published the merge (the marker its owner
+  # writes) and the task carries an observation obligation: the receipt teardown
+  # leaves behind must bind that publication before the marker is retired.
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    "$OBSERVE" enrol task-x1 --entrypoint spawn >/dev/null 2>&1 || fail "squash-merged: enrol obligation"
+  fm_pr_poll_merge_mark_notified "$case_dir/state" task-x1 github github.com example/repo 7 \
+    || fail "squash-merged: merge marker written by its owner"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -723,7 +733,12 @@ test_squash_merged_branch_deleted_allows() {
 
   expect_code 0 "$rc" "squash-merged: teardown should succeed when the PR is merged"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-merged: teardown printed a REFUSED line"
-  pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix)"
+  [ ! -e "$case_dir/state/task-x1.nm-observe" ] || fail "squash-merged: runtime obligation retired"
+  [ ! -e "$case_dir/state/task-x1.pr-poll-merge-notified" ] || fail "squash-merged: merge marker retired"
+  assert_grep "publication: merged:github:github.com:example/repo:7" "$case_dir/data/task-x1/nm-observation-receipt.md" \
+    "squash-merged: the surviving receipt binds the publication the marker carried"
+  assert_grep "finalized at" "$case_dir/data/task-x1/nm-observation-receipt.md" "squash-merged: receipt finalized"
+  pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix); receipt keeps the publication"
 }
 
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {

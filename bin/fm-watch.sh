@@ -79,6 +79,10 @@
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
+#   check: nm-observe      the non-consuming `bin/fm-nm-observe.sh reconcile
+#                          --peek` printed a new or changed no-mistakes coverage
+#                          finding; the cursor is left for firstmate's
+#                          `reconcile --now`, which prints the same lines
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> age=<seconds>s
 #                          the oldest valid row in an endpoint-recorded local
 #                          secondmate home's durable wake queue exceeded
@@ -1532,6 +1536,21 @@ while :; do
     fi
   else
     triage_log "inactive-outcome reconciliation unavailable"
+  fi
+
+  # The same loop owns the bounded no-mistakes observation cadence
+  # (bin/fm-nm-observe.sh reconcile --peek): silent for a home with no
+  # obligation and for unchanged inventory, so only a new or changed coverage
+  # finding wakes firstmate. The peek never advances the owner's cursor, so
+  # the `reconcile --now` firstmate runs on the wake prints the same lines.
+  nm_observe_out=
+  if nm_observe_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" reconcile --peek 2>/dev/null); then
+    if [ -n "$nm_observe_out" ]; then
+      wake "check: nm-observe"
+    fi
+  else
+    triage_log "no-mistakes observation reconciliation unavailable"
   fi
 
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).

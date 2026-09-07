@@ -378,6 +378,11 @@ jobs:
           if-no-files-found: warn
 
   # Aggregate per-lane timing into one summary artifact for critical-path review.
+  # Every job above that uploads an fm-test-timing-* artifact must be listed in
+  # needs (tests/fm-test-run.test.sh enforces it). The expected-lane manifest is
+  # bin/fm-test-run.sh --list-ci-lanes, the same owner the lane jobs take their
+  # lane names and serial shard count from, so a lane this aggregate never saw
+  # is reported as INCOMPLETE with its name rather than quietly left out.
   tests-timing-aggregate:
     name: Behavior timing aggregate
     runs-on: ubuntu-latest
@@ -398,16 +403,25 @@ jobs:
       - name: Build aggregate timing summary
         run: |
           set -eu
-          mkdir -p "$RUNNER_TEMP/fm-test"
-          shopt -s nullglob
-          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
-          if [ "${#inputs[@]}" -eq 0 ]; then
-            echo "::warning::no per-lane timing JSON found to aggregate"
-            exit 0
-          fi
+          mkdir -p "$RUNNER_TEMP/fm-test" "$RUNNER_TEMP/fm-test-aggregate"
+          # The download directory is passed whole: the aggregator resolves
+          # every fm-test-timing-*.json beneath it, including the Herdr lane's
+          # file nested inside its diagnostics bundle, validates each lane's
+          # identity, and refuses duplicates. A lane with no artifact (a
+          # cancelled job, a failed upload) fails this step by name.
+          expect=()
+          while IFS= read -r lane; do
+            [ -n "$lane" ] || continue
+            expect+=(--expect-lane "$lane")
+          done < <(bin/fm-test-run.sh --list-ci-lanes)
+          rc=0
           bin/fm-test-run.sh --aggregate-json \
             "$RUNNER_TEMP/fm-test/fm-test-timing-aggregate.json" \
-            "${inputs[@]}"
+            "${expect[@]}" "$RUNNER_TEMP/fm-test-aggregate" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the timing aggregate is INCOMPLETE or invalid (exit $rc); see the FM_TEST_AGGREGATE lines above"
+            exit "$rc"
+          fi
       - name: Upload aggregate timing artifact
         if: always()
         uses: actions/upload-artifact@v4

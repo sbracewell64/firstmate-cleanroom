@@ -22,14 +22,34 @@
 #   fm-test-run.sh --list-concurrent-safe-families
 #   fm-test-run.sh --concurrent-safe-family-jobs-max <name>
 #   fm-test-run.sh --list-lanes
+#   fm-test-run.sh --list-ci-lanes
 #   fm-test-run.sh --serial-shard-loads
 #   fm-test-run.sh --check-coverage
 #
 # Aggregation (no suite execution):
-#   fm-test-run.sh --aggregate-json <out.json> <lane.json> [more lane.json...]
+#   fm-test-run.sh --aggregate-json <out.json> [--expect-lane <lane>]... <input>...
+#                   Each <input> is a lane timing JSON or a directory searched
+#                   recursively for fm-test-timing-*.json, so a lane whose CI
+#                   artifact nests its file (the Herdr lane's diagnostics
+#                   bundle) is still resolved. Every input must carry the
+#                   "lane" identity --json records; an input without one is
+#                   refused, two inputs claiming one lane are refused rather
+#                   than summed, and a prior aggregate (kind=aggregate) found
+#                   beside the lanes is skipped, never summed.
+#                   --expect-lane <lane> (repeatable) declares the expected-lane
+#                   manifest: a missing lane is listed in summary.missing_lanes,
+#                   summary.complete is false, the summary line says
+#                   INCOMPLETE, and the exit status is 1 after the marked
+#                   aggregate is still written. Without a manifest
+#                   summary.complete is null ("undeclared"), never true.
+#                   summary.executed is total minus skipped_gate, so gate
+#                   skips never count as executed tests. The output is
+#                   byte-deterministic for the same inputs in any order.
 #
 # Options:
-#   --json <path>   write a deterministic timing artifact after the run
+#   --json <path>   write a deterministic timing artifact after the run; its
+#                   "lane" field is the --lane name, the --family name for a
+#                   family run, and null for every other selection
 #   --list          print selected script paths (one per line) and exit 0
 #   --list-scheduled
 #                   print selected paths longest-hint-first and exit 0
@@ -72,6 +92,11 @@
 #                   interrupt a running script; per-script hangs are
 #                   bounded by --per-script-timeout-secs. Pathological output
 #                   sinks that block finalization are explicitly out of scope.
+#   --list-ci-lanes print every lane CI must run and the timing aggregate must
+#                   see - both portable parallel shards, every portable serial
+#                   shard, and the real-herdr-gated family - one per line. This
+#                   is the single owner of the expected-lane manifest that
+#                   .github/workflows/ci.yml passes to --aggregate-json.
 #   --serial-shard-loads
 #                   print "<lane>\t<script count>\t<summed hint ms>" for every
 #                   portable serial CI shard and exit 0; the refresh procedure in
@@ -141,12 +166,15 @@ LIST_SCHEDULED=0
 LIST_FAMILIES=0
 LIST_CONCURRENT_SAFE_FAMILIES=0
 LIST_LANES=0
+LIST_CI_LANES=0
 CHECK_COVERAGE=0
 AGGREGATE_OUT=
+EXPECT_LANES=()
 FAMILY=
 LANE=
 BASE_REF=origin/main
 JSON_PATH=
+LANE_ID=
 SCRIPTS=()
 EXCLUDE_FAMILIES=()
 FAIL_ON_GATE_SKIP=
@@ -375,6 +403,13 @@ list_known_lanes() {
   printf '%s\n' real-herdr-gated
 }
 
+# Every lane CI runs as its own job or matrix shard, so the timing aggregate's
+# expected-lane manifest and the lane jobs read one inventory. The unsharded
+# portable-serial umbrella is a local selection, never a CI lane.
+list_ci_lanes() {
+  list_known_lanes | grep -v '^portable-serial$'
+}
+
 # Exact proven-isolated candidate set (same paths as
 # bin/fm-test-isolation-proof.sh --list). Do not expand without a new concurrent
 # isolation proof archive.
@@ -518,155 +553,159 @@ list_portable_serial() {
   done < <(all_repo_tests)
 }
 
-# Measured portable-serial script durations in milliseconds, from the CI timing
-# artifact recorded in docs/fm-test-portable-shards.md. These are balance hints
+# Measured portable-serial script durations in milliseconds: the per-script mean
+# over the CI timing artifacts recorded in docs/fm-test-portable-shards.md,
+# with a script measured by only some of those runs averaged over the runs
+# that carried it. These are balance hints
 # only: the shard partition stays complete and disjoint whatever they say, so a
 # stale hint costs balance rather than coverage. That doc owns the refresh
 # procedure.
 portable_serial_weight_hints() {
   cat <<'EOF'
-tests/fm-afk-inject-e2e.test.sh 33863
-tests/fm-afk-pi-herdr-return-e2e.test.sh 98
-tests/fm-afk-return.test.sh 1867
-tests/fm-ask-user-authority.test.sh 122
-tests/fm-backend-cmux-smoke.test.sh 34
-tests/fm-backend-cmux.test.sh 3278
-tests/fm-backend-herdr-focus-flash-e2e.test.sh 22
-tests/fm-backend-orca.test.sh 18329
-tests/fm-backend-tmux-smoke.test.sh 388
-tests/fm-backend-zellij-smoke.test.sh 21
-tests/fm-backend-zellij.test.sh 9072
-tests/fm-backend.test.sh 17120
-tests/fm-backlog-atomicity.test.sh 129876
-tests/fm-backlog-handoff.test.sh 38498
-tests/fm-bearings-board-render.test.sh 1468
-tests/fm-bearings-board.test.sh 4104
-tests/fm-bearings-snapshot.test.sh 81083
-tests/fm-bootstrap-network-parallel.test.sh 7206
-tests/fm-bootstrap.test.sh 24816
-tests/fm-branch-supervision.test.sh 5502
-tests/fm-busy-adapter-wiring.test.sh 16347
-tests/fm-busy-state.test.sh 2857
-tests/fm-calm-pi-extension.test.sh 212
-tests/fm-check-unregister.test.sh 497
-tests/fm-classify-corr-token.test.sh 45730
-tests/fm-classify-decision-key.test.sh 1125
-tests/fm-claude-stop-autoarm-live-e2e.test.sh 13
-tests/fm-claude-stop-autoarm.test.sh 60524
-tests/fm-cmux-claude-composer-live-e2e.test.sh 21
-tests/fm-codex-continuity-live-e2e.test.sh 13
-tests/fm-composer-matrix-live-e2e.test.sh 21
-tests/fm-continuation-lib.test.sh 120
-tests/fm-continuation-resolve.test.sh 310000
-tests/fm-control-relaunch.test.sh 47656
-tests/fm-control.test.sh 38218
-tests/fm-cursor-harness.test.sh 30108
-tests/fm-cursor-primary-live-e2e.test.sh 14
-tests/fm-cursor-primary.test.sh 52236
-tests/fm-daemon.test.sh 27959
-tests/fm-documentation-audiences.test.sh 747
-tests/fm-extension-binding.test.sh 13591
-tests/fm-fleet-snapshot-view.test.sh 8354
-tests/fm-fleet-sync.test.sh 35344
-tests/fm-gate-refuse.test.sh 4831
-tests/fm-gitignore-config.test.sh 59
-tests/fm-gotmp.test.sh 1272
-tests/fm-grok-continuity-live-e2e.test.sh 20
-tests/fm-grok-stop-live-e2e.test.sh 20
-tests/fm-guard-stale-banner.test.sh 6801
-tests/fm-harness-adapter-instructions-live-e2e.test.sh 22
-tests/fm-harness-adapter-references.test.sh 34
-tests/fm-harness-liveness-drift-live-e2e.test.sh 19
-tests/fm-herdr-session-cleanup.test.sh 6395
-tests/fm-herdr-submit-confirm-live-e2e.test.sh 21
-tests/fm-herdr-version-floor-live-e2e.test.sh 22
-tests/fm-home-summary-refresh.test.sh 34209
-tests/fm-inactive-reconcile.test.sh 41475
-tests/fm-kimi-harness.test.sh 18504
-tests/fm-lint-workflows.test.sh 832
-tests/fm-muse-harness.test.sh 60925
-tests/fm-muse-signals-live-e2e.test.sh 15
-tests/fm-no-mistakes-required.test.sh 207
-tests/fm-on.test.sh 8475
+tests/fm-afk-inject-e2e.test.sh 34878
+tests/fm-afk-pi-herdr-return-e2e.test.sh 85
+tests/fm-afk-return.test.sh 1735
+tests/fm-ask-user-authority.test.sh 100
+tests/fm-backend-cmux-smoke.test.sh 30
+tests/fm-backend-cmux.test.sh 3385
+tests/fm-backend-herdr-focus-flash-e2e.test.sh 19
+tests/fm-backend-orca.test.sh 18238
+tests/fm-backend-tmux-smoke.test.sh 270
+tests/fm-backend-zellij-smoke.test.sh 20
+tests/fm-backend-zellij.test.sh 8171
+tests/fm-backend.test.sh 19936
+tests/fm-backlog-atomicity.test.sh 111788
+tests/fm-backlog-handoff.test.sh 70241
+tests/fm-bearings-board-render.test.sh 1426
+tests/fm-bearings-board.test.sh 4246
+tests/fm-bearings-snapshot.test.sh 69561
+tests/fm-bootstrap-network-parallel.test.sh 7749
+tests/fm-bootstrap.test.sh 23763
+tests/fm-branch-supervision.test.sh 5179
+tests/fm-busy-adapter-wiring.test.sh 17442
+tests/fm-busy-state.test.sh 2971
+tests/fm-calm-pi-extension.test.sh 408
+tests/fm-check-unregister.test.sh 445
+tests/fm-classify-corr-token.test.sh 15340
+tests/fm-classify-decision-key.test.sh 1056
+tests/fm-claude-stop-autoarm-live-e2e.test.sh 18
+tests/fm-claude-stop-autoarm.test.sh 60622
+tests/fm-cmux-claude-composer-live-e2e.test.sh 20
+tests/fm-codex-continuity-live-e2e.test.sh 18
+tests/fm-composer-matrix-live-e2e.test.sh 22
+tests/fm-continuation-lib.test.sh 201
+tests/fm-continuation-resolve.test.sh 88323
+tests/fm-control-relaunch.test.sh 73249
+tests/fm-control.test.sh 43545
+tests/fm-cursor-harness.test.sh 30124
+tests/fm-cursor-primary-live-e2e.test.sh 21
+tests/fm-cursor-primary.test.sh 52582
+tests/fm-daemon.test.sh 26253
+tests/fm-documentation-audiences.test.sh 688
+tests/fm-extension-binding.test.sh 6987
+tests/fm-fleet-snapshot-view.test.sh 7971
+tests/fm-fleet-sync.test.sh 36065
+tests/fm-gate-refuse.test.sh 4707
+tests/fm-gitignore-config.test.sh 66
+tests/fm-gotmp.test.sh 1239
+tests/fm-grok-continuity-live-e2e.test.sh 18
+tests/fm-grok-stop-live-e2e.test.sh 21
+tests/fm-guard-stale-banner.test.sh 10471
+tests/fm-harness-adapter-instructions-live-e2e.test.sh 20
+tests/fm-harness-adapter-references.test.sh 72
+tests/fm-harness-liveness-drift-live-e2e.test.sh 21
+tests/fm-herdr-session-cleanup.test.sh 6511
+tests/fm-herdr-submit-confirm-live-e2e.test.sh 20
+tests/fm-herdr-version-floor-live-e2e.test.sh 19
+tests/fm-home-summary-refresh.test.sh 42932
+tests/fm-inactive-reconcile.test.sh 40678
+tests/fm-kimi-harness.test.sh 21584
+tests/fm-lint-workflows.test.sh 711
+tests/fm-muse-harness.test.sh 32102
+tests/fm-muse-signals-live-e2e.test.sh 20
+tests/fm-no-mistakes-required.test.sh 271
+tests/fm-on.test.sh 10870
 tests/fm-opencode-primary-live-e2e.test.sh 19
-tests/fm-operational-input.test.sh 222
-tests/fm-peek-remote.test.sh 899
-tests/fm-pending-reply.test.sh 25249
-tests/fm-pi-branch-extension.test.sh 27301
-tests/fm-pi-branch-live-e2e.test.sh 48
-tests/fm-pi-primary-live-e2e.test.sh 20
-tests/fm-pi-watch-extension.test.sh 45006
-tests/fm-pr-check-security.test.sh 157718
-tests/fm-procevent-quota.test.sh 1871
-tests/fm-procevent-when.test.sh 17939
-tests/fm-procevent.test.sh 84755
-tests/fm-programme-projection.test.sh 75000
-tests/fm-project-origin.test.sh 130
-tests/fm-public-followup.test.sh 244580
-tests/fm-quota-array-dispatch-live-e2e.test.sh 20
-tests/fm-quota-choose.test.sh 1393
-tests/fm-remote-backlog-handoff.test.sh 46532
-tests/fm-remote-doctor.test.sh 5517
-tests/fm-remote-entrypoint.test.sh 132
-tests/fm-remote-job-orphan-reap.test.sh 2899
-tests/fm-remote-job.test.sh 66011
-tests/fm-remote-reply.test.sh 117649
-tests/fm-remote-secondmate-lifecycle-e2e.test.sh 233800
-tests/fm-remote-secondmate-parent-binding.test.sh 32325
-tests/fm-remote-secondmate-trace-context.test.sh 100043
-tests/fm-remote-transport-lanes.test.sh 66737
-tests/fm-secondmate-harness.test.sh 159105
-tests/fm-secondmate-lifecycle-e2e.test.sh 8404
-tests/fm-secondmate-liveness.test.sh 9821
-tests/fm-secondmate-reconcile.test.sh 45100
-tests/fm-secondmate-safety.test.sh 60331
-tests/fm-secondmate-sync.test.sh 16796
-tests/fm-send-inbox-doorbell-live-e2e.test.sh 21
-tests/fm-send-inbox.test.sh 38279
-tests/fm-send-remote-delivery.test.sh 18886
-tests/fm-send-resolve-key.test.sh 20154
-tests/fm-send-secondmate-marker-herdr-e2e.test.sh 31
-tests/fm-send-secondmate-marker.test.sh 5783
-tests/fm-session-lock-ancestry.test.sh 1290
-tests/fm-session-start.test.sh 130224
-tests/fm-sessionstart-hook-live-e2e.test.sh 20
-tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 19
-tests/fm-sessionstart-nudge.test.sh 65844
-tests/fm-shared-captain-inheritance.test.sh 5859
-tests/fm-spawn-dispatch-profile.test.sh 63417
-tests/fm-spawn-pool-base-freshen.test.sh 34434
-tests/fm-spawn-worktree-settle.test.sh 5681
-tests/fm-startup-memory-budget.test.sh 6734
-tests/fm-startup-network.test.sh 53058
-tests/fm-stow-cascade.test.sh 3065
-tests/fm-subagent-pretool-check.test.sh 2083
-tests/fm-supervision-events.test.sh 750
-tests/fm-tangle-guard.test.sh 9491
-tests/fm-task-delivery.test.sh 5875
-tests/fm-task-inbox.test.sh 26743
-tests/fm-teardown-endpoint-safety.test.sh 4902
-tests/fm-teardown.test.sh 69255
-tests/fm-test-fixture-cleanup.test.sh 916
-tests/fm-test-fixtures.test.sh 88
-tests/fm-test-isolation-proof.test.sh 2508
-tests/fm-tmux-agent-liveness.test.sh 1487
-tests/fm-tool-update-check.test.sh 14472
-tests/fm-trace-context-lib.test.sh 359
-tests/fm-trace-context-spawn.test.sh 44432
-tests/fm-turnend-guard.test.sh 47994
-tests/fm-update.test.sh 4897
-tests/fm-vendor-auth-probe.test.sh 43323
-tests/fm-voice-relay.test.sh 30470
-tests/fm-wake-daemon-lifecycle-e2e.test.sh 7583
-tests/fm-wake-drain-open-decisions-cursor.test.sh 21516
-tests/fm-wake-drain-open-decisions.test.sh 5817
-tests/fm-wake-drain-unread-status.test.sh 37890
-tests/fm-wake-queue.test.sh 66034
-tests/fm-watch-arm.test.sh 56201
-tests/fm-watch-checkpoint.test.sh 5441
-tests/fm-watch-recovery-loop.test.sh 59087
-tests/fm-watch-triage.test.sh 282379
-tests/fm-watcher-lock.test.sh 64543
+tests/fm-operational-input.test.sh 351
+tests/fm-peek-remote.test.sh 864
+tests/fm-pending-reply.test.sh 43496
+tests/fm-pi-branch-extension.test.sh 22094
+tests/fm-pi-branch-live-e2e.test.sh 20
+tests/fm-pi-primary-live-e2e.test.sh 19
+tests/fm-pi-watch-extension.test.sh 64718
+tests/fm-pr-check-security.test.sh 146909
+tests/fm-procevent-quota.test.sh 1898
+tests/fm-procevent-when.test.sh 19374
+tests/fm-procevent.test.sh 65282
+tests/fm-programme-projection.test.sh 20454
+tests/fm-project-origin.test.sh 119
+tests/fm-public-followup.test.sh 86610
+tests/fm-quota-array-dispatch-live-e2e.test.sh 18
+tests/fm-quota-choose.test.sh 1243
+tests/fm-remote-backlog-handoff-failfast.test.sh 9997
+tests/fm-remote-backlog-handoff.test.sh 64028
+tests/fm-remote-doctor.test.sh 4768
+tests/fm-remote-entrypoint.test.sh 98
+tests/fm-remote-job-orphan-reap.test.sh 2945
+tests/fm-remote-job.test.sh 57954
+tests/fm-remote-reply.test.sh 48090
+tests/fm-remote-secondmate-lifecycle-e2e.test.sh 200591
+tests/fm-remote-secondmate-parent-binding.test.sh 27579
+tests/fm-remote-secondmate-trace-context.test.sh 57589
+tests/fm-remote-transport-lanes.test.sh 63076
+tests/fm-secondmate-harness.test.sh 146790
+tests/fm-secondmate-lifecycle-e2e.test.sh 8204
+tests/fm-secondmate-liveness.test.sh 16789
+tests/fm-secondmate-reconcile.test.sh 63989
+tests/fm-secondmate-safety.test.sh 54926
+tests/fm-secondmate-sync.test.sh 17103
+tests/fm-send-inbox-doorbell-live-e2e.test.sh 18
+tests/fm-send-inbox.test.sh 38332
+tests/fm-send-remote-delivery.test.sh 35745
+tests/fm-send-resolve-key.test.sh 18186
+tests/fm-send-secondmate-marker-herdr-e2e.test.sh 51
+tests/fm-send-secondmate-marker.test.sh 5561
+tests/fm-session-lock-ancestry.test.sh 1306
+tests/fm-session-start.test.sh 151260
+tests/fm-sessionstart-hook-live-e2e.test.sh 18
+tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 18
+tests/fm-sessionstart-nudge.test.sh 62593
+tests/fm-shared-captain-inheritance.test.sh 5655
+tests/fm-spawn-dispatch-profile.test.sh 62589
+tests/fm-spawn-pool-base-freshen.test.sh 41809
+tests/fm-spawn-worktree-settle.test.sh 5656
+tests/fm-startup-memory-budget.test.sh 6432
+tests/fm-startup-network.test.sh 54635
+tests/fm-stow-cascade.test.sh 2947
+tests/fm-subagent-pretool-check.test.sh 923
+tests/fm-supervision-events.test.sh 649
+tests/fm-tangle-guard.test.sh 9065
+tests/fm-task-delivery.test.sh 5460
+tests/fm-task-inbox.test.sh 28341
+tests/fm-teardown-endpoint-safety.test.sh 3995
+tests/fm-teardown.test.sh 90883
+tests/fm-test-fixture-cleanup.test.sh 742
+tests/fm-test-fixtures.test.sh 150
+tests/fm-test-isolation-proof.test.sh 2395
+tests/fm-tmux-agent-liveness.test.sh 1278
+tests/fm-tool-profile.test.sh 2054
+tests/fm-tool-update-check.test.sh 13977
+tests/fm-trace-context-lib.test.sh 209
+tests/fm-trace-context-spawn.test.sh 43176
+tests/fm-turnend-guard.test.sh 19550
+tests/fm-update.test.sh 4624
+tests/fm-vendor-auth-probe.test.sh 43257
+tests/fm-voice-relay.test.sh 30864
+tests/fm-wake-daemon-lifecycle-e2e.test.sh 7166
+tests/fm-wake-drain-open-decisions-cursor.test.sh 36101
+tests/fm-wake-drain-open-decisions.test.sh 6115
+tests/fm-wake-drain-unread-status.test.sh 13621
+tests/fm-wake-queue.test.sh 45673
+tests/fm-watch-arm.test.sh 57657
+tests/fm-watch-checkpoint.test.sh 5772
+tests/fm-watch-recovery-loop.test.sh 58724
+tests/fm-watch-triage.test.sh 247132
+tests/fm-watcher-lock.test.sh 60880
 EOF
 }
 
@@ -979,52 +1018,89 @@ run_coverage_guard() {
   return 0
 }
 
+# Resolve --aggregate-json inputs: a file is taken as given, a directory is
+# searched recursively for fm-test-timing-*.json (deterministic order). A
+# missing input is refused up front rather than reported as a missing lane.
+resolve_aggregate_inputs() {
+  local s
+  for s in "$@"; do
+    if [ -d "$s" ]; then
+      find "$s" -type f -name 'fm-test-timing-*.json' | LC_ALL=C sort
+    elif [ -f "$s" ]; then
+      printf '%s\n' "$s"
+    else
+      die "aggregate input not found: $s"
+    fi
+  done
+}
+
 aggregate_timing_json() {
-  local out=$1
+  local out=$1 expected_csv
   shift
-  [ "$#" -gt 0 ] || die "--aggregate-json requires at least one input timing JSON"
   command -v python3 >/dev/null 2>&1 || die "--aggregate-json requires python3"
-  python3 - "$out" "$@" <<'PY'
+  expected_csv=$(IFS=,; printf '%s' "${EXPECT_LANES[*]+"${EXPECT_LANES[*]}"}")
+  python3 - "$out" "${#EXPECT_LANES[@]}" "$expected_csv" "$@" <<'PY'
 import json, sys
 from pathlib import Path
 
 out = Path(sys.argv[1])
-inputs = [Path(p) for p in sys.argv[2:]]
-lanes = []
-all_scripts = []
-failed = 0
-skipped = 0
-total = 0
-wall_ms = 0
+expected = sys.argv[3].split(",") if int(sys.argv[2]) > 0 else None
+inputs = [Path(p) for p in sys.argv[4:]]
+
+
+def refuse(msg):
+    print(f"fm-test-run: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+lanes = {}
 for path in inputs:
     doc = json.loads(path.read_text(encoding="utf-8"))
-    summary = doc.get("summary") or {}
-    lane = {
+    if doc.get("kind") == "aggregate":
+        # A re-run job can download the previous attempt's aggregate next to
+        # the lane artifacts; it is a report, never a lane.
+        print(f"fm-test-run: skipping prior aggregate {path}", file=sys.stderr)
+        continue
+    lane = doc.get("lane")
+    if not isinstance(lane, str) or not lane:
+        refuse(f"aggregate input {path} carries no lane identity; produce it with --lane or --family so the aggregate can validate it")
+    if lane in lanes:
+        refuse(f"duplicate lane id {lane!r}: {lanes[lane]['path']} and {path} both claim it; refusing to sum them")
+    summary = dict(doc.get("summary") or {})
+    total = int(summary.get("total") or 0)
+    skipped = int(summary.get("skipped_gate") or 0)
+    summary["executed"] = total - skipped
+    lanes[lane] = {
+        "lane": lane,
         "path": str(path),
         "run_id": doc.get("run_id"),
         "selection": doc.get("selection"),
         "started_at": doc.get("started_at"),
         "finished_at": doc.get("finished_at"),
         "summary": summary,
+        "scripts": [dict(s, lane=lane, lane_selection=doc.get("selection"), lane_run_id=doc.get("run_id"))
+                    for s in doc.get("scripts") or []],
     }
-    lanes.append(lane)
-    total += int(summary.get("total") or 0)
-    failed += int(summary.get("failed") or 0)
-    skipped += int(summary.get("skipped_gate") or 0)
-    wall_ms = max(wall_ms, int(summary.get("duration_ms") or 0))
-    for s in doc.get("scripts") or []:
-        row = dict(s)
-        row["lane_selection"] = doc.get("selection")
-        row["lane_run_id"] = doc.get("run_id")
-        all_scripts.append(row)
 
-all_scripts.sort(key=lambda s: (-int(s.get("duration_ms") or 0), s.get("path") or ""))
+ordered = [lanes[k] for k in sorted(lanes)]
+all_scripts = [row for lane in ordered for row in lane.pop("scripts")]
+all_scripts.sort(key=lambda s: (-int(s.get("duration_ms") or 0), s.get("path") or "", s.get("lane") or ""))
+total = sum(int(l["summary"].get("total") or 0) for l in ordered)
+failed = sum(int(l["summary"].get("failed") or 0) for l in ordered)
+skipped = sum(int(l["summary"].get("skipped_gate") or 0) for l in ordered)
+wall_ms = max((int(l["summary"].get("duration_ms") or 0) for l in ordered), default=0)
+missing = [] if expected is None else [e for e in expected if e not in lanes]
+complete = None if expected is None else not missing
 agg = {
     "kind": "aggregate",
-    "lanes": lanes,
+    "lanes": ordered,
     "summary": {
-        "lanes": len(lanes),
+        "lanes": len(ordered),
+        "expected_lanes": expected,
+        "missing_lanes": missing,
+        "complete": complete,
         "total": total,
+        "executed": total - skipped,
         "failed": failed,
         "skipped_gate": skipped,
         "critical_path_duration_ms": wall_ms,
@@ -1034,7 +1110,12 @@ agg = {
 }
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(agg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-print(f"FM_TEST_AGGREGATE lanes={len(lanes)} total={total} failed={failed} skipped_gate={skipped} critical_path_duration_ms={wall_ms}")
+complete_s = "undeclared" if complete is None else ("true" if complete else "false")
+expected_s = "-" if expected is None else str(len(expected))
+print(f"FM_TEST_AGGREGATE lanes={len(ordered)} expected={expected_s} total={total} executed={total - skipped} failed={failed} skipped_gate={skipped} critical_path_duration_ms={wall_ms} complete={complete_s} missing_lanes={','.join(missing)}")
+if missing:
+    print(f"FM_TEST_AGGREGATE INCOMPLETE: missing expected lanes {', '.join(missing)}; this aggregate is not a complete cost or coverage report", file=sys.stderr)
+    sys.exit(1)
 PY
 }
 
@@ -1509,15 +1590,16 @@ write_json_artifact() {
   local selection=$9
   local records_file=${10}
   local families_file=${11}
+  local lane_id=${12}
 
   if ! command -v python3 >/dev/null 2>&1; then
     die "--json requires python3 to emit a valid timing artifact"
   fi
 
-  python3 - "$out" "$started" "$finished" "$run_id" "$total" "$failed" "$skipped" "$duration" "$selection" "$records_file" "$families_file" <<'PY'
+  python3 - "$out" "$started" "$finished" "$run_id" "$total" "$failed" "$skipped" "$duration" "$selection" "$records_file" "$families_file" "$lane_id" <<'PY'
 import json, sys
 
-out, started, finished, run_id, total, failed, skipped, duration, selection, records_file, families_file = sys.argv[1:]
+out, started, finished, run_id, total, failed, skipped, duration, selection, records_file, families_file, lane_id = sys.argv[1:]
 
 scripts = []
 with open(records_file, encoding="utf-8") as fh:
@@ -1551,6 +1633,7 @@ with open(families_file, encoding="utf-8") as fh:
 
 doc = {
     "run_id": run_id,
+    "lane": lane_id or None,
     "started_at": started,
     "finished_at": finished,
     "selection": selection,
@@ -1704,6 +1787,19 @@ while [ "$#" -gt 0 ]; do
       # For aggregation we accept only input JSON paths as free args after this.
       MODE=aggregate
       ;;
+    --expect-lane)
+      [ "$#" -gt 1 ] || die "--expect-lane requires a lane name"
+      EXPECT_LANES+=("$2")
+      shift 2
+      ;;
+    --expect-lane=*)
+      EXPECT_LANES+=("${1#--expect-lane=}")
+      shift
+      ;;
+    --list-ci-lanes)
+      LIST_CI_LANES=1
+      shift
+      ;;
     --exclude-family)
       [ "$#" -gt 1 ] || die "--exclude-family requires a name"
       EXCLUDE_FAMILIES+=("$2")
@@ -1765,6 +1861,11 @@ if [ "$LIST_LANES" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$LIST_CI_LANES" -eq 1 ]; then
+  list_ci_lanes
+  exit 0
+fi
+
 if [ "$CHECK_COVERAGE" -eq 1 ]; then
   run_coverage_guard
   exit $?
@@ -1772,12 +1873,15 @@ fi
 
 if [ "${MODE:-}" = "aggregate" ]; then
   [ -n "$AGGREGATE_OUT" ] || die "--aggregate-json requires an output path"
-  [ "${#SCRIPTS[@]}" -gt 0 ] || die "--aggregate-json requires at least one input timing JSON"
-  for s in "${SCRIPTS[@]}"; do
-    [ -f "$s" ] || die "aggregate input not found: $s"
+  [ "${#SCRIPTS[@]}" -gt 0 ] || die "--aggregate-json requires at least one input timing JSON or directory"
+  for e in "${EXPECT_LANES[@]+"${EXPECT_LANES[@]}"}"; do
+    case "$e" in
+      ''|*,*) die "--expect-lane names one lane with no comma (got '$e')" ;;
+    esac
   done
-  aggregate_timing_json "$AGGREGATE_OUT" "${SCRIPTS[@]}"
-  exit 0
+  mapfile -t AGGREGATE_INPUTS < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
+  aggregate_timing_json "$AGGREGATE_OUT" "${AGGREGATE_INPUTS[@]+"${AGGREGATE_INPUTS[@]}"}"
+  exit $?
 fi
 
 case "$JOBS" in
@@ -1805,10 +1909,12 @@ case "${MODE:-}" in
   family)
     select_family "$FAMILY"
     SELECTION_DESC="family=$FAMILY"
+    LANE_ID=$FAMILY
     ;;
   lane)
     select_lane "$LANE"
     SELECTION_DESC="lane=$LANE"
+    LANE_ID=$LANE
     ;;
   proven-isolated)
     select_proven_isolated
@@ -1883,7 +1989,7 @@ if [ "${#SCRIPTS[@]}" -eq 0 ]; then
     mkdir -p "$(dirname "$JSON_PATH")"
     write_json_artifact "$JSON_PATH" "$RUN_STARTED_ISO" "$empty_finished_iso" \
       "fm-test-run-${RUN_STARTED_MS}-$$" 0 0 0 "$empty_duration" \
-      "$SELECTION_DESC" "$empty_rec" "$empty_fam"
+      "$SELECTION_DESC" "$empty_rec" "$empty_fam" "$LANE_ID"
     rm -f "$empty_rec" "$empty_fam"
   fi
   exit "$empty_rc"
@@ -2280,7 +2386,7 @@ if [ -n "$JSON_PATH" ]; then
   write_json_artifact "$JSON_PATH" \
     "$RUN_STARTED_ISO" "$RUN_FINISHED_ISO" "$RUN_ID" \
     "$TOTAL" "$FAILED" "$SKIPPED_GATE" "$RUN_DURATION" \
-    "$SELECTION_DESC" "$RECORDS" "$FAMILIES_TSV"
+    "$SELECTION_DESC" "$RECORDS" "$FAMILIES_TSV" "$LANE_ID"
   json_rc=$?
   set -e
   if [ "$json_rc" -eq 0 ]; then

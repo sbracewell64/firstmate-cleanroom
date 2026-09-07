@@ -641,12 +641,14 @@ wait_for_network_stage() {
     "$ROOT/bin/fm-startup-network.sh" wait "$limit"
 }
 
+# <limit> is still whole seconds; the poll runs on tenths so a wake that lands
+# early is seen within 0.1s instead of at the next full-second tick.
 wait_for_network_wake() {
-  local home=$1 limit=${2:-30} waited=0
+  local home=$1 limit=${2:-30} ticks=0
   while ! grep -Fq $'check\tstartup-network' "$home/state/.wake-queue" 2>/dev/null \
-    && [ "$waited" -lt "$limit" ]; do
-    sleep 1
-    waited=$((waited + 1))
+    && [ "$ticks" -lt $((limit * 10)) ]; do
+    sleep 0.1
+    ticks=$((ticks + 1))
   done
   grep -Fq $'check\tstartup-network' "$home/state/.wake-queue" 2>/dev/null
 }
@@ -1811,7 +1813,7 @@ SH
 }
 
 test_runtime_bound_truncates_loudly_and_exits_zero() {
-  local rec root home fakebin out status=0 stray mechanism
+  local rec root home fakebin out status=0 stray mechanism ticks
   rec=$(new_world runtime-bound)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1848,9 +1850,17 @@ EOF
   # actually matters: once BOTH deadlines have passed, nothing hung is left.
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_STARTUP_NETWORK_TIMEOUT=2 \
     "$ROOT/bin/fm-startup-network.sh" wait 30 >/dev/null || true
-  sleep 1
-  stray=$(pgrep -f "$fakebin/git" 2>/dev/null | wc -l | tr -d ' ')
-  [ "$stray" -eq 0 ] || fail "the runtime bound left $stray hung subprocess(es) behind"
+  # The kill is asynchronous to the wait returning, so poll for the observable
+  # end state under a bounded deadline; a genuinely hung grandchild never
+  # leaves, so the deadline still fails it.
+  ticks=0
+  while :; do
+    stray=$(pgrep -f "$fakebin/git" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$stray" -ne 0 ] || break
+    [ "$ticks" -lt 100 ] || fail "the runtime bound left $stray hung subprocess(es) behind"
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
 
   status=0
   FM_TIMEOUT_MECHANISM_OVERRIDE=bash bash -c \

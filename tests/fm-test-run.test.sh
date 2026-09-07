@@ -1218,34 +1218,46 @@ puts JSON.generate(
   pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
 }
 
+# Write one lane timing artifact the way bin/fm-test-run.sh --json emits it.
+# aggregate_lane_fixture <path> <lane> <total> <failed> <skipped_gate> <duration_ms>
+aggregate_lane_fixture() {
+  local path=$1 lane=$2 total=$3 failed=$4 skipped=$5 duration=$6 i scripts=""
+  mkdir -p "$(dirname "$path")"
+  i=0
+  while [ "$i" -lt "$total" ]; do
+    [ -z "$scripts" ] || scripts="$scripts,"
+    if [ "$i" -lt "$skipped" ]; then
+      scripts="$scripts{\"path\": \"tests/$lane-$i.test.sh\", \"family\": \"afk\", \"duration_ms\": 5, \"exit\": 0, \"gate_skip\": true}"
+    elif [ "$i" -lt $((skipped + failed)) ]; then
+      scripts="$scripts{\"path\": \"tests/$lane-$i.test.sh\", \"family\": \"afk\", \"duration_ms\": 700, \"exit\": 1, \"gate_skip\": false}"
+    else
+      scripts="$scripts{\"path\": \"tests/$lane-$i.test.sh\", \"family\": \"afk\", \"duration_ms\": 400, \"exit\": 0, \"gate_skip\": false}"
+    fi
+    i=$((i + 1))
+  done
+  cat >"$path" <<JSON
+{
+  "run_id": "run-$lane",
+  "lane": "$lane",
+  "selection": "lane=$lane",
+  "started_at": "2026-09-06T00:00:00Z",
+  "finished_at": "2026-09-06T00:01:00Z",
+  "summary": {"total": $total, "failed": $failed, "skipped_gate": $skipped, "duration_ms": $duration},
+  "scripts": [$scripts]
+}
+JSON
+}
+
 test_aggregate_json() {
-  local tmp a b
+  local tmp out
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
-  cat >"$tmp/a.json" <<'JSON'
-{
-  "run_id": "a",
-  "selection": "lane=portable-parallel-1",
-  "started_at": "2026-07-22T00:00:00Z",
-  "finished_at": "2026-07-22T00:01:00Z",
-  "summary": {"total": 1, "failed": 0, "skipped_gate": 0, "duration_ms": 1000},
-  "scripts": [{"path": "tests/a.test.sh", "family": "pure-contract-unit", "duration_ms": 1000, "exit": 0, "gate_skip": false}]
-}
-JSON
-  cat >"$tmp/b.json" <<'JSON'
-{
-  "run_id": "b",
-  "selection": "lane=portable-serial",
-  "started_at": "2026-07-22T00:00:00Z",
-  "finished_at": "2026-07-22T00:02:00Z",
-  "summary": {"total": 2, "failed": 1, "skipped_gate": 0, "duration_ms": 2000},
-  "scripts": [
-    {"path": "tests/b.test.sh", "family": "afk", "duration_ms": 1500, "exit": 1, "gate_skip": false},
-    {"path": "tests/c.test.sh", "family": "afk", "duration_ms": 500, "exit": 0, "gate_skip": false}
-  ]
-}
-JSON
-  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/b.json")
-  assert_contains "$out" "FM_TEST_AGGREGATE lanes=2 total=3 failed=1" "aggregate summary line"
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  aggregate_lane_fixture "$tmp/b.json" portable-serial-1of1 2 1 0 2000
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/b.json") \
+    || { rm -rf "$tmp"; fail "aggregate of two identified lanes must succeed: $out"; }
+  assert_contains "$out" "FM_TEST_AGGREGATE lanes=2 " "aggregate summary line"
+  assert_contains "$out" " total=3 " "aggregate total"
+  assert_contains "$out" " failed=1 " "aggregate failed"
   python3 -c '
 import json,sys
 doc=json.load(open(sys.argv[1]))
@@ -1254,10 +1266,236 @@ assert doc["summary"]["lanes"]==2
 assert doc["summary"]["total"]==3
 assert doc["summary"]["failed"]==1
 assert doc["summary"]["critical_path_duration_ms"]==2000
+assert [l["lane"] for l in doc["lanes"]]==["portable-parallel-1","portable-serial-1of1"], doc["lanes"]
 assert len(doc["scripts"])==3
 ' "$tmp/out.json" || { rm -rf "$tmp"; fail "aggregate JSON shape wrong"; }
   rm -rf "$tmp"
   pass "aggregate-json merges lane timing artifacts"
+}
+
+# The Herdr CI lane uploads its timing JSON under a nested directory inside its
+# artifact, so an aggregate that only reads root-level members silently drops
+# that lane while the workflow still declares the aggregate depends on it. A
+# directory input must resolve every fm-test-timing-*.json beneath it.
+test_aggregate_resolves_nested_lane_members() {
+  local tmp out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggnest.XXXXXX")
+  aggregate_lane_fixture "$tmp/in/fm-test-timing-portable-parallel-1.json" portable-parallel-1 1 0 0 1000
+  aggregate_lane_fixture "$tmp/in/fm-test/fm-test-timing-real-herdr-gated.json" real-herdr-gated 3 0 0 3000
+  mkdir -p "$tmp/in/fm-herdr"
+  printf 'not a timing artifact\n' >"$tmp/in/fm-herdr/default-server.log"
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" \
+    --expect-lane portable-parallel-1 --expect-lane real-herdr-gated "$tmp/in") \
+    || { rm -rf "$tmp"; fail "aggregate over a directory holding a nested lane member must succeed: $out"; }
+  assert_contains "$out" "FM_TEST_AGGREGATE lanes=2 " "both lanes aggregated"
+  assert_contains "$out" " complete=true" "manifest satisfied"
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert [l["lane"] for l in doc["lanes"]]==["portable-parallel-1","real-herdr-gated"], doc["lanes"]
+assert doc["summary"]["complete"] is True, doc["summary"]
+assert doc["summary"]["missing_lanes"]==[], doc["summary"]
+assert doc["summary"]["critical_path_duration_ms"]==3000, doc["summary"]
+' "$tmp/out.json" || { rm -rf "$tmp"; fail "nested lane member was not included in the aggregate"; }
+  rm -rf "$tmp"
+  pass "aggregate-json resolves a nested lane member from a directory input"
+}
+
+test_aggregate_refuses_duplicate_lane_ids() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggdup.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  aggregate_lane_fixture "$tmp/b.json" portable-parallel-1 2 0 0 2000
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/b.json" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "two artifacts claiming the same lane must be refused, not summed: $out"; }
+  assert_contains "$out" "duplicate lane" "duplicate lane refusal names the defect"
+  assert_contains "$out" "portable-parallel-1" "duplicate lane refusal names the lane"
+  [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rm -rf "$tmp"
+  pass "aggregate-json refuses duplicate lane ids instead of summing them"
+}
+
+test_aggregate_requires_lane_identity() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-agglane.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  python3 -c '
+import json,sys
+p=sys.argv[1]; doc=json.load(open(p)); del doc["lane"]; json.dump(doc, open(p,"w"))
+' "$tmp/a.json"
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "an artifact with no lane identity must be refused: $out"; }
+  assert_contains "$out" "lane identity" "unidentified artifact refusal names the defect"
+  rm -rf "$tmp"
+  pass "aggregate-json refuses an input that carries no lane identity"
+}
+
+test_aggregate_marks_missing_expected_lanes_incomplete() {
+  local tmp out rc=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggmiss.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-parallel-1 1 0 0 1000
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" \
+    --expect-lane portable-parallel-1 --expect-lane portable-serial-1of2 \
+    --expect-lane portable-serial-2of2 --expect-lane real-herdr-gated "$tmp/a.json" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || { rm -rf "$tmp"; fail "an aggregate missing expected lanes must not exit 0: $out"; }
+  assert_contains "$out" "INCOMPLETE" "incomplete aggregate says so"
+  assert_contains "$out" " complete=false" "summary line reports incomplete"
+  assert_contains "$out" "missing_lanes=portable-serial-1of2,portable-serial-2of2,real-herdr-gated" "missing lanes are listed"
+  [ -f "$tmp/out.json" ] || { rm -rf "$tmp"; fail "an incomplete aggregate must still be written, marked incomplete"; }
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["summary"]["complete"] is False, doc["summary"]
+assert doc["summary"]["missing_lanes"]==["portable-serial-1of2","portable-serial-2of2","real-herdr-gated"], doc["summary"]
+assert doc["summary"]["expected_lanes"]==["portable-parallel-1","portable-serial-1of2","portable-serial-2of2","real-herdr-gated"], doc["summary"]
+assert doc["summary"]["lanes"]==1
+' "$tmp/out.json" || { rm -rf "$tmp"; fail "incomplete aggregate JSON is not marked"; }
+  # An undeclared manifest can never claim completeness.
+  out=$("$RUNNER" --aggregate-json "$tmp/out2.json" "$tmp/a.json") \
+    || { rm -rf "$tmp"; fail "aggregate with no manifest must still succeed: $out"; }
+  assert_contains "$out" " complete=undeclared" "no manifest means completeness is undeclared"
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["summary"]["complete"] is None, doc["summary"]
+assert doc["summary"]["expected_lanes"] is None, doc["summary"]
+' "$tmp/out2.json" || { rm -rf "$tmp"; fail "undeclared manifest must not be recorded as complete"; }
+  rm -rf "$tmp"
+  pass "aggregate-json lists missing expected lanes and marks the aggregate INCOMPLETE"
+}
+
+test_aggregate_counts_gate_skips_apart_from_executed() {
+  local tmp out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggskip.XXXXXX")
+  aggregate_lane_fixture "$tmp/a.json" portable-serial-1of2 5 1 2 4000
+  aggregate_lane_fixture "$tmp/b.json" portable-serial-2of2 3 0 1 3000
+  out=$("$RUNNER" --aggregate-json "$tmp/out.json" "$tmp/a.json" "$tmp/b.json") \
+    || { rm -rf "$tmp"; fail "aggregate must succeed: $out"; }
+  assert_contains "$out" " total=8 " "total counts every script"
+  assert_contains "$out" " executed=5 " "executed excludes gate skips"
+  assert_contains "$out" " skipped_gate=3 " "gate skips are reported on their own"
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+s=doc["summary"]
+assert s["total"]==8 and s["executed"]==5 and s["skipped_gate"]==3 and s["failed"]==1, s
+by={l["lane"]: l for l in doc["lanes"]}
+assert by["portable-serial-1of2"]["summary"]["executed"]==3, by
+assert by["portable-serial-2of2"]["summary"]["executed"]==2, by
+assert sum(1 for r in doc["scripts"] if r["gate_skip"])==3
+' "$tmp/out.json" || { rm -rf "$tmp"; fail "gate skips were not kept distinct from executed tests"; }
+  rm -rf "$tmp"
+  pass "aggregate-json keeps gate skips distinct from executed tests"
+}
+
+test_aggregate_is_deterministic_for_unchanged_input() {
+  local tmp out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggdet.XXXXXX")
+  aggregate_lane_fixture "$tmp/in/fm-test-timing-b.json" portable-serial-2of2 2 0 0 2000
+  aggregate_lane_fixture "$tmp/in/nested/fm-test-timing-a.json" portable-serial-1of2 2 0 1 1000
+  out=$("$RUNNER" --aggregate-json "$tmp/one.json" "$tmp/in/fm-test-timing-b.json" "$tmp/in/nested/fm-test-timing-a.json") \
+    || { rm -rf "$tmp"; fail "first aggregate must succeed: $out"; }
+  out=$("$RUNNER" --aggregate-json "$tmp/two.json" "$tmp/in/nested/fm-test-timing-a.json" "$tmp/in/fm-test-timing-b.json") \
+    || { rm -rf "$tmp"; fail "second aggregate must succeed: $out"; }
+  # A re-run downloads the previous attempt's aggregate beside the lanes; it
+  # is a report, never a lane, and must not change the bytes either.
+  cp "$tmp/one.json" "$tmp/in/fm-test-timing-aggregate.json"
+  out=$("$RUNNER" --aggregate-json "$tmp/three.json" "$tmp/in") \
+    || { rm -rf "$tmp"; fail "directory aggregate must succeed: $out"; }
+  cmp -s "$tmp/one.json" "$tmp/two.json" \
+    || { rm -rf "$tmp"; fail "input order changed the aggregate bytes"; }
+  cmp -s "$tmp/one.json" "$tmp/three.json" \
+    || { rm -rf "$tmp"; fail "resolving the same inputs from a directory changed the aggregate bytes"; }
+  rm -rf "$tmp"
+  pass "unchanged input yields a byte-identical aggregate regardless of input order, resolution, or a prior aggregate beside it"
+}
+
+# The producer stamps the lane identity the aggregate validates: the --lane
+# name, or the family name for a family run such as the Herdr CI lane.
+test_timing_json_records_lane_identity() {
+  local tmp out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-laneid.XXXXXX")
+  # Select the Herdr family, then exclude it, so the run is empty but keeps the
+  # family's identity without needing a real Herdr.
+  out=$("$RUNNER" --family real-herdr-gated --exclude-family real-herdr-gated --json "$tmp/family.json" 2>"$tmp/err") \
+    || { rm -rf "$tmp"; fail "empty family run must pass: $out $(cat "$tmp/err")"; }
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["lane"]=="real-herdr-gated", doc
+assert doc["summary"]["total"]==0
+' "$tmp/family.json" || { rm -rf "$tmp"; fail "family run did not record its lane identity"; }
+  out=$("$RUNNER" --json "$tmp/scripts.json" "$ROOT/tests/fm-test-fixtures.test.sh" 2>"$tmp/err") \
+    || { rm -rf "$tmp"; fail "script run must pass: $out $(cat "$tmp/err")"; }
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["lane"] is None, doc
+' "$tmp/scripts.json" || { rm -rf "$tmp"; fail "an ad-hoc script run must not claim a lane identity"; }
+  rm -rf "$tmp"
+  pass "timing JSON records the lane identity of lane and family runs only"
+}
+
+# The CI lane manifest has one owner: the same script that owns lane names and
+# the serial shard count. The workflow expects exactly these lanes in the
+# aggregate, so a lane added here without a job, or a shard count that moved,
+# shows up as INCOMPLETE instead of a quietly smaller report.
+test_list_ci_lanes_matches_the_lane_inventory() {
+  local ci lanes n
+  ci=$("$RUNNER" --list-ci-lanes) || fail "--list-ci-lanes failed"
+  lanes=$("$RUNNER" --list-lanes | grep -v '^portable-serial$')
+  [ "$ci" = "$lanes" ] || fail "--list-ci-lanes must equal every lane except the unsharded portable-serial umbrella:
+$ci
+--
+$lanes"
+  n=$(printf '%s\n' "$ci" | grep -c '^portable-serial-[0-9]*of[0-9]*$')
+  [ "$n" -ge 1 ] || fail "--list-ci-lanes must list every portable serial shard"
+  printf '%s\n' "$ci" | grep -qx 'real-herdr-gated' || fail "--list-ci-lanes must include the Herdr lane"
+  pass "--list-ci-lanes is the lane inventory minus the unsharded serial umbrella"
+}
+
+# Every CI job that uploads a per-lane timing artifact must feed the aggregate
+# job, so the manifest above and the workflow's dependency list cannot drift.
+test_timing_aggregate_job_needs_every_lane_producer() {
+  local file="$ROOT/.github/workflows/ci.yml" out
+  if command -v ruby >/dev/null 2>&1; then
+    out=$(ruby -ryaml -e '
+doc = YAML.load_file(ARGV[0])
+jobs = doc.fetch("jobs")
+needs = Array(jobs.fetch("tests-timing-aggregate")["needs"])
+producers = jobs.select { |id, job|
+  id != "tests-timing-aggregate" && Array(job["steps"]).any? { |s|
+    s.is_a?(Hash) && s["uses"].to_s.start_with?("actions/upload-artifact") &&
+      s.dig("with", "name").to_s.start_with?("fm-test-timing-")
+  }
+}.keys
+puts "producers=#{producers.sort.join(",")}"
+puts "missing=#{(producers - needs).sort.join(",")}"
+puts "extra=#{(needs - producers).sort.join(",")}"
+' "$file") || fail "could not parse the timing aggregate wiring from ci.yml"
+  elif python3 -c 'import yaml' 2>/dev/null; then
+    out=$(python3 - "$file" <<'PYEOF'
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+needs = jobs["tests-timing-aggregate"].get("needs") or []
+producers = sorted(
+    jid for jid, job in jobs.items()
+    if jid != "tests-timing-aggregate" and any(
+        isinstance(s, dict) and str(s.get("uses", "")).startswith("actions/upload-artifact")
+        and str((s.get("with") or {}).get("name", "")).startswith("fm-test-timing-")
+        for s in job.get("steps") or []))
+print("producers=" + ",".join(producers))
+print("missing=" + ",".join(sorted(set(producers) - set(needs))))
+print("extra=" + ",".join(sorted(set(needs) - set(producers))))
+PYEOF
+) || fail "could not parse the timing aggregate wiring from ci.yml"
+  else
+    fail "ruby or python3 with the yaml module is required to parse .github/workflows/ci.yml as YAML"
+  fi
+  assert_contains "$out" "producers=tests-herdr,tests-portable-parallel-1,tests-portable-parallel-2,tests-portable-serial" "lane producers"
+  printf '%s\n' "$out" | grep -qx 'missing=' || fail "a lane timing producer does not feed the aggregate: $out"
+  printf '%s\n' "$out" | grep -qx 'extra=' || fail "the aggregate needs a job that uploads no lane timing: $out"
+  pass "the timing aggregate job depends on exactly the jobs that upload lane timing"
 }
 
 test_list_all_exact_suite_coverage
@@ -1287,3 +1525,12 @@ test_portable_serial_shard_hints_stay_inside_the_job_cap_budget
 test_portable_serial_ci_job_cap_matches_the_runner_budget
 test_herdr_ci_family_run_has_a_step_timeout
 test_aggregate_json
+test_aggregate_resolves_nested_lane_members
+test_aggregate_refuses_duplicate_lane_ids
+test_aggregate_requires_lane_identity
+test_aggregate_marks_missing_expected_lanes_incomplete
+test_aggregate_counts_gate_skips_apart_from_executed
+test_aggregate_is_deterministic_for_unchanged_input
+test_timing_json_records_lane_identity
+test_list_ci_lanes_matches_the_lane_inventory
+test_timing_aggregate_job_needs_every_lane_producer

@@ -64,8 +64,9 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints came from the `fm-test-timing-portable-serial-*` artifacts of CI run [33747352811](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/33747352811) on 2026-09-03, where the lane ran 139 scripts in 3890219 ms of serial work.
-That run was the first on this repository whose four shard artifacts covered every serial script; the earlier hints from 2026-08-21 had left the scripts that grew since then, such as `tests/fm-public-followup.test.sh` at 244 s against a 36 s hint, piled onto one shard that reached the job cap.
+The hints are the per-script mean of the `fm-test-timing-portable-serial-*` artifacts from the three green `main` CI runs [34036430465](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34036430465), [34064555580](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34064555580), and [34073321294](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34073321294) of 2026-09-06 and 2026-09-07, where the lane ran 144 scripts in about 3.8 million ms of serial work per run.
+Averaging three runs damps the per-run spread (the same script varied by up to 2x between runs, for example `tests/fm-control-relaunch.test.sh` at 46 s to 94 s) that a single-run refresh bakes into the partition.
+The previous hints, from the 2026-09-03 run plus locally measured guesses for scripts added since, had drifted enough that the shard they balanced to 1078 s each actually ran 833 s to 1177 s of script time, with `portable-serial-2of4` the critical path on all three runs.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints affect balance and the shard budget guard below, never coverage: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard or a budget refusal rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured or grown scripts let one shard carry far more than another shard's real work and reach the job cap while another runner sits idle.
@@ -73,17 +74,37 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 35 | 1021584 ms (~1021.6 s) |
-| `portable-serial-2of4` | 36 | 1021592 ms (~1021.6 s) |
-| `portable-serial-3of4` | 35 | 1021582 ms (~1021.6 s) |
-| `portable-serial-4of4` | 35 | 1021581 ms (~1021.6 s) |
-| imbalance | | 11 ms |
+| `portable-serial-1of4` | 36 | 917206 ms (~917.2 s) |
+| `portable-serial-2of4` | 36 | 917197 ms (~917.2 s) |
+| `portable-serial-3of4` | 36 | 917195 ms (~917.2 s) |
+| `portable-serial-4of4` | 36 | 917194 ms (~917.2 s) |
+| imbalance | | 12 ms |
 
-`tests/fm-continuation-resolve.test.sh` (196000 ms) and `tests/fm-continuation-lib.test.sh` (120 ms) joined the serial lane on 2026-09-04 with locally measured hints, pending the next CI artifact refresh.
-`tests/fm-programme-projection.test.sh` (57000 ms) joined the serial lane on 2026-09-05 with a locally measured hint, pending the same refresh.
-On 2026-09-06 the owner-evidence adapter and quiet-presentation cases raised the locally measured hints to 310000 ms for `tests/fm-continuation-resolve.test.sh` and 75000 ms for `tests/fm-programme-projection.test.sh`, pending the same refresh.
+The single longest script, `tests/fm-watch-triage.test.sh` at 247132 ms, is the floor for any shard count.
 
-The single longest script, `tests/fm-watch-triage.test.sh` at 282379 ms, is the floor for any shard count.
+### Measured lane times and the 2026-09-07 rebalance
+
+The per-lane script time (`summary.duration_ms` of each lane artifact) on the three runs above, before the rebalance, was:
+
+| Lane | 34036430465 | 34064555580 | 34073321294 |
+|---|---:|---:|---:|
+| `portable-parallel-1` | 164.9 s | 213.2 s | 215.0 s |
+| `portable-parallel-2` | 158.1 s | 170.5 s | 166.3 s |
+| `portable-serial-1of4` | 883.4 s | 733.0 s | 855.1 s |
+| `portable-serial-2of4` | 1147.4 s | 1054.7 s | 1176.7 s |
+| `portable-serial-3of4` | 935.2 s | 699.5 s | 833.6 s |
+| `portable-serial-4of4` | 818.8 s | 939.3 s | 948.5 s |
+| `real-herdr-gated` | 532.6 s | 496.7 s | 537.9 s |
+
+`portable-serial-2of4` was the critical path each time; on run 34073321294 its job wall was 19m46s against 14m03s to 15m59s for the other three shards.
+Its two largest suites were `tests/fm-watch-triage.test.sh` (249 s) and `tests/fm-session-start.test.sh` (159 s), and after them `tests/fm-control-relaunch.test.sh` (94 s), `tests/fm-procevent.test.sh` (68 s), `tests/fm-sessionstart-nudge.test.sh` (65 s), and `tests/fm-pi-watch-extension.test.sh` (65 s).
+Profiling `tests/fm-watch-triage.test.sh` per case showed its cost spread over about 90 cases that each wait for at least one real watcher poll at the suite's tight one-second cadence, with the largest single case (five invalid pane-churn deadline variants at a three-second poll) at 13 s; the suite contained one fixed pause, now replaced by waiting for the observable poll cycle it stood in for.
+`tests/fm-session-start.test.sh` runs the real digest per case; its two fixed waits (a one-second network-wake poll granularity and a one-second settle before a hung-subprocess sweep) were replaced by tenth-second polls under the same deadlines.
+Neither suite's poll cadence was changed: those are the watcher and digest contracts under test, not guessed sleeps.
+
+The rebalance refreshed the hints only; no lane was added and no concurrency was raised.
+Replaying the same measured per-script durations from run 34073321294 through the refreshed partition predicts 986.9 s, 942.1 s, 948.3 s, and 928.7 s for shards 1 to 4, a critical shard of 986.9 s against the measured 1176.7 s (about 16 % less script time on the critical path), and by three-run means 917.2 s against 1087.8 s (about 16 %).
+That is the expected effect of the measured redistribution, not a measured result: record the first post-rebalance runs' per-lane times here at the next hint refresh, and expect the same +27 % run-to-run spread noted under Timeouts.
 
 Refresh the hints by downloading the per-shard timing artifacts from a CI run whose shard artifacts together cover every serial script, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above from `--serial-shard-loads`:
 
@@ -108,8 +129,11 @@ It also fails when any portable serial shard's summed duration hints exceed the 
 ## Timing artifacts
 
 Portable shards, each portable serial shard, and the Herdr lane upload runner-generated timing JSON.
-`bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
-`.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
+Each lane artifact carries its lane identity (`lane`: the `--lane` name, or the family name for the Herdr family run), and `bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact from those identities.
+The aggregate resolves lane files nested anywhere under the downloaded artifact directory, refuses an input with no lane identity or two inputs claiming one lane, keeps gate skips (`skipped_gate`) apart from `executed` scripts, and checks the lanes it saw against the expected-lane manifest.
+That manifest is `bin/fm-test-run.sh --list-ci-lanes`, the same owner the lane jobs take their names and shard count from; a lane that produced no artifact is listed under `missing_lanes`, the aggregate is marked `complete: false`, the summary line says `INCOMPLETE`, and the aggregate job fails by lane name instead of publishing a smaller report as if it were the whole fleet.
+Before this check the Herdr lane's nested file was silently left out, so the aggregate reported six lanes and 168 scripts for a run that executed seven lanes and 180.
+`.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring, and `tests/fm-test-run.test.sh` checks that every job uploading lane timing feeds the aggregate job.
 
 ## Local entry points
 

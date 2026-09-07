@@ -2277,7 +2277,10 @@ test_paused_authoritative_working_preserves_wedge_timer() {
   pid=$!
   wait_numeric_file "$state/.stale-since-$key" 30 || { reap "$pid"; fail "authoritative working state did not start wedge tracking"; }
   since=$(cat "$state/.stale-since-$key")
-  sleep 2
+  # One more completed poll is the repeat recheck; wait for that observable
+  # cycle rather than a fixed pause that may or may not contain one.
+  wait_poll_cycle "$state" "$pid" \
+    || { reap "$pid"; fail "the watcher exited before a repeat authoritative working recheck"; }
   [ "$(cat "$state/.stale-since-$key" 2>/dev/null || true)" = "$since" ] \
     || { reap "$pid"; fail "repeat authoritative working recheck reset the wedge timer"; }
   reap "$pid"

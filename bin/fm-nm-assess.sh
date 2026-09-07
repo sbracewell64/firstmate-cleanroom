@@ -10,6 +10,8 @@
 #                            [--carried-finding <id>] [--executed <csv>]
 #                            [--never-started <csv>] [--next-owner <text>]
 #                            [--disposition <d>] [--accepted-authority <ref>]
+#                            [--supersede <key|carried|provider>[,...]]
+#                            [--coverage-performed]
 #   fm-nm-assess.sh receipt  <task-id>
 #   fm-nm-assess.sh families [--task <task-id>]
 #   fm-nm-assess.sh coverage [--now <epoch>]
@@ -47,11 +49,12 @@
 #   data/nm-finding-families/<key>     one durable file per finding family,
 #                                      fm-nm-finding-family/v1: a header plus
 #                                      append-only occurrence lines keyed by
-#                                      task|run|transition (re-assessing one
-#                                      occurrence replaces its line; a distinct
-#                                      task/run/transition never overwrites
-#                                      another, so occurrence history is never
-#                                      lost)
+#                                      task|run|transition|head (re-assessing the
+#                                      identical occurrence replaces its line;
+#                                      a distinct task, run, transition, OR head
+#                                      revision never overwrites another, so
+#                                      occurrence history is immutable across
+#                                      head revisions and never lost)
 #   state/.nm-assess-<id>.lock         per-task write lock
 #   state/.nm-finding-families.lock    family-store write lock
 #
@@ -64,7 +67,31 @@
 #   anything else       -> the explicit owner the finding carries; a finding
 #                          with no owner is a bounded-owner-task to be filed
 # Dispositions: handled-in-run, linked-existing-repair, bounded-owner-task,
-# accepted-deferred-with-authority, no-actionable-anomaly.
+# accepted-deferred-with-authority, no-actionable-anomaly, coverage-unperformed.
+# A malformed --disposition is refused (exit 2) before anything is recorded, so a
+# nonsense value can never reach coverage/closure.
+#
+# Refresh semantics. An ordinary refresh (a re-assess or the observation owner's
+# best-effort hook, both --no-query with no new findings) PRESERVES the carried
+# residual finding, the provider-capacity block, and every recorded finding
+# family it already holds; it never silently clears them. Carried state is closed
+# only by a typed owner action: --supersede <family-key> drops one recorded
+# finding, --supersede carried clears the carried residual, and --supersede
+# provider clears a carried provider-capacity block once capacity has returned.
+#
+# CI-ready needs source-applicable evidence. A run is reported ci-ready only when
+# the effective canonical outcome is checks-passed; ci-ready is never inferred
+# from an absent, empty, or merely normalized outcome_class. Without that
+# evidence the transition is ci-ready-unverified, a check-normalization finding
+# is raised, and no clean CI-ready is claimed.
+#
+# Coverage performed vs UNPERFORMED. Recording that an assessment exists is not
+# an investigation. Coverage counts as PERFORMED only when a canonical read
+# actually ran, or findings/provider/carried state were ingested or carried, or
+# --coverage-performed explicitly asserts a clean investigation. Otherwise (the
+# bare existence-recording hook path) the assessment is disposed
+# coverage-unperformed and the receipt says so, rather than manufacturing a
+# clean no-actionable-anomaly.
 #
 # Exit codes: 0 done (including a coverage pass that printed enforcement gaps);
 # 1 typed refusal (NOT_ENROLLED); 2 usage or an unreadable record.
@@ -108,9 +135,14 @@ die_usage() {
 now_epoch() { date +%s; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# Age in seconds from <now> to <epoch-field>, or `unknown` when the field is
-# empty or non-numeric (never a negative or garbage number).
+# Age in seconds from <now> to <epoch-field>, or `unknown` when either operand
+# is empty or non-numeric (never a negative, garbage, or arithmetic-error value).
+# <now> is validated at dispatch; this guard keeps the arithmetic total even if a
+# malformed epoch ever reaches it.
 age_of() {  # <now> <epoch-field>
+  case "$1" in
+    ''|*[!0-9]*) printf 'unknown'; return 0 ;;
+  esac
   case "$2" in
     ''|*[!0-9]*) printf 'unknown' ;;
     *) printf '%ss' "$(( $1 - $2 ))" ;;
@@ -122,6 +154,26 @@ valid_task_id() {
     ''|*[!A-Za-z0-9._-]*|.*|-*) return 1 ;;
   esac
   return 0
+}
+
+# A non-negative integer epoch (seconds). Rejects empty, signs, decimals, and any
+# non-digit so a malformed --now can never produce an arithmetic error or a
+# silently-wrong age while the command still exits 0.
+valid_epoch() {
+  case "${1:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# The closed set of assessment dispositions. A value outside this set is
+# malformed and is refused before it can reach a record, coverage, or closure.
+valid_disposition() {
+  case "${1:-}" in
+    handled-in-run|linked-existing-repair|bounded-owner-task|\
+    accepted-deferred-with-authority|no-actionable-anomaly|coverage-unperformed) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # --- record I/O (obligation is READ-only here; assessment is ours) ----------
@@ -227,10 +279,11 @@ family_key() {  # <owner> <invariant> <failure-family> <applicability>
 family_file() { printf '%s/%s\n' "$FAMILIES_DIR" "$1"; }
 
 # Attach one occurrence to a family, creating the family header on first sight.
-# Occurrence identity is task|run|transition: re-assessing the same occurrence
-# replaces its line in place, while a distinct task/run/transition is always a
-# new line, so history across occurrences is never lost. Runs under the family
-# lock (held by the caller).
+# Occurrence identity is task|run|transition|head: re-assessing the identical
+# occurrence replaces its line in place, while a distinct task, run, transition,
+# OR head revision is always a new line, so a material candidate/head/evidence
+# revision preserves the prior occurrence and history is immutable across head
+# revisions. Runs under the family lock (held by the caller).
 family_attach() {  # <key> <owner> <invariant> <family> <applicability> <next-gate>
                    #   <task> <run> <head> <completed-repair> <usage-cost>
                    #   <disposition> <detail>
@@ -256,11 +309,13 @@ family_attach() {  # <key> <owner> <invariant> <family> <applicability> <next-ga
   occ=$(printf 'occurrence\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(now_epoch)" "$task" "$run" "$head" "$completed" "$usage" "$disp" "$detail")
   tmp="$file.tmp.$$"
-  # Drop any prior occurrence with the same task|run|transition (transition is
-  # folded into <detail>'s leading token by the caller), then append the fresh
-  # one. The occurrence identity match is on task+run+the transition prefix.
-  awk -F '\t' -v t="$task" -v r="$run" -v d="$detail" '
-    $1 == "occurrence" && $3 == t && $4 == r {
+  # Drop any prior occurrence with the same task|run|transition|head (transition
+  # is folded into <detail>'s leading token by the caller), then append the fresh
+  # one. The occurrence identity match is on task+run+head+the transition prefix,
+  # so the same task/run/transition at a DISTINCT head is a new occurrence and the
+  # earlier head's line is preserved, never overwritten.
+  awk -F '\t' -v t="$task" -v r="$run" -v h="$head" -v d="$detail" '
+    $1 == "occurrence" && $3 == t && $4 == r && $5 == h {
       split(d, want, ":"); split($9, have, ":")
       if (want[1] == have[1]) next
     }
@@ -313,14 +368,27 @@ transition_for_class() {  # <outcome-class> <provider-capacity>
   esac
 }
 
+# True when <token> appears in a comma-separated <csv> (whitespace tolerated).
+token_in_csv() {  # <token> <csv>
+  local tok=$1 csv=$2 item IFS=,
+  for item in $csv; do
+    item=${item# }; item=${item% }
+    [ "$item" = "$tok" ] && return 0
+  done
+  return 1
+}
+
 # Fill IMMEDIATE and ABOVE globals plus the finding/disposition state.
 do_assess() {  # many positional args, see dispatch
   local id=$1 transition=$2 no_query=$3 provider=$4 attempts=$5 usage=$6 gate=$7
   local carried=$8 executed=$9 never=${10} next_owner=${11} disp=${12} authority=${13}
-  shift 13
+  local supersede=${14} cov_perf=${15}
+  shift 15
   local -a findings=("$@")
   local obl meta record dir wt run class status outcome head branch nm_ver nm_build daemon
   local pr publication run_pr cached_pr reconciled toon epoch
+  local prior_carried='' prior_provider='' prior_prov_attempts='' prior_prov_cost='' prior_gate_paused=''
+  local -a prior_findings=()
   obl=$(obligation_path "$id")
   [ -f "$obl" ] && [ ! -L "$obl" ] || { echo "error: NOT_ENROLLED task=$id: no observation obligation ($obl); run bin/fm-nm-observe.sh enrol $id first" >&2; exit 1; }
   [ "$(record_get "$obl" record)" = "$OBLIGATION_SCHEMA" ] || { echo "error: unreadable observation obligation for $id ($obl)" >&2; exit 2; }
@@ -340,6 +408,26 @@ do_assess() {  # many positional args, see dispatch
   daemon=$(record_get "$obl" daemon_epoch)
   pr=$(record_get "$obl" pr)
   publication=$(record_get "$obl" publication)
+
+  # Carry-forward base. An ordinary refresh must PRESERVE the carried residual
+  # finding, the provider-capacity block, and every recorded finding family;
+  # only a typed --supersede closes them. Read the prior assessment before it is
+  # overwritten below.
+  if [ -f "$record" ] && [ "$(record_get "$record" record)" = "$ASSESS_SCHEMA" ]; then
+    prior_carried=$(record_get "$record" imm_carried_finding)
+    prior_provider=$(record_get "$record" provider_capacity)
+    prior_prov_attempts=$(record_get "$record" provider_attempts)
+    prior_prov_cost=$(record_get "$record" provider_usage_cost)
+    prior_gate_paused=$(record_get "$record" gate_paused)
+    local _pfc _pi
+    _pfc=$(record_get "$record" finding_count)
+    case "$_pfc" in ''|*[!0-9]*) _pfc=0 ;; esac
+    _pi=0
+    while [ "$_pi" -lt "$_pfc" ]; do
+      prior_findings+=("$(record_get "$record" "finding.$_pi")")
+      _pi=$((_pi + 1))
+    done
+  fi
 
   # One read-only canonical read of the bound run, unless suppressed. It refreshes
   # the daemon's own cached view (status/outcome/head and its cached pr ref) so a
@@ -378,7 +466,10 @@ do_assess() {  # many positional args, see dispatch
   # Provider-capacity: a typed external resource-blocked condition, DISTINCT from
   # a candidate repair. Real invocation attempts are preserved; completed repair
   # is false; usage/cost is UNKNOWN unless measured (never fabricated to zero);
-  # the affected gate is PAUSED while independent eligible work continues.
+  # the affected gate is PAUSED while independent eligible work continues. A fresh
+  # --provider-capacity computes the block from its flags and raises the finding;
+  # otherwise a prior block is carried forward unchanged unless --supersede
+  # provider closed it, so an ordinary refresh never drops it.
   local gate_paused='' prov_attempts=0 prov_cost=unknown
   if [ -n "$provider" ]; then
     gate_paused=${gate:-ci}
@@ -389,17 +480,49 @@ do_assess() {  # many positional args, see dispatch
       prov_cost=unknown
     fi
     findings+=("$(route_owner_for_family provider-capacity):provider-capacity-is-not-a-candidate-repair:provider-capacity:profile=${nm_ver:-unobserved}/${nm_build:-unobserved}")
+  elif [ -n "$prior_provider" ] && ! token_in_csv provider "$supersede"; then
+    # Carry the prior block forward verbatim; its finding line rides along in
+    # prior_findings, so it is not re-appended here.
+    provider=$prior_provider
+    gate_paused=$prior_gate_paused
+    prov_attempts=${prior_prov_attempts:-0}
+    prov_cost=${prior_prov_cost:-unknown}
   fi
 
-  # Compute the transition when the caller left it to us.
-  [ -n "$transition" ] || transition=$(transition_for_class "$class" "$provider")
-  [ -n "$executed" ] || executed=$(derive_executed "$class")
-  [ -n "$never" ] || never=$(derive_never_started "$class" "$provider")
+  # CI-ready needs source-applicable evidence: the effective canonical outcome
+  # must be checks-passed. ci-ready is NEVER inferred from an absent, empty, or
+  # merely normalized outcome_class. Without the evidence the transition is
+  # ci-ready-unverified and a check-normalization finding is raised, so no clean
+  # CI-ready is ever claimed.
+  local ci_unverified=0
+  if [ "$class" = ci-ready ] && [ "$outcome" != checks-passed ]; then
+    ci_unverified=1
+    findings+=("$(route_owner_for_family check-normalization):ci-ready-requires-source-applicable-ci-evidence:check-normalization:profile=${nm_ver:-unobserved}/${nm_build:-unobserved}")
+  fi
+
+  # Compute the transition when the caller left it to us. An unverified ci-ready
+  # is never derived as a clean ci-ready transition.
+  if [ -z "$transition" ]; then
+    if [ "$ci_unverified" -eq 1 ] && [ -z "$provider" ]; then
+      transition=ci-ready-unverified
+    else
+      transition=$(transition_for_class "$class" "$provider")
+    fi
+  fi
+  if [ "$ci_unverified" -eq 1 ] && [ -z "$provider" ]; then
+    [ -n "$executed" ] || executed='unknown (ci-ready claimed without source-applicable CI evidence)'
+    [ -n "$never" ] || never='ci (no source-applicable evidence CI started or completed)'
+  else
+    [ -n "$executed" ] || executed=$(derive_executed "$class")
+    [ -n "$never" ] || never=$(derive_never_started "$class" "$provider")
+  fi
 
   # Immediate defect / blocked condition.
   local imm_defect
   if [ -n "$provider" ]; then
     imm_defect="provider-capacity block at gate ${gate_paused} ($provider): a typed external resource-blocked condition, not a candidate repair and not a candidate failure; $prov_attempts invocation attempt(s), no completed repair"
+  elif [ "$ci_unverified" -eq 1 ]; then
+    imm_defect="ci-ready claimed without source-applicable CI evidence: outcome=${outcome:-none}, status=${status:-none}; ci-ready must be backed by a checks-passed canonical verdict, never inferred from an absent or normalized state"
   else
     case "$class" in
       failed) imm_defect="run failed: canonical status $status outcome $outcome" ;;
@@ -415,6 +538,8 @@ do_assess() {  # many positional args, see dispatch
     imm_next=$next_owner
   elif [ -n "$provider" ]; then
     imm_next="the affected gate stays paused and predecessor-linked until capacity returns; the owning worker consumes the gate normally once it does; the pinned-tool fix is owned by $(route_owner_for_family provider-capacity)"
+  elif [ "$ci_unverified" -eq 1 ]; then
+    imm_next="$(route_owner_for_family check-normalization) must confirm the source-applicable CI verdict before ci-ready is claimed; no CI gate is treated as consumed on absent or normalized state"
   else
     case "$class" in
       ci-ready) imm_next="the owning worker consumes the exact-head CI gate, with explicit disposition of any carried defect (a green rerun does not close a carried finding)" ;;
@@ -424,9 +549,93 @@ do_assess() {  # many positional args, see dispatch
     esac
   fi
 
-  # One owner level above, derived from what the findings expose.
+  # Merge findings. An ordinary refresh carries every prior finding forward
+  # (dropping only the family keys named in --supersede); a fresh finding with
+  # the same family key replaces its prior line. Entries are the stored pipe form
+  # fkey|owner|invariant|family|applicability|fdisp.
+  local -a merged=()
+  local m owner invariant family applicability fdisp fkey mk found j mfam
+  for m in ${prior_findings[@]+"${prior_findings[@]}"}; do
+    [ -n "$m" ] || continue
+    fkey=${m%%|*}
+    token_in_csv "$fkey" "$supersede" && continue
+    # --supersede provider closes the whole provider-capacity block, so its
+    # carried finding line is dropped along with the block state above.
+    mfam=$(printf '%s\n' "$m" | cut -d'|' -f4)
+    [ "$mfam" = provider-capacity ] && token_in_csv provider "$supersede" && continue
+    merged+=("$m")
+  done
+  for m in ${findings[@]+"${findings[@]}"}; do
+    IFS=: read -r owner invariant family applicability <<EOF2
+$m
+EOF2
+    [ -n "$owner" ] || owner=unassigned
+    [ -n "$applicability" ] || applicability="profile=${nm_ver:-unobserved}/${nm_build:-unobserved}"
+    if [ "$owner" = unassigned ]; then
+      fdisp=bounded-owner-task
+    elif [ "$family" = provider-capacity ] || [ "$family" = check-normalization ]; then
+      fdisp=linked-existing-repair
+    elif [ -n "$authority" ]; then
+      fdisp=accepted-deferred-with-authority
+    else
+      fdisp=linked-existing-repair
+    fi
+    fkey=$(family_key "$owner" "$invariant" "$family" "$applicability")
+    # Replace a prior line with the same family key, else append.
+    found=0
+    j=0
+    while [ "$j" -lt "${#merged[@]}" ]; do
+      mk=${merged[$j]%%|*}
+      if [ "$mk" = "$fkey" ]; then
+        merged[j]="$fkey|$owner|$invariant|$family|$applicability|$fdisp"
+        found=1
+        break
+      fi
+      j=$((j + 1))
+    done
+    [ "$found" -eq 1 ] || merged+=("$fkey|$owner|$invariant|$family|$applicability|$fdisp")
+  done
+
+  # Resolve the carried residual. An ordinary refresh preserves it; only
+  # --carried-finding replaces it and --supersede carried clears it.
+  local carried_final
+  if [ -n "$carried" ]; then
+    carried_final=$carried
+  elif token_in_csv carried "$supersede"; then
+    carried_final=none
+  elif [ -n "$prior_carried" ] && [ "$prior_carried" != none ]; then
+    carried_final=$prior_carried
+  else
+    carried_final=none
+  fi
+
+  # Coverage performed vs UNPERFORMED. Recording that an assessment exists is not
+  # an investigation: coverage counts as performed only when a canonical read
+  # actually ran, findings/provider/carried state were ingested or carried, or
+  # --coverage-performed asserts a clean investigation.
+  local performed=0
+  [ -n "$epoch" ] && performed=1
+  [ "${#merged[@]}" -gt 0 ] && performed=1
+  [ "$carried_final" != none ] && performed=1
+  [ -n "$supersede" ] && performed=1
+  [ "$cov_perf" -eq 1 ] && performed=1
+
+  # Immediate state label. An unverified ci-ready is never reported as clean.
+  local state_label
+  if [ "$ci_unverified" -eq 1 ] && [ -z "$provider" ]; then
+    state_label=ci-ready-unverified
+  else
+    state_label=${class:-unread}
+  fi
+
+  # One owner level above, derived from what the merged findings expose and
+  # whether coverage was actually performed.
   local above_owner above_siblings above_reason
-  if [ "${#findings[@]}" -eq 0 ]; then
+  if [ "$performed" -eq 0 ]; then
+    above_owner="coverage UNPERFORMED: an assessment record exists but no investigation ran (no canonical read, no ingested or carried findings); existence is not investigation"
+    above_siblings=none
+    above_reason="the default/hook path recorded existence only; it does not prove the run clean and must be re-assessed with an actual canonical read or ingested findings"
+  elif [ "${#merged[@]}" -eq 0 ]; then
     above_owner="no anomaly within measured coverage"
     above_siblings=none
     above_reason="the canonical read exposed no defect and no avoidable work; a clean assessment does not prove the architecture defect-free"
@@ -440,17 +649,20 @@ do_assess() {  # many positional args, see dispatch
     above_reason=
   fi
 
-  # Overall disposition. A finding whose owner field is empty is unassigned and
-  # must be filed as a bounded owner task; a finding routed to a standing owner
-  # (provider-capacity, check-normalization, or an explicit known owner) links
-  # an existing repair.
+  # Overall disposition. Unperformed coverage is disposed coverage-unperformed
+  # rather than a manufactured clean no-actionable-anomaly. A finding whose owner
+  # field is unassigned must be filed as a bounded owner task; a finding routed to
+  # a standing owner links an existing repair.
   local have_unassigned=0 fscan fowner
-  for fscan in ${findings[@]+"${findings[@]}"}; do
-    fowner=${fscan%%:*}
-    [ -n "$fowner" ] || have_unassigned=1
+  for fscan in ${merged[@]+"${merged[@]}"}; do
+    fscan=${fscan#*|}
+    fowner=${fscan%%|*}
+    { [ -z "$fowner" ] || [ "$fowner" = unassigned ]; } && have_unassigned=1
   done
   if [ -z "$disp" ]; then
-    if [ "${#findings[@]}" -eq 0 ]; then
+    if [ "$performed" -eq 0 ]; then
+      disp=coverage-unperformed
+    elif [ "${#merged[@]}" -eq 0 ]; then
       disp=no-actionable-anomaly
     elif [ -n "$authority" ]; then
       disp=accepted-deferred-with-authority
@@ -474,15 +686,18 @@ do_assess() {  # many positional args, see dispatch
     printf 'imm_branch=%s\n' "$branch"
     printf 'imm_head=%s\n' "$head"
     printf 'imm_gate=%s\n' "${status:-none}"
-    printf 'imm_state=%s\n' "${class:-unread}"
+    printf 'imm_state=%s\n' "$state_label"
     printf 'imm_defect=%s\n' "$imm_defect"
     printf 'imm_executed=%s\n' "$executed"
     printf 'imm_never_started=%s\n' "$never"
-    printf 'imm_carried_finding=%s\n' "${carried:-none}"
+    printf 'imm_carried_finding=%s\n' "$carried_final"
     printf 'imm_next_owner=%s\n' "$imm_next"
     printf 'above_owner=%s\n' "$above_owner"
     printf 'above_siblings=%s\n' "$above_siblings"
     printf 'above_reason=%s\n' "$above_reason"
+    printf 'coverage_performed=%s\n' "$([ "$performed" -eq 1 ] && printf yes || printf no)"
+    printf 'ci_ready_unverified=%s\n' "$([ "$ci_unverified" -eq 1 ] && printf yes || printf no)"
+    printf 'superseded=%s\n' "${supersede:-none}"
     printf 'provider_capacity=%s\n' "$provider"
     printf 'provider_attempts=%s\n' "$prov_attempts"
     printf 'provider_completed_repair=%s\n' "$([ -n "$provider" ] && printf false || printf 'n/a')"
@@ -498,24 +713,14 @@ do_assess() {  # many positional args, see dispatch
     printf 'disposition=%s\n' "$disp"
   } >> "$record.tmp.$$"
 
-  # Findings: record each and attach it to its family under the family lock.
-  local i=0 f owner invariant family applicability fdisp fkey
-  for f in ${findings[@]+"${findings[@]}"}; do
-    IFS=: read -r owner invariant family applicability <<EOF2
-$f
-EOF2
-    [ -n "$owner" ] || owner=unassigned
-    [ -n "$applicability" ] || applicability="profile=${nm_ver:-unobserved}/${nm_build:-unobserved}"
-    if [ "$owner" = unassigned ]; then
-      fdisp=bounded-owner-task
-    elif [ "$family" = provider-capacity ] || [ "$family" = check-normalization ]; then
-      fdisp=linked-existing-repair
-    elif [ -n "$authority" ]; then
-      fdisp=accepted-deferred-with-authority
-    else
-      fdisp=linked-existing-repair
-    fi
-    fkey=$(family_key "$owner" "$invariant" "$family" "$applicability")
+  # Findings: record each merged finding and attach it to its family under the
+  # family lock. Occurrence identity includes the head, so a distinct head keeps
+  # the prior occurrence rather than overwriting it.
+  local i=0
+  for m in ${merged[@]+"${merged[@]}"}; do
+    IFS='|' read -r fkey owner invariant family applicability fdisp <<EOF3
+$m
+EOF3
     printf 'finding.%s=%s|%s|%s|%s|%s|%s\n' "$i" "$fkey" "$owner" "$invariant" "$family" "$applicability" "$fdisp" >> "$record.tmp.$$"
     with_lock "$FAMILIES_LOCK" family_attach "$fkey" "$owner" "$invariant" "$family" "$applicability" \
       "$(next_gate_for_family "$family")" "$id" "${run:-none}" "${head:-none}" \
@@ -530,7 +735,7 @@ EOF2
 
   render_receipt "$id"
   printf 'NM_ASSESS: ASSESSED task=%s transition=%s state=%s findings=%s disposition=%s\n' \
-    "$id" "$transition" "${class:-unread}" "$i" "$disp"
+    "$id" "$transition" "$state_label" "$i" "$disp"
 }
 
 outcome_class_of() {  # <status> <outcome> (mirror of the obligation owner's map)
@@ -609,7 +814,11 @@ render_receipt() {  # <task-id>
 
     printf '## Findings and dispositions\n\n'
     if [ "${fc:-0}" -eq 0 ]; then
-      printf -- '- none within measured coverage; disposition: no-actionable-anomaly\n'
+      if [ "$(record_get "$record" coverage_performed)" = no ]; then
+        printf -- '- coverage UNPERFORMED: existence recorded without an investigation; findings not ingested; disposition: coverage-unperformed\n'
+      else
+        printf -- '- none within measured coverage; disposition: no-actionable-anomaly\n'
+      fi
     else
       i=0
       while [ "$i" -lt "$fc" ]; do
@@ -617,11 +826,20 @@ render_receipt() {  # <task-id>
         i=$((i + 1))
       done
     fi
+    [ "$(record_get "$record" superseded)" = none ] || printf -- '- typed-closed (superseded) this refresh: %s\n' "$(record_get "$record" superseded)"
+    printf -- '- carried residual finding: %s (carried by identity across refresh unless typed-closed)\n' "$(record_get "$record" imm_carried_finding)"
     printf -- '- overall disposition: %s\n' "$(record_get "$record" disposition)"
     [ -z "$(record_get "$record" accepted_authority)" ] || printf -- '- accepted/deferred authority: %s\n' "$(record_get "$record" accepted_authority)"
     printf '\n'
 
+    if [ "$(record_get "$record" ci_ready_unverified)" = yes ]; then
+      printf '## CI-ready evidence (unverified)\n\n'
+      printf -- '- ci-ready was NOT claimed: no source-applicable checks-passed verdict; ci-ready is never inferred from an absent or normalized state\n'
+      printf -- '- %s\n\n' "$(record_get "$record" imm_defect)"
+    fi
+
     printf '## Coverage and freshness\n\n'
+    printf -- '- coverage performed: %s (recording existence is not investigation)\n' "$(record_get "$record" coverage_performed)"
     printf -- '- last successful canonical read: %s\n' "$(record_get "$record" last_poll_epoch)"
     printf -- '- last material event: %s\n' "$(record_get "$record" last_material_epoch)"
     printf -- '- last handled/acknowledged: %s\n' "$(record_get "$record" last_handled_epoch)"
@@ -696,6 +914,9 @@ do_coverage() {  # <now-epoch-or-empty>
     if [ -z "$disp" ]; then
       printf 'NM_ASSESS: COVERAGE_GAP task=%s reason=assessment has no disposition (heal: bin/fm-nm-assess.sh assess %s)\n' "$id" "$id"
       any=1
+    elif ! valid_disposition "$disp"; then
+      printf 'NM_ASSESS: COVERAGE_GAP task=%s reason=assessment has a malformed disposition (%s) outside the defined set (heal: bin/fm-nm-assess.sh assess %s --disposition <valid>)\n' "$id" "$disp" "$id"
+      any=1
     fi
   done
   if [ -d "$FAMILIES_DIR" ]; then
@@ -748,6 +969,9 @@ if [ "$VERB" = coverage ]; then
     esac
   done
   [ -z "$want" ] || die_usage "--now requires a value"
+  # A malformed --now must fail typed and non-zero, never produce an arithmetic
+  # error or a silently-wrong age while still exiting 0 with COVERAGE ok.
+  [ -z "$NOW" ] || valid_epoch "$NOW" || die_usage "--now requires a non-negative integer epoch (got: $NOW)"
   mkdir -p "$STATE"
   do_coverage "$NOW"
   exit 0
@@ -785,6 +1009,8 @@ NEVER=
 NEXT_OWNER=
 DISPOSITION=
 AUTHORITY=
+SUPERSEDE=
+COV_PERF=0
 FINDINGS=()
 want=
 for a in "$@"; do
@@ -802,6 +1028,7 @@ for a in "$@"; do
       next-owner) NEXT_OWNER=$a ;;
       disposition) DISPOSITION=$a ;;
       accepted-authority) AUTHORITY=$a ;;
+      supersede) SUPERSEDE=$a ;;
     esac
     want=
     continue
@@ -820,17 +1047,22 @@ for a in "$@"; do
     --next-owner) want='next-owner' ;;
     --disposition) want=disposition ;;
     --accepted-authority) want='accepted-authority' ;;
+    --supersede) want=supersede ;;
+    --coverage-performed) COV_PERF=1 ;;
     *) die_usage "unknown flag $a for $VERB" ;;
   esac
 done
 [ -z "$want" ] || die_usage "--$want requires a value"
+# A malformed --disposition is refused before anything is recorded, so a nonsense
+# value can never reach a record, coverage, or closure.
+[ -z "$DISPOSITION" ] || valid_disposition "$DISPOSITION" || die_usage "invalid --disposition: $DISPOSITION (one of handled-in-run, linked-existing-repair, bounded-owner-task, accepted-deferred-with-authority, no-actionable-anomaly, coverage-unperformed)"
 mkdir -p "$STATE"
 
 case "$VERB" in
   assess)
     with_lock "$(lock_path "$ID")" do_assess "$ID" "$TRANSITION" "$NO_QUERY" "$PROVIDER" \
       "$ATTEMPTS" "$USAGE" "$GATE" "$CARRIED" "$EXECUTED" "$NEVER" "$NEXT_OWNER" \
-      "$DISPOSITION" "$AUTHORITY" ${FINDINGS[@]+"${FINDINGS[@]}"} ;;
+      "$DISPOSITION" "$AUTHORITY" "$SUPERSEDE" "$COV_PERF" ${FINDINGS[@]+"${FINDINGS[@]}"} ;;
   receipt)
     [ -f "$(assessment_path "$ID")" ] || { echo "error: no assessment for $ID; run bin/fm-nm-assess.sh assess $ID" >&2; exit 2; }
     render_receipt "$ID"; printf '%s\n' "$(receipt_path "$ID")" ;;

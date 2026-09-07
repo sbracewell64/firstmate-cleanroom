@@ -498,6 +498,11 @@ render_receipt() {  # <task-id>
 # existing observation owner produces the assessment receipt; it is not run in
 # the running primary until that primary adopts this code root (runtime adoption
 # is a separate decision). Opt out with FM_NM_ASSESS_DISABLE.
+#
+# This hook ingests no findings, so it records an HONEST coverage-unperformed
+# assessment (existence recorded without an investigation), never a manufactured
+# clean verdict; the owning worker re-assesses with real findings or an explicit
+# --coverage-performed once an investigation has actually run.
 assess_hook() {  # <task-id>
   [ -z "${FM_NM_ASSESS_DISABLE:-}" ] || return 0
   [ -x "$SCRIPT_DIR/fm-nm-assess.sh" ] || return 0

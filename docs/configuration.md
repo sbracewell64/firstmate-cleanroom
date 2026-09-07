@@ -18,6 +18,7 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 The producing PR and Relay helpers own the fields they append, `bin/fm-stage.sh` owns the `stage=` and `stage_*` lifecycle fields and the stage receipts it appends to the status log, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 `bin/fm-nm-observe.sh` owns the no-mistakes observation obligation at `state/<id>.nm-observe`, the durable per-task receipt at `data/<id>/nm-observation-receipt.md`, and the reconciliation cursor at `state/.nm-observe-watermark`; [`no-mistakes-observation.md`](no-mistakes-observation.md) owns the entrypoint census and coverage claims.
+`bin/fm-nm-assess.sh` owns the per-run two-level assessment at `state/<id>.nm-assessment`, its durable receipt at `data/<id>/nm-assessment-receipt.md`, and the finding families at `data/nm-finding-families/`; the same document owns its assessment invariant.
 Wake, watcher, away-mode, and Relay-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.

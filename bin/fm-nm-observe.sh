@@ -491,6 +491,20 @@ render_receipt() {  # <task-id>
   mv -f -- "$tmp" "$out"
 }
 
+# Produce the per-run two-level assessment through its own owner
+# (bin/fm-nm-assess.sh) at a material transition. Best-effort and never affects
+# the observation result: --no-query because the verb calling this has just read
+# canonical state, and a failure is swallowed. This is the seam by which the
+# existing observation owner produces the assessment receipt; it is not run in
+# the running primary until that primary adopts this code root (runtime adoption
+# is a separate decision). Opt out with FM_NM_ASSESS_DISABLE.
+assess_hook() {  # <task-id>
+  [ -z "${FM_NM_ASSESS_DISABLE:-}" ] || return 0
+  [ -x "$SCRIPT_DIR/fm-nm-assess.sh" ] || return 0
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-assess.sh" assess "$1" --no-query >/dev/null 2>&1 || true
+}
+
 # --- verbs ------------------------------------------------------------------
 
 do_enrol() {  # <task-id> <entrypoint>
@@ -725,6 +739,7 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   record_set "$record" "run_status=$status" "run_outcome=$outcome" "outcome_class=$class" "outcome_epoch=$(now_epoch)"
   refresh_side_facts "$id" "$meta" "$record" "$dir" "$out"
   render_receipt "$id"
+  assess_hook "$id"
   printf 'NM_OBSERVE: %s task=%s run=%s status=%s class=%s\n' "$([ -z "$have" ] && printf 'RUN_BOUND' || printf 'REFRESHED')" "$id" "$run" "$status" "$class"
 }
 
@@ -816,6 +831,7 @@ do_refresh() {  # <task-id> <accept-reset 0|1>
   record_set "$record" "run_status=$status" "run_outcome=$outcome" "outcome_class=$class" "outcome_epoch=$(now_epoch)"
   refresh_side_facts "$id" "$meta" "$record" "$dir" "$out"
   render_receipt "$id"
+  assess_hook "$id"
   printf 'NM_OBSERVE: REFRESHED task=%s run=%s status=%s class=%s\n' "$id" "$run" "$status" "$class"
 }
 

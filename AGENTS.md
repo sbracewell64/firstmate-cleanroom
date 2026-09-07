@@ -91,6 +91,8 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
   <id>/nm-observation-receipt.md  per-task no-mistakes observation receipt stating what was and was not observed; written only by bin/fm-nm-observe.sh and survives teardown
+  <id>/nm-assessment-receipt.md  per-run two-level assessment receipt (immediate boundary and one owner level above); written only by bin/fm-nm-assess.sh and survives teardown
+  nm-finding-families/  deduplicated no-mistakes finding families with append-only occurrence history; written only by bin/fm-nm-assess.sh (docs/no-mistakes-observation.md)
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored
   <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
@@ -101,6 +103,7 @@ state/               runtime records and signals; gitignored
   <id>.cursor-session  cursor busy-source binding (projects root, task worktree, prior conversations) written by fm-spawn; removed by teardown
   <id>.reconcile-nudged  epoch second of the last inventory-reconcile nudge sent to this secondmate; bin/fm-secondmate-reconcile.sh owns its per-home cooldown window
   <id>.nm-observe    no-mistakes observation obligation binding the admitted launch attempt to the actual run and its canonical outcome; written only by bin/fm-nm-observe.sh, finalized and removed by teardown
+  <id>.nm-assessment  per-run two-level assessment state rendered into the assessment receipt; written only by bin/fm-nm-assess.sh, removed by teardown (the receipt survives)
   .nm-observe-watermark  reconciliation cursor for already-reported observation findings; owned by bin/fm-nm-observe.sh, safe to delete (re-reports the current findings once)
   <id>.backlog-close  the exact backlog close a teardown recorded before removing the task's record, so an interrupted cleanup can still be finished at the next session start; bin/fm-backlog-transition-lib.sh owns its format and replay, and a landed close removes it
   <id>.inbox/          durable steering inbox: sequenced firstmate instruction records the worker acknowledges by moving them into its handled/ subdirectory; written by fm-send, with ordinary records re-rung and escalated by the watcher while explicit fire-and-forget records are excluded from that ladder, and removed by teardown (bin/fm-task-inbox-lib.sh)

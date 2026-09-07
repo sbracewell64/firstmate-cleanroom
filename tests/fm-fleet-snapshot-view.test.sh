@@ -799,8 +799,109 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# The home-summary aggregate state (externally_held / captain_decision) is
+# informational only. eligible_queued is the producer-exposed per-task predicate
+# a task-selection consumer reads instead of inferring fleet-wide blocking from
+# the aggregate label. Each case pairs a red assertion (the independent eligible
+# task is selectable and excluded from holds) with its positive control (a
+# genuinely held or dependency-blocked task stays blocked and out of
+# eligible_queued).
+#
+# Scope: these are PRODUCER-seam projections. eligibility is decided purely by
+# structural per-task predicates - no unresolved blocker dependency and no
+# active hold - and NEVER by interpreting hold-reason prose. Whether a held
+# preference is currently authoritative or historically superseded, and the real
+# lifecycle transition -> parent/reference refresh -> independent read-back, are
+# CALLER/LIFECYCLE concerns exercised at the actual selection caller (and
+# roadmap-read-update-duty), not proven here.
+run_home_summary() {  # <home>
+  FM_HOME="$1" FM_SNAPSHOT_NOW="2026-09-07T00:00:00Z" FM_SNAPSHOT_NOW_EPOCH=1788000000 \
+    "$SNAPSHOT" --secondmate-home-summary
+}
+
+test_eligible_queued_reflects_per_task_predicates() {
+  local home out
+
+  # Regression 1: one dependency-blocked task + one independent eligible task.
+  # The aggregate is externally_held, but the independent task stays selectable.
+  home=$(make_home eligible-independent)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] eligible-task - Independent eligible work (repo: alpha) (kind: ship) (priority: 2) (since 2026-09-01)
+- [ ] dep-task - Dependent work blocked-by: eligible-task (repo: alpha) (kind: ship) (since 2026-09-01)
+- [ ] held-task - Held on infra (repo: alpha) (kind: ship) (hold: waiting on infra) (hold-kind: external) (since 2026-09-01)
+
+## Done
+EOF
+  out=$(run_home_summary "$home")
+  printf '%s' "$out" | jq -e '
+    .state == "externally_held"
+    and ([.eligible_queued[].id] == ["eligible-task"])
+    and .counts.eligible_queued == 1
+    and ([.holds[].id] | sort == ["dep-task", "held-task"])
+    and ([.eligible_queued[].id] | (index("dep-task") == null and index("held-task") == null))
+  ' >/dev/null \
+    || fail "aggregate externally_held with an independent eligible task must keep only that task selectable: $out"
+
+  # Regression 2: a blanket captain preference/pause hold must not block an
+  # otherwise-eligible task, while a genuinely dependent task stays blocked.
+  # The hold reason is neutral prose: eligibility filtering is structural (a hold
+  # is present) and does not interpret the words in the reason. Whether such a
+  # preference is currently authoritative or historically superseded is a
+  # caller-side authority decision, not proven at this producer seam.
+  home=$(make_home eligible-preference-hold)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] conserve-pause - Blanket conserve pause (repo: alpha) (kind: ship) (hold: conserve credits for now) (hold-kind: captain) (since 2026-09-01)
+- [ ] eligible-task - Independent eligible work (repo: alpha) (kind: ship) (since 2026-09-01)
+- [ ] dep-task - Dependent work blocked-by: eligible-task (repo: alpha) (kind: ship) (since 2026-09-01)
+
+## Done
+EOF
+  out=$(run_home_summary "$home")
+  printf '%s' "$out" | jq -e '
+    ([.eligible_queued[].id] == ["eligible-task"])
+    and ([.eligible_queued[].id] | (index("conserve-pause") == null and index("dep-task") == null))
+  ' >/dev/null \
+    || fail "a blanket captain preference hold must not remove an independent eligible task, and a dependent task must stay blocked: $out"
+
+  # Regression 3 (dependency filtering from current data only): with a blocker
+  # already Done, its dependent reads as eligible while a task blocked on an
+  # unfinished blocker stays out of eligible_queued, so the aggregate does not
+  # mislabel the fleet as blocked when eligible work exists. This proves
+  # structural blocker resolution, NOT the lifecycle transition-currentness
+  # repair (a live child transition -> parent/reference refresh -> independent
+  # read-back), which is roadmap-read-update-duty's requirement at the actual
+  # selection caller and is left OPEN here, not claimed covered.
+  home=$(make_home eligible-resolved-blocker)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] downstream-task - Depends on the merged child blocked-by: parent-child (repo: alpha) (kind: ship) (since 2026-09-01)
+- [ ] still-blocked - Depends on unfinished work blocked-by: never-done (repo: alpha) (kind: ship) (since 2026-09-01)
+
+## Done
+- [x] parent-child - Child that merged https://github.com/kunchenguid/firstmate/pull/9 (repo: alpha) (kind: ship) (merged 2026-09-06)
+EOF
+  out=$(run_home_summary "$home")
+  printf '%s' "$out" | jq -e '
+    ([.eligible_queued[].id] == ["downstream-task"])
+    and ([.holds[].id] == ["still-blocked"])
+    and ([.eligible_queued[].id] | index("still-blocked") == null)
+  ' >/dev/null \
+    || fail "a merged/qualified child must unblock its dependent while a genuinely blocked task stays out of eligible_queued: $out"
+
+  pass "producer eligible_queued reflects structural per-task predicates independent of the aggregate state label"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_eligible_queued_reflects_per_task_predicates
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

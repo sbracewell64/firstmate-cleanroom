@@ -188,6 +188,17 @@ Actionable tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason, hold_kind, hold_until, deferred_marker, and plural
 blocker fields for downstream projections. A captain hold is actionable only
 when every blocker is Done and any hold-until date has arrived.
+eligible_queued lists the queued items that are independently selectable now,
+the exact complement of the queued-hold surface: no unresolved blocker
+dependency and no active hold. This is a structural projection of existing
+per-task fields only; it never interprets hold-reason prose, and it decides
+neither whether a held preference is currently authoritative nor lifecycle
+transition-currentness, which stay with the actual selection caller. It is the
+per-task predicate a task-selection consumer reads when there is no active
+worker; the aggregate state field is informational, so a nonempty
+eligible_queued means the home has selectable work even when state is
+externally_held or captain_decision, subject to the consumer's own capacity,
+priority, and phase rules.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Each per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
@@ -778,6 +789,22 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
            | {id,title:((.backlog.title // .id) | trunc(90)),blocked_by:null,
               blocked_by_ids:[],unresolved_blocker_ids:[],
               reason:((.current_state.detail // .current_state.state) | trunc(120)),source:"child-state"} ]) as $holds_all
+    # Per-task eligibility, the exact complement of the queued-hold branch of
+    # $holds_all: a queued item with no unresolved blocker dependency and no
+    # active hold (captain or otherwise) is independently eligible for
+    # selection, subject to the normal capacity, priority, and phase rules the
+    # consumer applies. This is the per-task predicate a task-selection consumer must read:
+    # the aggregate $state below is informational only, so a nonempty
+    # $eligible_queued alongside $state == externally_held (or captain_decision)
+    # means the home is NOT globally blocked.
+    | ([ $queued_all[]
+         | select((.unresolved_blocker_ids | length) == 0
+                  and ((.hold_reason != null and .hold_kind != null) | not))
+         | {id:(.id | trunc(120)),title:(.title | trunc(90)),
+            kind:((.kind // null) | if . == null then null else trunc(40) end),
+            priority:((.priority // null) | if . == null then null else trunc(40) end),
+            repo:((.repo // null) | if . == null then null else trunc(120) end),
+            source:"backlog"} ]) as $eligible_queued
     | ($backlog.present == true
        and ($unstructured_current | length) == 0
        and ($unknown_children | length) == 0
@@ -824,6 +851,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           captain_actionable:(.captain_actionable // false),
           repo:((.repo // null) | if . == null then null else trunc(120) end),
           kind:((.kind // null) | if . == null then null else trunc(40) end)}][:$queued_n]),
+        eligible_queued:$eligible_queued[:$queued_n],
         landed:(if $landed_n == 0 then $landed_all else $landed_all[:$landed_n] end),
         endpoints:([$tasks[] | {id,state:.current_state.state,source:.current_state.source,
           endpoint:(.endpoint + {target:((.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
@@ -832,6 +860,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           decisions_open:($decisions_all | length),
           holds:($holds_all | length),
           queued:($queued_all | length),
+          eligible_queued:($eligible_queued | length),
           landed:($landed_all | length),
           endpoints:($tasks | length)
         },
@@ -839,6 +868,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           (if ($active_all | length) > $child_n then {surface:"active_children",count:(($active_all | length) - $child_n)} else empty end),
           (if ($decisions_all | length) > $decisions_n then {surface:"decisions_open",count:(($decisions_all | length) - $decisions_n)} else empty end),
           (if ($queued_all | length) > $queued_n then {surface:"queued",count:(($queued_all | length) - $queued_n)} else empty end),
+          (if ($eligible_queued | length) > $queued_n then {surface:"eligible_queued",count:(($eligible_queued | length) - $queued_n)} else empty end),
           (if ($tasks | length) > $child_n then {surface:"endpoints",count:(($tasks | length) - $child_n)} else empty end),
           (if $landed_n > 0 and ($landed_all | length) > $landed_n then {surface:"landed",count:(($landed_all | length) - $landed_n)} else empty end)
         ]
@@ -1340,6 +1370,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          freshness:{status:"fresh",observed_at:$observed,age_seconds:0},
          active_children:$summary.active_children,
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
+         eligible_queued:$summary.eligible_queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
          terminal_evidence:$terminal,contradiction:$contradiction}')
@@ -1369,7 +1400,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          reconcile_inventory:(if $summary_sampled then $summary.invalidity else null end),
          provenance:{selected:$provenance,structured_home:($home | if . == "" then null else . end),parent_event_role:"fallback-only-not-current"},
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
-         active_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
+         active_children:[],decisions_open:[],holds:[],queued:[],eligible_queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,eligible_queued:0,landed:0,endpoints:0},omitted:[],
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}')
     fi

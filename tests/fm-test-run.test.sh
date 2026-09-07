@@ -1359,11 +1359,24 @@ test_aggregate_refuses_empty_resolution_without_manifest() {
   [ ! -e "$tmp/out.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
   rc=0
   out=$("$RUNNER" --aggregate-json "$tmp/out2.json" --expect-lane portable-parallel-1 "$tmp/in" 2>&1) || rc=$?
-  [ "$rc" -eq 1 ] || { rm -rf "$tmp"; fail "the same empty directory under a manifest must report every lane missing with exit 1 (got $rc): $out"; }
-  assert_contains "$out" "missing_lanes=portable-parallel-1" "manifest path still lists the missing lane"
-  [ -f "$tmp/out2.json" ] || { rm -rf "$tmp"; fail "the incomplete aggregate under a manifest must still be written"; }
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "the same empty directory under a manifest must be refused with exit 2 (got $rc): $out"; }
+  assert_contains "$out" "fm-test-run: no fm-test-timing-*.json found under $tmp/in" "empty resolution under a manifest is typed"
+  [ ! -e "$tmp/out2.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  aggregate_lane_fixture "$tmp/lane.json" portable-parallel-1 1 0 0 1000
+  "$RUNNER" --aggregate-json "$tmp/prior/fm-test-timing-aggregate.json" "$tmp/lane.json" >/dev/null 2>&1 \
+    || { rm -rf "$tmp"; fail "building the prior aggregate fixture must succeed"; }
+  rc=0
+  out=$("$RUNNER" --aggregate-json "$tmp/out3.json" "$tmp/prior" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a directory holding only a prior aggregate must be refused with exit 2 (got $rc): $out"; }
+  assert_contains "$out" "fm-test-run: no lane timing artifact resolved from $tmp/prior/fm-test-timing-aggregate.json" "prior-aggregate-only refusal is typed and names the input"
+  [ ! -e "$tmp/out3.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
+  rc=0
+  out=$("$RUNNER" --aggregate-json "$tmp/out4.json" --expect-lane portable-parallel-1 --expect-lane real-herdr-gated "$tmp/prior" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || { rm -rf "$tmp"; fail "a prior-aggregate-only directory under a manifest must be refused with exit 2 (got $rc): $out"; }
+  assert_contains "$out" "every expected lane is missing: portable-parallel-1, real-herdr-gated" "prior-aggregate-only refusal under a manifest names every expected lane"
+  [ ! -e "$tmp/out4.json" ] || { rm -rf "$tmp"; fail "a refused aggregate must not write an output artifact"; }
   rm -rf "$tmp"
-  pass "aggregate-json refuses an empty resolution without a manifest and keeps the manifest path"
+  pass "aggregate-json refuses a resolution that yields no lane, with or without a manifest"
 }
 
 test_aggregate_refuses_invalid_lane_json() {

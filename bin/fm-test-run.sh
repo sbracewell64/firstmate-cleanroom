@@ -32,9 +32,10 @@
 #                   recursively for fm-test-timing-*.json, so a lane whose CI
 #                   artifact nests its file (the Herdr lane's diagnostics
 #                   bundle) is still resolved. A nonexistent input, an input
-#                   that is not valid JSON, and a resolution that finds no
-#                   timing file while no manifest is declared are each refused
-#                   (exit 2, nothing written). Every input must carry the
+#                   that is not valid JSON, and a resolution that yields no
+#                   lane at all (no timing file, or only prior aggregates)
+#                   are each refused (exit 2, nothing written), with or
+#                   without a manifest. Every input must carry the
 #                   "lane" identity --json records; an input without one is
 #                   refused, two inputs claiming one lane are refused rather
 #                   than summed, and a prior aggregate (kind=aggregate) found
@@ -1089,6 +1090,12 @@ for path in inputs:
                     for s in doc.get("scripts") or []],
     }
 
+if not lanes:
+    where = ", ".join(str(p) for p in inputs)
+    if expected is None:
+        refuse(f"no lane timing artifact resolved from {where} (only prior aggregates or nothing); refusing to write an empty aggregate")
+    refuse(f"no lane timing artifact resolved from {where} (only prior aggregates or nothing); every expected lane is missing: {', '.join(expected)}")
+
 ordered = [lanes[k] for k in sorted(lanes)]
 all_scripts = [row for lane in ordered for row in lane.pop("scripts")]
 all_scripts.sort(key=lambda s: (-int(s.get("duration_ms") or 0), s.get("path") or "", s.get("lane") or ""))
@@ -1893,8 +1900,8 @@ if [ "${MODE:-}" = "aggregate" ]; then
   while IFS= read -r s; do
     AGGREGATE_INPUTS+=("$s")
   done < <(resolve_aggregate_inputs "${SCRIPTS[@]}")
-  if [ "${#AGGREGATE_INPUTS[@]}" -eq 0 ] && [ "${#EXPECT_LANES[@]}" -eq 0 ]; then
-    die "no fm-test-timing-*.json found under ${SCRIPTS[*]}; declare --expect-lane to report the missing lanes instead"
+  if [ "${#AGGREGATE_INPUTS[@]}" -eq 0 ]; then
+    die "no fm-test-timing-*.json found under ${SCRIPTS[*]}; refusing to write an empty aggregate"
   fi
   aggregate_timing_json "$AGGREGATE_OUT" "${AGGREGATE_INPUTS[@]+"${AGGREGATE_INPUTS[@]}"}"
   exit $?

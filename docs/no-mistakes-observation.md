@@ -1,0 +1,55 @@
+# No-mistakes launch observation
+
+`bin/fm-nm-observe.sh` is the single owner of the no-mistakes observation obligation: the durable record that says a managed launch was admitted, which real run it became, what the canonical inventory says about that run, and what was never observed.
+Its header owns the exact verbs, flags, record fields, finding classes, cadence, and budgets; nothing here restates them.
+This document records the invariant, the entrypoint census with its honest coverage claims, the reconciliation seams, and the boundary the owner deliberately does not cross.
+
+## Invariant
+
+Every managed no-mistakes launch in a home has an observation obligation or an explicit typed gap, and every fact the obligation carries about a run is bound by identity from a canonical record.
+A managed launch is a task whose record says `kind=ship` and `mode=no-mistakes`.
+The obligation is bound before the launch is admitted, the actual run id is bound only after the daemon created the run, a preflight refusal keeps a launch-attempt identity and never a fabricated run id, a resumed run keeps its identity, and a retry links to its predecessor attempt and run.
+The canonical inventory is the daemon's own structured answer (`no-mistakes axi status` and `axi status --run <id>`); narration, activity logs, and the daemon's SQLite are never read.
+IPC run, step, and CI-readiness events are refresh hints only, and no owner in this repository subscribes to them today, so every recorded fact comes from a canonical read at a reconciliation moment.
+Unchanged state stays quiet: a reconciliation prints a line only for a new or changed finding, and a home that holds no obligation prints nothing and queries nothing.
+
+## Entrypoint census
+
+Each path that starts, resumes, or concludes a no-mistakes run for a task in this repository, with what actually covers it.
+COVERED means the obligation is created or advanced by the path's own owner before the run can exist; PENDING means the path is covered only by the reconciliation pass afterwards, so a bypass shows up as a typed gap rather than being prevented; COVERAGE GAP means nothing in this home can observe it beyond the orphan report.
+
+| Entrypoint | Owner | Coverage | How |
+|---|---|---|---|
+| Fresh ship spawn with `mode=no-mistakes` | `bin/fm-spawn.sh` | COVERED (enrolment) | The spawn enrols the obligation after its final commit, with `entrypoint=spawn`; an enrolment failure warns and leaves the task to be reported as `UNENROLLED`. |
+| Scout promotion to a no-mistakes ship | `bin/fm-promote.sh` | COVERED (enrolment) | Promotion enrols after the record flip, with `entrypoint=promote`. |
+| Worker-driven `/no-mistakes` (`no-mistakes axi run --intent`) from the ship brief | the worker, instructed by firstmate | PENDING at admission, reconciled after | Firstmate admits the attempt with `bin/fm-nm-observe.sh launch <id>` before it instructs the worker (AGENTS.md section 7), then binds the run with `bind` once the worker has started it. Nothing in this repository can intercept the worker's own shell, so a worker that starts or reruns a pipeline without that step is caught by reconcile as `UNBOUND_RUN` or `SUPERSEDED_RUN`, never prevented. A wrapper alone would not cover this path either; the census says so rather than claiming it. |
+| Relaunch of an existing task (`bin/fm-control.sh relaunch`, `bin/fm-spawn.sh --relaunch`) | `bin/fm-control.sh`, `bin/fm-spawn.sh` | COVERED (identity kept) | The relaunch republishes the task record and never touches the obligation, so a parked run resumed by the replacement keeps its bound run id; a genuinely new run after relaunch is `SUPERSEDED_RUN` until linked with `launch --retry` and `bind`. |
+| Retry or repair run on the same branch (`no-mistakes rerun`, a second `axi run`) | the worker | PENDING, reconciled after | Reported as `SUPERSEDED_RUN` with the exact heal; `launch --retry` opens the successor attempt linked to its predecessor. |
+| Current-state attribution | `bin/fm-crew-state.sh` via `bin/fm-nm-run-lib.sh` | COVERED (shared rules, no change) | The obligation binds runs under the same branch, head, and pipeline-owned rules the state helper uses, so the two never disagree about which run is the task's. |
+| PR ready and merge poll | `bin/fm-pr-check.sh`, `bin/fm-pr-poll.sh` | PENDING, reconciled after | `refresh` and `finalize` bind `pr=` and `pr_head=` from the task record; the PR owners are not changed. |
+| Merge outcome publication | `bin/fm-pr-merge.sh`, `bin/fm-merge-outcome-lib.sh` | PENDING, reconciled after | `refresh` records `publication=merged` from the merge-notification marker `bin/fm-pr-lib.sh` owns; the merge owners are not changed. |
+| Teardown | `bin/fm-teardown.sh` | COVERED (finalization) | Teardown finalizes the durable receipt before retiring the runtime obligation with the task's other state; the receipt survives in `data/<id>/`. |
+| Runs from another home on the shared daemon | none in this home | COVERAGE GAP | The daemon serves every home, so another home's runs appear in this home's inventory; they are reported once as `ORPHAN_RUN` and never adopted. |
+| Manual `no-mistakes` invocations in a project clone, and the daemon's own nested gate-agent runs | none | COVERAGE GAP | Same `ORPHAN_RUN` report; nothing else can observe them here. |
+| Runs that predate adoption | none | COVERAGE GAP (baseline) | The first reconciliation in a home records the existing inventory as uncovered history (`BASELINE`), not as observed work. |
+
+## Reconciliation seams
+
+- `bin/fm-session-start.sh` runs `reconcile --startup` on the locked path immediately after the inactive-outcome scan and prints any findings under a labeled line; a read-only session runs nothing.
+- `bin/fm-watch.sh` runs `reconcile` on every poll beside the inactive-outcome scan; the owner's cadence and budget keep quiet cycles free, and a printed finding raises `check: nm-observe`, which AGENTS.md section 8 routes to the same command and its printed heals.
+- The captured eval corpus (`eval.capture_provenance`, `eval.auto_capture`) is review evidence and is never counted as launch coverage; every receipt says so.
+
+## Records
+
+The obligation lives at `state/<id>.nm-observe` and the receipt at `data/<id>/nm-observation-receipt.md`; `state/.nm-observe-watermark` is the reconciliation's presentation cursor.
+[`configuration.md`](configuration.md) routes the home layout, and the script header owns the field inventory and the receipt's sections.
+
+## Boundary
+
+The observer reads and records; it never starts, answers, aborts, syncs, or reruns a pipeline, never approves a gate, never edits a pipeline-owned checkout, never writes under `NM_HOME`, and cannot manufacture an outcome: a recorded class is always replaced by the canonical read on the next refresh.
+A daemon identity change is reported and never silently rebound.
+The per-run two-level assessment and the lifecycle stage transitions are later increments of the same programme and are not part of this owner.
+
+## Verification
+
+`tests/fm-nm-observe.test.sh` pins the lifecycle and every finding class over isolated fixtures, including the negative proof that only read-only status reads were ever sent.

@@ -2872,7 +2872,16 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" \
+# Write the durable observation receipt (data/<id>/nm-observation-receipt.md)
+# before the runtime obligation is retired with the other per-task state.
+# bin/fm-nm-observe.sh finalize is best effort by contract: cleanup never
+# blocks on the daemon, and the receipt records what was not observed.
+if [ -f "$STATE/$ID.nm-observe" ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" finalize "$ID" >/dev/null 2>&1 \
+    || echo "warning: observation receipt for $ID could not be finalized" >&2
+fi
+rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.nm-observe" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \

@@ -3162,6 +3162,16 @@ if [ -n "$SPAWN_DEFERRED_SIGNAL" ]; then
   exit "$SPAWN_DEFERRED_SIGNAL_STATUS"
 fi
 
+# A fresh no-mistakes ship task carries its observation obligation from its
+# first record (bin/fm-nm-observe.sh). A relaunch keeps the existing record.
+# Enrolment failing never undoes a delivered spawn; the reconcile pass reports
+# the task as UNENROLLED until it is healed.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" enrol "$ID" --entrypoint spawn >/dev/null 2>&1 \
+    || echo "warning: observation obligation for $ID was not enrolled; run bin/fm-nm-observe.sh enrol $ID" >&2
+fi
+
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

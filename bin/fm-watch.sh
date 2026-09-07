@@ -1534,6 +1534,20 @@ while :; do
     triage_log "inactive-outcome reconciliation unavailable"
   fi
 
+  # The same loop owns the bounded no-mistakes observation cadence
+  # (bin/fm-nm-observe.sh reconcile): silent for a home with no obligation and
+  # for unchanged inventory, so only a new or changed coverage finding wakes
+  # firstmate.
+  nm_observe_out=
+  if nm_observe_out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" reconcile 2>/dev/null); then
+    if [ -n "$nm_observe_out" ]; then
+      wake "check: nm-observe"
+    fi
+  else
+    triage_log "no-mistakes observation reconciliation unavailable"
+  fi
+
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).
   # Time-based via .last-check mtime so the cadence survives watcher restarts.
   # Evaluated BEFORE the signal scan: wake() exits the cycle, so a check placed

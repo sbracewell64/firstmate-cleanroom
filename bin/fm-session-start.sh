@@ -757,6 +757,15 @@ else
   if [ -n "$INACTIVE_OUT" ]; then
     printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
   fi
+  # no-mistakes observation reconciliation, locked path only: the read-only
+  # inventory comparison bin/fm-nm-observe.sh owns. It is silent for a home
+  # that holds no obligation and for unchanged state, so a line here is a
+  # new or changed coverage finding with its heal command.
+  NM_OBSERVE_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" reconcile --startup 2>&1) || NM_OBSERVE_OUT=
+  if [ -n "$NM_OBSERVE_OUT" ]; then
+    printf 'no-mistakes observation reconciliation (typed owner: bin/fm-nm-observe.sh):\n%s\n' "$NM_OBSERVE_OUT"
+  fi
   # Pi supervision-branch recovery, locked path only: clear leases whose
   # supervising session died, and surface outcomes the branch stored durably
   # that never reached main (docs/pi-supervision-branch.md). Gated to the

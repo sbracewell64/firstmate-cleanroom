@@ -1,0 +1,7 @@
+HEAD=c6c22e3; cases touched by this change (wait_for_network_wake tenth-second poll; bounded stray-subprocess poll), run in isolation
+ok - the pure-Bash watchdog bounds session start, kills its hung grandchild, and emits the truncation contract
+
+real	0m45.397s
+user	0m1.779s
+sys	0m1.422s
+rc=0

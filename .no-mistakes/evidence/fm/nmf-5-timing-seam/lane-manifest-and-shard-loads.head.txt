@@ -1,0 +1,29 @@
+HEAD=c6c22e3
+## --list-ci-lanes (the manifest ci.yml builds --expect-lane from)
+portable-parallel-1
+portable-parallel-2
+portable-serial-1of4
+portable-serial-2of4
+portable-serial-3of4
+portable-serial-4of4
+real-herdr-gated
+
+## --list-lanes
+portable-parallel-1
+portable-parallel-2
+portable-serial
+portable-serial-1of4
+portable-serial-2of4
+portable-serial-3of4
+portable-serial-4of4
+real-herdr-gated
+
+## --serial-shard-loads
+portable-serial-1of4	36	917206
+portable-serial-2of4	36	917197
+portable-serial-3of4	36	917195
+portable-serial-4of4	36	917194
+
+## --check-coverage
+FM_TEST_COVERAGE ok total=180 parallel=24 serial=144 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=917206
+rc=0

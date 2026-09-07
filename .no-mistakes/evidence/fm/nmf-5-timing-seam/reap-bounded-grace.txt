@@ -1,0 +1,8 @@
+# reap() as defined in tests/fm-watch-triage.test.sh at HEAD c6c22e3, exercised against two background children
+reap () 
+{ 
+    local pid=$1 i=0;
+-- child 1: ignores TERM (models the bash-5.2 swallowed-trap watcher)
+reaped in 10.30s; still alive after reap: no
+-- child 2: cooperative (default TERM disposition)
+reaped in 0.11s; still alive after reap: no

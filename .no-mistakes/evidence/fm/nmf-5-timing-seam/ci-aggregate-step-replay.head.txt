@@ -1,0 +1,88 @@
+# Replay of the ci.yml 'Build aggregate timing summary' step (script extracted from the workflow YAML) at HEAD c6c22e3
+# Fixture downloads mimic actions/download-artifact merge-multiple: six portable lane files at the root, Herdr nested at fm-test/fm-test-timing-herdr.json
+
+===== A. all 7 lanes present (Herdr nested) -> complete=true, exit 0 =====
+-- download dir layout:
+   ./fm-test-timing-portable-parallel-1.json
+   ./fm-test-timing-portable-parallel-2.json
+   ./fm-test-timing-portable-serial-1of4.json
+   ./fm-test-timing-portable-serial-2of4.json
+   ./fm-test-timing-portable-serial-3of4.json
+   ./fm-test-timing-portable-serial-4of4.json
+   ./fm-test/fm-test-timing-herdr.json
+-- step output:
+FM_TEST_AGGREGATE lanes=7 expected=7 total=192 executed=177 failed=0 skipped_gate=15 critical_path_duration_ms=906000 complete=true missing_lanes=
+-- step exit: 0
+-- aggregate summary:
+{"complete": true, "critical_path_duration_ms": 906000, "executed": 177, "expected_lanes": ["portable-parallel-1", "portable-parallel-2", "portable-serial-1of4", "portable-serial-2of4", "portable-serial-3of4", "portable-serial-4of4", "real-herdr-gated"], "failed": 0, "lanes": 7, "missing_lanes": [], "skipped_gate": 15, "total": 192}
+lane ids: ['portable-parallel-1', 'portable-parallel-2', 'portable-serial-1of4', 'portable-serial-2of4', 'portable-serial-3of4', 'portable-serial-4of4', 'real-herdr-gated']
+
+===== B. Herdr artifact absent (the reproduced defect shape) -> INCOMPLETE by name, ::error, exit 1, marked aggregate still written =====
+-- download dir layout:
+   ./fm-test-timing-portable-parallel-1.json
+   ./fm-test-timing-portable-parallel-2.json
+   ./fm-test-timing-portable-serial-1of4.json
+   ./fm-test-timing-portable-serial-2of4.json
+   ./fm-test-timing-portable-serial-3of4.json
+   ./fm-test-timing-portable-serial-4of4.json
+-- step output:
+FM_TEST_AGGREGATE INCOMPLETE: missing expected lanes real-herdr-gated; this aggregate is not a complete cost or coverage report
+FM_TEST_AGGREGATE lanes=6 expected=7 total=180 executed=168 failed=0 skipped_gate=12 critical_path_duration_ms=906000 complete=false missing_lanes=real-herdr-gated
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 1
+-- step exit: 1
+-- aggregate summary:
+{"complete": false, "critical_path_duration_ms": 906000, "executed": 168, "expected_lanes": ["portable-parallel-1", "portable-parallel-2", "portable-serial-1of4", "portable-serial-2of4", "portable-serial-3of4", "portable-serial-4of4", "real-herdr-gated"], "failed": 0, "lanes": 6, "missing_lanes": ["real-herdr-gated"], "skipped_gate": 12, "total": 180}
+lane ids: ['portable-parallel-1', 'portable-parallel-2', 'portable-serial-1of4', 'portable-serial-2of4', 'portable-serial-3of4', 'portable-serial-4of4']
+
+===== C. no artifacts at all (download dir absent; the step mkdirs it) -> refused exit 2 naming every expected lane, nothing written =====
+-- download dir layout:
+   (directory absent before the step)
+-- step output:
+fm-test-run: no fm-test-timing-*.json found under $RUNNER_TEMP/fm-test-aggregate; every expected lane is missing: portable-parallel-1, portable-parallel-2, portable-serial-1of4, portable-serial-2of4, portable-serial-3of4, portable-serial-4of4, real-herdr-gated
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 2
+-- step exit: 2
+-- aggregate artifact: NOT WRITTEN
+
+===== D. re-run job downloads a prior aggregate beside the lanes -> skipped with a note, still 7 lanes, complete=true =====
+-- download dir layout:
+   ./fm-test-timing-aggregate.json
+   ./fm-test-timing-portable-parallel-1.json
+   ./fm-test-timing-portable-parallel-2.json
+   ./fm-test-timing-portable-serial-1of4.json
+   ./fm-test-timing-portable-serial-2of4.json
+   ./fm-test-timing-portable-serial-3of4.json
+   ./fm-test-timing-portable-serial-4of4.json
+   ./fm-test/fm-test-timing-herdr.json
+-- step output:
+fm-test-run: skipping prior aggregate $RUNNER_TEMP/fm-test-aggregate/fm-test-timing-aggregate.json
+FM_TEST_AGGREGATE lanes=7 expected=7 total=192 executed=177 failed=0 skipped_gate=15 critical_path_duration_ms=906000 complete=true missing_lanes=
+-- step exit: 0
+-- aggregate summary:
+{"complete": true, "critical_path_duration_ms": 906000, "executed": 177, "expected_lanes": ["portable-parallel-1", "portable-parallel-2", "portable-serial-1of4", "portable-serial-2of4", "portable-serial-3of4", "portable-serial-4of4", "real-herdr-gated"], "failed": 0, "lanes": 7, "missing_lanes": [], "skipped_gate": 15, "total": 192}
+lane ids: ['portable-parallel-1', 'portable-parallel-2', 'portable-serial-1of4', 'portable-serial-2of4', 'portable-serial-3of4', 'portable-serial-4of4', 'real-herdr-gated']
+
+===== E. two files claiming one lane -> refused exit 2, nothing written =====
+-- download dir layout:
+   ./fm-test-timing-portable-parallel-1-copy.json
+   ./fm-test-timing-portable-parallel-1.json
+   ./fm-test-timing-portable-parallel-2.json
+   ./fm-test-timing-portable-serial-1of4.json
+   ./fm-test-timing-portable-serial-2of4.json
+   ./fm-test-timing-portable-serial-3of4.json
+   ./fm-test-timing-portable-serial-4of4.json
+   ./fm-test/fm-test-timing-herdr.json
+-- step output:
+fm-test-run: duplicate lane id 'portable-parallel-1': $RUNNER_TEMP/fm-test-aggregate/fm-test-timing-portable-parallel-1-copy.json and $RUNNER_TEMP/fm-test-aggregate/fm-test-timing-portable-parallel-1.json both claim it; refusing to sum them
+::error::the timing aggregate is INCOMPLETE (exit 1, see the FM_TEST_AGGREGATE lines above) or was refused (exit 2, see the fm-test-run line above); got exit 2
+-- step exit: 2
+-- aggregate artifact: NOT WRITTEN
+
+===== determinism: A and D aggregates (same lanes, prior aggregate beside them in D) byte-identical? =====
+/tmp/fmci.bFQseA/rt1/fm-test/fm-test-timing-aggregate.json /tmp/fmci.bFQseA/rt4/fm-test/fm-test-timing-aggregate.json differ: byte 161, line 7
+
+NOTE: the A/D difference above is only each lane's recorded provenance "path" (A's inputs lived under rt1, D's under rt4). Re-checked with the same download directory and the same manifest order, as a CI re-run has (same RUNNER_TEMP, manifest from --list-ci-lanes):
+FM_TEST_AGGREGATE lanes=3 expected=3 total=10 executed=7 failed=0 skipped_gate=3 critical_path_duration_ms=3000 complete=true missing_lanes=
+fm-test-run: skipping prior aggregate $RUNNER_TEMP/in/fm-test-timing-aggregate.json
+FM_TEST_AGGREGATE lanes=3 expected=3 total=10 executed=7 failed=0 skipped_gate=3 critical_path_duration_ms=3000 complete=true missing_lanes=
+first run and re-run (prior aggregate beside the lanes): byte-identical, sha256 28ae10a78b4ef6e5
+Observation: summary.expected_lanes keeps the --expect-lane order as given (reordering the flags reorders that array); ci.yml always builds the manifest in --list-ci-lanes order, so CI output is stable.

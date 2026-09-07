@@ -1,0 +1,6 @@
+NM_ASSESS: COVERAGE_GAP task=g1 reason=admitted launch has no observation or explicit pending/error state (heal: bin/fm-nm-observe.sh refresh g1)
+NM_ASSESS: COVERAGE_GAP task=g2 reason=bound run has no assessment (heal: bin/fm-nm-assess.sh assess g2)
+NM_ASSESS: COVERAGE_GAP task=g3 reason=assessment has no disposition (heal: bin/fm-nm-assess.sh assess g3)
+NM_ASSESS: COVERAGE_GAP family=orphan-1 reason=remediation has no owner (file the bounded owner task with an owner and next gate)
+NM_ASSESS: FRESHNESS task=fr now=1000 last_poll_age=900s last_event_age=910s last_handled_age=920s generation=4242@gen
+NM_ASSESS: FRESHNESS task=g3 now=1000 last_poll_age=unknown last_event_age=unknown last_handled_age=unknown generation=

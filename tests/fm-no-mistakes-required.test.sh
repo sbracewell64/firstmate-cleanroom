@@ -169,6 +169,18 @@ test_resolve_missing_input_fails_closed() {
   pass "resolve fails closed on a missing required input"
 }
 
+test_resolve_empty_live_body_fails_closed() {
+  local rc=0 out
+  out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="" \
+    "$NMF_HELPER" resolve 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "resolve emitted a result for an empty live body in current mode"
+  case "$out" in
+    *"body<<"*) fail "resolve emitted a body block for an empty live body, which the verifier resolves through the frozen event" ;;
+  esac
+  pass "resolve fails closed on an empty live body so it cannot pass via the frozen event"
+}
+
 test_readback_unchanged_subject_passes() {
   local rc=0
   NMF_SUBJECT_NUMBER=3006 NMF_SUBJECT_HEAD="$NEW_SHA" \
@@ -253,6 +265,7 @@ test_resolve_matching_subject_emits_live_body_and_subject_head
 test_resolve_superseded_head_fails_closed
 test_resolve_identity_mismatch_fails_closed
 test_resolve_missing_input_fails_closed
+test_resolve_empty_live_body_fails_closed
 test_readback_unchanged_subject_passes
 test_readback_advanced_subject_fails_closed
 test_current_mode_sound_live_proof_passes

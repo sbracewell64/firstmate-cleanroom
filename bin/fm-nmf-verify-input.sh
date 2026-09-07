@@ -24,6 +24,11 @@
 #              own run), and emits the live body plus the subject head for the
 #              verifier. A historical event never reaches this path, so an old
 #              event can never be re-judged against a newer body or head.
+#              It also fails closed when the live body is empty or unavailable:
+#              it emits no body output rather than an empty one.
+#              An empty body is falsy to the pinned verifier and would fall back
+#              to the frozen event payload, so this refusal keeps a stale event
+#              from being reinterpreted against newer PR state.
 #   readback   current mode only, AFTER the verifier. Re-reads the live subject
 #              (number and head) and refuses to let the result stand if the
 #              subject advanced during verification, so an old-head run can never
@@ -47,7 +52,7 @@
 set -eu
 
 usage() {
-  sed -n '2,49{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,51{s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.
@@ -99,11 +104,6 @@ resolve() {
   require NMF_EVENT_HEAD_SHA "$event_head"
   require NMF_LIVE_NUMBER "$live_number"
   require NMF_LIVE_HEAD_SHA "$live_head"
-  # NMF_LIVE_BODY may legitimately be empty only if the PR genuinely has no
-  # body; such a PR carries no attestation and the verifier fails it. We still
-  # bind identity and subject first so a superseded or misidentified subject is
-  # refused before any body judgement.
-
   # Bind PR identity: the live read must describe the same PR the event names.
   if [ "$live_number" != "$event_number" ]; then
     die 1 "fm-nmf-verify-input.sh resolve: live PR identity #$live_number does not match the event subject #$event_number."
@@ -114,6 +114,13 @@ resolve() {
   # run; letting this one continue would judge a body/head this run is not about.
   if [ "$live_head" != "$event_head" ]; then
     die 1 "fm-nmf-verify-input.sh resolve: subject superseded - event head $event_head, live head $live_head. The advanced head has its own run; this run must not publish a result for it."
+  fi
+
+  # Fail closed on an empty live body. An empty PR_BODY is falsy to the pinned
+  # verifier, which would fall back to the frozen event payload - exactly the
+  # stale reinterpretation this mode forbids. Refuse before emitting any output.
+  if [ -z "$live_body" ]; then
+    die 1 "fm-nmf-verify-input.sh resolve: current-mode live body is empty or unavailable; no sound live subject established, refusing to fall back to the frozen event payload."
   fi
 
   local delimiter

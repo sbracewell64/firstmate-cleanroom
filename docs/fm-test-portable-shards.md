@@ -107,11 +107,11 @@ The rebalance refreshed the hints only; no lane was added and no concurrency was
 Replaying the same measured per-script durations from run 34073321294 through the refreshed partition predicts 986.9 s, 942.1 s, 948.3 s, and 928.7 s for shards 1 to 4, a critical shard of 986.9 s against the measured 1176.7 s (about 16 % less script time on the critical path), and by three-run means 917.2 s against 1087.8 s (about 16 %).
 That is the expected effect of the measured redistribution, not a measured result: record the first post-rebalance runs' per-lane times here at the next hint refresh, and expect the same +27 % run-to-run spread noted under Timeouts.
 
-Refresh the hints by downloading the per-shard timing artifacts from a CI run whose shard artifacts together cover every serial script, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above from `--serial-shard-loads`:
+Refresh the hints by downloading the per-shard timing artifacts from the latest few green `main` CI runs whose shard artifacts together cover every serial script (three, as above, damps the per-run spread; one run works but bakes its spread into the partition), replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with each script's mean `duration_ms` over the runs that carried it, and updating the table above from `--serial-shard-loads`:
 
 ```sh
-gh run download <run-id> -R <owner>/<repo> --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
-jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*/*.json | LC_ALL=C sort
+for run in <run-id> <run-id> <run-id>; do gh run download "$run" -R <owner>/<repo> --pattern 'fm-test-timing-portable-serial-*' -D "/tmp/fm-serial/$run"; done
+jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*/*/*.json | awk '{ sum[$1] += $2; n[$1]++ } END { for (p in sum) printf "%s %d\n", p, sum[p] / n[p] }' | LC_ALL=C sort
 bin/fm-test-run.sh --serial-shard-loads
 bin/fm-test-run.sh --check-coverage
 ```
@@ -147,7 +147,7 @@ Before this check the Herdr lane's nested file was silently left out, so the agg
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 30` | Each balanced shard is about 16.2 minutes of measured script time, and the same scripts varied by about +27 % between two runs, so the former 20-minute cap sat inside normal spread and cancelled healthy shards; 30 minutes gives about 1.9x hang-tripwire margin for job setup and runner-speed spread, and the coverage guard's shard budget of 66 % of the cap keeps hinted work at or below 19.8 minutes, which at +27 % still finishes with several minutes to spare. |
+| portable serial 1-4 | job `timeout-minutes: 30` | Each balanced shard is about 15 minutes of hinted script time (the shard table above owns the exact figure), and the same scripts varied by about +27 % between two runs, so the former 20-minute cap sat inside normal spread and cancelled healthy shards; 30 minutes gives about 2x hang-tripwire margin for job setup and runner-speed spread, and the coverage guard's shard budget of 66 % of the cap keeps hinted work at or below 19.8 minutes, which at +27 % still finishes with several minutes to spare. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

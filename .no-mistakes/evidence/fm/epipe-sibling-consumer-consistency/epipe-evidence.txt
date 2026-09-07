@@ -1,0 +1,36 @@
+### EPIPE sibling-consumer consistency — evidence transcript
+
+## 1. Baseline: handlers present, both regression suites PASS
+$ bash tests/fm-turnend-guard-epipe.test.sh
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+ok - Pi turn-end guard swallows a child-stdin EPIPE without crashing the host
+
+$ bash tests/fm-operational-input.test.sh   (EPIPE case only)
+ok - operational input: the OpenCode adapter swallows a child-stdin EPIPE without crashing the host
+
+## 2. Mutation-verification — each production handler removed independently, its
+   regression FAILS with an uncaught EPIPE host crash (exit!=0). Restored after.
+
+-- F1 Pi guard (.pi/extensions/fm-primary-turnend-guard.ts): handler removed --
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+not ok - Pi guard must survive a child-stdin EPIPE: node:child_process:8
+        const err = new Error("write EPIPE");
+Error: write EPIPE
+
+-- F1 OpenCode guard (.opencode/plugins/fm-primary-turnend-guard.js): handler removed --
+not ok - OpenCode guard must survive a child-stdin EPIPE: node:child_process:8
+        const err = new Error("write EPIPE");
+Error: write EPIPE
+    at raiseEpipe (node:child_process:8:21)
+
+-- F2 operational-input encoder (.opencode/plugins/lib/fm-operational-input.js): handler removed --
+not ok - OpenCode adapter must survive a child-stdin EPIPE and preserve the verdict: node:events:505
+Error: write EPIPE
+  code: 'EPIPE',
+  syscall: 'write'
+
+## 3. F3/CI fix: node-absence session-start cases now host-independent (this WSL host has /usr/bin/node)
+ok - digest sections are ordered safety-preamble first, live fleet state before curated memory
+ok - fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim
+
+Worktree clean after all mutation runs restored.

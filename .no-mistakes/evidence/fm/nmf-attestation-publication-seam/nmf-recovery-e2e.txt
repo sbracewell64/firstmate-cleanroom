@@ -1,0 +1,48 @@
+no-mistakes-required gate: typed-mode recovery, end-to-end through the REAL pinned verifier
+pinned action: kunchenguid/no-mistakes .../require-no-mistakes@32d396a  (fetched live)
+target commit: e5e0f03    base: 2d6106c
+
+############################################################
+# SCENARIO A  (INTENT: fix the false-fail)
+# synchronize recovery event, event payload one generation late,
+# but live body is soundly attested to the live head. MUST PASS.
+############################################################
+[resolve] exit=0  bound subject_head=2222222222222222222222222222222222222222
+[verify ] Found no-mistakes signature in PR #3006 body.
+Found structurally compliant pipeline step attestation.
+::warning::PR-body attestation is author-editable and is not cryptographic proof that no-mistakes produced it.  (exit 0)
+
+############################################################
+# SCENARIO B  (INTENT: do NOT weaken the check)
+# current mode, live body GENUINELY stale (attests OLD head,
+# live head is NEW). MUST FAIL.
+############################################################
+[resolve] exit=0 (binds matching subject; body judged by verifier)
+[verify ] exit=1  ::error::Pipeline attestation head_sha does not match the current PR head.
+
+attestation.head_sha: 1111111111111111111111111111111111111111
+PR head: 2222222222222222222222222222222222222222
+
+A later push must not pass on an older attestation. Re-run 'git push no-mistakes' so the PR body attestation binds to the current head.
+
+See CONTRIBUTING.md for setup and the full workflow.
+
+PR author: regression
+Found no-mistakes signature in PR #3006 body.
+
+############################################################
+# SCENARIO C  (INTENT pt.4 + review round-1 fix)
+# current mode, EMPTY live body. MUST FAIL CLOSED with NO body
+# output, so the verifier can't fall back to the frozen event.
+############################################################
+--- PRE-FIX (f047a1e): ---
+exit=0  body-block-emitted=YES-fail-open
+--- POST-FIX (target e5e0f03): ---
+exit=1  body-block-emitted=none-fail-closed
+diag: ::error::fm-nmf-verify-input.sh resolve: current-mode live body is empty or unavailable; no sound live subject established, refusing to fall back to the frozen event payload.
+
+############################################################
+# SCENARIO D  (INTENT pt.4/5: old-head run can't publish for advanced head)
+# read-back after verdict: subject advanced during verification. MUST FAIL.
+############################################################
+[readback] exit=1  ::error::fm-nmf-verify-input.sh readback: subject advanced during verification - verified head 1111111111111111111111111111111111111111, live head 2222222222222222222222222222222222222222. Refusing to publish a result for a superseded head.

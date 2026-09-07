@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
@@ -26,5 +27,76 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      # Check out the BASE branch, not the PR head. This gate script decides
+      # whether a PR may merge, so it must always be main's trusted copy; a fork
+      # head could otherwise replace it. The pinned verifier action is fetched
+      # by `uses:` independently and is unaffected by this checkout.
+      - name: Check out the base branch gate script
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      # Typed input mode. 'opened'/'edited' are historical: their evidence is the
+      # event snapshot and must be judged as it was, so no live read happens and
+      # the verifier falls back to the event payload. 'synchronize'/'reopened'
+      # are current-state recovery: their subject is current readiness, so the
+      # steps below bind the live PR and hand the verifier live body and head.
+      - name: Classify the verifier input mode
+        id: classify
+        env:
+          NMF_EVENT_ACTION: ${{ github.event.action }}
+        shell: bash
+        run: bin/fm-nmf-verify-input.sh classify >> "$GITHUB_OUTPUT"
+
+      # Current mode only. ONE live provider read (number, head, body); the gate
+      # script binds PR identity and refuses a superseded subject (a head that
+      # advanced past this event's head - that head has its own run) before
+      # emitting the live body and subject head for the verifier. Fails the job
+      # rather than silently reinterpreting a stale event against newer state.
+      - name: Bind the current PR subject
+        id: subject
+        if: steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NMF_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          NMF_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -eu
+          pr_json="$(gh pr view "$NMF_EVENT_NUMBER" --json number,body,headRefOid)"
+          NMF_LIVE_NUMBER="$(printf '%s' "$pr_json" | jq -r '.number')"
+          NMF_LIVE_HEAD_SHA="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
+          NMF_LIVE_BODY="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
+          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA NMF_LIVE_BODY
+          bin/fm-nmf-verify-input.sh resolve >> "$GITHUB_OUTPUT"
+
+      # Verify the signature and pipeline attestation. In current mode the inputs
+      # are the bound live body and subject head; in historical mode the subject
+      # step is skipped so both inputs are empty and the action reads the event
+      # payload, preserving the historical opened/edited semantics exactly.
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          pr-body: ${{ steps.subject.outputs.body }}
+          pr-head-sha: ${{ steps.subject.outputs.head_sha }}
+
+      # Current mode only, after the verdict. Re-read the live subject and refuse
+      # to let a green result stand if the head advanced during verification, so
+      # an old-head run can never publish a result for a newer advanced head.
+      - name: Read back the verified subject
+        if: success() && steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NMF_SUBJECT_NUMBER: ${{ steps.subject.outputs.subject_number }}
+          NMF_SUBJECT_HEAD: ${{ steps.subject.outputs.subject_head }}
+        shell: bash
+        run: |
+          set -eu
+          pr_json="$(gh pr view "$NMF_SUBJECT_NUMBER" --json number,headRefOid)"
+          NMF_LIVE_NUMBER="$(printf '%s' "$pr_json" | jq -r '.number')"
+          NMF_LIVE_HEAD_SHA="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
+          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA
+          bin/fm-nmf-verify-input.sh readback

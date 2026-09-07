@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
@@ -26,5 +27,78 @@ jobs:
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      # Check out the gate helper from the PR BASE, never the head. The workflow
+      # definition runs from the head, but the guard a PR is judged by must be
+      # the trusted, already-landed helper on the base branch - a PR cannot
+      # supply its own copy of the guard, and the helper is guaranteed to exist
+      # on the base independently of whatever the head contains.
+      - name: Check out base gate helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      # bin/fm-nmf-verify-input.sh is the single owner of the event-action ->
+      # input-mode mapping; the workflow never re-spells the action list.
+      # historical (opened, edited) is judged on the frozen event snapshot by
+      # the pinned action's defaults; current (synchronize, reopened) re-binds
+      # to a single live PR read below.
+      - name: Classify event input mode
+        id: classify
+        env:
+          NMF_EVENT_ACTION: ${{ github.event.action }}
+        run: bin/fm-nmf-verify-input.sh classify >> "$GITHUB_OUTPUT"
+
+      # Current mode only. The frozen event payload can carry a one-generation
+      # late body/head pair (read-replica lag, or a head that advanced after the
+      # event fired), so read the live PR subject once and let the helper bind
+      # PR identity, refuse a superseded subject, and fail closed on an empty
+      # live body. Its outputs (subject-bound live body and head) are what the
+      # verifier judges. A historical event skips this step, so an old event can
+      # never be re-judged against a newer live body or head.
+      - name: Resolve live PR subject
+        id: resolve
+        if: steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NMF_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          NMF_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NMF_EVENT_NUMBER}")
+          NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
+          NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+          NMF_LIVE_BODY=$(printf '%s' "$pr" | jq -r '.body // ""')
+          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA NMF_LIVE_BODY
+          bin/fm-nmf-verify-input.sh resolve >> "$GITHUB_OUTPUT"
+
+      # In historical mode the resolve step is skipped, so pr-body and
+      # pr-head-sha are empty and the pinned action falls back to the frozen
+      # event payload - exactly the event-snapshot judgement historical events
+      # require. In current mode they carry the subject-bound live body and head
+      # from the helper. pr-head-ref and pr-author are left to the action's
+      # event-payload defaults in both modes, so exempt-branch and fork-approval
+      # semantics are unchanged.
       - name: Verify no-mistakes signature and pipeline attestation
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          pr-body: ${{ steps.resolve.outputs.body }}
+          pr-head-sha: ${{ steps.resolve.outputs.head_sha }}
+
+      # Current mode only, AFTER the verdict. Re-read the live subject and
+      # refuse to let a green result stand if the PR head advanced during
+      # verification, so an old-head run can never publish a result for a newer,
+      # already-advanced head (which fires its own run).
+      - name: Read back live PR subject
+        if: steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NMF_SUBJECT_NUMBER: ${{ steps.resolve.outputs.subject_number }}
+          NMF_SUBJECT_HEAD: ${{ steps.resolve.outputs.subject_head }}
+        run: |
+          set -eu
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NMF_SUBJECT_NUMBER}")
+          NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
+          NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA
+          bin/fm-nmf-verify-input.sh readback

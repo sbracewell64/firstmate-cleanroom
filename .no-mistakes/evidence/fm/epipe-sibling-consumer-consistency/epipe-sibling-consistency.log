@@ -1,0 +1,44 @@
+### EPIPE sibling-consumer consistency — behavioral evidence
+
+== 1. Regression suites PASS with the production handlers in place ==
+$ bash tests/fm-turnend-guard-epipe.test.sh
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+ok - Pi turn-end guard swallows a child-stdin EPIPE without crashing the host
+
+$ bash tests/fm-operational-input.test.sh
+ok - operational input: every current generic envelope retains its exact structured kind
+ok - operational input: the established from-firstmate carrier remains structurally typed and byte-compatible
+ok - operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input
+ok - operational input: historical prose compatibility is isolated from current parsing
+ok - operational input: quoted, ASCII-only, arbitrary-U+2063, altered-legacy, and label-only near misses stay genuine
+ok - operational input: the OpenCode adapter constructs through the canonical owner
+ok - operational input: the OpenCode adapter swallows a child-stdin EPIPE without crashing the host
+ok - operational input: current construction rejects legacy kinds and empty bodies
+
+== 2. Mutation check: REMOVE the Pi guard child.stdin error handler ==
+(handler removed; test now FAILS -> the pin is real, not vacuous)
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+not ok - Pi guard must survive a child-stdin EPIPE: node:child_process:8
+        const err = new Error("write EPIPE");
+                    ^
+
+Error: write EPIPE
+    at raiseEpipe (node:child_process:8:21)
+    at node:child_process:15:50
+Emitted 'error' event at:
+    at raiseEpipe (node:child_process:10:15)
+    at node:child_process:15:50 {
+  code: 'EPIPE'
+}
+
+Node.js v24.20.0: expected exit 0, got 1
+
+== 3. Mutation check: REMOVE the operational-input encoder handler ==
+(handler removed; encoder EPIPE case now FAILS with uncaught write EPIPE)
+not ok - OpenCode adapter must survive a child-stdin EPIPE and preserve the verdict: node:events:505
+Error: write EPIPE
+  code: 'EPIPE',
+Node.js v24.20.0: expected exit 0, got 1
+
+== working tree restored ==
+(clean)

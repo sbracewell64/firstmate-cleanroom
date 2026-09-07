@@ -1,0 +1,14 @@
+# Mutation verification: regression pins FAIL when the production handler is removed
+# (proves each test observes real behavior, not a vacuous pass)
+
+== Pi guard handler removed -> tests/fm-turnend-guard-epipe.test.sh ==
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+not ok - Pi guard must survive a child-stdin EPIPE: node:child_process:8
+Error: write EPIPE
+Node.js v24.20.0: expected exit 0, got 1
+
+== encoder handler removed -> tests/fm-operational-input.test.sh (EPIPE case) ==
+not ok - OpenCode adapter must survive a child-stdin EPIPE and preserve the verdict: node:events:505
+Error: write EPIPE
+  code: 'EPIPE',
+Node.js v24.20.0: expected exit 0, got 1

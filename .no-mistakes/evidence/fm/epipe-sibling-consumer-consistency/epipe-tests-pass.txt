@@ -1,0 +1,16 @@
+# EPIPE sibling-consumer consistency — test evidence
+branch: fm/epipe-sibling-consumer-consistency  target: 722e6ca
+
+== 1. New EPIPE regression suite (production handlers PRESENT) ==
+ok - OpenCode turn-end guard swallows a child-stdin EPIPE without crashing the host
+ok - Pi turn-end guard swallows a child-stdin EPIPE without crashing the host
+
+== 2. operational-input suite incl. new >64KiB EPIPE case (handler PRESENT) ==
+ok - operational input: every current generic envelope retains its exact structured kind
+ok - operational input: the established from-firstmate carrier remains structurally typed and byte-compatible
+ok - operational input: untyped landed FIRSTMATE_OP transcripts are explicit legacy-operational input
+ok - operational input: historical prose compatibility is isolated from current parsing
+ok - operational input: quoted, ASCII-only, arbitrary-U+2063, altered-legacy, and label-only near misses stay genuine
+ok - operational input: the OpenCode adapter constructs through the canonical owner
+ok - operational input: the OpenCode adapter swallows a child-stdin EPIPE without crashing the host
+ok - operational input: current construction rejects legacy kinds and empty bodies

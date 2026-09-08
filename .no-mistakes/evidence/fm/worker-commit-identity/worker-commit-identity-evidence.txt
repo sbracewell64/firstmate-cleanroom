@@ -1,0 +1,28 @@
+# Worker commit-identity pin — end-to-end evidence
+# Target: c2548c8 on fm/worker-commit-identity
+
+## 1. Real spawn path exports pinned identity into worker pane (ship/direct-PR/scout)
+## 2. Effective git commit objects (author AND committer) resolve to the pinned captain identity, never the ambient global
+
+ok - a worktree with no pin authors commits under the ambient global - the contamination the fix removes
+# observed no-mistakes export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed no-mistakes author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788887661 -0400
+# observed direct-PR export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed direct-PR author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788887665 -0400
+# observed scout export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed scout author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788887667 -0400
+ok - ship, direct-PR, and scout workers each launch with the pinned commit identity in the effective author and committer
+# all fm-spawn-commit-identity tests passed
+
+## 3. #27 no-mistakes daemon gate-mirror pin still coexists and passes
+ok - CE6: a failed or out-of-home vendor gate never pins a mirror outside the declared NM_HOME
+ok - pin preserves original authors on rebase; only the replayed committer becomes the pin
+ok - pin is idempotent: repeated pins stay OK and the identity holds
+ok - pin never modifies the operator global git config
+ok - bad usage is rejected with the usage exit code
+ok - fm-nm-commit-identity: all cases
+
+## 4. Change maps both commit-identity tests via fm-test-run --changed
+tests/fm-commit-identity-verify.test.sh
+tests/fm-nm-commit-identity.test.sh
+tests/fm-spawn-commit-identity.test.sh

@@ -2217,8 +2217,27 @@ test_identity_obligation_refuses_missing_required_input() {
   pass "an obligated task with a missing required input fails closed before merge poll publication"
 }
 
+test_identity_obligation_gitlab_arms_without_enforcement() {
+  local dir url out rc
+  # A GitLab task's PR head is structurally empty by design (glab exposes it only
+  # inside JSON and firstmate avoids a JSON-processor dependency), so commit
+  # identity is deliberately UNENFORCED for GitLab: an obligated GitLab ship must
+  # still arm, not be refused for a head that can never be resolved here.
+  dir=$(make_case ident-gitlab)
+  url=https://gitlab.example/group/subgroup/project/-/merge_requests/7
+  write_task_meta "$dir"
+  write_identity_obligation "$dir"
+  run_check_entry "$dir" task-a "$url" > "$dir/out" 2> "$dir/err"; rc=$?
+  [ "$rc" -eq 0 ] || fail "an obligated GitLab ship must still arm: $(cat "$dir/err")"
+  assert_grep "armed: state/task-a.check.sh" "$dir/out" "the GitLab poll is armed despite an empty head"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "obligated GitLab arming did not publish an authenticated poll"
+  pass "an obligated GitLab ship arms without identity enforcement"
+}
+
 test_identity_obligation_refuses_unreadable_head
 test_identity_obligation_refuses_missing_required_input
+test_identity_obligation_gitlab_arms_without_enforcement
 test_parser_matrix
 test_identity_obligation_refuses_contaminated_pipeline_commit
 test_identity_obligation_arms_pinned_pipeline_commit

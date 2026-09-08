@@ -90,8 +90,16 @@ fi
 # base..head range. It does not by itself prove that every producer path records
 # an obligation, nor that every commit-producing path is covered - that remains
 # the recording side's responsibility (bin/fm-spawn.sh, bin/fm-nm-commit-identity.sh).
+# PROVIDER SCOPE (intentional gap, not silent): a GitLab task's PR_HEAD is
+# structurally empty by design - glab exposes the head only inside its JSON
+# output and firstmate deliberately avoids a JSON-processor dependency, so it is
+# never resolved live here. GitLab commit-identity is therefore deliberately
+# UNENFORCED at this boundary: an obligated GitLab task arms without identity
+# enforcement (its pre-hardening behavior) rather than being permanently refused
+# for a head that can never be present. The fail-closed enforcement below applies
+# only to PROVIDER=github, where the head is resolvable.
 OBLIGATION="$STATE/$ID.commit-identity"
-if [ -e "$OBLIGATION" ] || [ -L "$OBLIGATION" ]; then
+if [ "$PROVIDER" = github ] && { [ -e "$OBLIGATION" ] || [ -L "$OBLIGATION" ]; }; then
   if [ ! -f "$OBLIGATION" ] || [ -L "$OBLIGATION" ] || [ ! -r "$OBLIGATION" ] \
     || [ -z "$PR_HEAD" ] || [ -z "$WT" ] || [ ! -d "$WT" ] \
     || [ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]; then

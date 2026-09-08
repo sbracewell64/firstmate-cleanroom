@@ -235,6 +235,13 @@ esac
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
+# Captain-decided git identity every worker commit is authored and committed
+# under, pinned per-process at the launch seam below (search FM_WORKER_COMMIT_NAME).
+# The noreply email attributes worker commits to the captain's GitHub account
+# without exposing a personal address.
+FM_WORKER_COMMIT_NAME='sbracewell64'
+FM_WORKER_COMMIT_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
@@ -3100,6 +3107,20 @@ spawn_record_traceparent() {
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# Pin the captain-decided commit identity into the crewmate's pane shell, through
+# the same channel that already ships GOTMPDIR, so every git the worker runs -
+# the harness, no-mistakes' review/rebase/CI repair commits, promoted follow-ups,
+# and both local-only and PR delivery - authors AND commits under it instead of
+# inheriting whatever identity the operator's global git config carries. Left
+# unset, a worker commit is authored as that global identity, which GitHub
+# resolves to a foreign account and a squash-merge then propagates into landed
+# history as a Co-authored-by trailer. GIT_AUTHOR_*/GIT_COMMITTER_* are per
+# process, so this pins the effective identity without touching any git config,
+# the operator's global, or any sibling worktree or home, and a squash-merge then
+# carries the captain's own account into landed history. The noreply address
+# attributes the work to the captain's GitHub account without exposing a personal
+# email. Sent for every backend, harness, and kind - ship, scout, and secondmate.
+spawn_send_text_line "$T" "export GIT_AUTHOR_NAME=$(shell_quote "$FM_WORKER_COMMIT_NAME") GIT_AUTHOR_EMAIL=$(shell_quote "$FM_WORKER_COMMIT_EMAIL") GIT_COMMITTER_NAME=$(shell_quote "$FM_WORKER_COMMIT_NAME") GIT_COMMITTER_EMAIL=$(shell_quote "$FM_WORKER_COMMIT_EMAIL")"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.

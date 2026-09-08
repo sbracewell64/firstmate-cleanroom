@@ -1,0 +1,31 @@
+Provenance fail-closed hardening (counterexamples B & C) — behavioral evidence
+branch fm/provenance-verifier-residual-hardening  target 97f109d  base c7947025
+Generated 2026-09-08T20:09:21Z
+
+================================================================
+COUNTEREXAMPLE C — fm-commit-identity-verify.sh
+A git-log traversal failure must NOT be reported as a false OK.
+----------------------------------------------------------------
+[NEW source] new regression test:
+ok - git log failure cannot become OK zero commits
+ok - an unresolvable commit range is a typed RANGE_UNREADABLE
+
+[OLD source] same test against base-commit verifier (proves it is a real regression):
+not ok - failed traversal must be RANGE_UNREADABLE, got 0: OK 0 pipeline commits verified against sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+================================================================
+COUNTEREXAMPLE B — fm-pr-check.sh merge-poll boundary
+An obligated task with an unresolvable head / missing required input
+must REFUSE 'UNVERIFIED' and publish NO merge poll, instead of arming blind.
+GitLab obligated ships (structurally empty head) still arm (intentional gap).
+----------------------------------------------------------------
+[NEW source] identity regressions + positive/no-op/gitlab cases:
+ok - the commit-identity obligation refuses to arm the merge poll for a contaminated pipeline commit
+ok - the obligation arms the merge poll normally when the pipeline commit is pinned
+ok - the identity gate is opt-in: absent obligation never blocks arming
+ok - an obligated unreadable head fails closed before merge poll publication
+ok - an obligated task with a missing required input fails closed before merge poll publication
+ok - an obligated GitLab ship arms without identity enforcement
+
+[OLD source] the two new fail-closed cases against base-commit pr-check (proves regression):
+not ok - an unreadable obligated head must refuse instead of arming

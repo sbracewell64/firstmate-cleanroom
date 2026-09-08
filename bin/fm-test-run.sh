@@ -1332,6 +1332,7 @@ families_for_changed_path() {
       ;;
     bin/fm-work-context.sh|bin/fm-work-context-lib.sh)
       printf '%s\n' "__script__:fm-work-context.test.sh"
+      printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh"
       ;;
     bin/fm-secondmate*|bin/fm-remote*|bin/fm-on.sh|bin/fm-home-seed.sh|\
     bin/fm-backlog-handoff.sh|bin/fm-backlog-receive.sh|bin/fm-procevent-remote-reply.sh|\
@@ -1410,6 +1411,10 @@ families_for_changed_path() {
     bin/fm-peek.sh|bin/fm-composer*)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
+      # fm-spawn.sh also carries the wired work-context authority gate.
+      case "$path" in
+        bin/fm-spawn.sh) printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh" ;;
+      esac
       ;;
     bin/fm-task-inbox-lib.sh)
       # The steering-inbox record/doorbell/ladder owner: fm-send's data plane

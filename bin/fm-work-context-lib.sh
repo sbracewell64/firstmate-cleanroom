@@ -60,11 +60,15 @@
 # / fm_backlog_transition_applies / fm_meta_get); the front-end
 # bin/fm-work-context.sh does this. jq is required (as it is fleet-wide).
 #
-# INSTALLED / ACTIVE distinction. bin/fm-work-context.sh is the installed caller
-# proving every watched-red end to end. Live adoption in the fm-spawn dispatch
-# hot path (the read-only insertion point is documented in bin/fm-spawn.sh right
-# after its backlog-dispatchability probe) and the caller read-back against real
-# tasks are the SEPARATE downstream ACTIVE steps; a merge is not activation.
+# IMPLEMENTED / ACTIVE distinction. bin/fm-work-context.sh is the installed
+# caller proving every watched-red end to end, and the dispatch authority gate
+# (fm_work_context_dispatch_authority_gate) is WIRED into bin/fm-spawn.sh right
+# after its backlog-dispatchability probe, before any endpoint/worktree/record -
+# real caller enforcement in-candidate, covered by negative and positive spawn
+# tests. What remains a SEPARATE downstream ACTIVE step is the deployed runtime:
+# adopting the canonical control-plane ruling verifier (the receipt-schema
+# adapter below is the seam for it) and the caller read-back against real
+# production tasks. A merge is not activation.
 
 # Distinct typed exits (mirroring fm-gate-refuse-lib.sh's exit-3 refusal grade):
 FM_WORK_CONTEXT_PASS_EXIT=0
@@ -118,46 +122,156 @@ _fm_wc_descriptor_valid() {  # <descriptor-file>
   return 0
 }
 
-# Compositional authority classification. Sets FM_WORK_CONTEXT_CLASSES (the
-# declared bases, defaulting to "A") and FM_WORK_CONTEXT_CLASS_C_RULING to
-# present|absent|prose-only for a Class-C task. A consumed ruling is proven only
-# by a receipt FILE that is valid JSON with consumed==true and a non-empty
-# ruling and lease; a bare request id, label, or Captain tag in the descriptor
-# is prose and never counts.
-fm_work_context_authority_classify() {  # <data-dir> <id>
-  local data=$1 id=$2 desc classes receipt
+# The optional canonical-verifier command. When configured (env override or
+# config/work-context-ruling-verifier naming an executable), it is AUTHORITATIVE
+# and its non-zero exit fails closed; the strict local validation below is the
+# fallback because the canonical fm-sol-control consume/apply path lives in the
+# control-plane project, not this repo. It is never inferred from a name.
+_fm_wc_verifier_command() {  # <config-dir>
+  local config=$1 cmd
+  cmd=${FM_WORK_CONTEXT_RULING_VERIFIER:-}
+  if [ -z "$cmd" ] && [ -r "$config/work-context-ruling-verifier" ]; then
+    cmd=$(head -1 "$config/work-context-ruling-verifier" 2>/dev/null | tr -d '[:space:]')
+  fi
+  [ -n "$cmd" ] || return 0
+  command -v "$cmd" >/dev/null 2>&1 || return 0
+  printf '%s\n' "$cmd"
+}
+
+# Compositional authority classification, driven by the AUTHORITATIVE operation
+# owner. FM_WORK_CONTEXT_CLASSES is the union of the classes the operation's own
+# meta declares (authority_classes=) and any the descriptor supplements; because
+# meta is authoritative and survives descriptor deletion, deleting the descriptor
+# can NOT downgrade a known dependent op to Class A. FM_WORK_CONTEXT_CLASS_C_RULING
+# reports present only for a genuinely consumed, AFFIRMATIVE, subject-bound
+# routed ruling; every other state (absent, denied-or-invalid, unconsumed,
+# unbound, unrelated-subject, request/generation-mismatch, prose-only) fails
+# closed. Returns 1 only on a malformed descriptor.
+fm_work_context_authority_classify() {  # <state-dir> <data-dir> <id>
+  local state=$1 data=$2 id=$3 desc meta meta_classes desc_classes classes
   desc=$(fm_work_context_descriptor_path "$data" "$id")
+  meta="$state/$id.meta"
   FM_WORK_CONTEXT_CLASSES=A
   FM_WORK_CONTEXT_CLASS_C_RULING=
-  [ -f "$desc" ] || return 0
-  classes=$(jq -r '(.authority.classes // ["A"]) | join(" ")' "$desc" 2>/dev/null) || {
-    FM_WORK_CONTEXT_DETAIL="malformed work-context descriptor: $desc"
-    return 1
-  }
+
+  meta_classes=$(fm_meta_get "$meta" authority_classes | tr ',' ' ')
+  desc_classes=
+  if [ -f "$desc" ]; then
+    if ! jq empty "$desc" >/dev/null 2>&1; then
+      FM_WORK_CONTEXT_DETAIL="malformed work-context descriptor: $desc"
+      return 1
+    fi
+    desc_classes=$(jq -r '(.authority.classes // []) | join(" ")' "$desc" 2>/dev/null)
+  fi
+  classes=$(printf '%s %s' "${meta_classes:-}" "${desc_classes:-}" | tr -s ' ')
+  classes=${classes# }; classes=${classes% }
   [ -n "$classes" ] || classes=A
   FM_WORK_CONTEXT_CLASSES=$classes
+
   case " $classes " in
     *" C "*) ;;
     *) return 0 ;;
   esac
-  # Class C is required: locate and validate the consumed-ruling receipt.
+  _fm_wc_class_c_ruling "$state" "$data" "$id" "$desc"
+  return 0
+}
+
+# Validate the consumed Class-C ruling receipt, failing closed on any doubt.
+_fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor>
+  local state=$1 data=$2 id=$3 desc=$4 config receipt verifier
+  local outcome subject lease request generation consumed
+  local want_request want_generation
+  FM_WORK_CONTEXT_CLASS_C_RULING=absent
+
   receipt=$(_fm_wc_desc "$desc" '.authority.ruling_receipt')
-  if [ -z "$receipt" ]; then
-    FM_WORK_CONTEXT_CLASS_C_RULING=absent
-    return 0
-  fi
+  [ -n "$receipt" ] || receipt=$(fm_meta_get "$state/$id.meta" ruling_receipt)
+  [ -n "$receipt" ] || return 0
   case "$receipt" in
     /*) : ;;
-    *) receipt="$data/$id/$receipt" ;;   # relative to the task's data dir
+    *) receipt="$data/$id/$receipt" ;;
   esac
-  if [ ! -f "$receipt" ] \
-    || ! jq -e '(.consumed == true) and ((.ruling // "") != "") and ((.lease // "") != "")' \
-         "$receipt" >/dev/null 2>&1; then
+  [ -f "$receipt" ] || return 0
+
+  # A configured canonical verifier is authoritative; fail closed on its error.
+  config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}
+  verifier=$(_fm_wc_verifier_command "$config")
+  if [ -n "$verifier" ]; then
+    if "$verifier" verify --receipt "$receipt" --subject "$id" >/dev/null 2>&1; then
+      FM_WORK_CONTEXT_CLASS_C_RULING=present
+    else
+      FM_WORK_CONTEXT_CLASS_C_RULING=denied-or-invalid
+    fi
+    return 0
+  fi
+
+  # Strict local validation. A bare {consumed:true,ruling:"x",lease:"y"} is NOT
+  # enough: a DENY, an unrelated subject, or a mismatched request/generation all
+  # fail closed.
+  if ! jq empty "$receipt" >/dev/null 2>&1; then
     FM_WORK_CONTEXT_CLASS_C_RULING=prose-only
+    return 0
+  fi
+  outcome=$(jq -r '(.outcome // .ruling // "") | ascii_upcase' "$receipt" 2>/dev/null)
+  subject=$(jq -r '(.subject // .task // "")' "$receipt" 2>/dev/null)
+  lease=$(jq -r '(.lease // "")' "$receipt" 2>/dev/null)
+  request=$(jq -r '(.request // .request_id // "")' "$receipt" 2>/dev/null)
+  generation=$(jq -r '(.generation // "")' "$receipt" 2>/dev/null)
+  consumed=$(jq -r '(.consumed // false)' "$receipt" 2>/dev/null)
+
+  case "$outcome" in
+    PROCEED|PROCEED_WITH_CONDITIONS|PERMIT|PERMITTED|APPROVE|APPROVED|GRANT|GRANTED|ALLOW|ALLOWED) : ;;
+    *) FM_WORK_CONTEXT_CLASS_C_RULING=denied-or-invalid; return 0 ;;
+  esac
+  [ "$consumed" = true ] || { FM_WORK_CONTEXT_CLASS_C_RULING=unconsumed; return 0; }
+  if [ -z "$lease" ] || [ -z "$request" ] || [ -z "$generation" ] || [ -z "$subject" ]; then
+    FM_WORK_CONTEXT_CLASS_C_RULING=unbound
+    return 0
+  fi
+  if [ "$subject" != "$id" ]; then
+    FM_WORK_CONTEXT_CLASS_C_RULING=unrelated-subject
+    return 0
+  fi
+  want_request=$(_fm_wc_desc "$desc" '.authority.request')
+  [ -n "$want_request" ] || want_request=$(fm_meta_get "$state/$id.meta" ruling_request)
+  want_generation=$(_fm_wc_desc "$desc" '.authority.generation')
+  [ -n "$want_generation" ] || want_generation=$(fm_meta_get "$state/$id.meta" ruling_generation)
+  if [ -n "$want_request" ] && [ "$want_request" != "$request" ]; then
+    FM_WORK_CONTEXT_CLASS_C_RULING="request-mismatch"
+    return 0
+  fi
+  if [ -n "$want_generation" ] && [ "$want_generation" != "$generation" ]; then
+    FM_WORK_CONTEXT_CLASS_C_RULING="generation-mismatch"
     return 0
   fi
   FM_WORK_CONTEXT_CLASS_C_RULING=present
   return 0
+}
+
+# The dispatch-seam authority gate: the narrow predicate the fm-spawn dispatch
+# path consults before the launch effect. It refuses ONLY when the operation's
+# authoritative binding classifies it Class-C and no consumed affirmative bound
+# ruling is present; it is inert (no jq, proceed) for every ordinary op whose
+# meta declares no Class-C requirement, so existing dispatch behavior is
+# unchanged. Sets FM_WORK_CONTEXT_VERDICT/DETAIL. Returns 0 proceed, 3 refuse.
+fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id>
+  local state=$1 data=$2 id=$3
+  fm_work_context_reset
+  if ! fm_work_context_authority_classify "$state" "$data" "$id"; then
+    FM_WORK_CONTEXT_VERDICT=refuse
+    FM_WORK_CONTEXT_DETAIL=${FM_WORK_CONTEXT_DETAIL:-malformed authority declaration}
+    return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+  fi
+  case " $FM_WORK_CONTEXT_CLASSES " in
+    *" C "*)
+      if [ "$FM_WORK_CONTEXT_CLASS_C_RULING" != present ]; then
+        FM_WORK_CONTEXT_VERDICT=refuse
+        FM_WORK_CONTEXT_DETAIL="class-c-authority: $id requires a consumed routed ruling before dispatch (ruling=$FM_WORK_CONTEXT_CLASS_C_RULING); prose, consent, labels, and queued tasks do not substitute"
+        return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      fi ;;
+  esac
+  FM_WORK_CONTEXT_VERDICT=proceed
+  FM_WORK_CONTEXT_DETAIL="dispatch authority satisfied (classes=$FM_WORK_CONTEXT_CLASSES)"
+  return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
 
 # Resolve the DECLARED source locator FIRST (no heuristic crawl). The declared
@@ -296,10 +410,19 @@ _fm_wc_check_owners() {  # <descriptor-file>
 #   4 noop: no backlog item to dispatch (nothing to loop on)
 #   2 the backlog owner could not be read (fail closed, preserved as error)
 _fm_wc_check_readiness() {  # <config-dir> <data-dir> <id> <kind>
-  local config=$1 data=$2 id=$3 kind=$4 state held blocked
-  if ! fm_backlog_transition_applies "$config" "$data" "$kind"; then
-    # The backlog gate does not apply here (manual backend, secondmate, no
-    # backlog); readiness is owned elsewhere, so do not synthesize a refusal.
+  local config=$1 data=$2 id=$3 kind=$4 state held blocked applies_rc=0
+  fm_backlog_transition_applies "$config" "$data" "$kind" || applies_rc=$?
+  if [ "$applies_rc" -eq 2 ]; then
+    # An ERROR/CNO from the readiness owner (unresolvable data dir, unreadable
+    # backlog, incompatible tasks-axi) must FAIL CLOSED for the dependent op -
+    # never authorize on error - and surface the precise wait/recovery owner.
+    FM_WORK_CONTEXT_DETAIL="readiness-owner-error: ${FM_BACKLOG_TRANSITION_ERROR:-backlog readiness owner unavailable}"
+    return 2
+  fi
+  if [ "$applies_rc" -ne 0 ]; then
+    # A legitimate exemption (manual backend, secondmate, this home keeps no
+    # backlog): readiness is genuinely owned elsewhere, so do not synthesize a
+    # refusal. This is distinct from the error path above.
     FM_WORK_CONTEXT_DETAIL="readiness-not-gated: ${FM_BACKLOG_TRANSITION_SKIP:-not applicable}"
     return 0
   fi
@@ -402,7 +525,7 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   # (R1) Compositional authority: a required Class-C material decision needs a
   # consumed-ruling receipt BEFORE the dependent effect. Class B consent does
   # not waive it; prose does not substitute.
-  if ! fm_work_context_authority_classify "$data" "$id"; then
+  if ! fm_work_context_authority_classify "$state" "$data" "$id"; then
     FM_WORK_CONTEXT_VERDICT=refuse
     FM_WORK_CONTEXT_DETAIL=${FM_WORK_CONTEXT_DETAIL:-malformed authority declaration}
     return "$FM_WORK_CONTEXT_REFUSE_EXIT"
@@ -421,23 +544,41 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
 
-# (R3) Completion -> parent/reference currentness reconciliation. When a child
-# materially transitions, refresh a durable currentness receipt bound to that
-# child transition, PROVEN by an INDEPENDENT read-back of the authoritative
-# backlog owner (fm_backlog_row_probe), and do it idempotently so a replay after
-# a crash converges rather than double-applying. It never rewrites parent prose
-# (history is preserved); it records machine-checkable currentness the
-# next-selection preflight can consult. Returns 0 when the read-back CONFIRMS the
-# transition, non-zero when it cannot (the receipt still records the
-# discrepancy, so completion is never silently trusted).
+# (R3) Completion -> parent/reference currentness reconciliation. One authorized
+# CHILD transition drives three independent steps, in order:
+#   1. INDEPENDENT read-back of the CHILD's own authoritative backlog row
+#      (fm_backlog_row_probe): the activation evidence that the child actually
+#      transitioned, never the caller's say-so.
+#   2. When the descriptor declares a parent (.reconcile.parent), an INDEPENDENT
+#      read-back of that PARENT's authoritative backlog row - a different entity,
+#      a genuinely independent owner - so the reconciled currentness is sourced
+#      from the parent's real current state, not inferred.
+#   3. When the descriptor declares a reference currentness marker
+#      (.reconcile.reference_marker), REFRESH that marker atomically with the
+#      reconciled child+parent state, then INDEPENDENTLY re-read it from disk
+#      (not the value we believe we wrote) so a lost or partial write surfaces as
+#      unconfirmed rather than silently trusted.
+# It never rewrites parent prose or reimplements tasks-axi dependency semantics
+# (the backlog owner stays canonical); it records a machine-checkable currentness
+# the next-selection preflight can consult. Idempotent: a crash replay writes the
+# same content and re-confirms the same fact. Returns 0 when every declared step
+# CONFIRMS, non-zero when any cannot (the receipt still records the discrepancy,
+# so completion is never silently trusted).
+#
+# HONEST BOUND: with no declared parent/marker this degrades to the child-only
+# currentness receipt (parent=none reference=none) - the minimal form - rather
+# than inventing a parent to update.
 fm_work_context_reconcile() {  # <state> <data> <id> <transition>
-  local state=$1 data=$2 id=$3 transition=$4 receipt tmp child_state readback currentness rc=0
+  local state=$1 data=$2 id=$3 transition=$4
+  local desc receipt tmp child_state readback currentness rc=0
+  local parent parent_readback parent_state ref_marker ref_expect ref_dir rtmp
+  desc=$(fm_work_context_descriptor_path "$data" "$id")
   receipt="$state/$id.parent-currentness"
   FM_WORK_CONTEXT_RECONCILE=
 
-  # fm_backlog_row_probe returns non-zero for a NOT_FOUND row too, so branch on
-  # the result variable, not the exit status: a pruned/not_found row is a
-  # confirmed completion, only a genuinely unreadable owner is an error.
+  # Step 1. fm_backlog_row_probe returns non-zero for a NOT_FOUND row too, so
+  # branch on the result variable, not the exit status: a pruned/not_found row is
+  # a confirmed completion, only a genuinely unreadable owner is an error.
   fm_backlog_row_probe "$data" "$id" || true
   readback=$FM_BACKLOG_ROW_RESULT
   if [ "$readback" = found ]; then
@@ -461,6 +602,52 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
       if [ "$readback" = error ]; then currentness=unconfirmed; rc=1; else currentness=confirmed; fi ;;
   esac
 
+  # Step 2. INDEPENDENT read-back of the declared PARENT's authoritative row.
+  parent=$(_fm_wc_desc "$desc" '.reconcile.parent')
+  parent_state=none
+  if [ -n "$parent" ]; then
+    fm_backlog_row_probe "$data" "$parent" || true
+    case "$FM_BACKLOG_ROW_RESULT" in
+      found)     parent_state=${FM_BACKLOG_ROW_STATE%% *} ;;
+      not_found) parent_state=absent ;;
+      *)         parent_state=unreadable; currentness=unconfirmed; rc=1 ;;
+    esac
+  fi
+
+  # Step 3. Refresh the declared reference currentness marker, then INDEPENDENTLY
+  # re-read it. A write/read-back failure downgrades the reconciliation to
+  # unconfirmed even when the child itself transitioned.
+  ref_marker=$(_fm_wc_desc "$desc" '.reconcile.reference_marker')
+  parent_readback=none
+  if [ -n "$ref_marker" ]; then
+    case "$ref_marker" in
+      /*) : ;;
+      *) ref_marker="$data/$id/$ref_marker" ;;
+    esac
+    if [ "$currentness" = confirmed ]; then
+      ref_expect="child=$id transition=$transition child_state=${child_state:-done} parent=${parent:-none} parent_state=$parent_state"
+      ref_dir=$(dirname "$ref_marker")
+      rtmp="$ref_marker.tmp.$$"
+      if mkdir -p "$ref_dir" 2>/dev/null \
+        && ( umask 077; printf '%s\n' "$ref_expect" > "$rtmp" ) 2>/dev/null \
+        && mv -f "$rtmp" "$ref_marker" 2>/dev/null; then
+        parent_readback=$(head -1 "$ref_marker" 2>/dev/null || true)
+        if [ "$parent_readback" = "$ref_expect" ]; then
+          parent_readback=confirmed
+        else
+          currentness=unconfirmed; rc=1
+          parent_readback="mismatch:${parent_readback:-empty}"
+        fi
+      else
+        rm -f "$rtmp" 2>/dev/null || true
+        currentness=unconfirmed; rc=1
+        parent_readback=write-failed
+      fi
+    else
+      parent_readback=skipped-unconfirmed-child
+    fi
+  fi
+
   tmp="$receipt.tmp.$$"
   {
     printf 'schema=fm-work-context-currentness.v1\n'
@@ -468,6 +655,10 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     printf 'transition=%s\n' "$transition"
     printf 'child_state=%s\n' "${child_state:-none}"
     printf 'read_back=%s\n' "$readback"
+    printf 'parent=%s\n' "${parent:-none}"
+    printf 'parent_state=%s\n' "$parent_state"
+    printf 'reference_marker=%s\n' "${ref_marker:-none}"
+    printf 'parent_readback=%s\n' "$parent_readback"
     printf 'currentness=%s\n' "$currentness"
     printf 'epoch=%s\n' "$(date +%s 2>/dev/null || echo 0)"
   } > "$tmp" 2>/dev/null || {
@@ -485,6 +676,6 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     return 2
   }
   FM_WORK_CONTEXT_RECONCILE=$currentness
-  FM_WORK_CONTEXT_DETAIL="currentness=$currentness read_back=$readback child_state=${child_state:-none}"
+  FM_WORK_CONTEXT_DETAIL="currentness=$currentness read_back=$readback child_state=${child_state:-none} parent=${parent:-none} parent_state=$parent_state reference=$parent_readback"
   return "$rc"
 }

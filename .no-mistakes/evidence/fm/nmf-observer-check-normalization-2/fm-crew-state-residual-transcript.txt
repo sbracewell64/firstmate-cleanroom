@@ -1,0 +1,18 @@
+
+### Facet A: running run + empty CI read + stale ci-ready receipt (captain sees):
+state: working · source: run-step · validating (running)
+
+### Facet B: coarse running attribution + stale ci-ready receipt (captain sees):
+state: working · source: run-step · validating (background run)
+
+### Facet C: FAILED axi status query + stale ci-ready receipt (captain sees):
+state: unknown · source: status-log · PR https://github.com/o/r/pull/2 checks green from prior observation · current run evidence unavailable; inspect before treating as a terminal outcome
+
+### Facet C (failed receipt): FAILED query + stale failed: receipt (captain sees):
+state: unknown · source: status-log · run aborted on a prior observation · current run evidence unavailable; inspect before treating as a terminal outcome
+
+### Positive control: REAL green CI evidence -> done via run-step (not the receipt):
+state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)
+
+### Positive control: genuine failed receipt + SUCCESSFUL empty query still -> failed:
+state: failed · source: status-log · run aborted on a prior observation

@@ -287,6 +287,42 @@ fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_J
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 pass "worker identity binds the canonical configured code root"
 
+# A replacement must reap the whole supervisor group even when the group
+# leader's command line momentarily reads as empty. That transient - a live
+# worker process whose command line ps momentarily fails to render under load -
+# drops fm_remote_job_stop_worker_tree onto its lone-process path, and a lone stop
+# signals and waits for the recorded serving child only - never the restart
+# supervisor above it - so the replaced supervisor group is left running. That
+# is the reap race behind the intermittent "ensure left the replaced worker
+# supervisor group alive" CI failure. Forcing the empty leader read and freezing
+# the supervisor makes the leftover deterministic rather than a timing window:
+# without the group resolved at the ownership-proven caller, the frozen
+# supervisor survives; with it, the whole group is stopped.
+STALE_LEADER_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+STALE_LEADER_PGID=$(fm_remote_job_process_pgid "$STALE_LEADER_WORKER_PID") \
+  || fail "the stale-leader replacement fixture could not resolve the worker process group"
+STALE_LEADER_ROOT="$TMP_ROOT/stale-leader-root"
+cp -R "$REMOTE_ROOT" "$STALE_LEADER_ROOT"
+eval "fm_remote_job_process_command_unstubbed() $(declare -f fm_remote_job_process_command | sed '1d')"
+fm_remote_job_process_command() {
+  [ "${1:-}" != "$STALE_LEADER_PGID" ] || return 1
+  fm_remote_job_process_command_unstubbed "$@"
+}
+kill -STOP "$STALE_LEADER_PGID" 2>/dev/null \
+  || fail "the stale-leader replacement fixture could not freeze the supervisor"
+fm_remote_job_ensure_worker "$STALE_LEADER_ROOT" "$ACCOUNT_HOME" || true
+unset -f fm_remote_job_process_command
+eval "fm_remote_job_process_command() $(declare -f fm_remote_job_process_command_unstubbed | sed '1d')"
+unset -f fm_remote_job_process_command_unstubbed
+if kill -0 -- "-$STALE_LEADER_PGID" 2>/dev/null; then STALE_LEADER_GROUP_ALIVE=1; else STALE_LEADER_GROUP_ALIVE=0; fi
+kill -CONT "$STALE_LEADER_PGID" 2>/dev/null || true
+kill -KILL -- "-$STALE_LEADER_PGID" 2>/dev/null || true
+[ "$STALE_LEADER_GROUP_ALIVE" -eq 0 ] \
+  || fail "ensure left the replaced worker supervisor group alive when the group leader command read empty"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
+pass "worker replacement reaps the supervisor group when the group leader command reads empty"
+
 CRASHED_WORKER_PID=$NEW_WORKER_PID
 kill -KILL "$CRASHED_WORKER_PID"
 wait "$CRASHED_WORKER_PID" 2>/dev/null || true

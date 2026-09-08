@@ -628,7 +628,7 @@ tests/fm-kimi-harness.test.sh 21584
 tests/fm-lint-workflows.test.sh 711
 tests/fm-muse-harness.test.sh 32102
 tests/fm-muse-signals-live-e2e.test.sh 20
-tests/fm-nm-commit-identity.test.sh 960
+tests/fm-nm-commit-identity.test.sh 1900
 tests/fm-no-mistakes-required.test.sh 271
 tests/fm-on.test.sh 10870
 tests/fm-opencode-primary-live-e2e.test.sh 19

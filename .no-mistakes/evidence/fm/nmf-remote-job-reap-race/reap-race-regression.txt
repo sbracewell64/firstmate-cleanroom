@@ -1,0 +1,10 @@
+### Regression: worker replacement reaps supervisor group when group-leader command reads empty
+
+== WITH FIX (target commit 5e335ae, current worktree) ==
+ok - worker replacement reaps the supervisor group when the group leader command reads empty
+ALL TESTS PASSED
+
+== WITHOUT FIX (bin/fm-remote-job-lib.sh reverted to base ff568e4, new test kept) ==
+not ok - ensure left the replaced worker supervisor group alive when the group leader command read empty
+
+(Above 'not ok' proves the regression fails before the fix; the 'ok' + ALL TESTS PASSED proves it passes after.)

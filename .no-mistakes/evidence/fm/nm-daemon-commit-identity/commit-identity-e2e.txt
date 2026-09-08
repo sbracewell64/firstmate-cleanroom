@@ -1,0 +1,24 @@
+=== no-mistakes commit-identity: end-to-end demonstration ===
+Operator global (the contamination source): Test <test@example.com>
+
+--- BEFORE pin: a gate-worktree pipeline commit inherits the operator global ---
+  author=Test <test@example.com>
+  committer=Test <test@example.com>
+
+--- Pin the captain identity onto the mirror's SHARED config ---
+OK /tmp/tmp.zOxFptlnI2/nm/repos/demo.git verified=shared+wt:/tmp/tmp.zOxFptlnI2/wt-before
+
+--- AFTER pin: a fresh pipeline commit carries the captain identity (real object) ---
+  author=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+  committer=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+=== CI-ready boundary verifier (fm-commit-identity-verify.sh) ===
+--- Contaminated pipeline commit on PR head -> REFUSED ---
+CONTAMINATED not the pinned identity (sbracewell64 <301307654+sbracewell64@users.noreply.github.com>): 397015a1df0e(A:Test <test@example.com> C:Test <test@example.com>)
+  exit=7
+
+--- Pinned pipeline commit; upstream+worker commits ignored -> OK ---
+OK 1 pipeline commits verified against sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+  exit=0
+
+=== operator global UNCHANGED by the pin: Test <test@example.com> ===

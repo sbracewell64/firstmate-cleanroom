@@ -96,6 +96,30 @@ test_bad_usage() {
   pass "bad usage is rejected with the usage exit code"
 }
 
+test_git_log_failure_is_not_empty_success() {
+  local r base out rc real_git fakebin
+  r="$TMP_ROOT/log-failure"; new_repo "$r"; base=$(git -C "$r" rev-parse HEAD)
+  commit "$r" Test test@example.com "no-mistakes(document): contaminated"
+  real_git=$(command -v git)
+  fakebin="$TMP_ROOT/log-failure-bin"; mkdir -p "$fakebin"
+  cat > "$fakebin/git" <<'SH'
+#!/usr/bin/env bash
+for arg do
+  if [ "$arg" = log ]; then
+    printf 'fatal: fixture traversal failed\n' >&2
+    exit 7
+  fi
+done
+exec "$FM_TEST_REAL_GIT" "$@"
+SH
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" FM_TEST_REAL_GIT="$real_git" "$BIN" --repo "$r" --base "$base" --head HEAD --name "$PIN_NAME" --email "$PIN_EMAIL"); rc=$?
+  [ "$rc" -eq 3 ] || fail "failed traversal must be RANGE_UNREADABLE, got $rc: $out"
+  assert_contains "$out" "RANGE_UNREADABLE" "failed traversal is unavailable evidence"
+  pass "git log failure cannot become OK zero commits"
+}
+
+test_git_log_failure_is_not_empty_success
 test_ok_when_pipeline_commits_pinned_and_others_ignored
 test_contaminated_pipeline_commit_fails
 test_worker_or_upstream_contamination_is_not_flagged

@@ -81,31 +81,35 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   fi
 fi
 
-# Consume the durable commit-identity obligation at this CI-ready boundary: if
-# the task carries one (a no-mistakes ship spawn records it), verify that the
-# pipeline's OWN commits on the PR head carry the captain identity, and REFUSE to
-# arm the merge poll for a contaminated pipeline commit. This closes the gaps the
-# spawn-time mirror pin cannot (first run, recreation, effective-context,
-# concurrency) by checking the actual delivered commits. Fail OPEN on everything
-# it cannot check - no obligation, no head, no resolvable base, or the verifier
-# unavailable - so it only ever blocks a genuinely contaminated pipeline commit.
+# A recorded identity obligation must be discharged before publishing a merge
+# poll. Missing inputs or unavailable verification are not a clean verdict:
+# refuse UNVERIFIED rather than arm blind. Unmanaged callers without an
+# obligation retain their existing behavior.
+# RESIDUAL SCOPE (do not over-claim): this boundary enforces only when an
+# obligation was RECORDED for the task, and only against the delivered PR head's
+# base..head range. It does not by itself prove that every producer path records
+# an obligation, nor that every commit-producing path is covered - that remains
+# the recording side's responsibility (bin/fm-spawn.sh, bin/fm-nm-commit-identity.sh).
 OBLIGATION="$STATE/$ID.commit-identity"
-if [ -f "$OBLIGATION" ] && [ -n "$PR_HEAD" ] && [ -n "$WT" ] && [ -d "$WT" ]; then
+if [ -e "$OBLIGATION" ] || [ -L "$OBLIGATION" ]; then
+  if [ ! -f "$OBLIGATION" ] || [ -L "$OBLIGATION" ] || [ ! -r "$OBLIGATION" ] \
+    || [ -z "$PR_HEAD" ] || [ -z "$WT" ] || [ ! -d "$WT" ] \
+    || [ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]; then
+    echo "error: refusing to arm for $ID - commit identity UNVERIFIED: required input or verifier unavailable" >&2
+    exit 1
+  fi
   IDENT_BASE=$(cd "$WT" && git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
   if [ -z "$IDENT_BASE" ] && command -v gh >/dev/null 2>&1; then
     BR=$(cd "$WT" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null || true)
     [ -z "$BR" ] || IDENT_BASE="origin/$BR"
   fi
-  if [ -n "$IDENT_BASE" ] && (cd "$WT" && git rev-parse --verify --quiet "$IDENT_BASE^{commit}" >/dev/null 2>&1); then
-    if IDENT_OUT=$("$SCRIPT_DIR/fm-commit-identity-verify.sh" --repo "$WT" --base "$IDENT_BASE" --head "$PR_HEAD" --obligation "$OBLIGATION" 2>&1); then
-      IDENT_RC=0
-    else
-      IDENT_RC=$?
-    fi
-    if [ "$IDENT_RC" -eq 7 ]; then
-      echo "error: refusing to arm the merge poll for $ID - a pipeline commit does not carry the captain identity: $IDENT_OUT" >&2
-      exit 1
-    fi
+  if [ -z "$IDENT_BASE" ]; then
+    echo "error: refusing to arm for $ID - commit identity UNVERIFIED: base unavailable" >&2
+    exit 1
+  fi
+  if ! IDENT_OUT=$("$SCRIPT_DIR/fm-commit-identity-verify.sh" --repo "$WT" --base "$IDENT_BASE" --head "$PR_HEAD" --obligation "$OBLIGATION" 2>&1); then
+    echo "error: refusing to arm for $ID - commit identity UNVERIFIED: $IDENT_OUT" >&2
+    exit 1
   fi
 fi
 

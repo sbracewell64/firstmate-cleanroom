@@ -2171,8 +2171,10 @@ test_identity_obligation_arms_pinned_pipeline_commit() {
 
 test_identity_obligation_absent_does_not_gate() {
   local dir head
-  # With no obligation recorded, the boundary never inspects identity - a
-  # contaminated pipeline commit still arms (the check is opt-in and fail-open).
+  # With no obligation recorded, the boundary never inspects identity - the
+  # gate is opt-in, so a task with no recorded obligation is a clean no-op, not
+  # a refusal. (A recorded obligation with a missing input DOES refuse; see
+  # test_identity_obligation_refuses_missing_required_input.)
   dir=$(make_case ident-none)
   write_task_meta "$dir"
   head=$(setup_ident_wt "$dir" Test test@example.com)
@@ -2182,6 +2184,41 @@ test_identity_obligation_absent_does_not_gate() {
   pass "the identity gate is opt-in: absent obligation never blocks arming"
 }
 
+test_identity_obligation_refuses_unreadable_head() {
+  local dir rc
+  dir=$(make_case ident-unreadable)
+  write_task_meta "$dir"
+  setup_ident_wt "$dir" Test test@example.com >/dev/null
+  write_identity_obligation "$dir"
+  # A well-formed head that does not resolve in the worktree makes the verifier
+  # exit nonzero (RANGE_UNREADABLE). Old code only refused on exit 7, so this
+  # armed blind; new code refuses on ANY nonzero verifier exit.
+  FM_TEST_GH_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_check_entry "$dir" task-a https://github.com/o/r/pull/9 > "$dir/out" 2> "$dir/err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unreadable obligated head must refuse instead of arming"
+  assert_grep "UNVERIFIED" "$dir/err" "the refusal reports the verifier could not certify identity"
+  assert_absent "$dir/home/state/task-a.check.sh" "no merge poll without obligated verification"
+  pass "an obligated unreadable head fails closed before merge poll publication"
+}
+
+test_identity_obligation_refuses_missing_required_input() {
+  local dir rc
+  # A recorded obligation with a REQUIRED input unavailable (here the PR head
+  # cannot be resolved from the forge, so PR_HEAD is empty) must refuse UNVERIFIED
+  # BEFORE the verifier runs. Old code gated the whole block on `[ -n "$PR_HEAD" ]`
+  # and so armed blind when the head was missing; new code fails closed.
+  dir=$(make_case ident-missing-input)
+  write_task_meta "$dir"
+  setup_ident_wt "$dir" sbracewell64 301307654+sbracewell64@users.noreply.github.com >/dev/null
+  write_identity_obligation "$dir"
+  FM_TEST_GH_HEAD=not-a-sha run_check_entry "$dir" task-a https://github.com/o/r/pull/9 > "$dir/out" 2> "$dir/err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a recorded obligation with an unavailable required input must refuse instead of arming"
+  assert_grep "required input or verifier unavailable" "$dir/err" "the refusal names the missing required input"
+  assert_absent "$dir/home/state/task-a.check.sh" "no merge poll without a verified identity"
+  pass "an obligated task with a missing required input fails closed before merge poll publication"
+}
+
+test_identity_obligation_refuses_unreadable_head
+test_identity_obligation_refuses_missing_required_input
 test_parser_matrix
 test_identity_obligation_refuses_contaminated_pipeline_commit
 test_identity_obligation_arms_pinned_pipeline_commit

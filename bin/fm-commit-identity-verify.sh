@@ -66,10 +66,21 @@ fi
 
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
   || { echo "RANGE_UNREADABLE not a git repository: $REPO"; exit "$EX_RANGE"; }
-git -C "$REPO" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
+BASE_SHA=$(git -C "$REPO" rev-parse --verify --quiet "$BASE^{commit}") \
   || { echo "RANGE_UNREADABLE base is not a commit: $BASE"; exit "$EX_RANGE"; }
-git -C "$REPO" rev-parse --verify --quiet "$HEAD^{commit}" >/dev/null \
+HEAD_SHA=$(git -C "$REPO" rev-parse --verify --quiet "$HEAD^{commit}") \
   || { echo "RANGE_UNREADABLE head is not a commit: $HEAD"; exit "$EX_RANGE"; }
+
+# Capture the complete traversal before interpreting any result; process
+# substitution hides git's failure and can turn unavailable evidence into OK 0.
+OBJECTS=$(mktemp "${TMPDIR:-/tmp}/fm-commit-identity.XXXXXX") \
+  || { echo "RANGE_UNREADABLE cannot capture commit objects"; exit "$EX_RANGE"; }
+trap 'rm -f -- "$OBJECTS"' EXIT
+trap 'exit "$EX_RANGE"' HUP INT TERM
+if ! git -C "$REPO" log --no-merges --format='%s%x00%H%x00%an%x00%ae%x00%cn%x00%ce%x00' "$BASE_SHA..$HEAD_SHA" > "$OBJECTS" 2>/dev/null; then
+  echo "RANGE_UNREADABLE commit traversal failed"
+  exit "$EX_RANGE"
+fi
 
 want="$NAME <$EMAIL>"
 count=0
@@ -91,7 +102,7 @@ while IFS= read -r -d '' subject && IFS= read -r -d '' sha \
   if [ "$an <$ae>" != "$want" ] || [ "$cn <$ce>" != "$want" ]; then
     offenders="$offenders ${sha:0:12}(A:$an <$ae> C:$cn <$ce>)"
   fi
-done < <(git -C "$REPO" log --no-merges --format='%s%x00%H%x00%an%x00%ae%x00%cn%x00%ce%x00' "$BASE..$HEAD" 2>/dev/null)
+done < "$OBJECTS"
 
 if [ -n "$offenders" ]; then
   echo "CONTAMINATED not the pinned identity ($want):$offenders"

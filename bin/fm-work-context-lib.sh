@@ -359,8 +359,8 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   # (R4) Readiness/duplicate first, for every non-recovery effect: never dispatch
   # a duplicate, never loop on nothing. A genuine hold/dependency on the task's
   # OWN row refuses; the informational aggregate never does (R2).
-  _fm_wc_check_readiness "$config" "$data" "$id" "$kind"
-  rc=$?
+  rc=0
+  _fm_wc_check_readiness "$config" "$data" "$id" "$kind" || rc=$?
   case "$rc" in
     2) FM_WORK_CONTEXT_VERDICT=refuse; return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
     3) FM_WORK_CONTEXT_VERDICT=refuse; return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
@@ -435,11 +435,14 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
   receipt="$state/$id.parent-currentness"
   FM_WORK_CONTEXT_RECONCILE=
 
-  if fm_backlog_row_probe "$data" "$id"; then
-    readback=$FM_BACKLOG_ROW_RESULT
+  # fm_backlog_row_probe returns non-zero for a NOT_FOUND row too, so branch on
+  # the result variable, not the exit status: a pruned/not_found row is a
+  # confirmed completion, only a genuinely unreadable owner is an error.
+  fm_backlog_row_probe "$data" "$id" || true
+  readback=$FM_BACKLOG_ROW_RESULT
+  if [ "$readback" = found ]; then
     child_state=${FM_BACKLOG_ROW_STATE%% *}
   else
-    readback=error
     child_state=
   fi
 

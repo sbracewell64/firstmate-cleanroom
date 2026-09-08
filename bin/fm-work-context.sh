@@ -9,6 +9,7 @@
 #   fm-work-context.sh preflight <id> [--effect dependent|independent|recovery]
 #   fm-work-context.sh classify  <id>
 #   fm-work-context.sh reconcile <id> <transition>
+#   fm-work-context.sh select
 #
 # preflight prints one `verdict=<type> detail=<...>` line and exits:
 #   0 proceed        - the effect is authorized
@@ -26,6 +27,16 @@
 # child transition, proven by an independent read-back of the backlog owner;
 # exit 0 when the read-back confirms, 1 when it cannot (the receipt still
 # records the discrepancy), 2 on a receipt write failure.
+#
+# select composes the EXISTING per-task selection producer (fm-fleet-snapshot's
+# eligible_queued) with the per-task preflight and prints, for the no-active-
+# worker case, which queued tasks are independently selectable now. It is
+# read-only: it never dispatches, routes, or holds, and the aggregate home state
+# is reported for context only, NEVER read as a global hold. Priority and
+# capacity stay with the caller. Output:
+#   aggregate_state=<state> eligible_candidates=<n>
+#   selectable=<id,...>   (candidates whose per-task read-back proceeds)
+#   gated=<id:detail;...> (candidates a per-task refusal holds back)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,7 +56,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-work-context-lib.sh"
 
 usage() {
-  sed -n '2,25p' "$SCRIPT_DIR/fm-work-context.sh" | sed 's/^# \{0,1\}//'
+  sed -n '2,39p' "$SCRIPT_DIR/fm-work-context.sh" | sed 's/^# \{0,1\}//'
 }
 
 emit_verdict() {
@@ -101,6 +112,42 @@ case "${1:-}" in
     rc=$?
     printf 'reconcile=%s detail=%s\n' "${FM_WORK_CONTEXT_RECONCILE:-error}" "${FM_WORK_CONTEXT_DETAIL:-}"
     exit "$rc"
+    ;;
+  select)
+    if ! command -v jq >/dev/null 2>&1; then
+      printf 'fm-work-context.sh: jq is required for select\n' >&2
+      exit "$FM_WORK_CONTEXT_USAGE_EXIT"
+    fi
+    # Read the EXISTING per-task selection producer (fm-fleet-snapshot's
+    # eligible_queued): the aggregation-hazard complement that already excludes
+    # held/blocked rows, so the aggregate state is never a global hold here.
+    snapshot=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+      FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+      "$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary 2>/dev/null) || {
+        printf 'select=error detail=eligible-queued-producer-unavailable\n' >&2
+        exit "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      }
+    aggregate=$(printf '%s' "$snapshot" | jq -r '.state // "unknown"' 2>/dev/null)
+    candidate_ids=$(printf '%s' "$snapshot" | jq -r '.eligible_queued[]?.id // empty' 2>/dev/null)
+    candidate_count=0
+    selectable=
+    gated=
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      candidate_count=$((candidate_count + 1))
+      # Per-task read-back: the source/authority/currentness layer the producer
+      # deliberately leaves to the actual selection caller.
+      if fm_work_context_preflight "$STATE" "$DATA" "$CONFIG" "$cand" dependent; then
+        selectable="$selectable${selectable:+,}$cand"
+      else
+        gated="$gated${gated:+;}$cand:${FM_WORK_CONTEXT_DETAIL}"
+      fi
+    done <<EOF
+$candidate_ids
+EOF
+    printf 'aggregate_state=%s eligible_candidates=%s\n' "${aggregate:-unknown}" "$candidate_count"
+    printf 'selectable=%s\n' "$selectable"
+    printf 'gated=%s\n' "$gated"
     ;;
   -h|--help)
     usage

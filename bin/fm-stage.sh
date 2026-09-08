@@ -158,6 +158,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# shellcheck source=bin/fm-work-context-lib.sh
+. "$SCRIPT_DIR/fm-work-context-lib.sh"
 
 RETRY=0
 RUN_ARG=
@@ -589,6 +591,28 @@ readback_evidence() {  # prints the evidence, or 1
   return 1
 }
 
+# Completion -> parent/roadmap currentness reconciliation at the terminal
+# transition seam (bin/fm-work-context-lib.sh). When the landed child declares a
+# work-context reconcile block, this refreshes the parent/reference/roadmap
+# currentness through the SAME owner fm-spawn and the selection preflight read,
+# via an independent backlog read-back, so stale open-child wording does not
+# persist as current state. It is inert for a task with no descriptor, never
+# changes this stage transition's own exit status (the transition is already the
+# authority), and records any discrepancy in the receipt rather than trusting the
+# caller's say-so.
+reconcile_currentness() {  # <transition>
+  local transition=$1 desc
+  desc="$DATA/$ID/work-context.json"
+  command -v jq >/dev/null 2>&1 || return 0
+  [ -f "$desc" ] || return 0
+  jq -e '.reconcile != null' "$desc" >/dev/null 2>&1 || return 0
+  # The stage transition is already the authority; a reconcile that cannot
+  # confirm records the discrepancy in the receipt rather than failing the stage.
+  fm_work_context_reconcile "$STATE" "$DATA" "$ID" "$transition" || true
+  printf 'currentness: %s (%s)\n' "${FM_WORK_CONTEXT_RECONCILE:-unknown}" "${FM_WORK_CONTEXT_DETAIL:-}"
+  return 0
+}
+
 do_activated() {
   local current evidence
   require_ship activated
@@ -602,6 +626,7 @@ do_activated() {
     issue activated firstmate "$evidence" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" "stage_reason=$evidence"
   fi
+  reconcile_currentness activated
   next_for activated
 }
 

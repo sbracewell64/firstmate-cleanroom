@@ -394,4 +394,143 @@ REF_SECOND=$(cat "$H8/data/child2/roadmap.currentness")
 [ "$REF_FIRST" = "$REF_SECOND" ] || fail "reference reconciliation is not idempotent: '$REF_FIRST' vs '$REF_SECOND'"
 pass "defect 4: a confirmed child transition refreshes the declared reference marker from an independent parent read-back, idempotently"
 
+# =========================================================================
+# Acceptance (a): COMPLETION-TO-PARENT REFRESH. A confirmed terminal child
+# transition flips ONLY that child's matching obligation in the declared roadmap
+# owner from open to landed; unrelated obligations stay open and history is kept.
+# It never clears open wording before the child actually landed, and is idempotent.
+# =========================================================================
+
+H9=$(make_home roadmap)
+add_item "$H9" rchild
+add_item "$H9" rparent
+mkdir -p "$H9/data/rchild"
+ROADMAP="$H9/data/commission-roadmap.md"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver auth flow    obligation=rchild status=open'
+  printf '%s\n' '- Deliver billing      obligation=sibling status=open'
+  printf '%s\n' '- Deliver logging      obligation=shipped status=landed'
+} > "$ROADMAP"
+write_desc "$H9" rchild "{\"reconcile\":{\"parent\":\"rparent\",\"roadmap\":\"$ROADMAP\",\"obligation\":\"rchild\"}}"
+
+# (c) currentness read-back BEFORE declaring complete: while the child's
+# authoritative row is still open, the roadmap owner is not touched.
+tasks-axi start rchild --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild "merged"
+expect_code 1 "$WC_RC" "an open child cannot confirm the completion-to-parent refresh"
+assert_contains "$WC_OUT" "roadmap=skipped-unconfirmed-child" "open child -> roadmap untouched"
+assert_grep "obligation=rchild status=open" "$ROADMAP" "the matching obligation stays open until the child lands"
+pass "acceptance (c): roadmap state is compared with the authoritative child owner before declaring complete"
+
+# The child merges: the matching obligation flips open->landed; the sibling stays
+# open; the already-landed obligation is untouched; nothing is deleted.
+tasks-axi "done" rchild --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild "merged"
+expect_code 0 "$WC_RC" "a merged child confirms the completion-to-parent refresh"
+assert_contains "$WC_OUT" "roadmap=applied" "confirmed merge -> roadmap obligation flipped"
+assert_grep "obligation=rchild status=landed" "$ROADMAP" "the matching obligation is now landed"
+assert_grep "obligation=sibling status=open" "$ROADMAP" "an unrelated obligation stays open"
+assert_grep "obligation=shipped status=landed" "$ROADMAP" "an already-landed obligation is preserved"
+assert_grep "Deliver auth flow" "$ROADMAP" "history is preserved (the obligation line is edited in place, not deleted)"
+pass "acceptance (a): a merged child flips the parent's matching obligation open->landed while unrelated obligations stay open"
+
+# Idempotent replay: the roadmap owner is byte-identical and stays confirmed.
+ROADMAP_FIRST=$(cat "$ROADMAP")
+run_wc "$H9" reconcile rchild "merged"
+expect_code 0 "$WC_RC" "replaying the confirmed refresh stays confirmed"
+assert_contains "$WC_OUT" "roadmap=already-landed" "a matching obligation already landed is idempotent"
+ROADMAP_SECOND=$(cat "$ROADMAP")
+[ "$ROADMAP_FIRST" = "$ROADMAP_SECOND" ] || fail "roadmap refresh is not idempotent: '$ROADMAP_FIRST' vs '$ROADMAP_SECOND'"
+pass "acceptance (a): the completion-to-parent refresh is idempotent (the roadmap owner is byte-identical on replay)"
+
+# A declared obligation the roadmap does not carry is a real discrepancy that
+# fails closed, so a stale roadmap is never silently trusted as current.
+add_item "$H9" rchild_absent
+mkdir -p "$H9/data/rchild_absent"
+write_desc "$H9" rchild_absent "{\"reconcile\":{\"roadmap\":\"$ROADMAP\",\"obligation\":\"not-in-the-roadmap\"}}"
+tasks-axi start rchild_absent --file "$(backlog_of "$H9")" >/dev/null
+tasks-axi "done" rchild_absent --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild_absent "merged"
+expect_code 1 "$WC_RC" "a declared obligation the roadmap does not carry fails closed"
+assert_contains "$WC_OUT" "roadmap=obligation-absent" "a missing obligation is a discrepancy, not a silent confirm"
+pass "acceptance (a): a declared obligation absent from the roadmap fails closed rather than trusting a stale roadmap"
+
+# A matched obligation line that is neither status=open nor status=landed (a
+# stale in-progress line, or a matched obligation tag carrying no status token)
+# must FAIL CLOSED as obligation-not-landed, never be silently confirmed as
+# already-landed. Only a genuinely status=landed matched line confirms.
+H9B=$(make_home roadmap_notlanded)
+ROADMAP_NL="$H9B/data/commission-roadmap.md"
+
+# (i) status=in-progress: matched but not open and not landed -> fail closed.
+add_item "$H9B" rc_inprog
+mkdir -p "$H9B/data/rc_inprog"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver auth flow    obligation=rc_inprog status=in-progress'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_inprog "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_inprog\"}}"
+tasks-axi start rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_inprog "merged"
+expect_code 1 "$WC_RC" "an in-progress obligation line fails closed rather than confirming"
+assert_contains "$WC_OUT" "currentness=unconfirmed" "a non-landed matched obligation downgrades currentness"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "an in-progress obligation is not silently trusted as already-landed"
+assert_grep "obligation=rc_inprog status=in-progress" "$ROADMAP_NL" "the stale in-progress line is not flipped"
+
+# (ii) a matched obligation tag with no status token at all -> fail closed.
+add_item "$H9B" rc_nostatus
+mkdir -p "$H9B/data/rc_nostatus"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver logging    obligation=rc_nostatus'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_nostatus "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_nostatus\"}}"
+tasks-axi start rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_nostatus "merged"
+expect_code 1 "$WC_RC" "a matched obligation with no status token fails closed"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "a status-less matched obligation is not silently trusted"
+
+# (iii) a genuinely status=landed matched line still confirms idempotently.
+add_item "$H9B" rc_landed
+mkdir -p "$H9B/data/rc_landed"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver caching    obligation=rc_landed status=landed'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_landed "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_landed\"}}"
+tasks-axi start rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_landed "merged"
+expect_code 0 "$WC_RC" "a genuinely landed obligation still confirms"
+assert_contains "$WC_OUT" "roadmap=already-landed" "only a real status=landed line confirms idempotently"
+pass "acceptance (a): a matched obligation that is neither open nor landed fails closed as obligation-not-landed"
+
+# =========================================================================
+# Acceptance (b): NEXT-ELIGIBLE-TASK SELECTION. With no active worker, select
+# composes the existing per-task eligible_queued producer with the per-task
+# preflight: one held task is distinguished from an independent eligible task,
+# and an aggregate externally_held/captain_decision state is NOT a global hold.
+# =========================================================================
+
+if command -v tasks-axi >/dev/null 2>&1; then
+  H10=$(make_home select)
+  add_item "$H10" free_task
+  add_item "$H10" held_task
+  tasks-axi hold held_task --reason "blanket captain preference" --kind captain \
+    --file "$(backlog_of "$H10")" >/dev/null
+  run_wc "$H10" select
+  expect_code 0 "$WC_RC" "select is a read-only report and exits 0"
+  # The aggregate state reflects the hold, yet the home is NOT globally blocked.
+  assert_not_contains "$WC_OUT" "aggregate_state=no_active_work" "a held sibling makes the aggregate non-idle"
+  assert_contains "$WC_OUT" "eligible_candidates=1" "exactly the independent task is an eligible candidate"
+  assert_contains "$WC_OUT" "selectable=free_task" "the independent eligible task is selectable despite the aggregate hold"
+  printf '%s' "$WC_OUT" | grep -q "selectable=.*held_task" && fail "the held task must not be selectable"
+  pass "acceptance (b): selection distinguishes a held task from an independent eligible task; the aggregate hold is not global"
+else
+  pass "acceptance (b): skipped (tasks-axi not installed; the selection producer is inert without it)"
+fi
+
 echo "# fm-work-context.test.sh: all assertions passed"

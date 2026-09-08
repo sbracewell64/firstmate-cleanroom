@@ -472,11 +472,13 @@ test_ci_ready_stage_line_beats_monitoring_run() {
   fm_write_meta "$d/state/feat-cis.meta" "window=fm:fm-feat-cis" "worktree=$d/wt" "kind=ship"
   printf 'ci-ready: task=feat-cis gen=s1 branch=fm/feat-cis head=abc tree=def pr=https://github.com/o/r/pull/2 owner=merge-authority reason=-\n' > "$d/state/feat-cis.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cis)"
-  FM_FAKE_CI_LOGS="checks passed; monitoring PR for merge"
+  # A REAL green marker is required to certify the ci-ready receipt: current CI
+  # evidence must positively read green, not merely fail to contradict.
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
   local out; out=$(run_crew_state "$d" feat-cis)
-  assert_contains "$out" "state: done" "ci-ready stage line + monitoring run -> done"
-  assert_contains "$out" "source: status-log" "the stage receipt is the source"
-  pass "ci-ready stage line surfaces done while the run keeps monitoring"
+  assert_contains "$out" "state: done" "ci-ready stage line + green monitoring run -> done"
+  assert_contains "$out" "source: run-step" "green CI evidence, not the receipt, attributes the done"
+  pass "ci-ready stage line surfaces done while the run keeps monitoring (via current green CI)"
 }
 
 test_scalar_gate_parked_not_superseded() {
@@ -521,19 +523,23 @@ test_ci_ready_done_log_beats_monitoring_run() {
   fm_write_meta "$d/state/feat-ci.meta" "window=fm:fm-feat-ci" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://github.com/o/r/pull/2 checks green\n' > "$d/state/feat-ci.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-ci)"
+  # The legacy ci-ready receipt is certified only by a real current green marker.
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
   local out; out=$(run_crew_state "$d" feat-ci)
-  assert_contains "$out" "state: done" "ci-ready status log -> done"
-  assert_contains "$out" "source: status-log" "ci-ready state comes from the status log"
-  assert_contains "$out" "checks green" "ci-ready detail preserves the report"
-  assert_not_contains "$out" "state: working" "ci-ready is not hidden by monitoring run"
-  pass "ci-ready status log beats monitoring run"
+  assert_contains "$out" "state: done" "ci-ready status log + green run -> done"
+  assert_contains "$out" "source: run-step" "green CI evidence attributes the done, not the stale receipt"
+  assert_contains "$out" "checks green" "detail reports checks green"
+  assert_not_contains "$out" "state: working" "a green monitoring run is not hidden as still validating"
+  pass "a ci-ready status log with a green monitoring run surfaces done"
 }
 
 # Regression for the PR #252 incident: the crew's own status log never got a
-# "done: ... checks green" line (log_reports_ci_ready above does not apply),
-# but the ci step's log tail shows CI is actually green and only waiting on
-# merge/close. fm-crew-state must surface this as done, not "validating
-# (running)", so a green PR is never silently absorbed as still-in-progress.
+# "done: ... checks green" line (no ci-ready receipt at all), but the ci step's
+# log tail shows CI is actually green and only waiting on merge/close.
+# fm-crew-state must surface this as done, not "validating (running)", so a green
+# PR is never silently absorbed as still-in-progress. The run-step CI-log check
+# is the ONE owner of monitoring-run -> done: a receipt is neither required nor
+# sufficient without current green evidence.
 test_ci_monitoring_checks_green_surfaces_done() {
   reset_fakes
   local d; d=$(new_case ci-green)
@@ -893,26 +899,84 @@ EOF
   pass "cross-branch attribution picks the branch's most recent row"
 }
 
-test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status() {
+# Counterexample B (residual folded into nmf-observer-check-normalization): when
+# `axi status` answers another branch, this crew's own run is attributed only
+# COARSELY, from the runs list, as a bare `running` word - there is no run id, so
+# no CI-log proof is available for it. A currently-running run CONFLICTS with an
+# older ci-ready receipt (the run is advancing, not landed), so the coarse run
+# must NOT promote that receipt to done. It reports working from its own
+# run-step, never a false status-log done. (Before the fix, a coarse running run
+# plus a stale ci-ready row emitted state: done from the status log with no
+# matching run's CI proof.)
+test_coarse_running_run_does_not_certify_stale_ci_ready() {
   reset_fakes
-  local d short; d=$(new_case coarse-ready-other-log)
+  local d short; d=$(new_case coarse-running-stale-ready)
   make_repo_on_branch "$d/wt" fm/feat-coarseready
   short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-coarseready.meta" "window=fm:fm-feat-coarseready" "worktree=$d/wt" "kind=ship"
-  printf 'done: PR https://github.com/o/r/pull/4 checks green\n' > "$d/state/feat-coarseready.status"
+  printf 'ci-ready: PR https://github.com/o/r/pull/4 checks green from prior observation\n' > "$d/state/feat-coarseready.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/other-crew)"
   FM_FAKE_RUNS_LIST="$(cat <<EOF
   running    fm/other-crew aaaaaaa  2026-07-02 22:10
   running    fm/feat-coarseready ${short}  2026-07-02 22:05
 EOF
 )"
-  FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
   local out; out=$(run_crew_state "$d" feat-coarseready)
-  assert_contains "$out" "state: done" "coarse ready status -> done"
-  assert_contains "$out" "source: status-log" "coarse ready status remains status-log sourced"
-  assert_not_contains "$out" "state: working" "coarse ready status must not be suppressed by another branch log"
-  pass "coarse run does not probe another branch's ci log"
+  assert_contains "$out" "state: working" "coarse running run -> working, not a stale-receipt done"
+  assert_contains "$out" "source: run-step" "coarse running run reports its own run-step, not the status log"
+  assert_not_contains "$out" "state: done" "a coarse running run must never certify an older ci-ready receipt"
+  pass "coarse running run does not certify a stale ci-ready receipt (counterexample B)"
+}
+
+# Counterexample A (residual): the crew's OWN matching run is in ci-running, its
+# CI-log read SUCCEEDS but is EMPTY (no recognized marker), and an older ci-ready
+# receipt sits in the status log. An empty-but-successful log is unknown, not
+# green - old logs cannot replace missing current evidence - so the receipt must
+# NOT be promoted to done. The run is genuinely running, so working is the honest
+# current state. (Before the fix, empty/unknown CI evidence fell through the
+# `!= not-ready && != unavailable` gate and certified a false done.)
+test_matching_ci_running_empty_log_does_not_certify_stale_ci_ready() {
+  reset_fakes
+  local d out; d=$(new_case matching-ci-empty-log)
+  make_repo_on_branch "$d/wt" fm/feat-emptylog
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-emptylog.meta" "window=fm:fm-feat-emptylog" "worktree=$d/wt" "kind=ship"
+  printf 'ci-ready: PR https://github.com/o/r/pull/2 checks green from prior observation\n' > "$d/state/feat-emptylog.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-emptylog)"
+  FM_FAKE_CI_LOGS=""       # successful read, but empty: no green marker to confirm
+  FM_FAKE_CI_LOGS_RC=0
+  out=$(run_crew_state "$d" feat-emptylog)
+  assert_contains "$out" "state: working" "empty-but-successful CI log -> working, not a stale-receipt done"
+  assert_contains "$out" "source: run-step" "the running run reports its own run-step"
+  assert_not_contains "$out" "state: done" "an empty CI log must not certify an older ci-ready receipt"
+  pass "matching ci-running run with an empty CI log does not certify a stale ci-ready receipt (counterexample A)"
+}
+
+# Counterexample C (residual): the PRIMARY `axi status` run query FAILS (nonzero,
+# possibly with partial terminal stdout), an older ci-ready receipt sits in the
+# status log, and the pane is idle. The failed query means current attributable
+# evidence is UNAVAILABLE - the discarded bytes cannot certify anything - so the
+# status-log fallback must report unknown, never done. (Before the fix, the
+# helper discarded the failed query's bytes but still promoted the stale ci-ready
+# receipt to done through the status-log fallback.)
+test_failed_run_query_does_not_certify_stale_ci_ready_from_log() {
+  reset_fakes
+  local d out; d=$(new_case failed-query-stale-ready)
+  make_repo_on_branch "$d/wt" fm/feat-queryfail-ready
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-queryfail-ready.meta" "window=fm:fm-feat-queryfail-ready" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'ci-ready: PR https://github.com/o/r/pull/2 checks green from prior observation\n' > "$d/state/feat-queryfail-ready.status"
+  # The failed query even carries a terminal outcome in its partial stdout.
+  FM_FAKE_AXI_STATUS="$(run_checks_passed fm/feat-queryfail-ready)"
+  FM_FAKE_AXI_STATUS_RC=7
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-queryfail-ready
+  out=$(run_crew_state "$d" feat-queryfail-ready)
+  assert_contains "$out" "state: unknown" "a failed run query leaves current evidence unavailable -> unknown"
+  assert_contains "$out" "evidence unavailable" "the unavailability is named for the supervisor"
+  assert_not_contains "$out" "state: done" "a stale ci-ready receipt must not be certified when the run query failed"
+  pass "failed run query does not certify a stale ci-ready receipt from the status log (counterexample C)"
 }
 
 # A different-branch run with NO matching runs-list row must NOT be
@@ -1730,7 +1794,9 @@ test_terminal_passed
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
-test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
+test_coarse_running_run_does_not_certify_stale_ci_ready
+test_matching_ci_running_empty_log_does_not_certify_stale_ci_ready
+test_failed_run_query_does_not_certify_stale_ci_ready_from_log
 test_other_branch_run_ignored
 test_no_run_busy_pane
 test_no_run_footer_text_alone_is_not_working

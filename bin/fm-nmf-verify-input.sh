@@ -17,28 +17,48 @@
 #
 #   classify   maps the event action to 'historical' or 'current'. Single owner
 #              of that mapping, so the workflow never re-spells the action list.
-#   resolve    current mode only. Given the event's expected subject (PR number
-#              and head SHA) and ONE live provider read (number, head, body), it
-#              binds PR identity, refuses a superseded subject (a live head that
-#              advanced past the event's subject head - that newer head has its
-#              own run), and emits the live body plus the subject head for the
-#              verifier. A historical event never reaches this path, so an old
-#              event can never be re-judged against a newer body or head.
-#              It also fails closed when the live body is empty or unavailable:
-#              it emits no body output rather than an empty one.
-#              An empty body is falsy to the pinned verifier and would fall back
-#              to the frozen event payload, so this refusal keeps a stale event
-#              from being reinterpreted against newer PR state.
+#   resolve    current mode only, classifies ONE live provider read against the
+#              event subject. Given the event's expected subject (PR number and
+#              head SHA) and one live read (number, head, body), it binds PR
+#              identity, refuses a superseded subject (a live head that advanced
+#              past the event's subject head - that newer head has its own run),
+#              and inspects whether the live body's pipeline attestation is bound
+#              to the live head yet:
+#                BOUND   (exit 0): the live body carries a v1 pipeline
+#                        attestation whose head_sha equals the live head. It
+#                        emits the live body plus the subject head for the
+#                        verifier, exactly as before.
+#                PENDING (exit 3): the live body is present but its attestation
+#                        does not bind the live head yet (attestation absent, or
+#                        bound to a prior head). This is the publication-timing
+#                        window: 'git push no-mistakes' advances the head and
+#                        then re-publishes the body attestation for it in two
+#                        steps, so a synchronize event can fire and read the body
+#                        before the re-publication lands. The caller (workflow)
+#                        may re-read and retry within a short bounded SAME-SUBJECT
+#                        window; resolve emits no body output in this state, so a
+#                        not-yet-bound body can never reach the verifier as bound.
+#              A historical event never reaches this path, so an old event can
+#              never be re-judged against a newer body or head. It fails closed
+#              (exit 1) on identity mismatch, a superseded subject, or an empty
+#              live body. An empty body is falsy to the pinned verifier and would
+#              fall back to the frozen event payload, so that refusal keeps a
+#              stale event from being reinterpreted against newer PR state. A
+#              body that never binds the live head only ever reaches PENDING, so
+#              the caller's bounded window turns a sustained mismatch into a
+#              fail-closed deadline, never a pass.
 #   readback   current mode only, AFTER the verifier. Re-reads the live subject
 #              (number and head) and refuses to let the result stand if the
 #              subject advanced during verification, so an old-head run can never
 #              publish a green result for a newer, already-advanced PR head.
 #
 # All three fail closed: a missing required input or an unrecognized event action
-# is an error, never a silent pass. On success 'resolve' prints GITHUB_OUTPUT
-# key=value lines on stdout (the multi-line body uses a random heredoc delimiter,
-# GitHub's documented mitigation for attacker-controlled multi-line values);
-# every diagnostic is a ::error:: line on stderr.
+# is an error, never a silent pass. On a BOUND result 'resolve' prints
+# GITHUB_OUTPUT key=value lines on stdout (the multi-line body uses a random
+# heredoc delimiter, GitHub's documented mitigation for attacker-controlled
+# multi-line values); a hard refusal exits non-zero with a ::error:: line on
+# stderr; the PENDING publication-window state exits 3 with a ::notice:: line and
+# no stdout output, which is a retry signal to the caller, never a pass.
 #
 # Usage:
 #   NMF_EVENT_ACTION=<action> fm-nmf-verify-input.sh classify
@@ -52,7 +72,7 @@
 set -eu
 
 usage() {
-  sed -n '2,51{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,71{s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.
@@ -66,6 +86,45 @@ die() {
 require() {
   local name=$1 value=$2
   [ -n "$value" ] || die 2 "fm-nmf-verify-input.sh $SUBCOMMAND: missing required input $name."
+}
+
+# PENDING publication-window state: a ::notice:: (not ::error::) annotation on
+# stderr and exit 3 - the caller's retry-within-the-window signal, never a pass.
+# Emits nothing on stdout, so a body not yet bound to the live head can never be
+# consumed as a resolved live subject.
+pending() {
+  printf '::notice::%s\n' "$*" >&2
+  exit 3
+}
+
+# The pipeline attestation delimiters, byte-for-byte the pinned verifier's
+# (verify.py) ATTESTATION_PREFIX and ATTESTATION_CLOSING. Kept identical so this
+# helper's "is the body bound to the live head yet" predicate agrees with the
+# verifier's authoritative head-bind read. The verifier remains the sole judge
+# of a BOUND body; this predicate only decides WHEN the body is handed to it.
+ATTESTATION_PREFIX='<!-- no-mistakes-pipeline-attestation:v1 '
+ATTESTATION_CLOSING=' -->'
+
+# Print the head_sha of the FIRST v1 pipeline attestation block in the body, or
+# nothing when no block is present, the block is unterminated, or it carries no
+# head_sha. Mirrors verify.py, which uses the first block and reads its head_sha
+# field. Pure string work with no JSON dependency; a malformed or head_sha-less
+# block yields nothing, which the caller treats as not-yet-bound (PENDING)
+# rather than a pass, so the fail-closed direction is preserved.
+attested_head_of_body() {
+  local body=$1 rest block
+  case "$body" in
+    *"$ATTESTATION_PREFIX"*) ;;
+    *) return 0 ;;
+  esac
+  rest=${body#*"$ATTESTATION_PREFIX"}
+  case "$rest" in
+    *"$ATTESTATION_CLOSING"*) block=${rest%%"$ATTESTATION_CLOSING"*} ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$block" \
+    | sed -n 's/.*"head_sha"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]\{7,\}\)".*/\1/p' \
+    | head -1
 }
 
 # A random GITHUB_OUTPUT heredoc delimiter. 128 bits of entropy makes a
@@ -121,6 +180,25 @@ resolve() {
   # stale reinterpretation this mode forbids. Refuse before emitting any output.
   if [ -z "$live_body" ]; then
     die 1 "fm-nmf-verify-input.sh resolve: current-mode live body is empty or unavailable; no sound live subject established, refusing to fall back to the frozen event payload."
+  fi
+
+  # Publication-timing window. 'git push no-mistakes' advances the head and then
+  # re-publishes the body attestation for the new head in two steps, so a
+  # synchronize event can read the body after the head landed but before the
+  # attestation was re-bound to it - the FAIL-then-SUCCESS race on one head that
+  # this fix exists for. Only emit a BOUND live subject once the live body's
+  # attestation binds the live head; otherwise report PENDING so the caller can
+  # re-read within its bounded SAME-SUBJECT window. A body that never binds the
+  # live head only ever reaches PENDING, so the caller's deadline turns a
+  # sustained mismatch into a fail-closed refusal, never a pass. The verifier
+  # stays the sole authority on a BOUND body.
+  local attested_head
+  attested_head=$(attested_head_of_body "$live_body")
+  if [ -z "$attested_head" ]; then
+    pending "fm-nmf-verify-input.sh resolve: live body carries no pipeline attestation bound to the live head $live_head yet; awaiting publication within the bounded window."
+  fi
+  if [ "$attested_head" != "$live_head" ]; then
+    pending "fm-nmf-verify-input.sh resolve: live body attestation is bound to $attested_head, not the live head $live_head; awaiting re-publication for the current head within the bounded window."
   fi
 
   local delimiter

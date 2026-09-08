@@ -51,11 +51,22 @@ jobs:
 
       # Current mode only. The frozen event payload can carry a one-generation
       # late body/head pair (read-replica lag, or a head that advanced after the
-      # event fired), so read the live PR subject once and let the helper bind
-      # PR identity, refuse a superseded subject, and fail closed on an empty
-      # live body. Its outputs (subject-bound live body and head) are what the
+      # event fired), so read the live PR subject and let the helper bind PR
+      # identity, refuse a superseded subject, and fail closed on an empty live
+      # body. Its outputs (subject-bound live body and head) are what the
       # verifier judges. A historical event skips this step, so an old event can
       # never be re-judged against a newer live body or head.
+      #
+      # Bounded SAME-SUBJECT publication window. 'git push no-mistakes' advances
+      # the head and then re-publishes the body attestation for the new head in
+      # two steps, so a synchronize event can read the body after the head
+      # landed but before the attestation was re-bound to it - a spurious
+      # merge-blocking failure on a head that is about to become sound. While
+      # the live head is unchanged and the attestation is not yet bound to it
+      # (helper exit 3, PENDING), re-read within this window instead of judging
+      # a not-yet-bound body. Fail closed at the deadline, on a head advance, or
+      # on any hard refusal; the body is only handed to the verifier once its
+      # attestation binds the live head.
       - name: Resolve live PR subject
         id: resolve
         if: steps.classify.outputs.mode == 'current'
@@ -63,14 +74,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NMF_EVENT_NUMBER: ${{ github.event.pull_request.number }}
           NMF_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NMF_PUBLICATION_WINDOW_SECONDS: '90'
+          NMF_PUBLICATION_POLL_SECONDS: '6'
         run: |
           set -eu
-          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NMF_EVENT_NUMBER}")
-          NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
-          NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
-          NMF_LIVE_BODY=$(printf '%s' "$pr" | jq -r '.body // ""')
-          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA NMF_LIVE_BODY
-          bin/fm-nmf-verify-input.sh resolve >> "$GITHUB_OUTPUT"
+          deadline=$(( $(date +%s) + NMF_PUBLICATION_WINDOW_SECONDS ))
+          while : ; do
+            pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NMF_EVENT_NUMBER}")
+            NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
+            NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+            NMF_LIVE_BODY=$(printf '%s' "$pr" | jq -r '.body // ""')
+            export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA NMF_LIVE_BODY
+            rc=0
+            out=$(bin/fm-nmf-verify-input.sh resolve) || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            # Exit 3 is PENDING (retry within the window); any other non-zero is
+            # a hard fail-closed refusal that must propagate immediately.
+            if [ "$rc" -ne 3 ]; then
+              exit "$rc"
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::The no-mistakes attestation for the current PR head was not published within the ${NMF_PUBLICATION_WINDOW_SECONDS}s publication window; failing closed." >&2
+              exit 1
+            fi
+            sleep "$NMF_PUBLICATION_POLL_SECONDS"
+          done
 
       # In historical mode the resolve step is skipped, so pr-body and
       # pr-head-sha are empty and the pinned action falls back to the frozen

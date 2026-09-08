@@ -289,6 +289,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-work-context-lib.sh
+. "$SCRIPT_DIR/fm-work-context-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -2056,6 +2058,25 @@ else
     echo "error: task $ID cannot be dispatched because its backlog data directory is inaccessible: $DATA ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 1
   fi
+fi
+
+# Work-context authority gate (bin/fm-work-context-lib.sh). Before this spawn
+# creates any endpoint, worktree, or record, refuse a dependent Class-C material
+# effect whose authoritative binding (state/<id>.meta authority_classes, or the
+# data/<id>/work-context.json descriptor) declares it Class C without a consumed,
+# affirmative, subject-bound routed ruling. It is INERT for every ordinary op
+# (no Class-C binding -> Class A -> proceed with no jq), so existing dispatch
+# behavior is unchanged; a refusal here costs nothing to unwind, unlike the same
+# refusal after a live pane exists. Runtime read-back against the deployed
+# control-plane verifier remains the separate downstream ACTIVE step.
+WC_GATE_RC=0
+fm_work_context_dispatch_authority_gate "$STATE" "$DATA" "$ID" || WC_GATE_RC=$?
+if [ "$WC_GATE_RC" = "$FM_WORK_CONTEXT_REFUSE_EXIT" ]; then
+  echo "error: task $ID is refused before dispatch by the work-context authority gate: $FM_WORK_CONTEXT_DETAIL" >&2
+  exit 1
+elif [ "$WC_GATE_RC" != 0 ]; then
+  echo "error: task $ID's work-context authority could not be evaluated before dispatch: ${FM_WORK_CONTEXT_DETAIL:-unknown}" >&2
+  exit 1
 fi
 
 if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then

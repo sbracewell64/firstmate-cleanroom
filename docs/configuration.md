@@ -247,6 +247,7 @@ A secondmate does not create an independent default and instead receives the pri
 The file must be one positive base-10 integer followed by exactly one newline in a regular, single-linked file beneath a non-symlinked `config/` directory.
 Malformed, multi-line, symlinked, hardlinked, special, or otherwise unsafe values are rejected rather than treated as a default.
 Use `bin/fm-startup-memory-budget.sh read` to validate and print the effective value, or `bin/fm-startup-memory-budget.sh report` to account for the three files.
+`report` always exits 0 when the accounting runs, so its exit code is not a compliance signal; `bin/fm-startup-memory-budget.sh enforce` prints the same accounting but ties its exit code to compliance (0 within budget, 3 over budget, 2 on an accounting failure) so a caller at a startup/consumption or durable-memory-write boundary can gate on it.
 The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative portable approximation rather than a provider-exact tokenizer.
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
@@ -390,6 +391,18 @@ Valid files stay silent by default; with `FM_BOOTSTRAP_VERBOSE_FACTS=1`, bootstr
 Malformed JSON, an empty or malformed rule/default array, an unverified harness, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+
+## Work-context authority gate (config/work-context-ruling-verifier)
+
+`bin/fm-spawn.sh` consults the work-context authority gate (`bin/fm-work-context-lib.sh`) after its backlog-dispatchability probe and before any endpoint, worktree, or record exists.
+The gate is inert for an ordinary op: a task whose authoritative binding declares no Class-C material authority resolves to Class A and dispatches unchanged.
+It refuses only a Class-C op that lacks a consumed, affirmative, subject-bound routed ruling, because a material-Sol engineering decision needs a routed request and a lease-bound ruling before its dependent effect and prose, a request id, a label, a queued task, or recorded Captain consent never substitutes.
+The op's class is read from its authoritative binding - `state/<id>.meta` `authority_classes=` (which survives descriptor deletion) supplemented by the optional `data/<id>/work-context.json` descriptor - never inferred from a name or from free-text.
+
+`config/work-context-ruling-verifier` is an optional local, gitignored file naming an executable that consumes and validates the canonical control-plane ruling receipt.
+When present and on `PATH`, that verifier is authoritative and its non-zero exit fails closed; when absent, the gate applies strict local validation of the receipt (a consumed, affirmative outcome bound to this subject with a lease, request identity, and generation).
+The verifier is never inferred from a receipt, harness, or file name.
+`FM_WORK_CONTEXT_RULING_VERIFIER` overrides the file for one invocation.
 
 ## Toolchain
 

@@ -1,0 +1,26 @@
+=== no-mistakes gate-mirror commit-identity pin: end-to-end ===
+
+Operator global (the contaminating identity a squash-merge propagated):
+  Test <test@example.com>
+Per-repo mirror the shared daemon derives from sha256(repo path)[:12]:
+  repos/89e5da46a350.git
+
+--- BEFORE pin: a pipeline commit off the mirror inherits the operator global ---
+  author=Test <test@example.com>
+  committer=Test <test@example.com>
+
+--- Captain runs the fail-closed pin ---
+$ fm-nm-commit-identity.sh pin --repo <checkout> --nm-home <NM_HOME>
+  OK /tmp/nm-ident-demo.brhzVT/nm-home/repos/89e5da46a350.git verified=shared+wt:/tmp/nm-ident-demo.brhzVT/wt-before.19874
+  exit=0 (OK)
+
+--- AFTER pin: the pipeline's OWN document/review/rebase commit carries the captain identity ---
+  author=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+  committer=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+--- Fail-closed: no mirror yet -> typed MISSING, never silent OK ---
+  MISSING no gate mirror for /tmp/nm-ident-demo.brhzVT/ungated under /tmp/nm-ident-demo.brhzVT/nm-empty/repos (repo not gated here, or its first run has not created the mirror yet)
+  exit=3 (MISSING)
+
+--- Operator global never mutated by the pin ---
+  Test <test@example.com>

@@ -524,6 +524,25 @@ console_argv_subscription_only() {  # <argv...> -> 0 clean / 1 refuse (prints to
   done
   return 0
 }
+# doctor helper (extracted from an inline $(case ... esac) that stock macOS Bash
+# 3.2 cannot parse inside a command substitution): is the clean-room tools
+# surface first on PATH?
+doctor_tools_first() {  # <path> <fm-tools> -> "yes (<fm-tools>)" | "NO - REFUSE"
+  case "$1" in
+    "$2":*) echo "yes ($2)" ;;
+    *) echo "NO - REFUSE" ;;
+  esac
+}
+# Same reason: these keep a `case` out of a $(...) command substitution so stock
+# macOS Bash 3.2 can parse the doctor block. Read the resolved globals directly.
+doctor_fm_home_leak() {  # -> YES-REFUSE | none | none (no retired home configured)
+  [ -n "$FM_RETIRED_HOME" ] || { echo 'none (no retired home configured)'; return; }
+  case "$FM_HOME/" in "$FM_RETIRED_HOME"/*) echo YES-REFUSE ;; *) echo none ;; esac
+}
+doctor_path_leak() {  # -> "YES - <dir> is on PATH" | none | none (no retired home configured)
+  [ -n "$FM_RETIRED_HOME" ] || { echo 'none (no retired home configured)'; return; }
+  case ":$PATH:" in *":$FM_RETIRED_HOME/bin:"*) echo "YES - $FM_RETIRED_HOME/bin is on PATH" ;; *) echo none ;; esac
+}
 
 # --- Console launch contract (control issue #8 REVISE 2): pure decisions --------
 # console_harness_argv <harness> <model|""> <settings-file|""> <resume-id|""> [passthrough...]
@@ -1642,7 +1661,7 @@ if [ "$MODE" = doctor ]; then
   echo
   echo "-- tools (policy projected from the pinned upstream floors; repair is always clean-room-scoped)"
   echo "  PATH head:         $(printf '%s' "$PATH" | cut -d: -f1-3)"
-  echo "  tools first:       $(case "$PATH" in "$FM_TOOLS":*) echo "yes ($FM_TOOLS)" ;; *) echo "NO - REFUSE" ;; esac)"
+  echo "  tools first:       $(doctor_tools_first "$PATH" "$FM_TOOLS")"
   "$FM_TOOLS_ROOT/tool-policy.sh" --code-root "$FM_CODE_ROOT" 2>&1 | sed 's/^/  /'
   echo "  jq / python3:      $(command -v jq || echo MISSING) / $(command -v python3 || echo MISSING)"
   echo
@@ -1703,8 +1722,8 @@ if [ "$MODE" = doctor ]; then
   echo "-- non-adoption of the other live FirstMate home"
   echo "  its home:          ${FM_RETIRED_HOME:-<none configured>}  (not on this launch path)"
   echo "  its herdr session: default           (this launch uses '$HERDR_SESSION')"
-  echo "  FM_HOME leak:      $( [ -n "$FM_RETIRED_HOME" ] && case "$FM_HOME/" in "$FM_RETIRED_HOME"/*) echo YES-REFUSE ;; *) echo none ;; esac || echo 'none (no retired home configured)')"
-  echo "  PATH leak:         $( [ -n "$FM_RETIRED_HOME" ] && case ":$PATH:" in *":$FM_RETIRED_HOME/bin:"*) echo "YES - $FM_RETIRED_HOME/bin is on PATH" ;; *) echo none ;; esac || echo 'none (no retired home configured)')"
+  echo "  FM_HOME leak:      $(doctor_fm_home_leak)"
+  echo "  PATH leak:         $(doctor_path_leak)"
   echo "  NM_HOME leak:      $([ "$(nm_root_canonical "$NM_HOME")" = "$(nm_root_canonical "$NM_SHARED_ROOT")" ] && echo 'YES - REFUSE' || echo none)"
   echo
   echo "=== end doctor ==="

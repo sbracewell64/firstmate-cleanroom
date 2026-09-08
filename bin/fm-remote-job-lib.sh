@@ -956,15 +956,38 @@ fm_remote_job_worker_process_group() { # <pid>
   printf '%s\n' "$pgid"
 }
 
+# The isolated supervisor process group of a worker whose ownership the caller
+# has ALREADY proven (fm_remote_job_worker_owned_alive). Resolved straight from
+# the serving child's own process group, without re-verifying the group leader's
+# command the way fm_remote_job_worker_process_group does. That verification
+# exists to keep the orphan reaper from signalling an unproven group, but here
+# ownership is settled, and the leader-command read can transiently fail under
+# load - a momentarily unreadable ps command line - and force a lone-process
+# fallback. A lone stop signals and waits for the recorded serving child only,
+# never its restart supervisor, so the replaced worker's supervisor group is
+# left alive. Refuses the caller's own group and reserved ids so a stop can
+# never target them.
+fm_remote_job_owned_worker_group() { # <pid>
+  local pid=$1 pgid own_pgid
+  pgid=$(fm_remote_job_process_pgid "$pid") || return 1
+  case "$pgid" in 0|1) return 1 ;; esac
+  own_pgid=$(fm_remote_job_process_pgid "$$") || return 1
+  [ "$pgid" != "$own_pgid" ] || return 1
+  printf '%s\n' "$pgid"
+}
+
 # Stop a worker and every descendant it leaked, TERM first and KILL only for a
 # survivor. Signals the isolated worker group when one is provable and the lone
-# process otherwise. Returns non-zero when any verified worker-group member is
-# still alive afterwards.
-fm_remote_job_stop_worker_tree() { # <pid>
-  local pid=$1 pgid i=0
+# process otherwise. A caller that has already proven ownership passes the
+# resolved group as the optional second argument, so a transiently unreadable
+# group leader cannot force the restart-defeating lone path. Returns non-zero
+# when any verified worker-group member is still alive afterwards.
+fm_remote_job_stop_worker_tree() { # <pid> [<pgid>]
+  local pid=$1 pgid=${2:-} i=0
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] || return 1
-  pgid=$(fm_remote_job_worker_process_group "$pid" 2>/dev/null || true)
+  case "$pgid" in *[!0-9]*) pgid= ;; esac
+  [ -n "$pgid" ] || pgid=$(fm_remote_job_worker_process_group "$pid" 2>/dev/null || true)
   if [ -n "$pgid" ]; then kill -TERM -- "-$pgid" 2>/dev/null || true; else kill -TERM "$pid" 2>/dev/null || true; fi
   while { [ -n "$pgid" ] && kill -0 -- "-$pgid" 2>/dev/null || [ -z "$pgid" ] && kill -0 "$pid" 2>/dev/null; } \
     && [ "$i" -lt 50 ]; do
@@ -1158,9 +1181,13 @@ fm_remote_job_start_linux_worker() { # <remote-root> <account-home>
     if fm_remote_job_worker_identity_matches "$root" "$account_home"; then return 0; fi
     # The owner pid is the serving child; its restart supervisor sits above it
     # and would immediately replace a lone process kill, so stop the whole
-    # worker tree through its isolated group.
+    # worker tree through its isolated group. Resolve that group here, where
+    # ownership is already proven, and hand it to the stop so a transiently
+    # unreadable group leader cannot force the lone path and leave the replaced
+    # supervisor group alive.
     pid=$FM_REMOTE_JOB_OWNER_PID
-    fm_remote_job_stop_worker_tree "$pid" || {
+    fm_remote_job_stop_worker_tree "$pid" \
+      "$(fm_remote_job_owned_worker_group "$pid" 2>/dev/null || true)" || {
       FM_REMOTE_JOB_ERROR="stale remote job worker did not stop safely"
       return 1
     }

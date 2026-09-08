@@ -1,0 +1,9 @@
+# Red/green demonstration of the fix (bash 5.3 host).
+# The CI swallow's observable end state = a watcher that ignores its stop signal.
+# Reproduced with a stand-in: `bash -c 'trap "" HUP INT TERM; ...; while :; do sleep 0.5; done'`
+
+## RED — old teardown `kill "$pid"; wait "$pid"` (bare TERM), bounded externally by `timeout 4`
+timeout exit=124  => 124 = bare kill;wait HUNG until the external cap (the CI 30-min hang)
+
+## GREEN — the suite's reap() (FM_REAP_GRACE_POLLS=10 => ~1s grace, then uncatchable KILL)
+swallowed_bare_TERM=yes | reap collected in 1s | still_alive_after_reap=no

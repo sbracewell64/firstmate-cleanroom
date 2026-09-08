@@ -456,6 +456,58 @@ expect_code 1 "$WC_RC" "a declared obligation the roadmap does not carry fails c
 assert_contains "$WC_OUT" "roadmap=obligation-absent" "a missing obligation is a discrepancy, not a silent confirm"
 pass "acceptance (a): a declared obligation absent from the roadmap fails closed rather than trusting a stale roadmap"
 
+# A matched obligation line that is neither status=open nor status=landed (a
+# stale in-progress line, or a matched obligation tag carrying no status token)
+# must FAIL CLOSED as obligation-not-landed, never be silently confirmed as
+# already-landed. Only a genuinely status=landed matched line confirms.
+H9B=$(make_home roadmap_notlanded)
+ROADMAP_NL="$H9B/data/commission-roadmap.md"
+
+# (i) status=in-progress: matched but not open and not landed -> fail closed.
+add_item "$H9B" rc_inprog
+mkdir -p "$H9B/data/rc_inprog"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver auth flow    obligation=rc_inprog status=in-progress'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_inprog "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_inprog\"}}"
+tasks-axi start rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_inprog "merged"
+expect_code 1 "$WC_RC" "an in-progress obligation line fails closed rather than confirming"
+assert_contains "$WC_OUT" "currentness=unconfirmed" "a non-landed matched obligation downgrades currentness"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "an in-progress obligation is not silently trusted as already-landed"
+assert_grep "obligation=rc_inprog status=in-progress" "$ROADMAP_NL" "the stale in-progress line is not flipped"
+
+# (ii) a matched obligation tag with no status token at all -> fail closed.
+add_item "$H9B" rc_nostatus
+mkdir -p "$H9B/data/rc_nostatus"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver logging    obligation=rc_nostatus'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_nostatus "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_nostatus\"}}"
+tasks-axi start rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_nostatus "merged"
+expect_code 1 "$WC_RC" "a matched obligation with no status token fails closed"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "a status-less matched obligation is not silently trusted"
+
+# (iii) a genuinely status=landed matched line still confirms idempotently.
+add_item "$H9B" rc_landed
+mkdir -p "$H9B/data/rc_landed"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver caching    obligation=rc_landed status=landed'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_landed "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_landed\"}}"
+tasks-axi start rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_landed "merged"
+expect_code 0 "$WC_RC" "a genuinely landed obligation still confirms"
+assert_contains "$WC_OUT" "roadmap=already-landed" "only a real status=landed line confirms idempotently"
+pass "acceptance (a): a matched obligation that is neither open nor landed fails closed as obligation-not-landed"
+
 # =========================================================================
 # Acceptance (b): NEXT-ELIGIBLE-TASK SELECTION. With no active worker, select
 # composes the existing per-task eligible_queued producer with the per-task

@@ -572,13 +572,12 @@ _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
   fi
   tmp="$file.wc.$$.$RANDOM"
   awk -v key="$key" -v child="$child" -v epoch="$epoch" '
-    BEGIN { flipped = 0; matched = 0 }
+    BEGIN { flipped = 0; landed_seen = 0; other_seen = 0 }
     {
       line = $0; is = 0
       n = split(line, t, /[ \t]+/)
       for (i = 1; i <= n; i++) if (t[i] == "obligation=" key) is = 1
       if (is && line ~ /(^|[ \t])status=open([ \t]|$)/) {
-        matched = 1
         if (!sub(/ status=open/, " status=landed", line)) {
           if (!sub(/\tstatus=open/, "\tstatus=landed", line)) {
             sub(/^status=open/, "status=landed", line)
@@ -586,14 +585,17 @@ _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
         }
         line = line " landed=" child "@" epoch
         flipped++
+      } else if (is && line ~ /(^|[ \t])status=landed([ \t]|$)/) {
+        landed_seen = 1
       } else if (is) {
-        matched = 1
+        other_seen = 1
       }
       print line
     }
     END {
       if (flipped > 0) exit 0
-      else if (matched > 0) exit 10
+      else if (other_seen > 0) exit 12
+      else if (landed_seen > 0) exit 10
       else exit 11
     }
   ' "$file" > "$tmp" 2>/dev/null
@@ -602,6 +604,7 @@ _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
     0) : ;;
     10) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=already-landed; return 0 ;;
     11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-absent; return 1 ;;
+    12) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-not-landed; return 1 ;;
     *)  rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=refresh-error; return 1 ;;
   esac
   if mv -f "$tmp" "$file" 2>/dev/null; then

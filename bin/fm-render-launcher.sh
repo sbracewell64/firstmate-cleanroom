@@ -84,16 +84,46 @@ STAGE_CONSUMER="$STAGING/enter-firstmate.sh"
 REPORT="$STAGING/qualification-report.md"
 
 # --- donor guard: the adopted code root must differ from the current live one ---
+# Resolve the CURRENT LIVE (donor) code root robustly, since the live launcher is
+# not always the pre-migration donor: prefer the authoritative $FM_HOME/config/
+# code-root scalar (read the whole-file-strip way the source does), else a literal
+# FM_CODE_ROOT=<path> line in the live launcher but ONLY when it is a real resolved
+# absolute path (the versioned source has FM_CODE_ROOT=$(resolve_host_path ...) and
+# the rendered shim has no FM_CODE_ROOT= line, neither of which is a real root).
+is_real_code_root() {  # <value> -> 0 when a real resolved absolute path
+  # shellcheck disable=SC2016 # the literal $( match rejects a command substitution
+  case "$1" in
+    *'$('*) return 1 ;;
+    /*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 DONOR_CODE_ROOT=''
-if [ -f "$LIVE_LAUNCHER" ]; then
-  DONOR_CODE_ROOT=$(sed -nE 's/^FM_CODE_ROOT=(.+)$/\1/p' "$LIVE_LAUNCHER" | head -1)
-fi
-if [ -n "$DONOR_CODE_ROOT" ] && [ "$CODE_ROOT" = "$DONOR_CODE_ROOT" ]; then
-  if [ "$ALLOW_SAME" = 1 ]; then
-    note "WARNING: adopted --code-root equals the current live (donor) code root ($CODE_ROOT); proceeding only because --allow-same-code-root was given"
-  else
-    die "adopted --code-root equals the current live (donor) code root ($CODE_ROOT); adoption must move the code root to the adopted release. Refusing (pass --allow-same-code-root only for evidence/testing)."
+DONOR_SOURCE=''
+if [ -f "$FM_HOME_ARG/config/code-root" ]; then
+  _cfg_root=$(tr -d '[:space:]' < "$FM_HOME_ARG/config/code-root")
+  if is_real_code_root "$_cfg_root"; then
+    DONOR_CODE_ROOT="$_cfg_root"; DONOR_SOURCE="$FM_HOME_ARG/config/code-root"
   fi
+fi
+if [ -z "$DONOR_CODE_ROOT" ] && [ -f "$LIVE_LAUNCHER" ]; then
+  _lit_root=$(sed -nE 's/^FM_CODE_ROOT=(.+)$/\1/p' "$LIVE_LAUNCHER" | head -1)
+  if is_real_code_root "$_lit_root"; then
+    DONOR_CODE_ROOT="$_lit_root"; DONOR_SOURCE="$LIVE_LAUNCHER (literal FM_CODE_ROOT=)"
+  fi
+fi
+if [ -n "$DONOR_CODE_ROOT" ]; then
+  if [ "$CODE_ROOT" = "$DONOR_CODE_ROOT" ]; then
+    if [ "$ALLOW_SAME" = 1 ]; then
+      note "WARNING: adopted --code-root equals the current live (donor) code root ($CODE_ROOT, from $DONOR_SOURCE); proceeding only because --allow-same-code-root was given"
+    else
+      die "adopted --code-root equals the current live (donor) code root ($CODE_ROOT, from $DONOR_SOURCE); adoption must move the code root to the adopted release. Refusing (pass --allow-same-code-root only for evidence/testing)."
+    fi
+  fi
+elif [ "$ALLOW_SAME" = 1 ]; then
+  note "WARNING: could not resolve a real current live (donor) code root from $FM_HOME_ARG/config/code-root or $LIVE_LAUNCHER; proceeding only because --allow-same-code-root was given"
+else
+  die "could not resolve a real current live (donor) code root from $FM_HOME_ARG/config/code-root or $LIVE_LAUNCHER, so adoption cannot be proven to move the code root off the donor. Refusing (pass --allow-same-code-root only for a genuine fresh install with nothing to move off of)."
 fi
 
 mkdir -p "$ROLLBACK" "$STAGE_CONFIG"

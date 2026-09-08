@@ -22,6 +22,31 @@ ARM_FAIL_EXIT_POLLS=400
 
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
+# Stop a background watcher or arm and collect it, never blocking unboundedly on
+# a process that swallowed its stop signal. Send <signal> (default TERM) so the
+# target's own signal trap can release its lock and reap its child, then wait a
+# bounded grace; if it is still alive, KILL it and collect. This is the exact
+# hang this suite is fixing: on CI's bash 5.2 (ubuntu-latest) a trap that lands
+# while bash is expanding a command substitution can fail to run
+# ("fm-watch.sh: trap: unexpected EOF while looking for matching `)'"), so the
+# watcher swallows its TERM and loops until the job timeout - and a bare
+# `kill "$pid"; wait "$pid"` teardown then blocks forever, taking the whole
+# portable-serial lane to its 30-minute cap with no FM_TEST_END emitted. A KILL
+# is uncatchable, so the bounded path always collects; the lock library reclaims
+# a dead holder's lock, so any later watcher a case launches still starts. Local
+# bash 5.3 fixes the underlying trap bug and so cannot reproduce the swallow,
+# which is why this must be structural rather than reproduced here.
+reap() {  # <pid> [signal]
+  local pid=$1 sig=${2:-TERM} i=0 max=${FM_REAP_GRACE_POLLS:-100}
+  kill "-$sig" "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$max" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
 drain_and_ack() {  # <state>
   local state=$1 err sequence generation
   err="$state/.test-drain.err"
@@ -61,9 +86,8 @@ test_singleton_start() {
     i=$((i + 1))
   done
   grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null || fail "second watcher did not report existing singleton"
-  kill "$pid1" "$pid2" 2>/dev/null || true
-  wait "$pid1" 2>/dev/null || true
-  wait "$pid2" 2>/dev/null || true
+  reap "$pid1"
+  reap "$pid2"
   pass "simultaneous watcher starts leave exactly one live process"
 }
 
@@ -94,8 +118,7 @@ test_stale_watch_lock_reclaimed() {
   done
   [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
   [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  reap "$pid"
   pass "killed watcher stale lock is reclaimed"
 }
 
@@ -594,8 +617,7 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
   # After the seed dies without a successor, the attached arm must fail loudly.
-  kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  reap "$wpid"
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
@@ -635,8 +657,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
     || fail "attached arm signal was not recorded in the lifecycle ledger"
   is_live_non_zombie "$wpid" || fail "signaling an attached arm terminated the peer watcher"
-  kill "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
+  reap "$wpid"
   pass "attached arm signals record a classified lifecycle entry"
 }
 
@@ -689,8 +710,8 @@ test_arm_starts_and_self_heals() {
     grep -F "watcher: started pid=$lock_pid (beacon fresh)" "$armout" >/dev/null \
       || fail "arm ($row) started line did not name the confirmed live watcher (lock '$lock_pid')"
     kill -0 "$lock_pid" 2>/dev/null || fail "arm ($row) confirmed-started watcher is not actually alive"
-    kill "$armpid" "$lock_pid" 2>/dev/null || true
-    wait "$armpid" 2>/dev/null || true
+    reap "$armpid"
+    reap "$lock_pid"
   done
   pass "arm starts cleanly and resurfaces recovery after a dead-pid lock"
 }
@@ -872,8 +893,7 @@ SH
   grep -qF "watcher: started pid=$successor_pid" "$armout" || fail "successor ledger cycle did not start"
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
-  kill -HUP "$successor_arm" 2>/dev/null || true
-  wait "$successor_arm" 2>/dev/null || true
+  reap "$successor_arm" HUP
   # The forced interruption is a watcher-down interval. Consume the prior
   # delivered wake before beginning independent ledger cycles, just as the
   # recovery handling turn does, so this fixture does not intentionally carry a
@@ -894,8 +914,7 @@ SH
       i=$((i + 1))
     done
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
-    kill -HUP "$successor_arm" 2>/dev/null || true
-    wait "$successor_arm" 2>/dev/null || true
+    reap "$successor_arm" HUP
     drain_and_ack "$state" \
       || fail "recovery drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))
@@ -1102,6 +1121,55 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+test_reap_bounds_a_signal_swallowing_watcher() {
+  # Regression for the hang this suite is fixing: a watcher that swallows its
+  # stop signal (reproduced deterministically here by IGNORING HUP/INT/TERM
+  # outright, the observable end state of the CI bash-5.2 trap-during-command-
+  # substitution swallow) must be collected within a bounded deadline, not
+  # waited on forever. Before reap, a bare `kill; wait` teardown against such a
+  # process blocked until the 30-minute portable-serial job cap with no
+  # FM_TEST_END - so this asserts reap KILLs and collects it well inside that
+  # window. A KILL is uncatchable, so this holds on every bash version regardless
+  # of whether the underlying trap bug can be provoked on this host.
+  local dir ready ignorer start elapsed i
+  dir=$(make_case reap-swallow)
+  ready="$dir/ignorer.ready"
+  # A stand-in that ignores every stop signal, then blocks far longer than reap's
+  # bounded grace. The short inner sleeps leave no long-lived orphan once the
+  # shell itself is KILLed. It marks itself ready only AFTER installing the
+  # ignore traps: a fresh `bash -c` inherits the harness's trapped-TERM as the
+  # default disposition across exec, so signaling before the trap is installed
+  # would kill it in that startup window and mask the KILL path this asserts.
+  bash -c 'trap "" HUP INT TERM; : > "$1"; while :; do sleep 0.5; done' _ "$ready" &
+  ignorer=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -e "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] || fail "signal-swallowing stand-in did not install its ignore traps"
+  # Prove it is genuinely signal-resistant first, so a cooperative exit cannot
+  # let this pass without exercising the bounded KILL path.
+  kill -TERM "$ignorer" 2>/dev/null || true
+  kill -HUP "$ignorer" 2>/dev/null || true
+  sleep 0.3
+  is_live_non_zombie "$ignorer" \
+    || fail "signal-swallowing stand-in exited on TERM/HUP; cannot exercise the bounded reap"
+  # Force a short grace so the KILL path is exercised in ~1s rather than the
+  # 10s production teardown grace: the assertion is that reap is BOUNDED and
+  # collects, not the exact wall-clock ceiling, so this keeps the regression
+  # cheap without weakening it. The deadline check gives generous headroom over
+  # the forced 1s grace so CI scheduling jitter cannot make it flake.
+  start=$(date +%s)
+  FM_REAP_GRACE_POLLS=10 reap "$ignorer"
+  elapsed=$(( $(date +%s) - start ))
+  is_live_non_zombie "$ignorer" && fail "reap did not collect a signal-swallowing watcher"
+  [ "$elapsed" -le 20 ] \
+    || fail "reap did not bound a signal-swallowing watcher (took ${elapsed}s)"
+  pass "reap collects a signal-swallowing watcher within a bounded deadline"
+}
+
+test_reap_bounds_a_signal_swallowing_watcher
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse

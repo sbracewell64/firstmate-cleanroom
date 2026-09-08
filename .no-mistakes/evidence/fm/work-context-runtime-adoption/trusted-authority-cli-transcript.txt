@@ -1,0 +1,25 @@
+=== Trusted work-context authority path — end-user CLI behavior ===
+(tasks-axi 0.2.5 driving a real backlog)
+
+--- (1) a reachable canonical verifier is AUTHORITATIVE over the local schema ---
+$ fm-work-context classify vtask     # receipt = unconsumed DENY (locally invalid)
+classes=C C class_c_ruling=present
+    verifier was invoked as: verify verify --receipt /tmp/tmp.00nMHCx6kB/home/data/vtask/ruling.json --subject vtask --request req-32 --generation g-9
+    -> PROCEED from the trusted path wins; bound to --subject/--request/--generation (finding B)
+
+--- (2) a reachable verifier that REFUSES fails closed ---
+$ VEXIT=1 fm-work-context classify vtask
+classes=C C class_c_ruling=denied-or-invalid
+
+--- (3) a DECLARED-but-unreachable verifier FAILS CLOSED (finding A, the core defect) ---
+$ fm-work-context classify vtask     # receipt now locally VALID, verifier unreachable
+classes=C C class_c_ruling=verifier-unavailable
+$ fm-work-context preflight vtask --effect dependent
+verdict=refuse detail=class-c-prose-only: material Sol decision needs a consumed routed ruling (ruling=verifier-unavailable); prose/consent/labels do not substitute
+    exit=3
+    -> verifier-unavailable / refuse, never downgraded to the schema-shaped receipt
+
+--- (4) control: with NO verifier declared, the same VALID receipt authorizes locally ---
+$ fm-work-context preflight vtask --effect dependent
+verdict=proceed detail=dependent effect authorized: source, references, owners, and authority current
+    exit=0

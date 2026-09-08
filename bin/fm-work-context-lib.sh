@@ -558,11 +558,14 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
 # is edited in place and annotated, never deleted). An obligation line carries
 # two space-separated tokens: `obligation=<key>` (the exact key this child
 # fulfills, defaulting to the child id) and `status=open` | `status=landed`.
-# Idempotent: a matching line already landed is untouched (already-landed); a
-# declared obligation the roadmap does not carry is a real discrepancy
-# (obligation-absent) that fails closed so a stale roadmap is never silently
-# trusted as current. Sets FM_WC_ROADMAP_STATUS and returns 0 only when the
-# roadmap is now current for this obligation (applied or already-landed).
+# Idempotent: a matching line already landed is untouched (already-landed). Two
+# distinct discrepancies fail closed so a stale roadmap is never silently trusted
+# as current: a declared obligation the roadmap does not carry at all
+# (obligation-absent), and a matched obligation line whose status is neither open
+# nor landed - e.g. status=in-progress, or an obligation tag with no status token
+# (obligation-not-landed). Only a genuinely status=landed matched line confirms
+# idempotently. Sets FM_WC_ROADMAP_STATUS and returns 0 only when the roadmap is
+# now current for this obligation (applied or already-landed).
 _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
   local file=$1 key=$2 child=$3 epoch=$4 tmp rc=0
   FM_WC_ROADMAP_STATUS=

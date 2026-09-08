@@ -222,14 +222,24 @@ crew_busy_verdict() {  # <target>
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
-# trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
-# attribution helpers below are thin wrappers over the ONE owner in
+# trim, strip_quotes, the bounded nm_run_checked call, nm_field's TOON parse,
+# and the attribution helpers below are thin wrappers over the ONE owner in
 # bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
 trim() { fm_nm_trim "$@"; }
 strip_quotes() { fm_nm_strip_quotes "$@"; }
-nm_run() {  # <args...>
-  fm_nm_run "$WT" "$NM_TIMEOUT" "$@"
+# Every no-mistakes read in this helper goes through this CHECKED wrapper.
+# fm_nm_run_checked PRESERVES the command's exit status, so a call that FAILED
+# is distinguishable from one that legitimately returned empty. The swallowing
+# primitive fm_nm_run (`fm_nm_run_checked ... || true`) hides the status, so a
+# command that fails mid-flight after already writing PARTIAL stdout looks
+# identical to success - and that partial output can carry a stale
+# green/terminal marker that would certify a false done/checks-green. Callers
+# below treat a nonzero exit as "no usable evidence" and refuse to derive a
+# terminal verdict from the partial bytes. (Deliberately no swallowing wrapper
+# is defined here, so a future read cannot silently reintroduce that class.)
+nm_run_checked() {  # <args...>
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -349,7 +359,15 @@ nm_ci_checks_state() {
   local run_id log_tail marker
   run_id=$(strip_quotes "$(nm_field id)")
   [ -n "$run_id" ] || { printf 'unknown'; return; }
-  log_tail=$(nm_run axi logs --step ci --run "$run_id") || true
+  # CHECKED read: a failed `axi logs` call can still print partial stdout that
+  # happens to contain an older "checks passed" line. Swallowing the exit
+  # status (the previous `|| true`) let that stale partial output certify CI as
+  # green. On a nonzero exit report `unavailable` (evidence acquisition failed)
+  # so the caller refuses to promote to done; only a SUCCESSFUL read is scanned.
+  if ! log_tail=$(nm_run_checked axi logs --step ci --run "$run_id"); then
+    printf 'unavailable'
+    return
+  fi
   [ -n "$log_tail" ] || { printf 'unknown'; return; }
   marker=$(printf '%s\n' "$log_tail" \
     | grep -E 'CI checks passed|no CI checks reported - still monitoring|no CI checks reported yet|checks failed|issues detected|CI checks running|base branch advanced.*re-arming CI monitor timeout' \
@@ -392,7 +410,12 @@ nm_ci_checks_state() {
 # when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
 nm_runs_status_for_branch() {  # <branch>
   local branch=$1 out row st rest br sha
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  # CHECKED read: the coarse status word this returns can attribute a terminal
+  # done/failed (completed/cancelled) below. A FAILED `runs` call may print a
+  # partial list whose stale row for this branch reads `completed`; swallowing
+  # the exit status let that certify a false coarse done. On a nonzero exit
+  # report no coarse attribution (return empty) and let the caller fall through.
+  out=$(nm_run_checked runs --limit "$FM_CREW_STATE_RUNS_LIMIT") || return 0
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
     row=$(trim "$row")
@@ -451,7 +474,16 @@ COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
-  RUN_OUT=$(nm_run axi status)
+  # CHECKED read: this is the primary run-attribution source, and its output can
+  # certify a terminal done/checks-green (outcome: passed/checks-passed) below.
+  # A FAILED `axi status` call may still emit partial TOON on stdout; swallowing
+  # the exit status (the previous `nm_run`) let that partial output attribute a
+  # false terminal verdict. On a nonzero exit discard the bytes and fall through
+  # to the pane/status-log fallback rather than attribute a run from a failed
+  # read. An empty-but-successful read still means "no run" as before.
+  if ! RUN_OUT=$(nm_run_checked axi status); then
+    RUN_OUT=""
+  fi
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
     # Head equality, or the pipeline-owned-active exemption: while the
@@ -549,7 +581,10 @@ if [ "$HAVE_RUN" = 1 ]; then
         case "$CI_STEP_STATUS" in
           running)
             CI_LOG_STATE=$(nm_ci_checks_state)
-            if [ "$CI_LOG_STATE" = green ]; then
+            if [ "$CI_LOG_STATE" = unavailable ]; then
+              RUN_STATE=unknown
+              RUN_DETAIL="CI evidence unavailable; inspect the current run before intervention"
+            elif [ "$CI_LOG_STATE" = green ]; then
               RUN_STATE="done"
               RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
             fi
@@ -574,7 +609,13 @@ if [ "$HAVE_RUN" = 1 ]; then
     elif [ "$CI_STEP_STATUS" = fixing ]; then
       CI_LOG_STATE=not-ready
     fi
-    if [ "$CI_LOG_STATE" != not-ready ]; then
+    # A crew's own older ci-ready receipt is promoted to done only when current
+    # CI evidence does NOT contradict it. `unavailable` (a FAILED evidence read,
+    # possibly with partial green stdout) is not confirmation: it must never let
+    # a stale self-reported receipt certify done - exactly the counterexample-A
+    # vector (partial-green stdout + a failed command + an older ci-ready row).
+    # Fall through to the run-step verdict (still working / not terminal).
+    if [ "$CI_LOG_STATE" != not-ready ] && [ "$CI_LOG_STATE" != unavailable ]; then
       emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
   fi

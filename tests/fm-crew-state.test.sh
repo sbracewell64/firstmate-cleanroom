@@ -68,14 +68,18 @@ case "${1:-}" in
     case "${1:-}" in
       status)
         shift
+        # FM_FAKE_*_RC lets a case simulate a command that FAILS while still
+        # emitting stdout (the swallowed-error class): the bare `axi status` and
+        # the top-level `runs` and `axi logs` reads can each print partial bytes
+        # and exit nonzero. Only the bare status honours FM_FAKE_AXI_STATUS_RC.
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
-        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; fi ;;
+        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_AXI_STATUS_RC:-0}"; fi ;;
       logs)
-        printf '%s\n' "${FM_FAKE_CI_LOGS:-}" ;;
+        printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit "${FM_FAKE_CI_LOGS_RC:-0}" ;;
     esac
     ;;
   runs)
-    printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+    printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"; exit "${FM_FAKE_RUNS_LIST_RC:-0}" ;;
 esac
 exit 0
 SH
@@ -170,8 +174,12 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_CI_LOGS_RC=0
+  FM_FAKE_AXI_STATUS_RC=0
+  FM_FAKE_RUNS_LIST_RC=0
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_CI_LOGS_RC FM_FAKE_AXI_STATUS_RC FM_FAKE_RUNS_LIST_RC
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -288,6 +296,22 @@ run:
   pr: ""
   findings: none
 outcome: failed
+EOF
+}
+
+# outcome: checks-passed -> the "checks green: PR ready for review" terminal
+# verdict. Used by the swallowed-error sibling case to prove a FAILED `axi
+# status` read whose partial stdout carries this line cannot certify done.
+run_checks_passed() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+outcome: checks-passed
 EOF
 }
 
@@ -633,6 +657,89 @@ EOF
   assert_contains "$out" "state: working" "a later relapse marker must win over an earlier green one"
   assert_not_contains "$out" "state: done" "relapsed ci run must not read as done"
   pass "a fresh issue after an earlier green reading is not masked"
+}
+
+# --- swallowed-error class: a FAILED read must never certify a terminal verdict.
+# Counterexample A (the supervision misjudgement this hardening fixes): a
+# no-mistakes read that exits NONZERO can still have printed PARTIAL stdout
+# carrying a stale green/terminal marker. The old code shelled out through the
+# swallowing wrapper (`... || true`), so that partial output was scanned as if
+# the command had succeeded - yielding a false done/checks-green while CI was
+# actually red or unknown. Each read whose output can certify done is now a
+# CHECKED read; these three cases pin one such read each, and every one FAILS
+# against the pre-fix behavior (partial stdout -> done) and PASSES after it.
+
+# (1) The ci-step log read. A failed `axi logs` with partial green stdout, plus
+# an older ci-ready receipt in the status log, must NOT read as done. This is
+# the exact counterexample-A shape: partial-green stdout + a failed command + a
+# stale ci-ready row.
+test_ci_log_query_failure_cannot_supply_green() {
+  reset_fakes
+  local d out
+  d=$(new_case ci-log-query-failure)
+  make_repo_on_branch "$d/wt" fm/feat-query-failure
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/query-failure.meta" "window=fm:fm-query-failure" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-query-failure)"
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  FM_FAKE_CI_LOGS_RC=7
+  printf 'ci-ready: PR checks green\n' > "$d/state/query-failure.status"
+  out=$(run_crew_state "$d" query-failure)
+  assert_contains "$out" "state: unknown" "failed current CI evidence stays unknown"
+  assert_not_contains "$out" "state: done" "partial stdout and an older receipt cannot certify CI"
+  pass "failed CI log query cannot promote partial green stdout or a stale ci-ready receipt"
+}
+
+# (2) The primary `axi status` run-attribution read. A failed status query whose
+# partial stdout carries a terminal `outcome: checks-passed` must NOT attribute
+# a false checks-green done - it falls through to the pane/status-log fallback.
+test_axi_status_query_failure_cannot_supply_done() {
+  reset_fakes
+  local d out
+  d=$(new_case axi-status-query-failure)
+  make_repo_on_branch "$d/wt" fm/feat-statusfail
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/statusfail.meta" "window=fm:fm-statusfail" "worktree=$d/wt" "kind=ship"
+  # This crew's OWN branch and head, so the old swallowing read would attribute
+  # the run and read outcome=checks-passed as done.
+  FM_FAKE_AXI_STATUS="$(run_checks_passed fm/feat-statusfail)"
+  FM_FAKE_AXI_STATUS_RC=5
+  # Idle pane, no status log: the safe fallback verdict is unknown/none.
+  FM_FAKE_BUSY=0
+  out=$(run_crew_state "$d" statusfail)
+  assert_not_contains "$out" "state: done" "a failed status query's partial checks-passed cannot certify done"
+  assert_not_contains "$out" "source: run-step" "a failed status query must not attribute a run-step verdict"
+  assert_contains "$out" "state: unknown" "a failed status query falls through to the safe fallback"
+  pass "failed axi status query cannot promote partial terminal stdout to done"
+}
+
+# (3) The coarse `runs` list read. When `axi status` returns another branch, the
+# coarse fallback consults `no-mistakes runs`. A failed runs list whose partial
+# stdout carries a stale `completed` row for this branch must NOT attribute a
+# false coarse done.
+test_runs_list_query_failure_cannot_supply_coarse_done() {
+  reset_fakes
+  local d short out
+  d=$(new_case runs-query-failure)
+  make_repo_on_branch "$d/wt" fm/feat-runsfail
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/runsfail.meta" "window=fm:fm-runsfail" "worktree=$d/wt" "kind=ship"
+  # The repo-wide status answer is another branch, forcing the coarse fallback.
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  # Partial runs list carrying a stale terminal row for THIS branch, but the
+  # command fails: the old swallowing read parsed it as coarse `completed`->done.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  completed  fm/feat-runsfail ${short}  2026-07-02 20:00  https://github.com/o/r/pull/1
+EOF
+)"
+  FM_FAKE_RUNS_LIST_RC=6
+  FM_FAKE_BUSY=0
+  out=$(run_crew_state "$d" runsfail)
+  assert_not_contains "$out" "state: done" "a failed runs list's partial completed row cannot certify done"
+  assert_not_contains "$out" "source: run-step" "a failed runs list must not attribute a coarse run-step verdict"
+  assert_contains "$out" "state: unknown" "a failed runs list falls through to the safe fallback"
+  pass "failed runs list query cannot promote a stale partial completed row to done"
 }
 
 test_ci_ready_done_log_relapse_stays_working() {
@@ -1612,6 +1719,9 @@ test_ci_monitoring_green_then_rearm_stays_working
 test_ci_monitoring_no_checks_yet_stays_working
 test_ci_monitoring_still_waiting_stays_working
 test_ci_monitoring_green_then_new_issue_stays_working
+test_ci_log_query_failure_cannot_supply_green
+test_axi_status_query_failure_cannot_supply_done
+test_runs_list_query_failure_cannot_supply_coarse_done
 test_ci_ready_done_log_relapse_stays_working
 test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working

@@ -119,4 +119,22 @@ out=$(FM_HOME=$TMP/home-empty FM_CODE_ROOT='' FM_TOOLS_ROOT='' bash "$LAUNCHER" 
 case "$out" in *'code root is unset'*) ;; *) fail "the refusal must name the unset code root (got: $out)" ;; esac
 pass "real run: an unset code root is refused loudly before any launch action"
 
+# --- --print-console-menu: renders the menu and exits, before every hard gate ---
+# The staging qualifier drives this mode, which must render the four-profile menu
+# and exit 0 with NO usable tools root and without launching anything (it runs
+# before the tools-surface and no-mistakes gates that refuse a real launch).
+rc=0
+out=$(FM_HOME=$TMP/home-empty FM_CODE_ROOT='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "--print-console-menu must exit 0 with a /nonexistent tools root (rc=$rc, out: $out)"
+case "$out" in *'primary console profile menu'*) ;; *) fail "--print-console-menu must render the menu heading (got: $out)" ;; esac
+for _prof in fable-5.1 opus-4-8 codex-astra codex-sol; do
+  case "$out" in *"$_prof"*) ;; *) fail "--print-console-menu must list profile $_prof (got: $out)" ;; esac
+done
+case "$out" in *'default profile:   fable-5.1'*) ;; *) fail "--print-console-menu must show fable-5.1 as the default (got: $out)" ;; esac
+# opus-4-8 is not in the default qualified set, so it stays PENDING, never swapped
+case "$out" in *'opus-4-8'*'PENDING'*) ;; *) fail "an unqualified profile must render PENDING, never silently substituted (got: $out)" ;; esac
+# it renders ONLY the menu: no full doctor report, no launch/exec side effects
+case "$out" in *'effective identity'*) fail "--print-console-menu must render only the menu, not the full doctor report" ;; esac
+pass "print-console-menu: renders all four profiles (fable-5.1 default, unqualified PENDING) and exits 0 with no tools root"
+
 echo "all four-profile menu, subscription-boundary, and host-path resolution tests passed"

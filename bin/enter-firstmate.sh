@@ -279,6 +279,7 @@ case "${1:-}" in
   --arm-owner) MODE=arm-owner; shift ;;
   --converge-owner) MODE=converge-owner; shift ;;
   --tool-profile-inline) MODE=tool-profile-inline; DOCTOR=; shift ;;
+  --print-console-menu) MODE=print-console-menu; DOCTOR=; shift ;;
 esac
 [ -z "$DOCTOR" ] || MODE=doctor
 
@@ -490,6 +491,24 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
   case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
   console_profile_qualify "$p" "$installed" "$allowed"
 }
+# Sole owner of the four-profile primary console menu layout: heading, the active
+# and default markers, the qualified set, the $0/subscription note, and every
+# profile's harness, pinned model, permission posture and gate verdict. Called by
+# both --doctor and --print-console-menu so the two never drift. Reads only
+# FM_CONSOLE_PROFILE/FM_HARNESS_ENV and the pure profile/permission functions;
+# starts nothing and needs no tools or code root.
+console_profile_menu_render() {
+  local _p _h _m _g
+  echo "-- primary console profile menu (runtime-pin-adoption-gap; owner: this launcher's console_profile_* block)"
+  echo "  active profile:    $FM_CONSOLE_PROFILE$( [ -n "$FM_HARNESS_ENV" ] && printf ' (overridden by FM_HARNESS=%s; menu bypassed)' "$FM_HARNESS_ENV")"
+  echo "  default profile:   $(console_profile_default)   qualified here: $(console_profile_qualified_set)"
+  echo "  \$0/subscription:   enforced at the composed launch (no API/gateway/provider override, no overage, no budget flag)"
+  for _p in $(console_profile_menu); do
+    _h=$(console_profile_harness "$_p"); _m=$(console_profile_model "$_p"); _g=$(console_profile_gate "$_p")
+    printf '  %-12s harness=%-6s model=%-16s posture=%-40s %s%s\n' "$_p" "$_h" "$_m" "$(permission_policy_posture "$_h")" "$_g" "$( [ "$_p" = "$FM_CONSOLE_PROFILE" ] && printf '  <- active')"
+  done
+  echo "  note:              worker/pipeline model profiles are separate owners (code root bin/fm-spawn.sh, config/crew-dispatch.json); this menu never switches workers"
+}
 # The composed primary-console argv must never carry a paid, gateway, provider,
 # or budget selector: $0/subscription-only means the harness's own subscription
 # login, never an API key, base-url override, or an invented overage budget.
@@ -644,6 +663,19 @@ cold_arm_supersede_stale() {  # <gen> <owner-pid>
 # above exist, nothing below runs.
 # shellcheck disable=SC2317 # `return` serves a sourced load; `exit` covers a direct run.
 if [ -n "${FM_ENTRY_LIB:-}" ]; then return 0 2>/dev/null || exit 0; fi
+
+# --- Internal: render the profile menu and exit -------------------------------
+# Renders ONLY the four-profile console menu and exits, before every mandatory
+# environment gate (code/tools root, backend, herdr session, tools surface,
+# no-mistakes). It resolves the active profile exactly as the launch path does,
+# then defers to the single menu owner. It starts, execs and installs nothing and
+# needs no usable tools root, so staging can qualify the composed menu offline.
+if [ "$MODE" = print-console-menu ]; then
+  FM_CONSOLE_PROFILE=${FM_CONSOLE_PROFILE:-$(read_scalar console-profile || true)}
+  [ -n "$FM_CONSOLE_PROFILE" ] || FM_CONSOLE_PROFILE=$(console_profile_default)
+  console_profile_menu_render
+  exit 0
+fi
 
 # --- Home and code root -----------------------------------------------------
 # Required host paths are enforced here, past the FM_ENTRY_LIB return, so the
@@ -1571,15 +1603,7 @@ if [ "$MODE" = doctor ]; then
   echo "  fresh console argv: $FM_HARNESS $(console_harness_argv "$FM_HARNESS" "$FM_CONSOLE_MODEL" "$( [ "$FM_HARNESS" = claude ] && [ -f "$FM_HOME/config/claude-settings.json" ] && printf '%s' "$FM_HOME/config/claude-settings.json" )" "" | tr '\n' ' ')"
   echo "  resume window:     ${CONSOLE_RESUME_WINDOW}s (a resume exiting non-zero inside it falls back ONCE to a fresh session)   restore settle: ${CONSOLE_RESTORE_SETTLE}s   exit wait: ${CONSOLE_EXIT_WAIT}s"
   echo
-  echo "-- primary console profile menu (runtime-pin-adoption-gap; owner: this launcher's console_profile_* block)"
-  echo "  active profile:    $FM_CONSOLE_PROFILE$( [ -n "$FM_HARNESS_ENV" ] && printf ' (overridden by FM_HARNESS=%s; menu bypassed)' "$FM_HARNESS_ENV")"
-  echo "  default profile:   $(console_profile_default)   qualified here: $(console_profile_qualified_set)"
-  echo "  \$0/subscription:   enforced at the composed launch (no API/gateway/provider override, no overage, no budget flag)"
-  for _p in $(console_profile_menu); do
-    _h=$(console_profile_harness "$_p"); _m=$(console_profile_model "$_p"); _g=$(console_profile_gate "$_p")
-    printf '  %-12s harness=%-6s model=%-16s posture=%-40s %s%s\n' "$_p" "$_h" "$_m" "$(permission_policy_posture "$_h")" "$_g" "$( [ "$_p" = "$FM_CONSOLE_PROFILE" ] && printf '  <- active')"
-  done
-  echo "  note:              worker/pipeline model profiles are separate owners (code root bin/fm-spawn.sh, config/crew-dispatch.json); this menu never switches workers"
+  console_profile_menu_render
   echo "  herdr native resume: $(grep -E '^\s*resume_agents_on_restore\s*=' "$HOME/.config/herdr/config.toml" 2>/dev/null | tail -1 | tr -d ' ' || true)$(grep -qE '^\s*resume_agents_on_restore\s*=' "$HOME/.config/herdr/config.toml" 2>/dev/null || printf 'unset -> default true')  (global ~/.config/herdr/config.toml; shared with the other live home, so not changed by this launcher)"
   echo "  launch log:        $CONSOLE_LOG$( [ -f "$CONSOLE_LOG" ] && printf '  last: %s' "$(tail -1 "$CONSOLE_LOG" | cut -c1-200)" || printf '  (absent)')"
   echo

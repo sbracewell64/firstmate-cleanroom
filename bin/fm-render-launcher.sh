@@ -165,20 +165,25 @@ fi
 for t in arm launch profile; do
   qual "test: enter-firstmate-$t"      bash "$REPO_ROOT/tests/enter-firstmate-$t.test.sh"
 done
-# The staged source must resolve the staged config: run --doctor against a scratch
-# home holding the staged config, so no live home is touched. It is allowed to
-# exit non-zero (herdr/tools may be absent in a scratch home); we only require it
-# to reach and print the profile menu, proving the composition renders.
+# The staged source must resolve the staged config and compose the profile menu.
+# --print-console-menu renders ONLY the menu and exits 0 before every mandatory
+# environment gate, so it needs no usable tools root and touches no live home: run
+# it against a scratch home holding the staged config and assert the heading plus
+# all four profiles appear, proving the composed menu renders offline.
 scratch=$(mktemp -d)
 cp -a "$STAGE_CONFIG/." "$scratch/config/" 2>/dev/null || { mkdir -p "$scratch/config"; cp -a "$STAGE_CONFIG/." "$scratch/config/"; }
-# a herdr-session is required by the source's config gate; give the scratch one
-[ -f "$scratch/config/herdr-session" ] || printf 'firstmate-cleanroom-staging\n' > "$scratch/config/herdr-session"
-[ -f "$scratch/config/backend" ] || printf 'herdr\n' > "$scratch/config/backend"
-doctor_out=$(FM_HOME="$scratch" FM_CODE_ROOT="$REPO_ROOT" FM_TOOLS_ROOT="${TOOLS_ROOT:-/nonexistent}" bash "$SOURCE_LAUNCHER" --doctor 2>&1 || true)
-if printf '%s' "$doctor_out" | grep -q 'primary console profile menu'; then
-  q_pass+=("doctor: renders the four-profile menu")
+menu_out=$(FM_HOME="$scratch" FM_TOOLS_ROOT="${TOOLS_ROOT:-/nonexistent}" bash "$SOURCE_LAUNCHER" --print-console-menu 2>&1) && menu_rc=0 || menu_rc=$?
+menu_ok=0
+if [ "$menu_rc" = 0 ] && printf '%s' "$menu_out" | grep -q 'primary console profile menu'; then
+  menu_ok=1
+  for _prof in fable-5.1 opus-4-8 codex-astra codex-sol; do
+    printf '%s' "$menu_out" | grep -q "$_prof" || menu_ok=0
+  done
+fi
+if [ "$menu_ok" = 1 ]; then
+  q_pass+=("print-console-menu: renders the four-profile menu")
 else
-  q_fail+=("doctor: renders the four-profile menu")
+  q_fail+=("print-console-menu: renders the four-profile menu")
 fi
 rm -rf "$scratch"
 

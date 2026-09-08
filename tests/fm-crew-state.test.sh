@@ -979,6 +979,51 @@ test_failed_run_query_does_not_certify_stale_ci_ready_from_log() {
   pass "failed run query does not certify a stale ci-ready receipt from the status log (counterexample C)"
 }
 
+# Counterexample C, failed-receipt facet: the PRIMARY `axi status` run query FAILS
+# and the stale status-log line is a terminal `failed:` receipt. A `failed`
+# receipt is just as terminal as a `done` one - fm-inactive-reconcile turns both
+# into a captain-facing terminal outcome - so a query we could not read must not
+# certify it either. The guard reports unknown, never failed.
+test_failed_run_query_does_not_certify_stale_failed_from_log() {
+  reset_fakes
+  local d out; d=$(new_case failed-query-stale-failed)
+  make_repo_on_branch "$d/wt" fm/feat-queryfail-failed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-queryfail-failed.meta" "window=fm:fm-feat-queryfail-failed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'failed: run aborted on a prior observation\n' > "$d/state/feat-queryfail-failed.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-queryfail-failed)"
+  FM_FAKE_AXI_STATUS_RC=7
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-queryfail-failed
+  out=$(run_crew_state "$d" feat-queryfail-failed)
+  assert_contains "$out" "state: unknown" "a failed run query leaves current evidence unavailable -> unknown"
+  assert_contains "$out" "evidence unavailable" "the unavailability is named for the supervisor"
+  assert_not_contains "$out" "state: failed" "a stale failed receipt must not be certified when the run query failed"
+  pass "failed run query does not certify a stale failed receipt from the status log (counterexample C, failed facet)"
+}
+
+# Positive control for the failed-receipt guard: a genuine `failed:` status line
+# with a SUCCESSFUL (RC=0) but empty run query means "no active run" where the
+# terminal stage receipt remains the current best evidence, so it must still
+# report failed. The guard fires only on a FAILED primary query, never
+# over-suppressing a real terminal outcome.
+test_successful_empty_query_still_reports_failed_receipt() {
+  reset_fakes
+  local d out; d=$(new_case ok-query-failed-receipt)
+  make_repo_on_branch "$d/wt" fm/feat-okquery-failed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-okquery-failed.meta" "window=fm:fm-feat-okquery-failed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'failed: run aborted on a prior observation\n' > "$d/state/feat-okquery-failed.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_AXI_STATUS_RC=0
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" feat-okquery-failed
+  out=$(run_crew_state "$d" feat-okquery-failed)
+  assert_contains "$out" "state: failed" "a genuine failed receipt over a successful empty query still reports failed"
+  assert_contains "$out" "source: status-log" "the failed receipt is sourced from the status log"
+  pass "successful empty query still reports a genuine failed receipt (guard does not over-suppress)"
+}
+
 # A different-branch run with NO matching runs-list row must NOT be
 # misattributed, and must not be treated as a false "working" verdict either.
 test_other_branch_run_ignored() {
@@ -1797,6 +1842,8 @@ test_cross_branch_attribution_picks_most_recent_row
 test_coarse_running_run_does_not_certify_stale_ci_ready
 test_matching_ci_running_empty_log_does_not_certify_stale_ci_ready
 test_failed_run_query_does_not_certify_stale_ci_ready_from_log
+test_failed_run_query_does_not_certify_stale_failed_from_log
+test_successful_empty_query_still_reports_failed_receipt
 test_other_branch_run_ignored
 test_no_run_busy_pane
 test_no_run_footer_text_alone_is_not_working

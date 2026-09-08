@@ -584,6 +584,25 @@ test_real_helper_genuine_terminal_run_is_reported() {
   pass "real caller: a genuinely terminal run-step is still reported as a terminal outcome"
 }
 
+test_real_helper_failed_query_stale_failed_not_reported_as_terminal() {
+  make_world real-failedquery-stale-failed; write_nm_fake "$WORLD"
+  write_real_git_child "$MAIN" child fm/child \
+    'failed: run aborted on a prior observation'
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RC FM_FAKE_CI_LOGS FM_FAKE_CI_LOGS_RC FM_FAKE_RUNS_LIST
+  # The PRIMARY `axi status` query FAILS (nonzero) even though its partial bytes
+  # carry a terminal outcome; current evidence is unavailable, so the stale
+  # `failed:` receipt must not be surfaced as a captain-facing terminal outcome.
+  FM_FAKE_AXI_STATUS="$(passed_run fm/child "$REAL_CHILD_HEAD")"
+  FM_FAKE_AXI_STATUS_RC=7
+  FM_FAKE_CI_LOGS=""
+  FM_FAKE_CI_LOGS_RC=0
+  FM_FAKE_RUNS_LIST=""
+  run_reconcile_real_helper "$MAIN"
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "a failed run query with a stale failed receipt was falsely reported as a terminal outcome"
+  pass "real caller: a stale failed receipt under a failed run query is not a terminal outcome"
+}
+
 test_main_direct_terminal_presentation_receipt
 test_local_secondmate_reports_terminal_child
 test_local_secondmate_rejects_relative_parent_home
@@ -603,5 +622,6 @@ test_missing_parent_binding_names_itself
 test_reconciliation_never_calls_forge
 test_real_helper_stale_ci_ready_not_reported_as_terminal
 test_real_helper_genuine_terminal_run_is_reported
+test_real_helper_failed_query_stale_failed_not_reported_as_terminal
 
 echo "all inactive reconciliation tests passed"

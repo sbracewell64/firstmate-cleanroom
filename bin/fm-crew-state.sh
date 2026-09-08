@@ -64,7 +64,9 @@
 #   - terminal outcome                -> done/failed from the run's own outcome;
 #   - unavailable / conflicting        -> unknown. A FAILED primary run query
 #     (NM_QUERY_FAILED) means current evidence is unavailable, so the status-log
-#     fallback reports unknown rather than certifying an older terminal receipt.
+#     fallback reports unknown rather than certifying ANY older terminal receipt
+#     - both a done and a failed receipt are intercepted, since either would
+#     surface as a captain-facing terminal outcome from a query we could not read.
 # Old logs may explain history but cannot replace missing current evidence, and
 # every negative/refusal path returns working or unknown here, never done.
 #
@@ -687,15 +689,20 @@ if [ -n "$LOG_VERB" ]; then
   LOG_STATE=$(map_log_state "$LOG_LINE")
   # Counterexample-C: the PRIMARY run query FAILED (NM_QUERY_FAILED=1), so
   # current attributable evidence is UNAVAILABLE - we discarded the failed
-  # query's bytes above. An older terminal status-log receipt (ci-ready / done /
-  # a terminal stage, all of which map_log_state renders as `done`) must NOT
-  # certify completion from a query we could not read: report the unavailability
-  # as unknown, never done, and let the supervisor inspect the current run. A
-  # non-terminal log verb (working/blocked/paused/parked) is the crew's own
-  # current claim rather than a completion certification, so it still maps as
-  # before - the invariant guards false COMPLETION specifically.
-  if [ "$NM_QUERY_FAILED" = 1 ] && [ "$LOG_STATE" = "done" ]; then
-    emit unknown status-log "$(status_line_note "$LOG_LINE")${SEP}current run evidence unavailable; inspect before treating as complete"
+  # query's bytes above. Any older terminal status-log receipt - a `done`
+  # receipt (ci-ready / done / a terminal stage) OR a `failed` receipt, both of
+  # which fm-inactive-reconcile consumes as a captain-facing terminal outcome -
+  # must NOT certify a terminal verdict from a query we could not read: report
+  # the unavailability as unknown, never a terminal receipt, and let the
+  # supervisor inspect the current run. A non-terminal log verb
+  # (working/blocked/paused/parked) is the crew's own current claim rather than a
+  # terminal certification, so it still maps as before - the invariant guards a
+  # false terminal outcome specifically.
+  if [ "$NM_QUERY_FAILED" = 1 ]; then
+    case "$LOG_STATE" in
+      done|failed)
+        emit unknown status-log "$(status_line_note "$LOG_LINE")${SEP}current run evidence unavailable; inspect before treating as a terminal outcome" ;;
+    esac
   fi
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"

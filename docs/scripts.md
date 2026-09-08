@@ -106,8 +106,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |
 | `fm-backlog-transition-lib.sh` | Pair task-record changes with their backlog transitions and replay interrupted closes |
-| `fm-work-context-lib.sh` | Single owner of the machine-readable work-context contract enforced at the caller before a dependent effect (readiness, reference currentness, and Class-C authority gate) |
-| `fm-work-context.sh`     | Installed caller composing the work-context contract into one typed verdict: `preflight`, `classify`, and post-transition `reconcile` |
+| `fm-work-context-lib.sh` | Single owner of the machine-readable work-context contract enforced at the caller before a dependent effect (readiness, reference currentness, Class-C authority gate, and the completion-to-parent roadmap refresh) |
+| `fm-work-context.sh`     | Installed caller composing the work-context contract into one typed verdict: `preflight`, `classify`, post-transition `reconcile`, and read-only `select` (next-eligible-task selection over the existing `eligible_queued` producer) |
 | `fm-quota-axi-lib.sh`    | Shared `quota-axi` compatibility floor and quota snapshot schema validation           |
 | `fm-quota-choose.sh`     | Choose the first candidate with known positive quota from an ordered harness:model list |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |

@@ -340,7 +340,21 @@ test_landing_and_activated_need_readback() {
   [ "$(status_stage_field "$line" reason)" = "merged:github:github.com:o/r:7" ] || fail "read-back evidence carried (got $(status_stage_field "$line" reason))"
   out=$("$STAGE" a1 activated 2>&1)
   assert_contains "$out" "STAGE_UNCHANGED: activated" "duplicate activated is a no-op"
-  pass "fm-stage landing/activated: landing records, activated needs read-back evidence"
+  # Completion -> currentness wiring at the terminal transition seam: the
+  # activated transition is inert for a task with no work-context descriptor, and
+  # refreshes the currentness receipt through the same owner when the landed child
+  # declares a reconcile block. The per-obligation roadmap flip itself is covered
+  # in tests/fm-work-context.test.sh; here we prove the seam invokes that owner.
+  if command -v jq >/dev/null 2>&1; then
+    assert_not_contains "$out" "currentness:" "activated is inert for a task with no work-context descriptor"
+    mkdir -p "$DATA/a1"
+    printf '{"reconcile":{"parent":"a1"}}\n' > "$DATA/a1/work-context.json"
+    out=$("$STAGE" a1 activated 2>&1)
+    assert_contains "$out" "currentness:" "activated reconciles currentness when the child declares a reconcile block"
+    assert_present "$STATE/a1.parent-currentness" "the terminal transition writes the currentness receipt through the work-context owner"
+    rm -f "$DATA/a1/work-context.json"
+  fi
+  pass "fm-stage landing/activated: landing records, activated needs read-back evidence and refreshes declared currentness"
 }
 
 # --- validation-pending: a hold or missing capacity never starts validation ------
@@ -418,7 +432,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?

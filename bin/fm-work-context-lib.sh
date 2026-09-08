@@ -65,10 +65,15 @@
 # (fm_work_context_dispatch_authority_gate) is WIRED into bin/fm-spawn.sh right
 # after its backlog-dispatchability probe, before any endpoint/worktree/record -
 # real caller enforcement in-candidate, covered by negative and positive spawn
-# tests. What remains a SEPARATE downstream ACTIVE step is the deployed runtime:
-# adopting the canonical control-plane ruling verifier (the receipt-schema
-# adapter below is the seam for it) and the caller read-back against real
-# production tasks. A merge is not activation.
+# tests. The roadmap/backlog read-update duty is wired at the SAME seams, not as
+# a second owner: fm_work_context_reconcile runs at the terminal `activated`
+# transition in bin/fm-stage.sh (completion -> parent/roadmap refresh), and the
+# `select` verb composes the existing eligible_queued producer with the per-task
+# preflight for next-eligible-task selection. What remains a SEPARATE downstream
+# ACTIVE step is the deployed runtime: adopting the canonical control-plane
+# ruling verifier (the receipt-schema adapter below is the seam for it) and the
+# caller read-back against real production tasks. A merge is not activation, and
+# the roadmap flip is `landed`, never `active`.
 
 # Distinct typed exits (mirroring fm-gate-refuse-lib.sh's exit-3 refusal grade):
 FM_WORK_CONTEXT_PASS_EXIT=0
@@ -83,6 +88,7 @@ FM_WORK_CONTEXT_CLASSES=
 FM_WORK_CONTEXT_CLASS_C_RULING=
 FM_WORK_CONTEXT_RECONCILE=
 FM_WORK_CONTEXT_LOCATOR=
+FM_WC_ROADMAP_STATUS=
 
 # The canonical owner tokens this contract recognizes. The actual qualification
 # and landing SEMANTICS remain owned by no-mistakes and the guarded landing
@@ -544,6 +550,69 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
 
+# Per-obligation roadmap refresh. When the descriptor declares a maintained
+# roadmap owner (.reconcile.roadmap) - an EXISTING producer artifact such as a
+# commission-roadmap / sssf-map plan, NOT a new store - one CONFIRMED terminal
+# child transition flips ONLY that child's matching obligation line from open to
+# landed, leaving every unrelated obligation and all history in place (the line
+# is edited in place and annotated, never deleted). An obligation line carries
+# two space-separated tokens: `obligation=<key>` (the exact key this child
+# fulfills, defaulting to the child id) and `status=open` | `status=landed`.
+# Idempotent: a matching line already landed is untouched (already-landed); a
+# declared obligation the roadmap does not carry is a real discrepancy
+# (obligation-absent) that fails closed so a stale roadmap is never silently
+# trusted as current. Sets FM_WC_ROADMAP_STATUS and returns 0 only when the
+# roadmap is now current for this obligation (applied or already-landed).
+_fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
+  local file=$1 key=$2 child=$3 epoch=$4 tmp rc=0
+  FM_WC_ROADMAP_STATUS=
+  if [ ! -f "$file" ] || [ ! -r "$file" ] || [ ! -w "$file" ]; then
+    FM_WC_ROADMAP_STATUS="missing:$file"
+    return 1
+  fi
+  tmp="$file.wc.$$.$RANDOM"
+  awk -v key="$key" -v child="$child" -v epoch="$epoch" '
+    BEGIN { flipped = 0; matched = 0 }
+    {
+      line = $0; is = 0
+      n = split(line, t, /[ \t]+/)
+      for (i = 1; i <= n; i++) if (t[i] == "obligation=" key) is = 1
+      if (is && line ~ /(^|[ \t])status=open([ \t]|$)/) {
+        matched = 1
+        if (!sub(/ status=open/, " status=landed", line)) {
+          if (!sub(/\tstatus=open/, "\tstatus=landed", line)) {
+            sub(/^status=open/, "status=landed", line)
+          }
+        }
+        line = line " landed=" child "@" epoch
+        flipped++
+      } else if (is) {
+        matched = 1
+      }
+      print line
+    }
+    END {
+      if (flipped > 0) exit 0
+      else if (matched > 0) exit 10
+      else exit 11
+    }
+  ' "$file" > "$tmp" 2>/dev/null
+  rc=$?
+  case "$rc" in
+    0) : ;;
+    10) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=already-landed; return 0 ;;
+    11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-absent; return 1 ;;
+    *)  rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=refresh-error; return 1 ;;
+  esac
+  if mv -f "$tmp" "$file" 2>/dev/null; then
+    FM_WC_ROADMAP_STATUS=applied
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  FM_WC_ROADMAP_STATUS=write-failed
+  return 1
+}
+
 # (R3) Completion -> parent/reference currentness reconciliation. One authorized
 # CHILD transition drives three independent steps, in order:
 #   1. INDEPENDENT read-back of the CHILD's own authoritative backlog row
@@ -558,6 +627,14 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
 #      reconciled child+parent state, then INDEPENDENTLY re-read it from disk
 #      (not the value we believe we wrote) so a lost or partial write surfaces as
 #      unconfirmed rather than silently trusted.
+#   4. When the descriptor declares a maintained roadmap owner
+#      (.reconcile.roadmap) and the transition is terminal, flip ONLY this
+#      child's matching obligation (.reconcile.obligation, default the child id)
+#      from open to landed in that owner via _fm_wc_roadmap_refresh, leaving
+#      unrelated obligations and all history in place. It runs only when the
+#      child transition is CONFIRMED, so stale open-child wording is never
+#      cleared before the child actually landed, and a declared obligation the
+#      roadmap does not carry downgrades the reconciliation to unconfirmed.
 # It never rewrites parent prose or reimplements tasks-axi dependency semantics
 # (the backlog owner stays canonical); it records a machine-checkable currentness
 # the next-selection preflight can consult. Idempotent: a crash replay writes the
@@ -572,6 +649,7 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
   local state=$1 data=$2 id=$3 transition=$4
   local desc receipt tmp child_state readback currentness rc=0
   local parent parent_readback parent_state ref_marker ref_expect ref_dir rtmp
+  local terminal=no roadmap roadmap_key roadmap_status=none
   desc=$(fm_work_context_descriptor_path "$data" "$id")
   receipt="$state/$id.parent-currentness"
   FM_WORK_CONTEXT_RECONCILE=
@@ -592,6 +670,7 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
   # In-flight item, or explicitly done).
   case "$transition" in
     done|merged|closed|landed|activated)
+      terminal=yes
       if [ "$readback" = not_found ] || [ "$child_state" = "done" ]; then
         currentness=confirmed
       else
@@ -648,6 +727,34 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     fi
   fi
 
+  # Step 4. Flip this child's matching obligation in the declared maintained
+  # roadmap owner from open to landed, but only for a CONFIRMED terminal
+  # transition: stale open-child wording must never be cleared before the child
+  # actually landed. An obligation the roadmap does not carry, or a write that
+  # fails, downgrades the reconciliation to unconfirmed so a stale roadmap is
+  # never silently trusted as current.
+  roadmap=$(_fm_wc_desc "$desc" '.reconcile.roadmap')
+  if [ -n "$roadmap" ]; then
+    case "$roadmap" in
+      /*) : ;;
+      *) roadmap="$data/$id/$roadmap" ;;
+    esac
+    roadmap_key=$(_fm_wc_desc "$desc" '.reconcile.obligation')
+    [ -n "$roadmap_key" ] || roadmap_key=$id
+    if [ "$terminal" != yes ]; then
+      roadmap_status=skipped-nonterminal
+    elif [ "$currentness" != confirmed ]; then
+      roadmap_status=skipped-unconfirmed-child
+    else
+      if _fm_wc_roadmap_refresh "$roadmap" "$roadmap_key" "$id" "$(date +%s 2>/dev/null || echo 0)"; then
+        roadmap_status=$FM_WC_ROADMAP_STATUS
+      else
+        roadmap_status=$FM_WC_ROADMAP_STATUS
+        currentness=unconfirmed; rc=1
+      fi
+    fi
+  fi
+
   tmp="$receipt.tmp.$$"
   {
     printf 'schema=fm-work-context-currentness.v1\n'
@@ -659,6 +766,9 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     printf 'parent_state=%s\n' "$parent_state"
     printf 'reference_marker=%s\n' "${ref_marker:-none}"
     printf 'parent_readback=%s\n' "$parent_readback"
+    printf 'roadmap=%s\n' "${roadmap:-none}"
+    printf 'roadmap_obligation=%s\n' "${roadmap_key:-none}"
+    printf 'roadmap_refresh=%s\n' "$roadmap_status"
     printf 'currentness=%s\n' "$currentness"
     printf 'epoch=%s\n' "$(date +%s 2>/dev/null || echo 0)"
   } > "$tmp" 2>/dev/null || {
@@ -676,6 +786,6 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     return 2
   }
   FM_WORK_CONTEXT_RECONCILE=$currentness
-  FM_WORK_CONTEXT_DETAIL="currentness=$currentness read_back=$readback child_state=${child_state:-none} parent=${parent:-none} parent_state=$parent_state reference=$parent_readback"
+  FM_WORK_CONTEXT_DETAIL="currentness=$currentness read_back=$readback child_state=${child_state:-none} parent=${parent:-none} parent_state=$parent_state reference=$parent_readback roadmap=$roadmap_status"
   return "$rc"
 }

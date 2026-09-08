@@ -404,6 +404,12 @@ When present and on `PATH`, that verifier is authoritative and its non-zero exit
 The verifier is never inferred from a receipt, harness, or file name.
 `FM_WORK_CONTEXT_RULING_VERIFIER` overrides the file for one invocation.
 
+The same owner also carries the roadmap/backlog read-update duty wired into the existing seams, not a second store or router.
+`bin/fm-stage.sh` calls `fm_work_context_reconcile` at the terminal `activated` transition, so a landed child refreshes the maintained roadmap owner through its own producer seam.
+When the child's optional `data/<id>/work-context.json` declares `.reconcile.roadmap` (a path to a maintained roadmap owner such as a commission-roadmap / sssf-map plan) and `.reconcile.obligation` (the obligation key this child fulfils, defaulting to the child id), one confirmed terminal transition flips only that child's matching obligation line from `status=open` to `status=landed`, leaving unrelated obligations open and the line's history in place.
+It runs only when an independent backlog read-back confirms the child actually landed, and a declared obligation the roadmap does not carry fails closed rather than trusting a stale roadmap.
+`bin/fm-work-context.sh select` reads the existing `eligible_queued` producer (`bin/fm-fleet-snapshot.sh`) and the per-task preflight to report which queued tasks are independently selectable when there is no active worker; it is read-only, never dispatches, and treats an aggregate `externally_held` or `captain_decision` state as informational, never a global hold.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.

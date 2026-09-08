@@ -1815,6 +1815,19 @@ if [ "$KIND" = ship ]; then
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
+  # A no-mistakes ship runs its pipeline in a gate worktree the shared daemon
+  # creates off this repo's no-mistakes mirror, and those pipeline commits pick
+  # up whatever identity the mirror resolves - the operator global unless pinned.
+  # This is a distinct seam from a worker's OWN commits: pin the captain identity
+  # onto the mirror now, before the worker starts, so the pipeline's own
+  # document/review/rebase commits carry it too. Idempotent and best-effort by
+  # contract: a repo not yet gated in this home is a no-op, and a failure here
+  # never blocks the launch (bin/fm-nm-commit-identity.sh owns why the mirror's
+  # shared config, not a worktree-scoped pin, is the durable seam).
+  if [ "$MODE" = no-mistakes ]; then
+    "$FM_ROOT/bin/fm-nm-commit-identity.sh" pin "$PROJ_ABS" \
+      || echo "warning: could not pin the no-mistakes commit identity for $PROJ_NAME; pipeline commits may inherit the operator git identity" >&2
+  fi
 fi
 
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)

@@ -96,7 +96,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
 | `fm-nm-run-lib.sh`       | Single owner of shared no-mistakes run-attribution primitives and rules             |
 | `fm-nm-observe.sh`       | Single owner of the no-mistakes observation obligation, coverage receipt, and read-only inventory reconciliation |
-| `fm-nmf-verify-input.sh` | Typed input mode for the `Require no-mistakes` gate: historical event snapshot for opened/edited, live-subject binding with a superseded-subject guard and post-verdict read-back for synchronize/reopened |
+| `fm-nmf-verify-input.sh` | Typed input mode for the `Require no-mistakes` gate: historical event snapshot for opened/edited; live-subject binding with a superseded-subject guard, a bounded same-subject publication-window wait (PENDING/exit 3) that only binds once the live body attests the live head, and post-verdict read-back for synchronize/reopened |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-timeout-lib.sh`      | Single owner of hard-bounded command execution and its fallback watchdog |
 | `fm-timing-lib.sh`       | Single owner of the deferred network stage's per-step elapsed-time records, inert unless a run asks for them |

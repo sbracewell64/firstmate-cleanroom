@@ -219,24 +219,77 @@ test_current_mode_sound_live_proof_passes() {
   pass "current mode passes a stale-event PR whose live body is soundly attested to the live head"
 }
 
-# End to end: a current-state event whose live body is GENUINELY stale (attested
-# to an older head than the live head) still FAILS. The gate script binds the
-# subject; the verifier catches the stale attestation. The fix must not weaken
-# this.
-test_current_mode_genuinely_stale_live_body_fails() {
-  local body out rc verifier_out
+# A current-state event whose live body is attested to a DIFFERENT head than the
+# live head is held in the publication-timing window (PENDING, exit 3) rather
+# than bound. This is the FAIL-then-SUCCESS race: 'git push no-mistakes' advances
+# the head, then re-publishes the body attestation for it, so a synchronize event
+# can read the body between those steps. resolve emits no body block in this
+# state, so a not-yet-bound body can never reach the verifier as bound; the
+# caller re-reads within its bounded window (or fails closed at the deadline).
+test_resolve_pending_when_attestation_bound_to_other_head() {
+  local body out rc
   body=$(attested_body "$OLD_SHA")
   rc=0
   out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
     NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$body" \
+    "$NMF_HELPER" resolve 2>/dev/null) || rc=$?
+  [ "$rc" -eq 3 ] || fail "resolve should report PENDING (exit 3) for a body not yet bound to the live head, got rc=$rc"
+  case "$out" in
+    *"body<<"*) fail "PENDING resolve emitted a body block; a not-yet-bound body must never be handed to the verifier as bound" ;;
+    *"head_sha="*) fail "PENDING resolve emitted a head_sha output; it must emit no resolved subject" ;;
+  esac
+  pass "resolve holds a body bound to another head as PENDING and emits no subject"
+}
+
+# The PENDING notice names both the attested head and the live head, so a
+# workflow log makes the publication-window wait diagnosable.
+test_resolve_pending_notice_names_both_heads() {
+  local err rc
+  rc=0
+  err=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$(attested_body "$OLD_SHA")" \
+    "$NMF_HELPER" resolve 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -eq 3 ] || fail "expected PENDING exit 3, got rc=$rc"
+  assert_contains "$err" "$OLD_SHA" "PENDING notice did not name the attested head"
+  assert_contains "$err" "$NEW_SHA" "PENDING notice did not name the live head"
+  assert_contains "$err" "::notice::" "PENDING must annotate as ::notice::, not a hard ::error::"
+  pass "resolve PENDING notice names the attested and live heads for diagnosis"
+}
+
+# A non-empty live body with no pipeline attestation yet published is also
+# PENDING, not a pass: mid-publication the body may carry the signature line
+# before the attestation comment lands. It never binds, so the caller's bounded
+# window fails closed at the deadline - a genuinely non-no-mistakes body can
+# never pass this way.
+test_resolve_pending_when_no_attestation_published_yet() {
+  local out rc
+  rc=0
+  out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="a body with no attestation comment" \
+    "$NMF_HELPER" resolve 2>/dev/null) || rc=$?
+  [ "$rc" -eq 3 ] || fail "resolve should report PENDING (exit 3) when no attestation is published yet, got rc=$rc"
+  case "$out" in
+    *"body<<"*) fail "PENDING resolve emitted a body block for an unattested body" ;;
+  esac
+  pass "resolve holds an unattested body as PENDING within the publication window"
+}
+
+# End to end: once the live body binds the live head (publication landed), resolve
+# is BOUND and the verifier passes - the race resolves green with no re-attest,
+# restart, or manual step. This is the positive watched case.
+test_current_mode_race_resolves_green_once_body_binds_live_head() {
+  local out rc verifier_out
+  rc=0
+  out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$(attested_body "$NEW_SHA")" \
     "$NMF_HELPER" resolve) || rc=$?
-  expect_code 0 "$rc" "resolve should bind a matching subject before the body is judged"
+  expect_code 0 "$rc" "resolve should be BOUND once the body binds the live head"
   rc=0
   verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
-  [ "$rc" -ne 0 ] || fail "the verifier passed a genuinely stale attestation in current mode"
-  assert_contains "$verifier_out" "$OLD_SHA" "stale-body failure did not name the stale attestation head"
-  assert_contains "$verifier_out" "$NEW_SHA" "stale-body failure did not name the live head"
-  pass "current mode still fails a genuinely stale live attestation"
+  expect_code 0 "$rc" "the verifier should pass the bound live proof after the publication window"
+  assert_contains "$verifier_out" "Found structurally compliant pipeline step attestation." \
+    "the verifier did not accept the bound live proof after the race resolved"
+  pass "the publication-timing race resolves green once the body binds the live head"
 }
 
 # End to end: a historically invalid opened/edited body stays invalid. Those
@@ -269,5 +322,8 @@ test_resolve_empty_live_body_fails_closed
 test_readback_unchanged_subject_passes
 test_readback_advanced_subject_fails_closed
 test_current_mode_sound_live_proof_passes
-test_current_mode_genuinely_stale_live_body_fails
+test_resolve_pending_when_attestation_bound_to_other_head
+test_resolve_pending_notice_names_both_heads
+test_resolve_pending_when_no_attestation_published_yet
+test_current_mode_race_resolves_green_once_body_binds_live_head
 test_historical_invalid_body_is_not_rescued_by_a_clean_live_body

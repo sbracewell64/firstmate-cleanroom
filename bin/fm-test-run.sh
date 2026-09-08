@@ -675,6 +675,7 @@ tests/fm-sessionstart-hook-live-e2e.test.sh 18
 tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 18
 tests/fm-sessionstart-nudge.test.sh 62593
 tests/fm-shared-captain-inheritance.test.sh 5655
+tests/fm-spawn-commit-identity.test.sh 9447
 tests/fm-spawn-dispatch-profile.test.sh 62589
 tests/fm-spawn-pool-base-freshen.test.sh 41809
 tests/fm-spawn-worktree-settle.test.sh 5656
@@ -1411,9 +1412,13 @@ families_for_changed_path() {
     bin/fm-peek.sh|bin/fm-composer*)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
-      # fm-spawn.sh also carries the wired work-context authority gate.
+      # fm-spawn.sh also carries the wired work-context authority gate and the
+      # per-process worker commit-identity pin.
       case "$path" in
-        bin/fm-spawn.sh) printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh" ;;
+        bin/fm-spawn.sh)
+          printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh"
+          printf '%s\n' "__script__:fm-spawn-commit-identity.test.sh"
+          ;;
       esac
       ;;
     bin/fm-task-inbox-lib.sh)

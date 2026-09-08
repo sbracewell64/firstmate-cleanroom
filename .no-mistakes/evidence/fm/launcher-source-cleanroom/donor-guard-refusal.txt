@@ -1,0 +1,9 @@
+# Donor-guard: bin/fm-render-launcher.sh refuses to re-adopt the live code root (fails CLOSED)
+
+## Case 1: rendered shim live launcher (no FM_CODE_ROOT= line), donor resolved from config/code-root, re-adopt same root
+fm-render-launcher: adopted --code-root equals the current live (donor) code root (/tmp/tmp.jyH8e6Ukul/release-a, from /tmp/tmp.jyH8e6Ukul/home/config/code-root); adoption must move the code root to the adopted release. Refusing (pass --allow-same-code-root only for evidence/testing).
+exit=1
+
+## Case 2: fail-safe — source launcher has no real donor path and no config -> refuse (not silent pass)
+fm-render-launcher: could not resolve a real current live (donor) code root from /tmp/tmp.jyH8e6Ukul/home2/config/code-root or /tmp/tmp.jyH8e6Ukul/home2/enter-firstmate.sh, so adoption cannot be proven to move the code root off the donor. Refusing (pass --allow-same-code-root only for a genuine fresh install with nothing to move off of).
+exit=1

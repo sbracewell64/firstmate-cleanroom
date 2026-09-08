@@ -1,0 +1,49 @@
+===== tests/enter-firstmate-profile.test.sh =====
+ok - FM_ENTRY_LIB=1 defines the profile-menu, subscription, and resolution functions
+ok - menu: four profiles map to the exact harness + pinned model selector
+ok - Opus 4.8 only: the Opus-5 id is refused and never in the model table
+ok - qualify: QUALIFIED only when installed AND allowed; every PENDING states its exact gate
+ok - qualified set: default-only unless config/console-qualified-profiles widens it
+ok - gate: default profile qualifies with claude installed; opus-4-8 stays PENDING
+ok - subscription-only: every paid/gateway/budget selector is refused and named; clean argvs pass
+ok - console argv: the profile model reaches the composed argv; posture always leads
+ok - host paths: env override, then $FM_HOME/config scalar, else empty
+ok - real run: an unset code root is refused loudly before any launch action
+ok - print-console-menu: renders all four profiles (fable-5.1 default, unqualified PENDING) and exits 0 with no tools root
+all four-profile menu, subscription-boundary, and host-path resolution tests passed
+exit=0
+
+===== tests/enter-firstmate-launch.test.sh =====
+ok - FM_ENTRY_LIB=1 defines the launch and policy functions and runs nothing else
+ok - permission policy: claude exact flag, seven QUALIFIED equivalents, pi CNO, unknown CNO
+ok - every QUALIFIED worker posture is still present in /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M21G5Y76Z9C17FJA05S1MBK9/tests/../bin/fm-spawn.sh (no drift)
+ok - console argv: claude always leads with --dangerously-skip-permissions; bash gets passthrough only
+ok - resume candidate: exact id shape, Claude's native per-project transcript store, no cross-project adoption
+ok - launch outcome: exactly one stale-resume fallback, a failed fresh launch exits
+ok - pane classification: canonical, starting, foreign-harness, shell, other
+ok - convergence: restart a stranded shell, converge only a just-restored idle harness, otherwise leave
+ok - convergence plan: deferred after a server start, inline otherwise
+ok - claim deliverability: only a live cold-start arm-owner is a valid cold-start defer target
+all console launch and permission policy tests passed
+exit=0
+
+===== tests/enter-firstmate-arm.test.sh =====
+ok - FM_ENTRY_LIB=1 defines the pure functions and runs nothing else
+ok - cold_arm_decide truth table (11 rows)
+ok - cold_arm_arm_line classifies the last arm line
+ok - cold_arm_reasons keeps only the actionable class, bounded
+ok - cold_arm_wake_body is one line with the handling contract
+ok - watcher-kind envelope round-trips through bin/fm-operational-input.sh (/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M21G5Y76Z9C17FJA05S1MBK9/tests/..)
+all cold-start arm decision tests passed
+exit=0
+
+===== tests/enter-firstmate-render.test.sh =====
+ok - (i) shim live launcher + config/code-root re-adoption fires the donor guard
+ok - (ii) versioned-source live launcher + config/code-root re-adoption fires the donor guard
+ok - (iii) first cutover: a real literal FM_CODE_ROOT= donor fires the donor guard
+ok - (iv) no resolvable donor root fails safe (refuses, never silently proceeds)
+ok - (iv-b) --allow-same-code-root bypasses the fail-safe for a genuine fresh install
+ok - (v) a genuine move to a different code root passes the guard and stages
+all donor-guard tests passed
+exit=0
+

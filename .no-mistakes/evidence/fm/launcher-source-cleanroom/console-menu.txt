@@ -1,0 +1,15 @@
+# Four-profile primary console menu — end-user surface
+# Command: FM_CODE_ROOT='' FM_TOOLS_ROOT=/nonexistent bin/enter-firstmate.sh --print-console-menu
+# (renders BEFORE the mandatory tools/no-mistakes gates; no real tools root needed; exits 0)
+
+-- primary console profile menu (runtime-pin-adoption-gap; owner: this launcher's console_profile_* block)
+  active profile:    fable-5.1
+  default profile:   fable-5.1   qualified here: fable-5.1
+  $0/subscription:   enforced at the composed launch (no API/gateway/provider override, no overage, no budget flag)
+  fable-5.1    harness=claude model=fable            posture=--dangerously-skip-permissions           QUALIFIED  <- active
+  opus-4-8     harness=claude model=claude-opus-4-8  posture=--dangerously-skip-permissions           PENDING: model claude-opus-4-8 (claude) is not yet qualified on the zero-dollar subscription plan; adoption pending
+  codex-astra  harness=codex  model=gpt-6-astra      posture=--dangerously-bypass-approvals-and-sandbox PENDING: model gpt-6-astra (codex) is not yet qualified on the zero-dollar subscription plan; adoption pending
+  codex-sol    harness=codex  model=gpt-5.6-sol      posture=--dangerously-bypass-approvals-and-sandbox PENDING: model gpt-5.6-sol (codex) is not yet qualified on the zero-dollar subscription plan; adoption pending
+  note:              worker/pipeline model profiles are separate owners (code root bin/fm-spawn.sh, config/crew-dispatch.json); this menu never switches workers
+
+exit=0

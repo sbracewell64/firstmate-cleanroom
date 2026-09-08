@@ -1,0 +1,38 @@
+=== fm-work-context.sh caller-enforcement transcript ===
+tasks-axi 0.2.5  |  jq jq-1.8.1
+
+# 1. Class-A dispatch is inert: an eligible queued task proceeds
+classes=A class_c_ruling=n/a
+  -> exit 0
+verdict=proceed detail=dependent effect authorized: source, references, owners, and authority current
+  -> exit 0
+
+# 2. R1 defect-1: a prose-only Class-C material decision is REFUSED before its dependent effect (Class-B consent does not waive)
+classes=B C class_c_ruling=absent
+  -> exit 0
+verdict=refuse detail=class-c-prose-only: material Sol decision needs a consumed routed ruling (ruling=absent); prose/consent/labels do not substitute
+  -> exit 3
+
+# 3. defect-1: a DENY / unconsumed / unbound receipt each FAILS CLOSED
+classes=C class_c_ruling=denied-or-invalid
+  -> exit 0
+verdict=refuse detail=class-c-prose-only: material Sol decision needs a consumed routed ruling (ruling=denied-or-invalid); prose/consent/labels do not substitute
+  -> exit 3
+
+# 4. a CONSUMED, affirmative, subject+identity-bound routed ruling AUTHORIZES the Class-C effect
+classes=C class_c_ruling=present
+  -> exit 0
+verdict=proceed detail=dependent effect authorized: source, references, owners, and authority current
+  -> exit 0
+
+# 5. defect-2: descriptor DELETED but authoritative binding survives (state/<id>.meta authority_classes=C) -> dependent effect still blocked, independent + recovery continue
+classes=C class_c_ruling=absent
+  -> exit 0
+verdict=refuse detail=class-c-prose-only: material Sol decision needs a consumed routed ruling (ruling=absent); prose/consent/labels do not substitute
+  -> exit 3
+verdict=proceed detail=independent authorized work; context not required
+  -> exit 0
+verdict=proceed-recovery detail=recovery effect is never gated
+  -> exit 0
+
+=== end transcript ===

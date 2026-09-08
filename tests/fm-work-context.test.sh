@@ -288,6 +288,82 @@ expect_code 0 "$WC_RC" "safety/control recovery is never blocked by the unruled 
 pass "defect 2: descriptor absence does not downgrade a meta-declared Class-C op; only its dependent effect is blocked"
 
 # =========================================================================
+# Trusted authority path adoption (audit findings A/B/C). A configured canonical
+# ruling verifier is AUTHORITATIVE, is bound to the DECLARED applicability
+# (subject + request + generation), and a DECLARED-but-unreachable verifier FAILS
+# CLOSED rather than downgrading to the schema-shaped local validation. This is
+# the runtime adoption a schema-shaped receipt can never prove on its own.
+# =========================================================================
+
+HV=$(make_home verifier)
+add_item "$HV" vtask
+mkdir -p "$TMP_ROOT/verifier" "$HV/data/vtask"
+VSTUB="$TMP_ROOT/verifier/verifier-stub.sh"
+VARGS_LOG="$TMP_ROOT/verifier/verifier-args.log"
+cat > "$VSTUB" <<'STUB'
+#!/usr/bin/env bash
+# Stub standing in for the canonical control-plane verifier. It records the exact
+# args it was invoked with, then exits per VSTUB_EXIT (default 0). It never reads
+# the receipt's local schema, so a PROCEED here on a locally-INVALID receipt
+# proves the trusted path is authoritative, not merely ANDed with local checks.
+printf '%s\n' "$*" > "${VSTUB_ARGS_LOG:?}"
+exit "${VSTUB_EXIT:-0}"
+STUB
+chmod +x "$VSTUB"
+printf '%s\n' "$VSTUB" > "$HV/config/work-context-ruling-verifier"
+export VSTUB_ARGS_LOG="$VARGS_LOG"
+
+# The receipt is LOCALLY INVALID (unconsumed DENY): if the trusted path were
+# merely ANDed with local validation, no verdict could ever proceed.
+printf '{"consumed":false,"outcome":"DENY"}\n' > "$HV/data/vtask/ruling.json"
+printf 'kind=ship\nauthority_classes=C\n' > "$HV/state/vtask.meta"
+write_desc "$HV" vtask '{"source":{"locator":"'"$HV"'"},"authority":{"classes":["C"],"ruling_receipt":"ruling.json","request":"req-32","generation":"g-9"}}'
+
+# (finding A / positive) a reachable verifier that PROCEEDs authorizes the effect
+# even though the receipt would fail local validation: the trusted path is
+# authoritative and actually consulted at the seam.
+rm -f "$VARGS_LOG"
+export VSTUB_EXIT=0
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=present" "a reachable canonical verifier that PROCEEDs -> present"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 0 "$WC_RC" "the trusted verifier authorizes the dependent effect (authoritative over local schema)"
+assert_contains "$WC_OUT" "verdict=proceed" "trusted verifier PROCEED -> proceed"
+# (finding B) the verifier was bound to the DECLARED applicability, not just the receipt.
+assert_grep "--subject vtask" "$VARGS_LOG" "the verifier is bound to the subject"
+assert_grep "--request req-32" "$VARGS_LOG" "the verifier is bound to the declared request identity"
+assert_grep "--generation g-9" "$VARGS_LOG" "the verifier is bound to the declared generation identity"
+pass "findings A/B: a configured canonical verifier is consulted, authoritative, and applicability-bound"
+
+# (authoritative refuse) the same reachable verifier that REFUSES fails closed,
+# regardless of receipt shape.
+export VSTUB_EXIT=1
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=denied-or-invalid" "a reachable verifier that refuses -> denied-or-invalid"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 3 "$WC_RC" "a non-zero verifier exit fails closed before the dependent effect"
+unset VSTUB_EXIT
+
+# (finding A / the core defect) a DECLARED-but-unreachable verifier must FAIL
+# CLOSED, never silently downgrade to schema-shaped local validation - even when
+# the local receipt would otherwise be perfectly valid.
+printf '{"consumed":true,"outcome":"PROCEED","subject":"vtask","lease":"l","request":"req-32","generation":"g-9"}\n' \
+  > "$HV/data/vtask/ruling.json"
+# Sanity: with NO verifier declared, this exact receipt authorizes locally.
+rm -f "$HV/config/work-context-ruling-verifier"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 0 "$WC_RC" "with no verifier declared the locally-valid receipt authorizes (control)"
+# Now DECLARE an unreachable verifier: the very same receipt must be refused.
+printf '%s\n' "$TMP_ROOT/verifier/no-such-verifier-xyz" > "$HV/config/work-context-ruling-verifier"
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=verifier-unavailable" "a declared-but-unreachable verifier -> verifier-unavailable, not present"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 3 "$WC_RC" "a declared-but-unreachable verifier fails closed instead of accepting the schema-shaped receipt"
+assert_contains "$WC_OUT" "verifier-unavailable" "the refusal names the unreachable trusted path, not a schema verdict"
+pass "finding A: a declared-but-unreachable canonical verifier fails closed rather than downgrading to local schema validation"
+unset VSTUB_ARGS_LOG
+
+# =========================================================================
 # Defect 3 (fail-open): an ERROR from the readiness owner must FAIL CLOSED for a
 # dependent op, never collapse to proceed. A legitimate exemption still proceeds.
 # =========================================================================

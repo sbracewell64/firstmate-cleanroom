@@ -93,7 +93,7 @@ case "${1:-}" in
   classify)
     shift
     id=${1:-}; require_id "$id"
-    if ! fm_work_context_authority_classify "$STATE" "$DATA" "$id"; then
+    if ! fm_work_context_authority_classify "$STATE" "$DATA" "$id" "$CONFIG"; then
       printf 'classes=error detail=%s\n' "${FM_WORK_CONTEXT_DETAIL:-malformed}" >&2
       exit "$FM_WORK_CONTEXT_REFUSE_EXIT"
     fi

@@ -92,4 +92,51 @@ assert_contains "$OUT" "spawned $ID" "authorized Class-C spawn reports success"
 assert_present "$HOME_DIR/state/$ID.meta" "authorized Class-C spawn writes its meta"
 pass "defect 5: a consumed, subject-bound routed ruling lets an authorized Class-C op spawn"
 
+# --- 4. a Class-C op whose CONFIGURED canonical verifier PROCEEDs spawns ------
+# The trusted authority path is consulted at the REAL dispatch seam and is
+# authoritative over the local schema: the receipt here is locally INVALID
+# (unconsumed DENY), yet a reachable verifier that PROCEEDs lets the op spawn.
+
+VSTUB="$TMP_ROOT/verifier-stub.sh"
+cat > "$VSTUB" <<'STUB'
+#!/usr/bin/env bash
+# Stub canonical verifier: it never reads the receipt schema, so a spawn here on
+# a locally-invalid receipt proves the trusted path is actually consulted.
+exit "${VSTUB_EXIT:-0}"
+STUB
+chmod +x "$VSTUB"
+
+ID=wcgate-vok-z4
+REC=$(make_case wcgate-vok "$ID"); read_case "$REC"
+mkdir -p "$HOME_DIR/data/$ID" "$HOME_DIR/config"
+printf '%s\n' "$VSTUB" > "$HOME_DIR/config/work-context-ruling-verifier"
+printf '{"consumed":false,"outcome":"DENY"}\n' > "$HOME_DIR/data/$ID/ruling.json"
+write_desc "$HOME_DIR" "$ID" '{"authority":{"classes":["C"],"ruling_receipt":"ruling.json"}}'
+OUT=$(VSTUB_EXIT=0 run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR")
+STATUS=$?
+expect_code 0 "$STATUS" "a Class-C op whose configured canonical verifier PROCEEDs spawns at the real dispatch seam"
+assert_contains "$OUT" "spawned $ID" "verifier-authorized Class-C spawn reports success"
+assert_present "$HOME_DIR/state/$ID.meta" "verifier-authorized Class-C spawn writes its meta"
+pass "runtime adoption: a configured canonical verifier is consulted at real dispatch and is authoritative over the local schema"
+
+# --- 5. a DECLARED-but-unreachable verifier is refused BEFORE any record ------
+# The receipt is locally VALID, so without the trusted path it would authorize;
+# but the operator DECLARED a canonical verifier and it is unreachable, so the
+# gate fails closed rather than downgrading to the schema-shaped local proof.
+
+ID=wcgate-vunreach-z5
+REC=$(make_case wcgate-vunreach "$ID"); read_case "$REC"
+mkdir -p "$HOME_DIR/data/$ID" "$HOME_DIR/config"
+printf '%s\n' "$TMP_ROOT/no-such-verifier-xyz" > "$HOME_DIR/config/work-context-ruling-verifier"
+printf '{"consumed":true,"outcome":"PROCEED","subject":"%s","lease":"l-1","request":"req-1","generation":"g-1"}\n' "$ID" \
+  > "$HOME_DIR/data/$ID/ruling.json"
+write_desc "$HOME_DIR" "$ID" '{"authority":{"classes":["C"],"ruling_receipt":"ruling.json"}}'
+OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR")
+STATUS=$?
+expect_code 1 "$STATUS" "a declared-but-unreachable canonical verifier must be refused before dispatch"
+assert_contains "$OUT" "verifier-unavailable" "the refusal names the unreachable trusted path, not a schema verdict"
+assert_absent "$HOME_DIR/state/$ID.meta" "the trusted-path refusal happens before any meta/endpoint is written"
+[ ! -s "$LAUNCH_LOG" ] || fail "the refused op must not launch a worker"
+pass "finding A at the real caller: a declared-but-unreachable verifier fails closed before any record, never downgrading to the schema-shaped receipt"
+
 echo "# fm-spawn-work-context-gate.test.sh: all assertions passed"

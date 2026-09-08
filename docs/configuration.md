@@ -400,7 +400,9 @@ It refuses only a Class-C op that lacks a consumed, affirmative, subject-bound r
 The op's class is read from its authoritative binding - `state/<id>.meta` `authority_classes=` (which survives descriptor deletion) supplemented by the optional `data/<id>/work-context.json` descriptor - never inferred from a name or from free-text.
 
 `config/work-context-ruling-verifier` is an optional local, gitignored file naming an executable that consumes and validates the canonical control-plane ruling receipt.
-When present and on `PATH`, that verifier is authoritative and its non-zero exit fails closed; when absent, the gate applies strict local validation of the receipt (a consumed, affirmative outcome bound to this subject with a lease, request identity, and generation).
+When it names a reachable verifier, that verifier is authoritative: the gate invokes it bound to the declared applicability (`--subject` always, plus `--request` and `--generation` when the descriptor or meta declares them, the same identities the local validation enforces), and any non-zero exit fails closed.
+When no verifier is configured, the gate applies strict local validation of the receipt (a consumed, affirmative outcome bound to this subject with a lease, request identity, and generation).
+Opting into the trusted authority path is a decision to fail closed when it cannot be reached: a verifier that is declared but unreachable refuses (`ruling=verifier-unavailable`) rather than silently downgrading to the schema-shaped local validation, so a locally-valid receipt is never accepted as proof of the trusted path.
 The verifier is never inferred from a receipt, harness, or file name.
 `FM_WORK_CONTEXT_RULING_VERIFIER` overrides the file for one invocation.
 

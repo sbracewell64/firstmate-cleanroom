@@ -2070,7 +2070,7 @@ fi
 # refusal after a live pane exists. Runtime read-back against the deployed
 # control-plane verifier remains the separate downstream ACTIVE step.
 WC_GATE_RC=0
-fm_work_context_dispatch_authority_gate "$STATE" "$DATA" "$ID" || WC_GATE_RC=$?
+fm_work_context_dispatch_authority_gate "$STATE" "$DATA" "$ID" "$CONFIG" || WC_GATE_RC=$?
 if [ "$WC_GATE_RC" = "$FM_WORK_CONTEXT_REFUSE_EXIT" ]; then
   echo "error: task $ID is refused before dispatch by the work-context authority gate: $FM_WORK_CONTEXT_DETAIL" >&2
   exit 1

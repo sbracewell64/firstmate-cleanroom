@@ -69,11 +69,19 @@
 # a second owner: fm_work_context_reconcile runs at the terminal `activated`
 # transition in bin/fm-stage.sh (completion -> parent/roadmap refresh), and the
 # `select` verb composes the existing eligible_queued producer with the per-task
-# preflight for next-eligible-task selection. What remains a SEPARATE downstream
-# ACTIVE step is the deployed runtime: adopting the canonical control-plane
-# ruling verifier (the receipt-schema adapter below is the seam for it) and the
-# caller read-back against real production tasks. A merge is not activation, and
-# the roadmap flip is `landed`, never `active`.
+# preflight for next-eligible-task selection. The trusted authority path is
+# ADOPTED, not merely described: when a canonical control-plane ruling verifier is
+# configured (config/work-context-ruling-verifier or FM_WORK_CONTEXT_RULING_VERIFIER)
+# it is consulted before the dependent effect, bound to the declared applicability
+# (subject + request/generation), and a verifier that is DECLARED but unreachable
+# FAILS CLOSED rather than downgrading to the schema-shaped local validation - a
+# schema-shaped receipt is never proof of the trusted path. Adverse and positive
+# cases exercise this through the real fm-spawn dispatch caller, not a manually-
+# invoked helper. What remains genuinely EXTERNAL is the control-plane verifier
+# BINARY itself (it lives in the control-plane project, not this repo); the
+# ACTIVE/READ-BACK claim is proven by the real-caller read-back the tests
+# demonstrate, standing in for that binary. A merge is not activation, and the
+# roadmap flip is `landed`, never `active`.
 
 # Distinct typed exits (mirroring fm-gate-refuse-lib.sh's exit-3 refusal grade):
 FM_WORK_CONTEXT_PASS_EXIT=0
@@ -133,15 +141,25 @@ _fm_wc_descriptor_valid() {  # <descriptor-file>
 # and its non-zero exit fails closed; the strict local validation below is the
 # fallback because the canonical fm-sol-control consume/apply path lives in the
 # control-plane project, not this repo. It is never inferred from a name.
+#
+# Three outcomes are DISTINCT (audit finding A: a declared-but-unreachable
+# verifier must never silently downgrade to the weaker schema-shaped local
+# validation - opting into the trusted authority path is a decision to fail
+# closed when that path cannot be reached, not to accept a local receipt as
+# canonical proof):
+#   return 0, prints cmd - configured AND reachable -> authoritative
+#   return 1, prints nothing - NOT configured -> strict local validation is used
+#   return 2, prints nothing - DECLARED but unreachable -> the caller fails closed
 _fm_wc_verifier_command() {  # <config-dir>
   local config=$1 cmd
   cmd=${FM_WORK_CONTEXT_RULING_VERIFIER:-}
   if [ -z "$cmd" ] && [ -r "$config/work-context-ruling-verifier" ]; then
     cmd=$(head -1 "$config/work-context-ruling-verifier" 2>/dev/null | tr -d '[:space:]')
   fi
-  [ -n "$cmd" ] || return 0
-  command -v "$cmd" >/dev/null 2>&1 || return 0
+  [ -n "$cmd" ] || return 1
+  command -v "$cmd" >/dev/null 2>&1 || return 2
   printf '%s\n' "$cmd"
+  return 0
 }
 
 # Compositional authority classification, driven by the AUTHORITATIVE operation
@@ -153,8 +171,8 @@ _fm_wc_verifier_command() {  # <config-dir>
 # routed ruling; every other state (absent, denied-or-invalid, unconsumed,
 # unbound, unrelated-subject, request/generation-mismatch, prose-only) fails
 # closed. Returns 1 only on a malformed descriptor.
-fm_work_context_authority_classify() {  # <state-dir> <data-dir> <id>
-  local state=$1 data=$2 id=$3 desc meta meta_classes desc_classes classes
+fm_work_context_authority_classify() {  # <state-dir> <data-dir> <id> [config-dir]
+  local state=$1 data=$2 id=$3 config=${4:-} desc meta meta_classes desc_classes classes
   desc=$(fm_work_context_descriptor_path "$data" "$id")
   meta="$state/$id.meta"
   FM_WORK_CONTEXT_CLASSES=A
@@ -178,13 +196,17 @@ fm_work_context_authority_classify() {  # <state-dir> <data-dir> <id>
     *" C "*) ;;
     *) return 0 ;;
   esac
-  _fm_wc_class_c_ruling "$state" "$data" "$id" "$desc"
+  _fm_wc_class_c_ruling "$state" "$data" "$id" "$desc" "$config"
   return 0
 }
 
 # Validate the consumed Class-C ruling receipt, failing closed on any doubt.
-_fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor>
-  local state=$1 data=$2 id=$3 desc=$4 config receipt verifier
+# <config-dir> is threaded from the caller (audit finding C) so the trusted-path
+# lookup uses the SAME config dir the dispatch caller operates on, not whatever
+# ambient FM_CONFIG_OVERRIDE happens to be set in the process; it falls back to
+# the env only when the caller supplies nothing.
+_fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor> [config-dir]
+  local state=$1 data=$2 id=$3 desc=$4 config=${5:-} receipt verifier vrc
   local outcome subject lease request generation consumed
   local want_request want_generation
   FM_WORK_CONTEXT_CLASS_C_RULING=absent
@@ -198,17 +220,39 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor>
   esac
   [ -f "$receipt" ] || return 0
 
+  # Declared applicability identity, resolved ONCE and bound to BOTH the trusted
+  # and local paths (audit finding B: the trusted verifier must not be told less
+  # than the local path enforces, or adopting the authoritative path would
+  # silently drop the request/generation binding a receipt is scoped to).
+  want_request=$(_fm_wc_desc "$desc" '.authority.request')
+  [ -n "$want_request" ] || want_request=$(fm_meta_get "$state/$id.meta" ruling_request)
+  want_generation=$(_fm_wc_desc "$desc" '.authority.generation')
+  [ -n "$want_generation" ] || want_generation=$(fm_meta_get "$state/$id.meta" ruling_generation)
+
   # A configured canonical verifier is authoritative; fail closed on its error.
-  config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}
-  verifier=$(_fm_wc_verifier_command "$config")
-  if [ -n "$verifier" ]; then
-    if "$verifier" verify --receipt "$receipt" --subject "$id" >/dev/null 2>&1; then
-      FM_WORK_CONTEXT_CLASS_C_RULING=present
-    else
-      FM_WORK_CONTEXT_CLASS_C_RULING=denied-or-invalid
-    fi
-    return 0
-  fi
+  [ -n "$config" ] || config=${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}
+  verifier=$(_fm_wc_verifier_command "$config"); vrc=$?
+  case "$vrc" in
+    0)
+      # Bind the trusted path to the declared applicability the local path also
+      # enforces: subject always, plus request/generation when declared.
+      local vargs
+      vargs=(verify --receipt "$receipt" --subject "$id")
+      [ -n "$want_request" ] && vargs+=(--request "$want_request")
+      [ -n "$want_generation" ] && vargs+=(--generation "$want_generation")
+      if "$verifier" "${vargs[@]}" >/dev/null 2>&1; then
+        FM_WORK_CONTEXT_CLASS_C_RULING=present
+      else
+        FM_WORK_CONTEXT_CLASS_C_RULING=denied-or-invalid
+      fi
+      return 0 ;;
+    2)
+      # A verifier was DECLARED but is unreachable: fail closed rather than
+      # downgrade to the weaker schema-shaped local validation (audit finding A).
+      FM_WORK_CONTEXT_CLASS_C_RULING="verifier-unavailable"
+      return 0 ;;
+    *) : ;;  # 1: no verifier configured -> strict local validation below.
+  esac
 
   # Strict local validation. A bare {consumed:true,ruling:"x",lease:"y"} is NOT
   # enough: a DENY, an unrelated subject, or a mismatched request/generation all
@@ -237,10 +281,6 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor>
     FM_WORK_CONTEXT_CLASS_C_RULING=unrelated-subject
     return 0
   fi
-  want_request=$(_fm_wc_desc "$desc" '.authority.request')
-  [ -n "$want_request" ] || want_request=$(fm_meta_get "$state/$id.meta" ruling_request)
-  want_generation=$(_fm_wc_desc "$desc" '.authority.generation')
-  [ -n "$want_generation" ] || want_generation=$(fm_meta_get "$state/$id.meta" ruling_generation)
   if [ -n "$want_request" ] && [ "$want_request" != "$request" ]; then
     FM_WORK_CONTEXT_CLASS_C_RULING="request-mismatch"
     return 0
@@ -259,10 +299,10 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor>
 # ruling is present; it is inert (no jq, proceed) for every ordinary op whose
 # meta declares no Class-C requirement, so existing dispatch behavior is
 # unchanged. Sets FM_WORK_CONTEXT_VERDICT/DETAIL. Returns 0 proceed, 3 refuse.
-fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id>
-  local state=$1 data=$2 id=$3
+fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir]
+  local state=$1 data=$2 id=$3 config=${4:-}
   fm_work_context_reset
-  if ! fm_work_context_authority_classify "$state" "$data" "$id"; then
+  if ! fm_work_context_authority_classify "$state" "$data" "$id" "$config"; then
     FM_WORK_CONTEXT_VERDICT=refuse
     FM_WORK_CONTEXT_DETAIL=${FM_WORK_CONTEXT_DETAIL:-malformed authority declaration}
     return "$FM_WORK_CONTEXT_REFUSE_EXIT"
@@ -531,7 +571,7 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   # (R1) Compositional authority: a required Class-C material decision needs a
   # consumed-ruling receipt BEFORE the dependent effect. Class B consent does
   # not waive it; prose does not substitute.
-  if ! fm_work_context_authority_classify "$state" "$data" "$id"; then
+  if ! fm_work_context_authority_classify "$state" "$data" "$id" "$config"; then
     FM_WORK_CONTEXT_VERDICT=refuse
     FM_WORK_CONTEXT_DETAIL=${FM_WORK_CONTEXT_DETAIL:-malformed authority declaration}
     return "$FM_WORK_CONTEXT_REFUSE_EXIT"

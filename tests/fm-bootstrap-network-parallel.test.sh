@@ -43,6 +43,28 @@ install_fake_ssh() {
 set -eu
 log=${FM_FAKE_SSH_LOG:?}
 sleep_s=${FM_FAKE_SSH_SLEEP:-0.4}
+# Two-way rendezvous barrier shared with the fake git-fetch (clone refresh).
+# Each side marks itself present, then blocks until the other side is present
+# too, up to a bounded deadline. Because a probe cannot leave the barrier and
+# start its own timed window until the fetch has arrived (and vice versa), the
+# fetch's window and at least one probe's window are guaranteed to run
+# concurrently whenever the production path actually backgrounds the refresh -
+# so the overlap is observed deterministically rather than by timing luck. The
+# deadline keeps a genuinely serial (regressed) production path from hanging:
+# the barrier releases, no window overlaps, and the assertion fails as it must.
+fm_barrier() { # <self-marker> <other-marker>
+  local rzdir rz_max rz_i
+  rzdir=${FM_FAKE_RENDEZVOUS_DIR:-}
+  [ -n "$rzdir" ] || return 0
+  : > "$rzdir/$1.ready"
+  rz_max=$(( ${FM_FAKE_RENDEZVOUS_DEADLINE:-10} * 50 ))
+  rz_i=0
+  while [ ! -e "$rzdir/$2.ready" ]; do
+    sleep 0.02
+    rz_i=$((rz_i + 1))
+    [ "$rz_i" -lt "$rz_max" ] || break
+  done
+}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) shift 2 ;;
@@ -72,6 +94,7 @@ case "$command_name" in
     ;;
 esac
 if [ "$slow" -eq 1 ]; then
+  fm_barrier probe fetch
   printf 'START %s %s %s\n' "$host" "$command_name" "$subcommand" >> "$log"
   sleep "$sleep_s"
   printf 'END %s %s %s\n' "$host" "$command_name" "$subcommand" >> "$log"
@@ -128,6 +151,22 @@ install_slow_git() {
   cat > "$fakebin/git" <<SH
 #!/usr/bin/env bash
 set -eu
+# See fm_barrier in install_fake_ssh: the clone refresh is the fetch side of the
+# same two-way rendezvous, so its timed window is guaranteed to run concurrently
+# with a remote probe's window whenever the production path backgrounds it.
+fm_barrier() { # <self-marker> <other-marker>
+  local rzdir rz_max rz_i
+  rzdir=\${FM_FAKE_RENDEZVOUS_DIR:-}
+  [ -n "\$rzdir" ] || return 0
+  : > "\$rzdir/\$1.ready"
+  rz_max=\$(( \${FM_FAKE_RENDEZVOUS_DEADLINE:-10} * 50 ))
+  rz_i=0
+  while [ ! -e "\$rzdir/\$2.ready" ]; do
+    sleep 0.02
+    rz_i=\$((rz_i + 1))
+    [ "\$rz_i" -lt "\$rz_max" ] || break
+  done
+}
 slow=0
 for arg in "\$@"; do
   if [ "\$arg" = fetch ]; then
@@ -136,6 +175,7 @@ for arg in "\$@"; do
   fi
 done
 if [ "\$slow" -eq 1 ]; then
+  fm_barrier fetch probe
   printf 'START fleet-fetch git fetch\n' >> '$log'
   sleep "\${FM_FAKE_GIT_FETCH_SLEEP:-0.4}"
   printf 'END fleet-fetch git fetch\n' >> '$log'
@@ -159,7 +199,7 @@ starts_before_first_end() { # <log> <pattern>
 
 test_remote_probe_scheduling_keeps_per_mate_lines() { # <parallel|fallback>
   local mode=$1
-  local dir home primary fakebin log out n doctor_overlap liveness_starts fetch_starts
+  local dir home primary fakebin log rzdir out n doctor_overlap liveness_starts fetch_starts
   local alpha_root alpha_home bravo_root bravo_home charlie_root charlie_home
   dir="$TMP_ROOT/parallel-lines-$mode"
   home="$dir/home"
@@ -174,6 +214,8 @@ test_remote_probe_scheduling_keeps_per_mate_lines() { # <parallel|fallback>
   fm_fake_exit0 "$fakebin" gh treehouse tmux node
   log="$dir/probe.log"
   : > "$log"
+  rzdir="$dir/rendezvous"
+  mkdir -p "$rzdir"
   install_fake_ssh "$fakebin"
   install_slow_git "$fakebin" "$REAL_GIT" "$log"
   if [ "$mode" = fallback ]; then
@@ -220,6 +262,8 @@ SH
     FM_FAKE_SSH_FAIL_HOST=host-alpha \
     FM_FAKE_SSH_DIRTY_HOST=host-charlie \
     FM_FAKE_GIT_FETCH_SLEEP=0.4 \
+    FM_FAKE_RENDEZVOUS_DIR="$rzdir" \
+    FM_FAKE_RENDEZVOUS_DEADLINE="${FM_FAKE_RENDEZVOUS_DEADLINE:-10}" \
     FM_INHERITABLE_CONFIG='' \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
     "$ROOT/bin/fm-bootstrap.sh" 2>&1

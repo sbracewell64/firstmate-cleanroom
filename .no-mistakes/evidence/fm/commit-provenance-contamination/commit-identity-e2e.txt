@@ -1,0 +1,16 @@
+=== fm-spawn worker commit-identity pin: end-to-end evidence ===
+
+Ambient (contaminating) global identity for this run: Disposable Global <disposable-global@example.invalid>
+Captain-pinned identity expected:                     sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+--- GREEN: real spawn drives pinned identity into every worker kind ---
+ok - a worktree with no pin authors commits under the ambient global - the contamination the fix removes
+# observed no-mistakes export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed no-mistakes author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788871429 -0400
+# observed direct-PR export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed direct-PR author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788871433 -0400
+# observed scout export: export GIT_AUTHOR_NAME='sbracewell64' GIT_AUTHOR_EMAIL='301307654+sbracewell64@users.noreply.github.com' GIT_COMMITTER_NAME='sbracewell64' GIT_COMMITTER_EMAIL='301307654+sbracewell64@users.noreply.github.com'
+# observed scout author-ident: sbracewell64 <301307654+sbracewell64@users.noreply.github.com> 1788871435 -0400
+ok - ship, direct-PR, and scout workers each launch with the pinned commit identity in the effective author and committer
+# all fm-spawn-commit-identity tests passed
+test exit: 0

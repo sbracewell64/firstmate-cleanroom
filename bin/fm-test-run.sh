@@ -261,6 +261,7 @@ family_for_basename() {
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
+    fm-nm-commit-identity.test.sh|fm-commit-identity-verify.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
@@ -596,6 +597,7 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 18
 tests/fm-claude-stop-autoarm.test.sh 60622
 tests/fm-cmux-claude-composer-live-e2e.test.sh 20
 tests/fm-codex-continuity-live-e2e.test.sh 18
+tests/fm-commit-identity-verify.test.sh 520
 tests/fm-composer-matrix-live-e2e.test.sh 22
 tests/fm-continuation-lib.test.sh 201
 tests/fm-continuation-resolve.test.sh 88323
@@ -627,6 +629,7 @@ tests/fm-kimi-harness.test.sh 21584
 tests/fm-lint-workflows.test.sh 711
 tests/fm-muse-harness.test.sh 32102
 tests/fm-muse-signals-live-e2e.test.sh 20
+tests/fm-nm-commit-identity.test.sh 1900
 tests/fm-no-mistakes-required.test.sh 271
 tests/fm-on.test.sh 10870
 tests/fm-opencode-primary-live-e2e.test.sh 19
@@ -1387,6 +1390,11 @@ families_for_changed_path() {
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
+    bin/fm-commit-identity-verify.sh)
+      # Its own portable contract, plus the CI-ready boundary that consumes it.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both
       # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's
@@ -1411,9 +1419,13 @@ families_for_changed_path() {
     bin/fm-peek.sh|bin/fm-composer*)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
-      # fm-spawn.sh also carries the wired work-context authority gate.
+      # fm-spawn.sh also carries the wired work-context authority gate and the
+      # no-mistakes commit-identity pin it calls for a no-mistakes ship spawn.
       case "$path" in
-        bin/fm-spawn.sh) printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh" ;;
+        bin/fm-spawn.sh)
+          printf '%s\n' "__script__:fm-spawn-work-context-gate.test.sh"
+          printf '%s\n' "__script__:fm-nm-commit-identity.test.sh"
+          ;;
       esac
       ;;
     bin/fm-task-inbox-lib.sh)
@@ -1441,6 +1453,7 @@ families_for_changed_path() {
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
+    bin/fm-nm-commit-identity.sh|\
     bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
       printf '%s\n' pure-contract-unit
       ;;

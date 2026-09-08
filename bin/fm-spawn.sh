@@ -1815,6 +1815,33 @@ if [ "$KIND" = ship ]; then
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
+  # A no-mistakes ship runs its pipeline in a gate worktree the shared daemon
+  # creates off this repo's no-mistakes mirror, and those pipeline commits pick
+  # up whatever identity the mirror resolves - the operator global unless pinned.
+  # This is a distinct seam from a worker's OWN commits: pin the captain identity
+  # onto the mirror now, before the worker starts, so the pipeline's own
+  # document/review/rebase commits carry it too. This is a scoped MITIGATION, not
+  # universal enforcement: the daemon owns the gate-worktree lifecycle firstmate
+  # cannot interleave with, so this covers repeat runs of an already-gated repo
+  # but not a repo's very first run (whose mirror the daemon creates mid-run).
+  # fm-nm-commit-identity.sh fails closed with a typed outcome (MISSING /
+  # AMBIGUOUS / WRITE_FAILED / UNVERIFIED); surface a non-OK result but never
+  # block the launch on it.
+  if [ "$MODE" = no-mistakes ]; then
+    if ! nm_ident_out=$("$FM_ROOT/bin/fm-nm-commit-identity.sh" pin --repo "$PROJ_ABS" 2>&1); then
+      echo "warning: no-mistakes commit-identity pin not confirmed for $PROJ_NAME ($nm_ident_out); the pipeline's own commits may inherit the operator git identity until the mirror is pinned" >&2
+    fi
+    # Because the pin is only a mitigation, record a DURABLE obligation that this
+    # task's pipeline commits must carry the captain identity. bin/fm-pr-check.sh
+    # consumes it at the CI-ready boundary and refuses to arm the merge poll for a
+    # contaminated pipeline commit, closing the gaps the spawn-time pin cannot
+    # (first run, recreation, effective-context, concurrency) by checking the
+    # actual delivered commits rather than trusting the pin fired.
+    if [ -d "$STATE" ]; then
+      "$FM_ROOT/bin/fm-nm-commit-identity.sh" identity > "$STATE/$ID.commit-identity" 2>/dev/null \
+        || echo "warning: could not record the commit-identity obligation for $ID" >&2
+    fi
+  fi
 fi
 
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)

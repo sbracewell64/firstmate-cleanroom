@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# When the task carries a durable commit-identity obligation, first consume it at
+# this CI-ready boundary and refuse to arm for a pipeline commit that does not
+# carry the captain identity (bin/fm-commit-identity-verify.sh owns the check).
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -75,6 +78,34 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
+  fi
+fi
+
+# Consume the durable commit-identity obligation at this CI-ready boundary: if
+# the task carries one (a no-mistakes ship spawn records it), verify that the
+# pipeline's OWN commits on the PR head carry the captain identity, and REFUSE to
+# arm the merge poll for a contaminated pipeline commit. This closes the gaps the
+# spawn-time mirror pin cannot (first run, recreation, effective-context,
+# concurrency) by checking the actual delivered commits. Fail OPEN on everything
+# it cannot check - no obligation, no head, no resolvable base, or the verifier
+# unavailable - so it only ever blocks a genuinely contaminated pipeline commit.
+OBLIGATION="$STATE/$ID.commit-identity"
+if [ -f "$OBLIGATION" ] && [ -n "$PR_HEAD" ] && [ -n "$WT" ] && [ -d "$WT" ]; then
+  IDENT_BASE=$(cd "$WT" && git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -z "$IDENT_BASE" ] && command -v gh >/dev/null 2>&1; then
+    BR=$(cd "$WT" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null || true)
+    [ -z "$BR" ] || IDENT_BASE="origin/$BR"
+  fi
+  if [ -n "$IDENT_BASE" ] && (cd "$WT" && git rev-parse --verify --quiet "$IDENT_BASE^{commit}" >/dev/null 2>&1); then
+    if IDENT_OUT=$("$SCRIPT_DIR/fm-commit-identity-verify.sh" --repo "$WT" --base "$IDENT_BASE" --head "$PR_HEAD" --obligation "$OBLIGATION" 2>&1); then
+      IDENT_RC=0
+    else
+      IDENT_RC=$?
+    fi
+    if [ "$IDENT_RC" -eq 7 ]; then
+      echo "error: refusing to arm the merge poll for $ID - a pipeline commit does not carry the captain identity: $IDENT_OUT" >&2
+      exit 1
+    fi
   fi
 fi
 

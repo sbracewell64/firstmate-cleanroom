@@ -2121,7 +2121,71 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+# --- durable commit-identity obligation consumed at the CI-ready boundary -----
+
+# setup_ident_wt <dir> <pipeline-author-name> <pipeline-author-email> -> head sha.
+# Builds the task worktree with a base, an origin/HEAD, and one no-mistakes
+# pipeline commit authored by the given identity.
+setup_ident_wt() {
+  local dir=$1 pn=$2 pe=$3 base
+  local wt="$dir/wt"
+  git -C "$wt" init -q
+  git -C "$wt" -c user.name=Base -c user.email=base@example.invalid commit -q --allow-empty -m base
+  base=$(git -C "$wt" rev-parse HEAD)
+  git -C "$wt" update-ref refs/remotes/origin/main "$base"
+  git -C "$wt" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$wt" -c user.name="$pn" -c user.email="$pe" commit -q --allow-empty -m "no-mistakes(document): generated docs"
+  git -C "$wt" rev-parse HEAD
+}
+
+write_identity_obligation() {  # <dir> [id]
+  printf 'name=sbracewell64\nemail=301307654+sbracewell64@users.noreply.github.com\n' \
+    > "$1/home/state/${2:-task-a}.commit-identity"
+}
+
+test_identity_obligation_refuses_contaminated_pipeline_commit() {
+  local dir head rc
+  dir=$(make_case ident-bad)
+  write_task_meta "$dir"
+  head=$(setup_ident_wt "$dir" Test test@example.com)
+  write_identity_obligation "$dir"
+  FM_TEST_GH_HEAD=$head run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/out" 2> "$dir/err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a contaminated pipeline commit must make the CI-ready check refuse"
+  assert_grep "refusing to arm" "$dir/err" "the refusal names the boundary"
+  assert_absent "$dir/home/state/task-a.check.sh" "no merge poll was armed for a contaminated PR"
+  pass "the commit-identity obligation refuses to arm the merge poll for a contaminated pipeline commit"
+}
+
+test_identity_obligation_arms_pinned_pipeline_commit() {
+  local dir head
+  dir=$(make_case ident-ok)
+  write_task_meta "$dir"
+  head=$(setup_ident_wt "$dir" sbracewell64 301307654+sbracewell64@users.noreply.github.com)
+  write_identity_obligation "$dir"
+  FM_TEST_GH_HEAD=$head run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/out" 2> "$dir/err" || fail "a pinned pipeline commit should arm normally: $(cat "$dir/err")"
+  assert_grep "armed: state/task-a.check.sh" "$dir/out" "the poll is armed for a clean pinned PR"
+  pass "the obligation arms the merge poll normally when the pipeline commit is pinned"
+}
+
+test_identity_obligation_absent_does_not_gate() {
+  local dir head
+  # With no obligation recorded, the boundary never inspects identity - a
+  # contaminated pipeline commit still arms (the check is opt-in and fail-open).
+  dir=$(make_case ident-none)
+  write_task_meta "$dir"
+  head=$(setup_ident_wt "$dir" Test test@example.com)
+  FM_TEST_GH_HEAD=$head run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/out" 2> "$dir/err" || fail "without an obligation the check must not gate: $(cat "$dir/err")"
+  assert_grep "armed: state/task-a.check.sh" "$dir/out" "no obligation means no identity gate"
+  pass "the identity gate is opt-in: absent obligation never blocks arming"
+}
+
 test_parser_matrix
+test_identity_obligation_refuses_contaminated_pipeline_commit
+test_identity_obligation_arms_pinned_pipeline_commit
+test_identity_obligation_absent_does_not_gate
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed

@@ -1,0 +1,38 @@
+Counterexample A — swallowed-error class in bin/fm-crew-state.sh
+================================================================
+
+Scenario (the exact counterexample-A vector): the no-mistakes `axi logs --step ci`
+read FAILS (exit 7) but still prints PARTIAL stdout carrying a stale
+"all CI checks passed" line, AND the crew has an older "ci-ready: PR checks green"
+receipt in its status log. A supervisor reading this crew's current state must NOT
+conclude checks are green from a failed read.
+
+Real fm-crew-state.sh output for the same crew, same fakes, before vs after fix:
+
+--- PRE-FIX (base 59344b4, swallowing `... || true`) -------------------------
+state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)
+  ^ FALSE GREEN: a failed evidence read certified the crew as done/checks-green.
+    This is the real supervision misjudgement (worker read "checks green" with CI
+    red/unknown; a false-green read drives a wrong interrupt).
+
+--- FIXED (target 62a8d1d, CHECKED read via fm_nm_run_checked) ---------------
+state: unknown · source: run-step · CI evidence unavailable; inspect the current run before intervention
+  ^ A nonzero exit is treated as "no usable evidence"; the partial green stdout
+    and the older ci-ready receipt can no longer promote to done.
+
+Regression coverage (each proven to FAIL pre-fix, PASS post-fix), isolated run
+against the PRE-FIX source:
+  PREFIX-RESULT: test_ci_log_query_failure_cannot_supply_green FAILED (regression reproduced)
+  PREFIX-RESULT: test_axi_status_query_failure_cannot_supply_done FAILED (regression reproduced)
+  PREFIX-RESULT: test_runs_list_query_failure_cannot_supply_coarse_done FAILED (regression reproduced)
+
+The three sibling reads hardened (all now CHECKED):
+  (1) ci-step log read      -> new `unavailable` state; ci-monitoring path AND the
+                               older-ci-ready-receipt reconciliation path both
+                               refuse to promote to done on it.
+  (2) primary `axi status`  -> discards partial output on failure, falls through
+                               to pane/status-log fallback (no false checks-passed).
+  (3) coarse `runs` list    -> yields no coarse attribution on failure (no false
+                               `completed` row).
+
+Full colocated behavior suite: 63/63 green on the fixed tree.

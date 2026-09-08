@@ -1,0 +1,33 @@
+########################################################################
+# Known-open-item FIX: a matched obligation that is NEITHER open NOR
+# landed must FAIL CLOSED (not be silently trusted as already-landed).
+########################################################################
+
+== matched obligation line: [status=in-progress] ==
+  roadmap line: - Deliver X   obligation=rc_in_progress status=in-progress
+$ fm-work-context.sh reconcile rc_in_progress merged
+  reconcile=unconfirmed detail=currentness=unconfirmed read_back=found child_state=done parent=none parent_state=none reference=none roadmap=obligation-not-landed
+  exit=1
+
+== matched obligation line: [(no status token)] ==
+  roadmap line: - Deliver X   obligation=rc_no_status_token
+$ fm-work-context.sh reconcile rc_no_status_token merged
+  reconcile=unconfirmed detail=currentness=unconfirmed read_back=found child_state=done parent=none parent_state=none reference=none roadmap=obligation-not-landed
+  exit=1
+
+== matched obligation line: [status=landed] ==
+  roadmap line: - Deliver X   obligation=rc_genuinely_landed status=landed
+$ fm-work-context.sh reconcile rc_genuinely_landed merged
+  reconcile=confirmed detail=currentness=confirmed read_back=found child_state=done parent=none parent_state=none reference=none roadmap=already-landed
+  exit=0
+
+-> in-progress and no-status-token: exit=1, roadmap=obligation-not-landed,
+   currentness downgraded to unconfirmed => FAIL CLOSED (was wrongly 'already-landed' before the fix).
+-> genuinely status=landed: exit=0, roadmap=already-landed => only a real landed line confirms.
+
+------------------------------------------------------------------------
+REGRESSION PROOF (fails before the fix, passes after):
+  BUGGY commit ee7ebac (feature, pre review-fix), in-progress obligation:
+    reconcile=confirmed ... roadmap=already-landed          exit=0   (WRONG)
+  FIXED commit 3daceeb (this branch head), same input:
+    reconcile=unconfirmed ... roadmap=obligation-not-landed exit=1   (fail-closed)

@@ -1,0 +1,18 @@
+########################################################################
+# Acceptance (b): next-eligible-task SELECTION (read-only 'select' verb)
+# one held task vs one independent eligible task; aggregate hold != global
+########################################################################
+
+== Backlog: free_task queued, held_task held (captain) ==
+- [ ] free_task - independent eligible task (kind: ship) (since 2026-09-07)
+- [ ] held_task - held task (kind: ship) (since 2026-09-07) (hold: blanket captain preference) (hold-kind: captain)
+
+$ fm-work-context.sh select
+aggregate_state=captain_decision eligible_candidates=1
+selectable=free_task
+gated=
+  exit=0
+
+-> aggregate_state is NON-idle (a held sibling exists) yet NOT a global hold.
+-> eligible_candidates=1; selectable=free_task; held_task is excluded.
+-> read-only: never dispatches/routes/holds; priority & capacity stay with caller.

@@ -1,0 +1,35 @@
+########################################################################
+# Acceptance (a)+(c): completion-to-parent roadmap READ-UPDATE duty
+########################################################################
+
+== ROADMAP OWNER BEFORE (canonical existing producer artifact) ==
+# Commission roadmap (Sol 5574149214 part 4)
+- Deliver auth flow      obligation=auth    status=open
+- Deliver billing        obligation=billing status=open
+- Deliver logging        obligation=logging status=landed
+
+== Child still OPEN in its authoritative backlog row ==
+$ fm-work-context.sh reconcile auth merged   (child not yet landed)
+reconcile=unconfirmed detail=currentness=unconfirmed read_back=found child_state=in_flight parent=auth parent_state=in_flight reference=none roadmap=skipped-unconfirmed-child
+  exit=1
+  -> roadmap owner is NOT touched while the child is open (read-back first):
+- Deliver auth flow      obligation=auth    status=open
+
+== Child MERGES: authoritative row -> done, then reconcile ==
+$ fm-work-context.sh reconcile auth merged
+reconcile=confirmed detail=currentness=confirmed read_back=found child_state=done parent=auth parent_state=done reference=none roadmap=applied
+  exit=0
+
+== ROADMAP OWNER AFTER ==
+# Commission roadmap (Sol 5574149214 part 4)
+- Deliver auth flow      obligation=auth    status=landed landed=auth@1788834656
+- Deliver billing        obligation=billing status=open
+- Deliver logging        obligation=logging status=landed
+
+-> ONLY obligation=auth flipped open->landed (+landed=auth@epoch annotation).
+-> obligation=billing stays OPEN; obligation=logging (already landed) untouched.
+-> line history preserved (edited in place, 'landed' token, never 'active', never deleted).
+
+== Idempotent replay ==
+  replay exit=0
+  roadmap byte-identical on replay (already-landed, idempotent)

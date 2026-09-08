@@ -1,0 +1,26 @@
+=== no-mistakes pipeline commit-identity pin: end-to-end demonstration ===
+
+Operator global identity (the contaminating fall-through):
+  Test <test@example.com>
+
+Gate mirror: NM_HOME/repos/deadbeef1234.git
+  origin=https://github.com/sbracewell64/firstmate-cleanroom.git ; worktreeConfig=on ; user.* UNSET
+Worker checkout origin: https://github.com/sbracewell64/firstmate-cleanroom/  [.git-less + trailing-slash spelling]
+
+--- BEFORE pin: pipeline commit in a gate worktree off the mirror (daemon-faithful: no GIT_AUTHOR_* env) ---
+  author=Test <test@example.com>  committer=Test <test@example.com>
+
+--- fm-spawn.sh's best-effort call before a no-mistakes ship worker starts ---
+  $ fm-nm-commit-identity.sh pin <checkout>
+  => pinned /tmp/tmp.VcKDj43ORj/nm-home/repos/deadbeef1234.git
+  $ fm-nm-commit-identity.sh show <checkout>
+  => /tmp/tmp.VcKDj43ORj/nm-home/repos/deadbeef1234.git	sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+--- AFTER pin: a FRESH gate worktree off the same mirror (recreated worktree inherits shared config) ---
+  author=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>  committer=sbracewell64 <301307654+sbracewell64@users.noreply.github.com>
+
+--- Idempotent re-pin ---
+  => already-pinned /tmp/tmp.VcKDj43ORj/nm-home/repos/deadbeef1234.git
+
+--- Operator global is UNTOUCHED by the pin ---
+  Test <test@example.com>

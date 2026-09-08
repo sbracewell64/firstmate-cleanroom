@@ -80,7 +80,7 @@ FM_NM_GATE_CMD="${FM_NM_GATE_CMD:-no-mistakes status}"
 EX_OK=0 EX_USAGE=2 EX_MISSING=3 EX_AMBIGUOUS=4 EX_WRITE=5 EX_UNVERIFIED=6
 
 usage() {
-  echo "usage: fm-nm-commit-identity.sh <pin|verify|show> --repo <dir> [--nm-home <dir>] [--mirror <dir>]" >&2
+  echo "usage: fm-nm-commit-identity.sh <pin|verify|show> --repo <dir> [--nm-home <dir>] [--mirror <dir>] | identity" >&2
   exit "$EX_USAGE"
 }
 
@@ -96,6 +96,14 @@ MIRROR_ARG=""
 [ "$#" -ge 1 ] || usage
 ACTION=$1
 shift
+# `identity` prints the durable commit-identity obligation (name=/email= lines)
+# so a caller can record it without hardcoding the value a second time; this file
+# stays the single owner of the pinned identity.
+if [ "$ACTION" = identity ]; then
+  [ "$#" -eq 0 ] || usage
+  printf 'name=%s\nemail=%s\n' "$FM_NM_COMMIT_NAME" "$FM_NM_COMMIT_EMAIL"
+  exit 0
+fi
 case "$ACTION" in
   pin | verify | show) ;;
   *) usage ;;
@@ -161,22 +169,45 @@ else
   REPO_TOP=$(canonical "${REPO_TOP:-$REPO_ABS}")
   [ -n "$REPO_TOP" ] || REPO_TOP=$REPO_ABS
   NM_HOME_RESOLVED="${NM_HOME_ARG:-${NM_HOME:-$HOME/.no-mistakes}}"
-  H="$NM_HOME_RESOLVED/repos/$(repo_id "$REPO_TOP").git"
+  # The declared boundary: every candidate mirror MUST live under this repos dir.
+  # A binding that resolves outside it is rejected before any mutation, so a
+  # failed or malformed vendor answer can never steer a pin to a foreign mirror.
+  NM_REPOS="$NM_HOME_RESOLVED/repos"
+  NM_REPOS_CANON=$(canonical "$NM_REPOS")
+  [ -n "$NM_REPOS_CANON" ] || NM_REPOS_CANON="$NM_REPOS"
+  H="$NM_REPOS/$(repo_id "$REPO_TOP").git"
 
-  # Authoritative gate from the daemon (best-effort, bounded).
-  G=""
+  # under_declared_repos <canonical-path>: 0 iff the path is inside NM_REPOS.
+  under_declared_repos() {
+    case "$1/" in "$NM_REPOS_CANON"/*) return 0 ;; *) return 1 ;; esac
+  }
+
+  # Authoritative gate from the daemon (bounded). A NONZERO vendor status is a
+  # typed failure: its output is not trusted at all (CE6), so the gate line is
+  # read ONLY when the command exits 0. Whatever it yields is still constrained
+  # to the declared repos dir below.
+  raw=""
+  vrc=0
   if have_to=$(command -v timeout || command -v gtimeout); then
-    G=$(cd "$REPO_TOP" 2>/dev/null && "$have_to" 15 sh -c "$FM_NM_GATE_CMD" 2>/dev/null \
-      | sed -n 's/^[[:space:]]*gate:[[:space:]]*//p' | head -n1)
+    raw=$(cd "$REPO_TOP" 2>/dev/null && "$have_to" 15 sh -c "$FM_NM_GATE_CMD" 2>/dev/null); vrc=$?
   else
-    G=$(cd "$REPO_TOP" 2>/dev/null && sh -c "$FM_NM_GATE_CMD" 2>/dev/null \
-      | sed -n 's/^[[:space:]]*gate:[[:space:]]*//p' | head -n1)
+    raw=$(cd "$REPO_TOP" 2>/dev/null && sh -c "$FM_NM_GATE_CMD" 2>/dev/null); vrc=$?
   fi
+  G=""
+  [ "$vrc" -eq 0 ] && G=$(printf '%s\n' "$raw" | sed -n 's/^[[:space:]]*gate:[[:space:]]*//p' | head -n1)
   G_ABS=""
-  [ -n "$G" ] && [ -d "$G" ] && G_ABS=$(canonical "$G")
+  if [ -n "$G" ] && [ -d "$G" ]; then
+    G_ABS=$(canonical "$G")
+    if [ -n "$G_ABS" ] && ! under_declared_repos "$G_ABS"; then
+      emit AMBIGUOUS "daemon gate ($G_ABS) is outside the declared repos dir $NM_REPOS_CANON; refusing to pin a foreign mirror" "$EX_AMBIGUOUS"
+    fi
+  fi
 
   H_ABS=""
-  [ -d "$H" ] && H_ABS=$(canonical "$H")
+  if [ -d "$H" ]; then
+    H_ABS=$(canonical "$H")
+    under_declared_repos "$H_ABS" || H_ABS=""
+  fi
 
   if [ -n "$G_ABS" ] && [ -n "$H_ABS" ] && [ "$G_ABS" != "$H_ABS" ]; then
     emit AMBIGUOUS "daemon gate ($G_ABS) and derived mirror ($H_ABS) disagree; refusing to guess" "$EX_AMBIGUOUS"
@@ -185,7 +216,7 @@ else
   elif [ -n "$H_ABS" ]; then
     MIRROR=$H_ABS
   else
-    emit MISSING "no gate mirror for $REPO_TOP under $NM_HOME_RESOLVED/repos (repo not gated here, or its first run has not created the mirror yet)" "$EX_MISSING"
+    emit MISSING "no gate mirror for $REPO_TOP under $NM_REPOS (repo not gated here, or its first run has not created the mirror yet)" "$EX_MISSING"
   fi
 fi
 
@@ -237,14 +268,18 @@ while IFS= read -r line; do
           || { [ -n "$wt_email" ] && [ "$wt_email" != "$FM_NM_COMMIT_EMAIL" ]; }; then
           override_detail="config.worktree in $wt overrides the pin ($wt_name <$wt_email>)"
         fi
-        eff=$(read_effective_ident "$wt" || true)
-        if [ -n "$eff" ]; then
+        # A live gate worktree whose identity cannot be read (e.g. an empty
+        # user.name makes `git var` fail 128) is UNVERIFIED, never silently
+        # dropped as if the context did not exist (CE5).
+        if eff=$(read_effective_ident "$wt"); then
           en=${eff%%$'\t'*}; ee=${eff#*$'\t'}
           if [ "$en" != "$FM_NM_COMMIT_NAME" ] || [ "$ee" != "$FM_NM_COMMIT_EMAIL" ]; then
             mismatch_detail="effective identity in $wt is $en <$ee>, not the pin"
           else
             verified_ctx="$verified_ctx+wt:$wt"
           fi
+        else
+          mismatch_detail="effective identity in $wt is unreadable (git could not resolve it)"
         fi
       fi
       wt=""

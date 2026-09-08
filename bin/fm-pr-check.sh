@@ -78,6 +78,34 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   fi
 fi
 
+# Consume the durable commit-identity obligation at this CI-ready boundary: if
+# the task carries one (a no-mistakes ship spawn records it), verify that the
+# pipeline's OWN commits on the PR head carry the captain identity, and REFUSE to
+# arm the merge poll for a contaminated pipeline commit. This closes the gaps the
+# spawn-time mirror pin cannot (first run, recreation, effective-context,
+# concurrency) by checking the actual delivered commits. Fail OPEN on everything
+# it cannot check - no obligation, no head, no resolvable base, or the verifier
+# unavailable - so it only ever blocks a genuinely contaminated pipeline commit.
+OBLIGATION="$STATE/$ID.commit-identity"
+if [ -f "$OBLIGATION" ] && [ -n "$PR_HEAD" ] && [ -n "$WT" ] && [ -d "$WT" ]; then
+  IDENT_BASE=$(cd "$WT" && git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -z "$IDENT_BASE" ] && command -v gh >/dev/null 2>&1; then
+    BR=$(cd "$WT" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null || true)
+    [ -z "$BR" ] || IDENT_BASE="origin/$BR"
+  fi
+  if [ -n "$IDENT_BASE" ] && (cd "$WT" && git rev-parse --verify --quiet "$IDENT_BASE^{commit}" >/dev/null 2>&1); then
+    if IDENT_OUT=$("$SCRIPT_DIR/fm-commit-identity-verify.sh" --repo "$WT" --base "$IDENT_BASE" --head "$PR_HEAD" --obligation "$OBLIGATION" 2>&1); then
+      IDENT_RC=0
+    else
+      IDENT_RC=$?
+    fi
+    if [ "$IDENT_RC" -eq 7 ]; then
+      echo "error: refusing to arm the merge poll for $ID - a pipeline commit does not carry the captain identity: $IDENT_OUT" >&2
+      exit 1
+    fi
+  fi
+fi
+
 META_TMP=
 META_LOCK=
 META_LOCK_HELD=0

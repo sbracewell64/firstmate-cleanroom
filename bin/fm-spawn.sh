@@ -1831,6 +1831,16 @@ if [ "$KIND" = ship ]; then
     if ! nm_ident_out=$("$FM_ROOT/bin/fm-nm-commit-identity.sh" pin --repo "$PROJ_ABS" 2>&1); then
       echo "warning: no-mistakes commit-identity pin not confirmed for $PROJ_NAME ($nm_ident_out); the pipeline's own commits may inherit the operator git identity until the mirror is pinned" >&2
     fi
+    # Because the pin is only a mitigation, record a DURABLE obligation that this
+    # task's pipeline commits must carry the captain identity. bin/fm-pr-check.sh
+    # consumes it at the CI-ready boundary and refuses to arm the merge poll for a
+    # contaminated pipeline commit, closing the gaps the spawn-time pin cannot
+    # (first run, recreation, effective-context, concurrency) by checking the
+    # actual delivered commits rather than trusting the pin fired.
+    if [ -d "$STATE" ]; then
+      "$FM_ROOT/bin/fm-nm-commit-identity.sh" identity > "$STATE/$ID.commit-identity" 2>/dev/null \
+        || echo "warning: could not record the commit-identity obligation for $ID" >&2
+    fi
   fi
 fi
 

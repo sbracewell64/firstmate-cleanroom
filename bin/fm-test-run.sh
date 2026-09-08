@@ -261,7 +261,7 @@ family_for_basename() {
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
-    fm-nm-commit-identity.test.sh|\
+    fm-nm-commit-identity.test.sh|fm-commit-identity-verify.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
@@ -597,6 +597,7 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 18
 tests/fm-claude-stop-autoarm.test.sh 60622
 tests/fm-cmux-claude-composer-live-e2e.test.sh 20
 tests/fm-codex-continuity-live-e2e.test.sh 18
+tests/fm-commit-identity-verify.test.sh 520
 tests/fm-composer-matrix-live-e2e.test.sh 22
 tests/fm-continuation-lib.test.sh 201
 tests/fm-continuation-resolve.test.sh 88323
@@ -1387,6 +1388,11 @@ families_for_changed_path() {
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
     bin/fm-x-*|bin/fm-check*)
+      printf '%s\n' pr-forge
+      ;;
+    bin/fm-commit-identity-verify.sh)
+      # Its own portable contract, plus the CI-ready boundary that consumes it.
+      printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
       ;;
     bin/fm-nm-run-lib.sh)

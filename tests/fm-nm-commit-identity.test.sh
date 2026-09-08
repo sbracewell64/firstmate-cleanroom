@@ -275,6 +275,55 @@ test_operator_global_untouched() {
   pass "pin never modifies the operator global git config"
 }
 
+test_ce5_unreadable_worktree_identity_fails_closed() {
+  local mirror out rc wt
+  # Reviewer CE5: a live worktree whose git var read fails (empty user.name ->
+  # git var exits 128) must be UNVERIFIED, never silently dropped as OK.
+  mirror="$TMP_ROOT/nm-ce5/repos/ce5.git"
+  make_mirror "$mirror" "https://example.com/org/ce5.git"
+  run pin --mirror "$mirror" >/dev/null || fail "initial pin failed"
+  wt="$TMP_ROOT/wt-ce5"
+  git_env -C "$mirror" worktree add -q --detach "$wt" main
+  git_env -C "$wt" config --worktree user.name ""   # empty -> git var fails 128
+  # Confirm the hazard: git var really cannot resolve an identity here.
+  ( cd "$wt" && git_env var GIT_AUTHOR_IDENT >/dev/null 2>&1 ) \
+    && fail "expected git var to fail on an empty user.name"
+  out=$(run verify --mirror "$mirror"); rc=$?
+  [ "$rc" -eq 6 ] || fail "an unreadable worktree identity must exit 6 (UNVERIFIED), got $rc: $out"
+  assert_contains "$out" "UNVERIFIED" "unreadable identity yields UNVERIFIED"
+  assert_not_contains "$out" "OK " "a failed read must never certify as OK"
+  pass "CE5: an unreadable live-worktree identity fails closed (UNVERIFIED, exit 6)"
+}
+
+test_ce6_failed_vendor_never_pins_outside_nm_home() {
+  local nm co outside out rc
+  # Reviewer CE6: a vendor status that exits nonzero while printing a gate path
+  # OUTSIDE the declared NM_HOME must NOT be trusted, and no foreign mirror is
+  # ever pinned.
+  nm="$TMP_ROOT/nm-ce6"; mkdir -p "$nm/repos"
+  outside="$TMP_ROOT/outside-ce6/other.git"
+  make_mirror "$outside" "https://example.com/org/ce6.git"
+  co="$TMP_ROOT/co-ce6"
+  make_checkout "$co" "https://example.com/org/ce6.git"
+  export FM_NM_GATE_CMD="printf 'gate:  $outside\n'; exit 7"
+  out=$(run pin --repo "$co" --nm-home "$nm"); rc=$?
+  export FM_NM_GATE_CMD='true'
+  [ "$rc" -ne 0 ] || fail "a failed vendor status pointing outside NM_HOME must not succeed: $out"
+  # The foreign mirror was never pinned - a real commit there is still Test.
+  case "$(real_commit_identity "$outside" ce6)" in
+    "author=$GLOBAL_NAME <$GLOBAL_EMAIL>"*) ;;
+    *) fail "the outside mirror was mutated despite the failed binding" ;;
+  esac
+  # Even a SUCCESSFUL vendor status pointing outside the declared repos dir is
+  # rejected as AMBIGUOUS rather than pinning a foreign mirror.
+  export FM_NM_GATE_CMD="printf 'gate:  $outside\n'"
+  out=$(run pin --repo "$co" --nm-home "$nm"); rc=$?
+  export FM_NM_GATE_CMD='true'
+  [ "$rc" -eq 4 ] || fail "a gate outside the declared repos dir must exit 4 (AMBIGUOUS), got $rc: $out"
+  assert_contains "$out" "AMBIGUOUS" "an out-of-home gate is AMBIGUOUS"
+  pass "CE6: a failed or out-of-home vendor gate never pins a mirror outside the declared NM_HOME"
+}
+
 test_bad_usage() {
   local rc
   rc=0; run bogus --repo /tmp >/dev/null 2>&1 || rc=$?
@@ -292,6 +341,8 @@ test_ce2_write_failure_is_typed_and_not_pinned
 test_ce3_worktree_override_fails_closed
 test_ce4_exact_binding_no_fuzzy_multi_mutation
 test_authoritative_gate_resolution
+test_ce5_unreadable_worktree_identity_fails_closed
+test_ce6_failed_vendor_never_pins_outside_nm_home
 test_rebase_preserves_authors
 test_idempotent
 test_operator_global_untouched

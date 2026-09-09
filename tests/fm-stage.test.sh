@@ -432,7 +432,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?

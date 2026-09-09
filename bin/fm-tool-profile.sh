@@ -36,7 +36,7 @@
 # the local floor would reject.
 #
 # The default required set is what the deterministic lint and test gates
-# execute: shellcheck actionlint tasks-axi node-ts. no-mistakes is observed and
+# execute: shellcheck actionlint tasks-axi node-ts workflow-yaml. no-mistakes is observed and
 # reported but only required when --require names it.
 #
 # Usage:
@@ -53,8 +53,8 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SELF_DIR/fm-tool-profile.sh"
 ROOT="$(cd "$SELF_DIR/.." && pwd)"
 
-KNOWN_TOOLS="shellcheck actionlint tasks-axi no-mistakes node-ts"
-DEFAULT_REQUIRE="shellcheck actionlint tasks-axi node-ts"
+KNOWN_TOOLS="shellcheck actionlint tasks-axi no-mistakes node-ts workflow-yaml"
+DEFAULT_REQUIRE="shellcheck actionlint tasks-axi node-ts workflow-yaml"
 
 fm_tool_profile_usage() {
   awk '
@@ -134,6 +134,7 @@ owner_of() {  # <tool> -> the owner action to run when the tool is not QUALIFIED
     tasks-axi) printf 'install tasks-axi %s ahead of any older copy on PATH (bin/fm-bootstrap.sh install tasks-axi, or the environment'"'"'s scoped pin owner)\n' "$PIN_TASKS_AXI" ;;
     no-mistakes) printf 'install no-mistakes %s or newer ahead of any older copy on PATH (bin/fm-bootstrap.sh install no-mistakes, or the environment'"'"'s scoped pin owner)\n' "$FLOOR_NO_MISTAKES" ;;
     node-ts) printf 'put a Node build that executes .ts files without flags ahead of the current node on PATH (official Node release binaries from 23.6 do; distro node packages are often built without process.features.typescript)\n' ;;
+    workflow-yaml) printf 'provision PyYAML in the validation Python environment (or Ruby with YAML/JSON); bin/fm-workflow-yaml.sh --probe owns the capability and selected backend\n' ;;
     profile) printf 'the launcher or environment that exports NM_HOME and PATH (export both before starting the session server and re-select them after any login-shell initialization)\n' ;;
   esac
 }
@@ -263,6 +264,17 @@ observe_no_mistakes() {
   fi
 }
 
+observe_workflow_yaml() {
+  local out backend
+  BOUND="capability=workflow-yaml-to-json"
+  if out=$("$ROOT/bin/fm-workflow-yaml.sh" --probe 2>/dev/null); then
+    IFS=$'\t' read -r backend VERSION PATHV <<< "$out"
+    STATE=QUALIFIED; DETAIL="backend=$backend; parser capability passed"
+  else
+    STATE=CAPABILITY_MISSING; VERSION=; PATHV=; DETAIL="no usable workflow YAML parser"
+  fi
+}
+
 observe_node_ts() {
   local tmp out feature
   BOUND="capability=execute-ts"
@@ -304,6 +316,7 @@ observe_pinned actionlint "$PIN_ACTIONLINT" -version; record actionlint
 observe_tasks_axi; record tasks-axi
 observe_no_mistakes; record no-mistakes
 observe_node_ts; record node-ts
+observe_workflow_yaml; record workflow-yaml
 
 # Profile facts observed from this invocation's own environment.
 OBS_NM_HOME=${NM_HOME-}

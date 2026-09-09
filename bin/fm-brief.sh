@@ -324,6 +324,18 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+# Shared mutation boundary for disposable workers; a linked worktree isolates
+# checked-out files but not common Git configuration or shared services.
+IFS= read -r -d '' WORKTREE_BOUNDARY <<EOF || true
+# Worktree mutation boundary
+Use the declared task worktree for repository changes and the explicit report/status/inbox paths for fleet communication.
+Linked worktrees share common Git metadata: default or --local git-config writes can change sibling workers and the primary checkout.
+Keep shared/global Git configuration and shared services with their declared owner; use the launcher's per-task identity and report an absent or wrong binding to firstmate before committing.
+A --worktree setting is isolated only when extensions.worktreeConfig is already enabled and the target configuration path is verified; enabling that extension is itself a shared-repository change.
+For a reported malfunction or causal review, read \`$FM_ROOT/.agents/skills/diagnostic-reasoning/SKILL.md\` before claiming a cause; its reproduction and uncertainty rules govern the evidence.
+EOF
+WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -333,6 +345,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 $HERDR_SECTION
 
+$WORKTREE_BOUNDARY
+
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
@@ -341,7 +355,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Follow the worktree mutation boundary above.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -406,6 +420,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 $HERDR_SECTION
 
+$WORKTREE_BOUNDARY
+
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
@@ -417,7 +433,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Follow the worktree mutation boundary above.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`

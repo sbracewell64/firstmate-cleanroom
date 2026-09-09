@@ -136,6 +136,8 @@ qualified_bin() {
   write_tasks_axi "$1" "$PIN_TASKS_AXI"
   write_no_mistakes "$1" 1.61.0 0af0be6
   write_node "$1" 24.0.0 yes
+  printf '#!/bin/sh\nprintf "fixture-pyyaml\\n"\n' > "$1/python3"
+  chmod +x "$1/python3"
 }
 
 run_probe() {  # <bin> [args...] -> OUT, RC (stdout and stderr merged)
@@ -482,3 +484,18 @@ test_expected_profile_mismatch_fails
 test_login_shell_negative_control_reports_the_legacy_selection
 test_json_output_carries_the_same_verdict
 test_unknown_tool_and_missing_jq_are_usage_errors
+
+
+test_workflow_yaml_required_capability() {
+  local bin="$TMP_ROOT/yaml-capability"
+  qualified_bin "$bin"
+  run_probe "$bin" --require workflow-yaml
+  [ "$RC" -eq 0 ] || fail "qualified YAML capability rejected: $OUT"
+  assert_contains "$OUT" workflow-yaml 'profile observes shared YAML capability'
+  rm "$bin/python3"
+  run_probe "$bin" --require workflow-yaml
+  [ "$RC" -eq 1 ] || fail "missing YAML capability must make profile unready"
+  assert_contains "$OUT" 'ENVIRONMENT_UNREADY: workflow-yaml CAPABILITY_MISSING' 'profile fails on missing parser'
+  pass "profile and workflow checks share one YAML capability owner"
+}
+test_workflow_yaml_required_capability

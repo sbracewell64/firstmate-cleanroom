@@ -1093,19 +1093,13 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
-# Print one job's `timeout-minutes` from ci.yml parsed as YAML, with ruby (the
-# parser CI's ubuntu-latest image carries and the Herdr timeout test already
-# uses) or python3's yaml module, so a nested key cannot masquerade as the job
-# contract. Fails when neither parser is present.
+# Workflow parsing is owned by the same capability the tool profile probes.
+# Parse once before the expensive suite; unavailable tooling fails immediately.
+WORKFLOW_JSON=$("$ROOT/bin/fm-workflow-yaml.sh" "$ROOT/.github/workflows/ci.yml") \
+  || fail "workflow YAML capability or input unavailable"
+
 workflow_job_timeout_minutes() {  # <job-id>
-  local job=$1 file="$ROOT/.github/workflows/ci.yml"
-  if command -v ruby >/dev/null 2>&1; then
-    ruby -ryaml -e 'puts YAML.load_file(ARGV[0]).fetch("jobs").fetch(ARGV[1]).fetch("timeout-minutes")' "$file" "$job"
-  elif python3 -c 'import yaml' 2>/dev/null; then
-    python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["timeout-minutes"])' "$file" "$job"
-  else
-    fail "ruby or python3 with the yaml module is required to parse .github/workflows/ci.yml as YAML"
-  fi
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["jobs"][sys.argv[1]]["timeout-minutes"])' "$1" <<<"$WORKFLOW_JSON"
 }
 
 test_portable_serial_shard_hints_stay_inside_the_job_cap_budget() {
@@ -1188,23 +1182,12 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
   local json job_timeout step_timeout
-  json=$(ruby -ryaml -rjson -e '
-doc = YAML.load_file(ARGV[0])
-job = doc.fetch("jobs").fetch("tests-herdr")
-step = job.fetch("steps").find { |s|
-  s.is_a?(Hash) && s["name"] == "Run real-Herdr family (serial, required)"
-}
-raise "missing family-run step" if step.nil?
-raise "family-run step has no timeout-minutes" unless step.key?("timeout-minutes")
-puts JSON.generate(
-  "job_timeout" => job.fetch("timeout-minutes"),
-  "step_timeout" => step.fetch("timeout-minutes")
-)
-' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse tests-herdr timeouts from ci.yml"
+  json=$(python3 -c 'import json,sys
+job=json.load(sys.stdin)["jobs"]["tests-herdr"]
+step=next(s for s in job["steps"] if isinstance(s,dict) and s.get("name")=="Run real-Herdr family (serial, required)")
+print(json.dumps({"job_timeout":job["timeout-minutes"],"step_timeout":step["timeout-minutes"]}))' <<<"$WORKFLOW_JSON") \
+    || fail "could not read tests-herdr timeouts from parsed workflow"
   job_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_timeout"])' <<<"$json") \
     || fail "could not read job timeout from parsed workflow"
   step_timeout=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["step_timeout"])' <<<"$json") \
@@ -1521,46 +1504,61 @@ $lanes"
 # Every CI job that uploads a per-lane timing artifact must feed the aggregate
 # job, so the manifest above and the workflow's dependency list cannot drift.
 test_timing_aggregate_job_needs_every_lane_producer() {
-  local file="$ROOT/.github/workflows/ci.yml" out
-  if command -v ruby >/dev/null 2>&1; then
-    out=$(ruby -ryaml -e '
-doc = YAML.load_file(ARGV[0])
-jobs = doc.fetch("jobs")
-needs = Array(jobs.fetch("tests-timing-aggregate")["needs"])
-producers = jobs.select { |id, job|
-  id != "tests-timing-aggregate" && Array(job["steps"]).any? { |s|
-    s.is_a?(Hash) && s["uses"].to_s.start_with?("actions/upload-artifact") &&
-      s.dig("with", "name").to_s.start_with?("fm-test-timing-")
-  }
-}.keys
-puts "producers=#{producers.sort.join(",")}"
-puts "missing=#{(producers - needs).sort.join(",")}"
-puts "extra=#{(needs - producers).sort.join(",")}"
-' "$file") || fail "could not parse the timing aggregate wiring from ci.yml"
-  elif python3 -c 'import yaml' 2>/dev/null; then
-    out=$(python3 - "$file" <<'PYEOF'
-import sys, yaml
-jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
-needs = jobs["tests-timing-aggregate"].get("needs") or []
-producers = sorted(
-    jid for jid, job in jobs.items()
-    if jid != "tests-timing-aggregate" and any(
-        isinstance(s, dict) and str(s.get("uses", "")).startswith("actions/upload-artifact")
-        and str((s.get("with") or {}).get("name", "")).startswith("fm-test-timing-")
-        for s in job.get("steps") or []))
-print("producers=" + ",".join(producers))
-print("missing=" + ",".join(sorted(set(producers) - set(needs))))
-print("extra=" + ",".join(sorted(set(needs) - set(producers))))
-PYEOF
-) || fail "could not parse the timing aggregate wiring from ci.yml"
-  else
-    fail "ruby or python3 with the yaml module is required to parse .github/workflows/ci.yml as YAML"
-  fi
+  local out
+  out=$(python3 -c 'import json,sys
+jobs=json.load(sys.stdin)["jobs"]
+needs=jobs["tests-timing-aggregate"].get("needs") or []
+if isinstance(needs,str): needs=[needs]
+producers=sorted(jid for jid,job in jobs.items() if jid!="tests-timing-aggregate" and any(
+ isinstance(s,dict) and str(s.get("uses","")).startswith("actions/upload-artifact")
+ and str((s.get("with") or {}).get("name","")).startswith("fm-test-timing-") for s in job.get("steps",[])))
+print("producers="+",".join(producers))
+print("missing="+",".join(sorted(set(producers)-set(needs))))
+print("extra="+",".join(sorted(set(needs)-set(producers))))' <<<"$WORKFLOW_JSON") \
+    || fail "could not read timing aggregate wiring from parsed workflow"
   assert_contains "$out" "producers=tests-herdr,tests-portable-parallel-1,tests-portable-parallel-2,tests-portable-serial" "lane producers"
   printf '%s\n' "$out" | grep -qx 'missing=' || fail "a lane timing producer does not feed the aggregate: $out"
   printf '%s\n' "$out" | grep -qx 'extra=' || fail "the aggregate needs a job that uploads no lane timing: $out"
   pass "the timing aggregate job depends on exactly the jobs that upload lane timing"
 }
+
+test_serial_runner_isolates_instance_environment() {
+  local tmp fixture bound out rc
+  tmp=$(fm_test_tmproot fm-test-run-instance-env)
+  fixture="$tmp/instance.test.sh"
+  mkdir -p "$tmp/captain" "$tmp/fixture-home"
+  printf 'untouched\n' > "$tmp/captain/sentinel"
+  cat > "$fixture" <<'SH'
+#!/usr/bin/env bash
+set -u
+for key in FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND; do
+  if printenv "$key" >/dev/null 2>&1; then
+    printf 'not ok - inherited instance binding reached test: %s\n' "$key"
+    exit 1
+  fi
+done
+[ "$FM_RUNNER_KEEP" = kept ] || exit 8
+# A test's own explicit instance remains usable after the runner boundary.
+FM_HOME="$FM_RUNNER_FIXTURE_HOME" bash -c 'printf "fixture-only\n" > "$FM_HOME/receipt"' || exit 9
+printf 'ok - instance bindings isolated; explicit fixture and unrelated input preserved\n'
+SH
+  for bound in 0 10; do
+    rc=0
+    out=$(FM_HOME="$tmp/captain" FM_STATE_OVERRIDE="$tmp/captain/state" \
+      FM_DATA_OVERRIDE="$tmp/captain/data" FM_ROOT_OVERRIDE="$tmp/captain" \
+      FM_PROJECTS_OVERRIDE="$tmp/captain/projects" FM_CONFIG_OVERRIDE="$tmp/captain/config" \
+      FM_BACKEND=herdr FM_RUNNER_KEEP=kept FM_RUNNER_FIXTURE_HOME="$tmp/fixture-home" \
+      "$RUNNER" --per-script-timeout-secs "$bound" "$fixture" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || fail "serial runner leaked an instance binding (bound=$bound): $out"
+    assert_contains "$out" 'FM_TEST_SUMMARY total=1 failed=0' 'isolated runner summary'
+    [ "$(cat "$tmp/fixture-home/receipt")" = fixture-only ] || fail "fixture override did not work"
+    [ "$(cat "$tmp/captain/sentinel")" = untouched ] || fail "parent sentinel changed"
+    [ ! -e "$tmp/captain/receipt" ] || fail "test wrote through the inherited home"
+  done
+  pass "serial and timed scripts isolate instance bindings while retaining explicit fixture inputs"
+}
+
+test_serial_runner_isolates_instance_environment
 
 test_list_all_exact_suite_coverage
 test_family_selection

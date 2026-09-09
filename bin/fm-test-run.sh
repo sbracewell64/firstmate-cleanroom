@@ -272,7 +272,7 @@ family_for_basename() {
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|fm-continuation-lib.test.sh|fm-tool-profile.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-workflow-yaml.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -2217,10 +2217,14 @@ record_script_result() {
 # positive, a script that outruns it is terminated and reported as exit 124: a
 # hung script must become a bounded failure rather than an unbounded suite,
 # because an unbounded suite is what silently outruns its caller's budget.
-run_script_bounded() {  # <script> <out> <stream> <id>
+run_script_bounded() (  # <script> <out> <stream> <id>
   local script=$1 out=$2 stream=$3 id=$4
   local rc
   : "$id"
+  # Every test child has the same instance boundary, including serial runs.
+  # Tests can still bind their own fixtures explicitly; the caller is unchanged.
+  unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+    FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND
   set +e
   if [ "$stream" -eq 1 ]; then
     if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
@@ -2246,7 +2250,7 @@ run_script_bounded() {  # <script> <out> <stream> <id>
     [ "$stream" -eq 1 ] && tail -1 "$out"
   fi
   return "$rc"
-}
+)
 
 run_one_serial() {
   local script=$1
@@ -2364,8 +2368,6 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       set +e

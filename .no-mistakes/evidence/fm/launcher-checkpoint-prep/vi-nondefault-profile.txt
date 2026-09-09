@@ -1,0 +1,61 @@
+################################################################
+# EVIDENCE 1: non-default --console-profile stages + renders as active (case vi)
+################################################################
+$ fm-render-launcher.sh --console-profile codex-astra  (stage)
+fm-render-launcher: staged under /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging
+fm-render-launcher: rollback snapshot: /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/rollback/20260909T013125Z
+fm-render-launcher: qualification report: /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/qualification-report.md
+fm-render-launcher: qualification: all automated checks passed (live cutover matrix remains captain-run)
+  exit=0
+-- staged config/console-profile --
+codex-astra
+-- qualification-report.md (generated product output) --
+# Captain launcher staging + qualification
+
+- Rendered (UTC): 20260909T013125Z
+- Canonical source: bin/enter-firstmate.sh (@ /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M21WDGT3T7WP4W2PZVETNME1)
+- Runtime home: /tmp/tmp.wgY2tztjSY/home-alt
+- Adopted code root (config/code-root): /tmp/tmp.wgY2tztjSY/adopted-release
+- Current live (donor) code root: /tmp/tmp.wgY2tztjSY/old-release
+- Console profile (config/console-profile): codex-astra
+- Staging dir: /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging
+- Rollback snapshot: /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/rollback/20260909T013125Z (see MANIFEST.txt)
+
+## Automated qualification (this run)
+- PASS source: bash -n
+- PASS consumer shim: bash -n
+- PASS source: shellcheck
+- PASS consumer shim: shellcheck
+- PASS test: enter-firstmate-arm
+- PASS test: enter-firstmate-launch
+- PASS test: enter-firstmate-profile
+- PASS print-console-menu: renders the four-profile menu
+
+## Live cutover matrix (captain-run; NOT performed here)
+Each item is verified live at cutover, not by this staging run:
+- Windows .lnk -> wsl.exe -> Ubuntu -> cwd -> launcher (repoint --cd off the donor to the adopted release)
+- firstmate-cleanroom Herdr session/socket continuity
+- Claude primary composition (fable-5.1 default)
+- Codex primary composition (codex-astra / codex-sol)
+- Selected profile native auth / provider / model / permission AFTER composition
+- Zero-dollar / subscription boundary (no API/gateway fallback, no overage, no budget flag)
+- Attach/resume vs fresh-relaunch
+- Post-launch cwd / SHA / instruction+skill+hook / inbox / lease evidence
+
+## Cutover (separate, captain-authorized; this script does none of it)
+1. Ensure the adopted release exists at: /tmp/tmp.wgY2tztjSY/adopted-release
+2. Copy staged config into the live home: cp -n /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/config/* /tmp/tmp.wgY2tztjSY/home-alt/config/
+3. Replace the live launcher with the consumer shim: cp /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/enter-firstmate.sh /tmp/tmp.wgY2tztjSY/home-alt/enter-firstmate.sh
+4. Repoint the Windows shortcut(s) --cd from the donor to the adopted release.
+5. Rollback if needed: restore files from /tmp/tmp.wgY2tztjSY/home-alt/state/launcher-staging/rollback/20260909T013125Z (bytes preserved).
+
+$ enter-firstmate.sh --print-console-menu   (offline, against STAGED config)
+-- primary console profile menu (runtime-pin-adoption-gap; owner: this launcher's console_profile_* block)
+  active profile:    codex-astra
+  default profile:   fable-5.1   qualified here: fable-5.1
+  $0/subscription:   enforced at the composed launch (no API/gateway/provider override, no overage, no budget flag)
+  fable-5.1    harness=claude model=fable            posture=--dangerously-skip-permissions           QUALIFIED
+  opus-4-8     harness=claude model=claude-opus-4-8  posture=--dangerously-skip-permissions           PENDING: model claude-opus-4-8 (claude) is not yet qualified on the zero-dollar subscription plan; adoption pending
+  codex-astra  harness=codex  model=gpt-6-astra      posture=--dangerously-bypass-approvals-and-sandbox PENDING: model gpt-6-astra (codex) is not yet qualified on the zero-dollar subscription plan; adoption pending  <- active
+  codex-sol    harness=codex  model=gpt-5.6-sol      posture=--dangerously-bypass-approvals-and-sandbox PENDING: model gpt-5.6-sol (codex) is not yet qualified on the zero-dollar subscription plan; adoption pending
+  note:              worker/pipeline model profiles are separate owners (code root bin/fm-spawn.sh, config/crew-dispatch.json); this menu never switches workers

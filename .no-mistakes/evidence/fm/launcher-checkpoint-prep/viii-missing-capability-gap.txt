@@ -1,0 +1,23 @@
+################################################################
+# EVIDENCE 2: missing required menu capability => explicit GAP (case viii)
+################################################################
+
+===== POSITIVE CONTROL: COMPLETE menu (all four profiles) =====
+tool exit = 0
+-- tail of tool output --
+fm-render-launcher: qualification: all automated checks passed (live cutover matrix remains captain-run)
+-- console-menu line in qualification-report.md --
+- PASS print-console-menu: renders the four-profile menu
+
+===== GAP: INCOMPLETE menu (codex-sol missing) =====
+tool exit = 1   (nonzero = gap surfaced, never a silent PASS)
+-- tool output --
+fm-render-launcher: WARNING: could not resolve a real current live (donor) code root from /tmp/tmp.GqGzbF6XsP/incomplete/home/config/code-root or /tmp/tmp.GqGzbF6XsP/incomplete/home/enter-firstmate.sh; proceeding only because --allow-same-code-root was given
+fm-render-launcher: no current live launcher at /tmp/tmp.GqGzbF6XsP/incomplete/home/enter-firstmate.sh; rollback snapshot omits it
+fm-render-launcher: staged under /tmp/tmp.GqGzbF6XsP/incomplete/home/state/launcher-staging
+fm-render-launcher: rollback snapshot: /tmp/tmp.GqGzbF6XsP/incomplete/home/state/launcher-staging/rollback/20260909T013149Z
+fm-render-launcher: qualification report: /tmp/tmp.GqGzbF6XsP/incomplete/home/state/launcher-staging/qualification-report.md
+fm-render-launcher: QUALIFICATION FAILURES: print-console-menu: renders the four-profile menu
+-- console-menu + a still-reported unrelated check in qualification-report.md --
+- PASS source: bash -n
+- FAIL print-console-menu: renders the four-profile menu

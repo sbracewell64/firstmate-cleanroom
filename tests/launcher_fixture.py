@@ -38,6 +38,7 @@ class LauncherFixture:
         for owner in self.entry.parent.glob('*.sh'):
             if owner.name != 'fm-tool-profile.sh':
                 shutil.copy2(owner, self.code/'bin'/owner.name)
+        shutil.copytree(self.entry.parent/'backends', self.code/'bin/backends')
         shutil.copy2(self.entry.parent/'fm-console-codex.py', self.code/'bin/fm-console-codex.py')
         self.script(self.tools/'bin/pgrep', 'test -n "${FIXTURE_SERVER_PID:-}" && echo "$FIXTURE_SERVER_PID"\n')
         herdr = self.tools/'bin/herdr'
@@ -49,24 +50,35 @@ if len(args)<2 or args[-2:]!=['--session','synthetic']:
 args=args[:-2]
 if not args:sys.exit(int(os.environ.get('FAIL_ATTACH','0')))
 if args[:2]==['session','list']: out={'sessions':[{'name':'synthetic','socket_path':'/synthetic.sock'}]}
-elif args[:1]==['status']: out={'server':{'running':True}}
+elif args[:1]==['server']: sys.exit(0)
+elif args[:1]==['status']:
+    stopped=os.environ.get('START_SERVER') and not (p/'started').exists()
+    (p/'started').touch()
+    out={'server':{'running':not stopped}}
 elif args[:2]==['pane','list']:
     if os.environ.get('FAIL_LIST'):sys.exit(73)
     out=json.loads((p/'inventory').read_text())
 elif args[:2]==['workspace','create']:
     with (p/'effects').open('a') as f:f.write('create\n')
     if os.environ.get('FAIL_CREATE'):sys.exit(74)
+    (p/'workspace-env').write_text(json.dumps(args))
+    (p/'workspaces').write_text('[{"workspace_id":"w8","label":"firstmate"}]')
+    if os.environ.get('LOST_CREATE'): print('{}');sys.exit(0)
     time.sleep(.1)
     out={'result':{'workspace':{'workspace_id':'w8'},'root_pane':{'pane_id':'w8:p1'}}}
     (p/'inventory').write_text(json.dumps({'result':{'panes':[{'workspace_id':'w8','pane_id':'w8:p1'}]}}))
 elif args[:2]==['pane','run']:
     with (p/'effects').open('a') as f:f.write('run\n')
+    (p/'pane-command').write_text(args[-1])
     if os.environ.get('FAIL_RUN'):sys.exit(76)
+    if os.environ.get('UNCONFIRMED'):print('{}');sys.exit(0)
     record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);record.write_text(json.dumps(data));out={}
 elif args[:2]==['pane','process-info']:
     if os.environ.get('FAIL_CONVERGE'):sys.exit(75)
     out={'result':{'type':'pane_process_info','process_info':{'pane_id':args[-1], 'shell_pid':1,'foreground_processes':[{'name':'codex','pid':int(os.environ['FIXTURE_CONSOLE_PID'])}]}}}
-elif args[:2]==['workspace','list']:out={'result':{'workspaces':json.loads(os.environ.get('FIXTURE_WORKSPACES','[]'))}}
+    if os.environ.get('IDLE_SHELL_PID'):
+        pid=int(os.environ['IDLE_SHELL_PID']);out['result']['process_info'].update(shell_pid=pid,foreground_process_group_id=pid,foreground_processes=[{'name':'bash','argv0':'bash','pid':pid}])
+elif args[:2]==['workspace','list']:out={'result':{'workspaces':json.loads((p/'workspaces').read_text() if (p/'workspaces').exists() else os.environ.get('FIXTURE_WORKSPACES','[]'))}}
 else:print('unexpected fixture command '+repr(args),file=sys.stderr);sys.exit(93)
 print(json.dumps(out))
 ''')
@@ -86,7 +98,7 @@ print(json.dumps(out))
         path.chmod(0o755)
 
     def record(self, **changes):
-        data = dict(workspace_id='w7', pane_id='w7:p1', session='synthetic', harness='claude')
+        data = dict(workspace_id='w7', pane_id='w7:p1', session='synthetic', harness='claude', profile='codex-astra', model='gpt-6-astra')
         data.update(changes)
         (self.home/'state/captain-console.json').write_text(json.dumps(data))
 
@@ -95,7 +107,7 @@ print(json.dumps(out))
 
     def run(self, *args, **env):
         return subprocess.run([BASH, '--noprofile', '--norc', shellpath(self.entry), *args],
-                              env=dict(self.env, **env), text=True, capture_output=True, timeout=15)
+                              env=dict(self.env, **env), text=True, capture_output=True, timeout=35)
 
     def effects(self):
         p = self.root/'effects'

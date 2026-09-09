@@ -784,6 +784,8 @@ if [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = codex ] || [ "$FM_HARNESS_E
   esac
 fi
 
+export FM_CONSOLE_PROFILE
+
 # --- Console record and launch log (this home's own console identity) -------------
 CONSOLE_RECORD=$FM_HOME/state/captain-console.json
 CONSOLE_LOG=$FM_HOME/state/console-launch.log
@@ -837,7 +839,7 @@ if [ "$MODE" = console-run ]; then
   # Claim the console record FIRST, before the identity probes below take their
   # seconds, so the Desktop launch classifies this pane as `starting` (never as
   # a stranded shell) from the moment the contract is running here.
-  if console_record_update "$(jq -n --arg pid "$$" --arg t "$(date -u +%FT%TZ)" '{console_pid:($pid|tonumber), launch_stage:"starting", started_at:$t, launch_mode:"", resume_id:"", exit_rc:null}')"; then
+  if console_record_update "$(jq -n --arg pid "$$" --arg t "$(date -u +%FT%TZ)" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" '{profile:$profile, model:$model, console_pid:($pid|tonumber), launch_stage:"starting", started_at:$t, launch_mode:"", resume_id:"", exit_rc:null}')"; then
     console_log "console: starting in pane $HERDR_PANE_ID (record claimed)"
   else
     console_log "console: starting in pane $HERDR_PANE_ID but the console record names another pane or is absent; launch fields not recorded"
@@ -930,16 +932,18 @@ ensure_session() {
   done
   die "the clean-room Herdr session '$FM_HERDR_SESSION' did not come up within 15s (see $log)"
 }
+console_absence_proven() {
+  local inventory count
+  inventory=$(hs workspace list 2>/dev/null) || return 2
+  printf '%s' "$inventory" | jq -e '.result.workspaces | type == "array" and all(.[]; (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
+  count=$(printf '%s' "$inventory" | jq --arg label "$FM_CONSOLE_LABEL" '[.result.workspaces[] | select(.label==$label)] | length') || return 2
+  [ "$count" = 0 ] || return 2
+  return 1
+}
 # Return 1 only for proven absence; 2 for unreadable/conflicting ownership.
 console_record_pane() {
   local ws pane rec_harness inventory count pane_count
-  if [ ! -e "$CONSOLE_RECORD" ]; then
-    inventory=$(hs workspace list 2>/dev/null) || return 2
-    printf '%s' "$inventory" | jq -e '.result.workspaces | type == "array" and all(.[]; (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
-    count=$(printf '%s' "$inventory" | jq --arg label "$FM_CONSOLE_LABEL" '[.result.workspaces[] | select(.label==$label)] | length') || return 2
-    [ "$count" = 0 ] || return 2
-    return 1
-  fi
+  if [ ! -e "$CONSOLE_RECORD" ]; then console_absence_proven; return $?; fi
   if ! jq -e 'type == "object" and (.workspace_id | type == "string" and length > 0)
       and (.pane_id | type == "string" and length > 0)
       and (.session | type == "string" and length > 0)
@@ -954,11 +958,15 @@ console_record_pane() {
   count=$(printf '%s' "$inventory" | jq --arg p "$pane" --arg w "$ws" '[.result.panes[] | select(.pane_id==$p and .workspace_id==$w)] | length') || return 2
   pane_count=$(printf '%s' "$inventory" | jq --arg p "$pane" '[.result.panes[] | select(.pane_id==$p)] | length') || return 2
   [ "$pane_count" = "$count" ] || return 2
-  [ "$count" != 0 ] || return 1
+  [ "$count" != 0 ] || { console_absence_proven; return $?; }
   [ "$count" = 1 ] || return 2
   rec_harness=$(jq -r '.harness' "$CONSOLE_RECORD")
   if [ "$rec_harness" != "$FM_HARNESS" ]; then
     printf 'enter-firstmate: live console uses %s; supported handover required before selecting %s\n' "$rec_harness" "$FM_HARNESS" >&2
+    return 2
+  fi
+  if [ "$(console_record_field profile)" != "$FM_CONSOLE_PROFILE" ] || [ "$(console_record_field model)" != "$FM_CONSOLE_MODEL" ]; then
+    printf 'enter-firstmate: live console profile/model is unknown or differs from selected %s/%s; supported handover required\n' "$FM_CONSOLE_PROFILE" "$FM_CONSOLE_MODEL" >&2
     return 2
   fi
   printf '%s %s\n' "$ws" "$pane"
@@ -989,14 +997,14 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
     cp -p "$CONSOLE_RECORD" "$FM_HOME/state/console-history/$(date -u +%Y%m%dT%H%M%S)-$$.json" || return 2
   fi
   out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus \
-        --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" 2>&1) \
+        --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE" 2>&1) \
     || die "herdr workspace create failed: $out"
   ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
   pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
   [ -n "$ws" ] && [ -n "$pane" ] || die "herdr workspace create returned no workspace/pane id: $out"
   mkdir -p "$FM_HOME/state"
-  jq -n --arg s "$FM_HERDR_SESSION" --arg sock "$(session_socket)" --arg w "$ws" --arg p "$pane" --arg t "$(date -u +%FT%TZ)" --arg h "$FM_HARNESS" \
-    '{record:"fm-cleanroom-captain-console/v1", session:$s, socket:$sock, workspace_id:$w, pane_id:$p, label:"firstmate", harness:$h, created_at:$t, transport:"herdr-session"}' > "$CONSOLE_RECORD"
+  jq -n --arg s "$FM_HERDR_SESSION" --arg sock "$(session_socket)" --arg w "$ws" --arg p "$pane" --arg t "$(date -u +%FT%TZ)" --arg h "$FM_HARNESS" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" \
+    '{record:"fm-cleanroom-captain-console/v1", session:$s, socket:$sock, workspace_id:$w, pane_id:$p, label:"firstmate", harness:$h, profile:$profile, model:$model, created_at:$t, transport:"herdr-session"}' > "$CONSOLE_RECORD"
   # The console is the harness itself, started by this same script in its own
   # pane; no worker is spawned to build the UI (workers remain a separate
   # FirstMate action). `pane run` types the command into the pane's shell.
@@ -1403,7 +1411,7 @@ console_restart_in_pane() {
     age=$(( $(date +%s) - $(cat "$marker" 2>/dev/null || echo 0) ))
     [ "$age" -ge 120 ] || die "the console was already restarted in pane $pane ${age}s ago and is not canonical yet ($why); refusing a second restart within two minutes (no retry loop) - inspect with $FM_HOME/enter-firstmate.sh --doctor"
   fi
-  cmd="exec '$FM_HOME/enter-firstmate.sh' --console"
+  printf -v cmd "exec env FM_CONSOLE_PROFILE=%q FM_HARNESS=%q %q --console" "$FM_CONSOLE_PROFILE" "$FM_HARNESS" "$FM_HOME/enter-firstmate.sh"
   if [ -n "$sid" ]; then console_resume_id_valid "$sid" || die "refusing to pass a malformed resume id to --console: $sid"; cmd="$cmd --resume '$sid'"; fi
   old_cpid=$(console_record_field console_pid)
   date +%s > "$marker"
@@ -1421,6 +1429,7 @@ console_restart_in_pane() {
   done
   printf 'enter-firstmate: WARNING: the console contract was typed into pane %s (%s) but did not claim the console record within 20s; watch that pane\n' "$pane" "$why" >&2
   printf '%s %s restart-unconfirmed\n' "$ws" "$pane"
+  return 1
 }
 # console_converge <ws> <pane>: the recorded pane exists; decide from what is
 # OBSERVED in it whether the canonical console is live, and converge if not.
@@ -1451,7 +1460,7 @@ console_converge() {
       return 0 ;;
     restart)
       console_restart_in_pane "$ws" "$pane" "" "pane was stranded at an idle shell; the previous console pid $(console_record_field console_pid) is gone"
-      return 0 ;;
+      return $? ;;
     converge)
       # Herdr's native resume-on-restore put a harness this launcher did not start
       # into the console pane (only possible right after THIS launch started the
@@ -1469,7 +1478,7 @@ console_converge() {
       done
       [ "$(console_pane_state "$pane")" = shell ] || die "pane $pane did not return to an idle shell within ${CONSOLE_EXIT_WAIT}s after the exit command (submit verdict: $verdict); leaving it alone - inspect it and click the launcher again"
       console_restart_in_pane "$ws" "$pane" "$sid" "Herdr's native resume of session $sid was exited (verdict $verdict)"
-      return 0 ;;
+      return $? ;;
     *)
       case "$cls" in
         foreign-harness)
@@ -1587,12 +1596,16 @@ if [ "$MODE" = converge-owner ]; then
   console_log "converge-owner: waiting up to ${CONSOLE_ATTACH_WAIT}s for pane $2 to materialize (Herdr spawns restored panes on TUI attach)"
   deadline=$(( $(date +%s) + CONSOLE_ATTACH_WAIT ))
   until console_pane_process "$2" >/dev/null 2>&1; do
-    if [ "$(date +%s)" -ge "$deadline" ]; then console_log "converge-owner: pane $2 never materialized within ${CONSOLE_ATTACH_WAIT}s; nothing done"; exit 0; fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then console_log "converge-owner: pane $2 never materialized within ${CONSOLE_ATTACH_WAIT}s; convergence incomplete"; printf 'enter-firstmate: console convergence timed out\n' >&2; exit 1; fi
     sleep 1
   done
   console_log "converge-owner: pane $2 materialized; settling and classifying"
+  exec 9>"$FM_HOME/state/console-launch.lock" || exit 2
+  flock -w 10 9 || exit 2
+  rec=$(console_record_pane) || exit $?
+  [ "$rec" = "$1 $2" ] || exit 2
   console_converge "$1" "$2"
-  exit 0
+  exit $?
 fi
 # --- exchange/current freshness owner (control issue #3, exchange projection maintenance gap) ---
 # The captain-facing projection E:\FirstMate-Cleanroom\exchange\current\ is code-owned by
@@ -1861,17 +1874,36 @@ console_location=$(ensure_console_workspace) || exit $?
 read -r ws pane how <<< "$console_location"
 [ -n "$ws" ] && [ -n "$pane" ] && [ -n "$how" ] || die "console workspace result is incomplete"
 printf 'enter-firstmate: console workspace %s pane %s (%s) in session %s at %s\n' "$ws" "$pane" "$how" "$FM_HERDR_SESSION" "$sock" >&2
+converge_pid=''
 if [ "$how" = deferred ]; then
   # This launch started the server: Herdr will spawn the restored console pane
   # only once the TUI below attaches, so the convergence (restart a stranded
   # shell, or exit a natively resumed harness and relaunch it canonically) is
-  # owned by one detached process that acts after that attach.
-  ( setsid "$COLD_ARM_SELF" --converge-owner "$ws" "$pane" </dev/null >>"$CONSOLE_LOG" 2>&1 & )
+  # owned by one child process that acts after that attach.
+  "$COLD_ARM_SELF" --converge-owner "$ws" "$pane" </dev/null &
+  converge_pid=$!
   console_log "launch: server started by this launch; convergence of pane $pane deferred to a post-attach owner"
-  printf 'enter-firstmate: the server was started by this launch, so Herdr restores the console pane only when the TUI attaches; a detached owner converges it through the console contract right after (log: %s)\n' "$CONSOLE_LOG" >&2
+  printf 'enter-firstmate: the server was started by this launch, so Herdr restores the console pane only when the TUI attaches; a supervised owner converges it through the console contract right after (log: %s)\n' "$CONSOLE_LOG" >&2
 fi
 # Evidence capture only: FM_ENTRY_NO_ATTACH=1 stops here, after the session and
 # console exist, so a non-interactive run can prove the placement without a tty.
-[ -z "${FM_ENTRY_NO_ATTACH:-}" ] || { printf 'enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI\n' >&2; exit 0; }
+[ -z "${FM_ENTRY_NO_ATTACH:-}" ] || {
+  printf 'enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI\n' >&2
+  [ -z "$converge_pid" ] || wait "$converge_pid" || exit $?
+  exit 0
+}
 # Retain this shell so the failure-display owner also sees attach failures.
-herdr --session "$FM_HERDR_SESSION"
+if [ -n "$converge_pid" ]; then
+  herdr --session "$FM_HERDR_SESSION" <&0 &
+  attach_pid=$!
+  converge_rc=0
+  wait "$converge_pid" || converge_rc=$?
+  if [ "$converge_rc" != 0 ]; then
+    kill "$attach_pid" 2>/dev/null || true
+    wait "$attach_pid" 2>/dev/null || true
+    exit "$converge_rc"
+  fi
+  wait "$attach_pid"
+else
+  herdr --session "$FM_HERDR_SESSION"
+fi

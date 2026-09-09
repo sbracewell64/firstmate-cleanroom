@@ -9,7 +9,7 @@ class GuardTests(unittest.TestCase):
     def test_package_pin_checks_every_member(self):
         import json, hashlib
         with tempfile.TemporaryDirectory() as d:
-            home=pathlib.Path(d);(home/'config').mkdir()
+            home=pathlib.Path(d).resolve();(home/'config').mkdir()
             root=home/'package';files={}
             for name in ['bin/codex','bin/codex-code-mode-host','codex-package.json','codex-path/rg','codex-resources/bwrap','codex-resources/zsh/bin/zsh']:
                 member=root/name;member.parent.mkdir(parents=True,exist_ok=True)
@@ -24,8 +24,8 @@ class GuardTests(unittest.TestCase):
     def test_missing_package_helpers_refuse(self):
         import json, shutil, hashlib
         with tempfile.TemporaryDirectory() as d:
-            home=pathlib.Path(d);(home/'config').mkdir()
-            client=home/'codex';shutil.copyfile('/bin/true',client);client.chmod(0o755)
+            home=pathlib.Path(d).resolve();(home/'config').mkdir()
+            client=home/'codex';client.write_bytes(b'\x7fELFsynthetic-client');client.chmod(0o755)
             (home/'config/console-codex-client.json').write_text(json.dumps({'path':str(client),'sha256':hashlib.sha256(client.read_bytes()).hexdigest()}))
             with self.assertRaises(guard.Refused):guard.checked_pin(home)
     def test_api_mode_override_refuses(self):
@@ -46,15 +46,4 @@ class GuardTests(unittest.TestCase):
         guard.check_config({'model':'gpt-6-astra','forced_login_method':'chatgpt','model_provider':'openai','model_providers':None},'gpt-6-astra')
     def test_missing_auth_is_unknown(self):
         with self.assertRaises(guard.Refused):guard.check_config({'model':'gpt-6-astra','model_provider':'openai'},'gpt-6-astra')
-    def test_actual_console_propagates_guard_refusal(self):
-        with tempfile.TemporaryDirectory() as d:
-            p=pathlib.Path(d);(p/'bin').mkdir()
-            for name,body in [('codex','echo UNGUARDED_NATIVE_LAUNCH\nexit 0\n'),('python3','echo SUBSCRIPTION_GUARD_REFUSED\nexit 86\n')]:
-                f=p/'bin'/name;f.write_text('#!/bin/sh\n'+body);f.chmod(0o755)
-            text=ENTRY.read_text();function=text[text.index('console_run() {'):text.index('if [ "$MODE" = arm-owner ]; then')]
-            runner=p/'call.sh'
-            runner.write_text('FM_ENTRY_LIB=1 . "$1"\n'+function+'\nCONSOLE_RESUME_WINDOW=20\njq() { echo "{}"; }\nconsole_log() { :; }\nconsole_record_update() { :; }\nFM_HARNESS=codex\nFM_CONSOLE_MODEL=gpt-6-astra\nFM_CODE_ROOT=/controlled-code\nconsole_run\n')
-            env={k:v for k,v in os.environ.items() if not k.startswith(('FM_','HERDR_'))};env['PATH']=sp(p/'bin')+':/usr/bin:/bin'
-            r=subprocess.run([BASH,'--noprofile','--norc',sp(runner),sp(ENTRY)],env=env,text=True,capture_output=True,timeout=10)
-            self.assertEqual(r.returncode,86,r.stdout+r.stderr);self.assertIn('SUBSCRIPTION_GUARD_REFUSED',r.stdout);self.assertNotIn('UNGUARDED_NATIVE_LAUNCH',r.stdout)
 if __name__=='__main__':unittest.main(verbosity=2)

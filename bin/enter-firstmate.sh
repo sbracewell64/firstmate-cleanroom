@@ -285,6 +285,26 @@ esac
 
 die() { printf 'enter-firstmate: %s\n' "$*" >&2; exit 1; }
 
+# Keep Desktop and pane failures visible until the operator acknowledges them.
+# Only the entry shell holds the terminal; command substitutions, background
+# owners, noninteractive callers and successful exits retain ordinary semantics.
+entry_failure_hold() {
+  local rc=$1
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ "$$:$BASH_SUBSHELL" = "$ENTRY_SHELL" ] && [ -t 0 ] && [ -t 2 ]; then
+    printf '\nFirstMate launch failed (status %s). Press Enter to close... ' "$rc" >&2
+    read -r _ || true
+  fi
+  exit "$rc"
+}
+if [ -z "${FM_ENTRY_LIB:-}" ]; then
+  case "$MODE" in
+    console-launch|console-run)
+      ENTRY_SHELL=$$:$BASH_SUBSHELL
+      trap 'entry_failure_hold "$?"' EXIT ;;
+  esac
+fi
+
 # --- tool profile, inline fallback (internal; owner is upstream bin/fm-tool-profile.sh) ---
 # Runs in the ASKING shell and reports that shell's own NM_HOME and PATH as
 # found at entry, before this file re-exports them below, so a login shell
@@ -869,7 +889,7 @@ cd "$FM_CODE_ROOT"
 # --- Herdr session helpers -------------------------------------------------------
 hs() { herdr "$@" --session "$FM_HERDR_SESSION"; }   # every CLI call names the session explicitly (HERDR_SESSION alone is not reliably honored)
 session_running() { herdr status --json --session "$FM_HERDR_SESSION" 2>/dev/null | jq -e '.server.running == true' >/dev/null 2>&1; }
-session_socket() { herdr session list --json 2>/dev/null | jq -r --arg s "$FM_HERDR_SESSION" '[.sessions[]? | select(.name==$s) | .socket_path][0] // empty' 2>/dev/null; }
+session_socket() { hs session list --json 2>/dev/null | jq -r --arg s "$FM_HERDR_SESSION" '[.sessions[]? | select(.name==$s) | .socket_path][0] // empty' 2>/dev/null; }
 console_workspaces() {  # workspace ids carrying the console label, one per line
   hs workspace list 2>/dev/null | jq -r --arg l "$FM_CONSOLE_LABEL" '.result.workspaces[]? | select(.label==$l) | .workspace_id' 2>/dev/null
 }
@@ -887,7 +907,7 @@ session_server_pid() {  # pid of the running server for THIS session, identified
 }
 assert_session_env() {  # the live server must carry the clean-room NM_HOME and tools-first PATH
   local pid srv_nm srv_path0
-  pid=$(session_server_pid) || { printf 'enter-firstmate: WARNING: could not identify the running server process for session %s; its environment is unverified\n' "$FM_HERDR_SESSION" >&2; return 0; }
+  pid=$(session_server_pid) || die "could not identify the running server owner for session $FM_HERDR_SESSION; its environment is unverified; coordinator must restore the named session ownership before launch"
   srv_nm=$(session_env_field "$pid" NM_HOME)
   srv_path0=$(session_env_field "$pid" PATH); srv_path0=${srv_path0%%:*}
   [ "$srv_nm" = "$NM_HOME" ] && [ "$srv_path0" = "$FM_TOOLS" ] && return 0
@@ -912,8 +932,14 @@ ensure_session() {
 }
 # Return 1 only for proven absence; 2 for unreadable/conflicting ownership.
 console_record_pane() {
-  local ws pane rec_harness inventory count
-  [ -e "$CONSOLE_RECORD" ] || return 1
+  local ws pane rec_harness inventory count pane_count
+  if [ ! -e "$CONSOLE_RECORD" ]; then
+    inventory=$(hs workspace list 2>/dev/null) || return 2
+    printf '%s' "$inventory" | jq -e '.result.workspaces | type == "array" and all(.[]; (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
+    count=$(printf '%s' "$inventory" | jq --arg label "$FM_CONSOLE_LABEL" '[.result.workspaces[] | select(.label==$label)] | length') || return 2
+    [ "$count" = 0 ] || return 2
+    return 1
+  fi
   if ! jq -e 'type == "object" and (.workspace_id | type == "string" and length > 0)
       and (.pane_id | type == "string" and length > 0)
       and (.session | type == "string" and length > 0)
@@ -926,6 +952,8 @@ console_record_pane() {
   inventory=$(hs pane list 2>/dev/null) || return 2
   printf '%s' "$inventory" | jq -e '.result.panes | type == "array" and all(.[]; (.pane_id | type == "string" and length > 0) and (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
   count=$(printf '%s' "$inventory" | jq --arg p "$pane" --arg w "$ws" '[.result.panes[] | select(.pane_id==$p and .workspace_id==$w)] | length') || return 2
+  pane_count=$(printf '%s' "$inventory" | jq --arg p "$pane" '[.result.panes[] | select(.pane_id==$p)] | length') || return 2
+  [ "$pane_count" = "$count" ] || return 2
   [ "$count" != 0 ] || return 1
   [ "$count" = 1 ] || return 2
   rec_harness=$(jq -r '.harness' "$CONSOLE_RECORD")
@@ -1452,8 +1480,8 @@ console_converge() {
         *)
           printf 'enter-firstmate: WARNING: console pane %s foreground is neither the canonical console nor an idle shell (%s); it is left untouched - inspect it\n' "$pane" "$cls" >&2 ;;
       esac
-      printf '%s %s existing-%s\n' "$ws" "$pane" "$cls"
-      return 0 ;;
+      printf 'enter-firstmate: console convergence is incomplete (%s); refusing to report a successful launch\n' "$cls" >&2
+      return 1 ;;
   esac
 }
 console_exit_command() {  # the harness's own exit command, as bin/fm-control-lib.sh's fm_control_exit_command
@@ -1464,7 +1492,7 @@ console_pane_recorded_session() { console_pane_recorded_session_of "$HERDR_PANE_
 # arm. Owns the resume decision, the argv, the record, and the observed
 # stale-resume fallback. Never returns: it exits with the harness's status.
 console_run() {
-  local resume='' origin='' verdict argv=() fresh=() started rc elapsed outcome policy_state style off
+  local resume='' origin='' verdict argv=() fresh=() started rc elapsed outcome policy_state style off arg
   local -a passthrough=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1491,8 +1519,12 @@ console_run() {
   fi
   policy_state=$(permission_policy_state "$FM_HARNESS")
   style=${HARNESS_STYLE_SETTINGS:-}
-  mapfile -t fresh < <(console_harness_argv "$FM_HARNESS" "$FM_CONSOLE_MODEL" "$style" "" "${passthrough[@]}")
-  if [ -n "$resume" ]; then mapfile -t argv < <(console_harness_argv "$FM_HARNESS" "$FM_CONSOLE_MODEL" "$style" "$resume" "${passthrough[@]}"); else argv=("${fresh[@]}"); fi
+  while IFS= read -r arg; do fresh+=("$arg"); done < <(console_harness_argv "$FM_HARNESS" "$FM_CONSOLE_MODEL" "$style" "" "${passthrough[@]}")
+  if [ -n "$resume" ]; then
+    while IFS= read -r arg; do argv+=("$arg"); done < <(console_harness_argv "$FM_HARNESS" "$FM_CONSOLE_MODEL" "$style" "$resume" "${passthrough[@]}")
+  else
+    argv=("${fresh[@]}")
+  fi
   # Launch-byte watched red (control #7): a profile console can never start
   # without the captain-authorized posture, whatever composed the argv.
   case "$(permission_policy_state "$FM_HARNESS")" in
@@ -1841,4 +1873,5 @@ fi
 # Evidence capture only: FM_ENTRY_NO_ATTACH=1 stops here, after the session and
 # console exist, so a non-interactive run can prove the placement without a tty.
 [ -z "${FM_ENTRY_NO_ATTACH:-}" ] || { printf 'enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI\n' >&2; exit 0; }
-exec herdr --session "$FM_HERDR_SESSION"
+# Retain this shell so the failure-display owner also sees attach failures.
+herdr --session "$FM_HERDR_SESSION"

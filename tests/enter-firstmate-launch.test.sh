@@ -159,3 +159,5 @@ echo "all console launch and permission policy tests passed"
 python3 "$HERE/test_startup_selection.py" "$LAUNCHER" || fail "startup selection regression"
 python3 "$HERE/test_console_subscription.py" "$CODE_ROOT/bin/fm-console-codex.py" "$LAUNCHER" || fail "subscription contract regression"
 python3 "$HERE/test_console_lifecycle.py" "$LAUNCHER" || fail "console lifecycle regression"
+
+python3 "$HERE/test_launcher_terminal.py" "$LAUNCHER" || fail "terminal failure visibility"

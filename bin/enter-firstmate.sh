@@ -722,16 +722,34 @@ case "$FM_HERDR_SESSION" in
   *[!A-Za-z0-9._-]*) die "config/herdr-session contains characters Herdr does not accept in a session name: $FM_HERDR_SESSION" ;;
 esac
 
+# --- Tool PATH --------------------------------------------------------------
+# ORDER IS LOAD-BEARING and asserted below. The private bin dir is added FIRST
+# (a non-login WSL shell, which is what the Desktop shortcut opens, does not
+# carry it), and the clean-room tools dir is prepended LAST so it is
+# unconditionally PATH[0]. Measured 2026-09-02 through wsl.exe: the inverted
+# order resolved `no-mistakes` to the host-wide v1.40.3 instead of the
+# clean-room's pinned v1.61.0.
+[ ! -d "$HOME/.local/bin" ] || export PATH="$HOME/.local/bin:$PATH"
+[ -d "$FM_TOOLS" ] || die "clean-room tools surface missing: $FM_TOOLS"
+export PATH="$FM_TOOLS:$PATH"
+case "$PATH" in
+  "$FM_TOOLS":*) ;;
+  *) die "clean-room tools are not first on PATH (PATH starts '${PATH%%:*}'); refusing rather than running the host-wide tools" ;;
+esac
+
 # --- Primary console profile resolution (runtime) ------------------------------
 # The four-profile menu (console_profile_* above) drives the primary console's
-# harness + model. An explicit FM_HARNESS override (evidence runs) skips it. The
+# harness + model. A non-native FM_HARNESS override (evidence runs) skips it. The
 # selected profile is refused, never silently swapped, when it is not QUALIFIED;
 # --doctor shows every profile's gate and starts nothing.
 FM_CONSOLE_PROFILE=${FM_CONSOLE_PROFILE:-$(read_scalar console-profile || true)}
 [ -n "$FM_CONSOLE_PROFILE" ] || FM_CONSOLE_PROFILE=$(console_profile_default)
-if [ -z "$FM_HARNESS_ENV" ]; then
+# A Herdr pane inherits the selected native harness from the outer launcher.
+# Re-resolve its model and gate here; that inherited value is not an evidence override.
+if [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = codex ] || [ "$FM_HARNESS_ENV" = claude ]; then
   h=$(console_profile_harness "$FM_CONSOLE_PROFILE")
   [ -n "$h" ] || die "config/console-profile names an unknown profile '$FM_CONSOLE_PROFILE'; known profiles: $(console_profile_menu)"
+  [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = "$h" ] || die "native harness $FM_HARNESS_ENV conflicts with selected profile $FM_CONSOLE_PROFILE; select the matching profile explicitly"
   FM_HARNESS=$h
   FM_CONSOLE_MODEL=$(console_profile_model "$FM_CONSOLE_PROFILE")
   # Refuse a non-qualified profile rather than starting a console under it or
@@ -805,21 +823,6 @@ if [ "$MODE" = console-run ]; then
     console_log "console: starting in pane $HERDR_PANE_ID but the console record names another pane or is absent; launch fields not recorded"
   fi
 fi
-
-# --- Tool PATH --------------------------------------------------------------
-# ORDER IS LOAD-BEARING and asserted below. The private bin dir is added FIRST
-# (a non-login WSL shell, which is what the Desktop shortcut opens, does not
-# carry it), and the clean-room tools dir is prepended LAST so it is
-# unconditionally PATH[0]. Measured 2026-09-02 through wsl.exe: the inverted
-# order resolved `no-mistakes` to the host-wide v1.40.3 instead of the
-# clean-room's pinned v1.61.0.
-[ -d "$HOME/.local/bin" ] && case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$PATH:$HOME/.local/bin" ;; esac
-[ -d "$FM_TOOLS" ] || die "clean-room tools surface missing: $FM_TOOLS"
-export PATH="$FM_TOOLS:$PATH"
-case "$PATH" in
-  "$FM_TOOLS":*) ;;
-  *) die "clean-room tools are not first on PATH (PATH starts '${PATH%%:*}'); refusing rather than running the host-wide tools" ;;
-esac
 
 # --- no-mistakes isolation -----------------------------------------------------
 export NM_HOME="$FM_HOME/no-mistakes"
@@ -907,32 +910,55 @@ ensure_session() {
   done
   die "the clean-room Herdr session '$FM_HERDR_SESSION' did not come up within 15s (see $log)"
 }
-console_record_pane() {  # prints "<ws> <pane>" from the record if that pane still exists in this session
-  local ws pane rec_harness
-  [ -f "$CONSOLE_RECORD" ] || return 1
-  ws=$(jq -r '.workspace_id // empty' "$CONSOLE_RECORD" 2>/dev/null); pane=$(jq -r '.pane_id // empty' "$CONSOLE_RECORD" 2>/dev/null)
-  [ -n "$ws" ] && [ -n "$pane" ] || return 1
-  [ "$(jq -r '.session // empty' "$CONSOLE_RECORD")" = "$FM_HERDR_SESSION" ] || return 1
-  # A console recorded for another harness (an evidence run with FM_HARNESS=bash)
-  # is never silently attached as the captain's console.
-  rec_harness=$(jq -r '.harness // empty' "$CONSOLE_RECORD" 2>/dev/null)
-  if [ -n "$rec_harness" ] && [ "$rec_harness" != "$FM_HARNESS" ]; then
-    die "the recorded console (workspace $ws pane $pane) runs harness '$rec_harness', not '$FM_HARNESS'; close that workspace (herdr workspace close $ws --session $FM_HERDR_SESSION) and remove $CONSOLE_RECORD, then launch again"
+# Return 1 only for proven absence; 2 for unreadable/conflicting ownership.
+console_record_pane() {
+  local ws pane rec_harness inventory count
+  [ -e "$CONSOLE_RECORD" ] || return 1
+  if ! jq -e 'type == "object" and (.workspace_id | type == "string" and length > 0)
+      and (.pane_id | type == "string" and length > 0)
+      and (.session | type == "string" and length > 0)
+      and (.harness | type == "string" and length > 0)' "$CONSOLE_RECORD" >/dev/null 2>&1; then
+    printf 'enter-firstmate: console ownership record is unreadable or malformed\n' >&2
+    return 2
   fi
-  hs pane list 2>/dev/null | jq -e --arg p "$pane" --arg w "$ws" '[.result.panes[]? | select(.pane_id==$p and .workspace_id==$w)] | length == 1' >/dev/null 2>&1 || return 1
+  ws=$(jq -r '.workspace_id' "$CONSOLE_RECORD"); pane=$(jq -r '.pane_id' "$CONSOLE_RECORD")
+  [ "$(jq -r '.session' "$CONSOLE_RECORD")" = "$FM_HERDR_SESSION" ] || return 2
+  inventory=$(hs pane list 2>/dev/null) || return 2
+  printf '%s' "$inventory" | jq -e '.result.panes | type == "array" and all(.[]; (.pane_id | type == "string" and length > 0) and (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
+  count=$(printf '%s' "$inventory" | jq --arg p "$pane" --arg w "$ws" '[.result.panes[] | select(.pane_id==$p and .workspace_id==$w)] | length') || return 2
+  [ "$count" != 0 ] || return 1
+  [ "$count" = 1 ] || return 2
+  rec_harness=$(jq -r '.harness' "$CONSOLE_RECORD")
+  if [ "$rec_harness" != "$FM_HARNESS" ]; then
+    printf 'enter-firstmate: live console uses %s; supported handover required before selecting %s\n' "$rec_harness" "$FM_HARNESS" >&2
+    return 2
+  fi
   printf '%s %s\n' "$ws" "$pane"
 }
-ensure_console_workspace() {  # prints "<workspace-id> <pane-id> created|existing"
-  local rec out ws pane others
+ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existing"
+  local rec out ws pane others record_rc
+  mkdir -p "$FM_HOME/state" || return 2
+  command -v flock >/dev/null 2>&1 || { printf 'enter-firstmate: flock required for console ownership\n' >&2; return 2; }
+  exec 9>"$FM_HOME/state/console-launch.lock" || return 2
+  flock -w 10 9 || { printf 'enter-firstmate: another launcher owns console creation\n' >&2; return 2; }
+  trap 'flock -u 9' EXIT
   # The console is identified by THIS HOME'S OWN RECORD, never by the label alone:
   # the upstream adapter also creates a "firstmate"-labeled workspace for a
   # worker spawned from outside Herdr, and a label cannot tell the two apart.
   if rec=$(console_record_pane); then
     case "$(console_converge_plan "$SESSION_STARTED_NOW")" in
       deferred) printf '%s deferred\n' "$rec" ;;   # the launch path starts the post-attach owner
-      *) console_converge "${rec% *}" "${rec#* }" ;;
+      *) console_converge "${rec% *}" "${rec#* }" || return $? ;;
     esac
     return 0
+  else
+    record_rc=$?
+    [ "$record_rc" = 1 ] || { printf 'enter-firstmate: console ownership unavailable or conflicting; refusing another primary\n' >&2; return "$record_rc"; }
+  fi
+  # Retain a stale record as handover evidence before replacing its identity.
+  if [ -f "$CONSOLE_RECORD" ]; then
+    mkdir -p "$FM_HOME/state/console-history" || return 2
+    cp -p "$CONSOLE_RECORD" "$FM_HOME/state/console-history/$(date -u +%Y%m%dT%H%M%S)-$$.json" || return 2
   fi
   out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus \
         --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" 2>&1) \
@@ -951,7 +977,7 @@ ensure_console_workspace() {  # prints "<workspace-id> <pane-id> created|existin
   others=$(console_workspaces | grep -vx "$ws" | tr '\n' ' ' || true)
   [ -z "$others" ] || printf 'enter-firstmate: note: other workspace(s) also carry the label %s (%s); spawns from OUTSIDE this session are ambiguous until they close, spawns from the console are not\n' "$FM_CONSOLE_LABEL" "$others" >&2
   printf '%s %s created\n' "$ws" "$pane"
-}
+)
 
 
 # --- Cold-start supervision arm (control issue #8; see the header) --------------
@@ -1490,7 +1516,11 @@ console_run() {
   console_log "launch harness=$FM_HARNESS mode=$( [ -n "$resume" ] && echo resume || echo fresh ) resume=${resume:-none} origin=${origin:-none} permission=$policy_state argv=${argv[*]}"
   started=$(date +%s)
   set +e
-  "$FM_HARNESS" "${argv[@]}"; rc=$?
+  if [ "$FM_HARNESS" = codex ]; then
+    python3 "$FM_CODE_ROOT/bin/fm-console-codex.py" "${argv[@]}"; rc=$?
+  else
+    "$FM_HARNESS" "${argv[@]}"; rc=$?
+  fi
   set -e
   elapsed=$(( $(date +%s) - started ))
   outcome=$(console_launch_outcome "$( [ -n "$resume" ] && echo 1 || echo 0 )" "$rc" "$elapsed" "$CONSOLE_RESUME_WINDOW")
@@ -1795,7 +1825,9 @@ assert_session_env
 sock=$(session_socket)
 [ -n "$sock" ] || die "the clean-room session '$FM_HERDR_SESSION' reports no socket"
 case "$sock" in "$HOME/.config/herdr/herdr.sock") die "the clean-room session resolved to the DEFAULT server socket; refusing to attach to the legacy session" ;; esac
-read -r ws pane how <<< "$(ensure_console_workspace)"
+console_location=$(ensure_console_workspace) || exit $?
+read -r ws pane how <<< "$console_location"
+[ -n "$ws" ] && [ -n "$pane" ] && [ -n "$how" ] || die "console workspace result is incomplete"
 printf 'enter-firstmate: console workspace %s pane %s (%s) in session %s at %s\n' "$ws" "$pane" "$how" "$FM_HERDR_SESSION" "$sock" >&2
 if [ "$how" = deferred ]; then
   # This launch started the server: Herdr will spawn the restored console pane

@@ -32,6 +32,7 @@
 #   --console-profile <name>  config/console-profile            (default: fable-5.1)
 #   --staging <dir>           output dir (default: <fm-home>/state/launcher-staging)
 #   --lnk <file>              a Windows .lnk to snapshot for rollback (repeatable; bytes only)
+#   --require-complete-config refuse activation staging with missing isolation inputs
 #   --allow-same-code-root    bypass the donor-guard (evidence/testing only)
 set -euo pipefail
 
@@ -51,6 +52,7 @@ EXCHANGE_OWNER=''
 CONSOLE_PROFILE=fable-5.1
 STAGING=''
 ALLOW_SAME=0
+REQUIRE_COMPLETE=0
 LNKS=()
 
 while [ $# -gt 0 ]; do
@@ -64,6 +66,7 @@ while [ $# -gt 0 ]; do
     --console-profile) CONSOLE_PROFILE=${2:?}; shift 2 ;;
     --staging) STAGING=${2:?}; shift 2 ;;
     --lnk) LNKS+=("${2:?--lnk needs a file}"); shift 2 ;;
+    --require-complete-config) REQUIRE_COMPLETE=1; shift ;;
     --allow-same-code-root) ALLOW_SAME=1; shift ;;
     -h|--help) sed -n '1,40p' "$SELF"; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -159,12 +162,28 @@ for lnk in "${LNKS[@]:-}"; do
 done
 
 # --- 2. staged config scalars + the consumer shim (never the live path) ---------
+# Carry the home's existing configuration into the staged home. Explicit
+# renderer selections below replace their corresponding scalar values.
+if [ -d "$FM_HOME_ARG/config" ]; then
+  cp -a "$FM_HOME_ARG/config/." "$STAGE_CONFIG/"
+fi
 printf '%s\n' "$CODE_ROOT" > "$STAGE_CONFIG/code-root"
 [ -z "$TOOLS_ROOT" ]        || printf '%s\n' "$TOOLS_ROOT"        > "$STAGE_CONFIG/tools-root"
 [ -z "$CONTROL_RESOLVER" ]  || printf '%s\n' "$CONTROL_RESOLVER"  > "$STAGE_CONFIG/control-resolver"
 [ -z "$RETIRED_HOME" ]      || printf '%s\n' "$RETIRED_HOME"      > "$STAGE_CONFIG/retired-home"
 [ -z "$EXCHANGE_OWNER" ]    || printf '%s\n' "$EXCHANGE_OWNER"    > "$STAGE_CONFIG/exchange-owner"
 printf '%s\n' "$CONSOLE_PROFILE" > "$STAGE_CONFIG/console-profile"
+
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  for key in code-root tools-root backend herdr-session; do
+    [ -s "$STAGE_CONFIG/$key" ] || die "incomplete staged configuration: $key is required"
+  done
+  [ "$(cat "$STAGE_CONFIG/backend")" = herdr ] || die "incomplete staged configuration: backend must be herdr"
+  session=$(cat "$STAGE_CONFIG/herdr-session")
+  case "$session" in default|''|*[!A-Za-z0-9._-]*) die "incomplete staged configuration: a named non-default Herdr session is required" ;; esac
+  [ -d "$(cat "$STAGE_CONFIG/tools-root")/bin" ] || die "incomplete staged configuration: tools surface is missing"
+  [ -x "$CODE_ROOT/bin/enter-firstmate.sh" ] || die "incomplete staged configuration: adopted launcher is missing"
+fi
 
 cat > "$STAGE_CONSUMER" <<SHIM
 #!/usr/bin/env bash
@@ -233,6 +252,8 @@ rm -rf "$scratch"
   echo "## Automated qualification (this run)"
   for p in "${q_pass[@]:-}"; do [ -n "$p" ] && echo "- PASS $p"; done
   for f in "${q_fail[@]:-}"; do [ -n "$f" ] && echo "- FAIL $f"; done
+  echo
+  echo "Staging completeness required: $REQUIRE_COMPLETE (menu checks alone do not qualify activation)."
   echo
   echo "## Live cutover matrix (captain-run; NOT performed here)"
   echo "Each item is verified live at cutover, not by this staging run:"

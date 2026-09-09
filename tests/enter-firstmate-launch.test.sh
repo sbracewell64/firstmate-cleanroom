@@ -153,3 +153,9 @@ command -v cold_arm_claim_deliverable >/dev/null || fail "cold_arm_claim_deliver
 pass "claim deliverability: only a live cold-start arm-owner is a valid cold-start defer target"
 
 echo "all console launch and permission policy tests passed"
+
+# Native-console contract tests use controlled external processes and metadata;
+# they make no model calls and are part of the normal launcher test family.
+python3 "$HERE/test_startup_selection.py" "$LAUNCHER" || fail "startup selection regression"
+python3 "$HERE/test_console_subscription.py" "$CODE_ROOT/bin/fm-console-codex.py" "$LAUNCHER" || fail "subscription contract regression"
+python3 "$HERE/test_console_lifecycle.py" "$LAUNCHER" || fail "console lifecycle regression"

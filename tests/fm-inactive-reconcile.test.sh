@@ -464,6 +464,145 @@ test_reconciliation_never_calls_forge() {
   pass "reconciliation makes zero forge or PR API calls"
 }
 
+# --- real-caller qualification (nmf-observer-check-normalization) ------------
+# The three observer residuals are false `done` verdicts out of fm-crew-state;
+# this reconciler is the closure caller that turns a done/failed verdict into a
+# captain-facing terminal outcome. These cases drive the ACTUAL fm-crew-state.sh
+# helper (not the canned FM_FAKE_CREW_STATE stub) over a real temporary git
+# worktree and a fake no-mistakes, so the fix is qualified at a real caller and
+# not merely in the helper's own suite: a matching ci-running run with no green
+# proof plus a stale ci-ready receipt must NOT be reported as terminal, while a
+# genuinely terminal run still is.
+
+write_nm_fake() { # <world>
+  local fake="$1/fakebin"
+  cat > "$fake/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  axi)
+    shift
+    case "${1:-}" in
+      status)
+        shift
+        if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
+        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_AXI_STATUS_RC:-0}"; fi ;;
+      logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit "${FM_FAKE_CI_LOGS_RC:-0}" ;;
+    esac ;;
+  runs) printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"; exit "${FM_FAKE_RUNS_LIST_RC:-0}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fake/no-mistakes"
+}
+
+write_real_git_child() { # <home> <id> <branch> <status>
+  local home=$1 id=$2 branch=$3 status=$4 wt="$1/projects/$2"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  git -C "$wt" -c user.email=t@t.invalid -c user.name=t commit -q --allow-empty -m init
+  git -C "$wt" checkout -q -b "$branch"
+  REAL_CHILD_HEAD=$(git -C "$wt" rev-parse HEAD)
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" "worktree=$wt" "project=alpha" \
+    'harness=codex' 'kind=ship' 'mode=no-mistakes' 'yolo=off' \
+    "spawn_gen=s${BASHPID:-$$}.$RANDOM" 'pr=https://example.test/owner/repo/pull/1'
+  printf '%s\n' "$status" > "$home/state/$id.status"
+  : > "$home/state/$id.turn-ended"
+  age "$home/state/$id.meta" "$home/state/$id.status" "$home/state/$id.turn-ended"
+}
+
+run_reconcile_real_helper() { # <home>
+  PATH="$WORLD/fakebin:$PATH" FM_ROOT_OVERRIDE="$WORLD/root" FM_HOME="$1" \
+    FM_STATE_OVERRIDE="$1/state" FM_DATA_OVERRIDE="$1/data" FM_CONFIG_OVERRIDE="$1/config" \
+    FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_CREW_STATE_BIN="$ROOT/bin/fm-crew-state.sh" \
+    FM_FORGE_LOG="$WORLD/forge.log" "$RECON" scan --startup
+}
+
+ci_monitoring_run() { # <branch> <head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "$2"
+  pr: "https://github.com/o/r/pull/2"
+  findings: none
+  steps[4]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    review,completed,0,0
+    push,completed,0,0
+    ci,running,0,0
+EOF
+}
+
+passed_run() { # <branch> <head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "$2"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+outcome: passed
+EOF
+}
+
+test_real_helper_stale_ci_ready_not_reported_as_terminal() {
+  make_world real-stale-ready; write_nm_fake "$WORLD"
+  write_real_git_child "$MAIN" child fm/child \
+    'ci-ready: PR https://github.com/o/r/pull/2 checks green from prior observation'
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RC FM_FAKE_CI_LOGS FM_FAKE_CI_LOGS_RC FM_FAKE_RUNS_LIST
+  FM_FAKE_AXI_STATUS="$(ci_monitoring_run fm/child "$REAL_CHILD_HEAD")"
+  FM_FAKE_AXI_STATUS_RC=0
+  FM_FAKE_CI_LOGS=""        # empty-but-successful: no green proof (counterexample A)
+  FM_FAKE_CI_LOGS_RC=0
+  FM_FAKE_RUNS_LIST=""
+  run_reconcile_real_helper "$MAIN"
+  # A terminal-outcome record is written BEFORE any wake is queued, so a pending
+  # count of zero proves the reconciler neither recorded nor surfaced a false
+  # terminal outcome for this crew.
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "a matching ci-running run with no green proof was falsely reported as a terminal outcome"
+  pass "real caller: a stale ci-ready receipt over a running run is not a terminal outcome"
+}
+
+test_real_helper_genuine_terminal_run_is_reported() {
+  make_world real-terminal; write_nm_fake "$WORLD"
+  write_real_git_child "$MAIN" child fm/child \
+    'ci-ready: PR https://github.com/o/r/pull/2 checks green from prior observation'
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RC FM_FAKE_CI_LOGS FM_FAKE_CI_LOGS_RC FM_FAKE_RUNS_LIST
+  FM_FAKE_AXI_STATUS="$(passed_run fm/child "$REAL_CHILD_HEAD")"
+  FM_FAKE_AXI_STATUS_RC=0
+  FM_FAKE_CI_LOGS=""
+  FM_FAKE_CI_LOGS_RC=0
+  FM_FAKE_RUNS_LIST=""
+  run_reconcile_real_helper "$MAIN"
+  [ "$(outcome_count "$MAIN" pending)" = 1 ] \
+    || fail "a genuinely terminal (outcome: passed) run was not reported as a terminal outcome"
+  pass "real caller: a genuinely terminal run-step is still reported as a terminal outcome"
+}
+
+test_real_helper_failed_query_stale_failed_not_reported_as_terminal() {
+  make_world real-failedquery-stale-failed; write_nm_fake "$WORLD"
+  write_real_git_child "$MAIN" child fm/child \
+    'failed: run aborted on a prior observation'
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RC FM_FAKE_CI_LOGS FM_FAKE_CI_LOGS_RC FM_FAKE_RUNS_LIST
+  # The PRIMARY `axi status` query FAILS (nonzero) even though its partial bytes
+  # carry a terminal outcome; current evidence is unavailable, so the stale
+  # `failed:` receipt must not be surfaced as a captain-facing terminal outcome.
+  FM_FAKE_AXI_STATUS="$(passed_run fm/child "$REAL_CHILD_HEAD")"
+  FM_FAKE_AXI_STATUS_RC=7
+  FM_FAKE_CI_LOGS=""
+  FM_FAKE_CI_LOGS_RC=0
+  FM_FAKE_RUNS_LIST=""
+  run_reconcile_real_helper "$MAIN"
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "a failed run query with a stale failed receipt was falsely reported as a terminal outcome"
+  pass "real caller: a stale failed receipt under a failed run query is not a terminal outcome"
+}
+
 test_main_direct_terminal_presentation_receipt
 test_local_secondmate_reports_terminal_child
 test_local_secondmate_rejects_relative_parent_home
@@ -481,5 +620,8 @@ test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
 test_reconciliation_never_calls_forge
+test_real_helper_stale_ci_ready_not_reported_as_terminal
+test_real_helper_genuine_terminal_run_is_reported
+test_real_helper_failed_query_stale_failed_not_reported_as_terminal
 
 echo "all inactive reconciliation tests passed"

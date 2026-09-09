@@ -51,6 +51,25 @@
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
 #
+# Evidence precedence (the five-state completion contract). An OLD status-log
+# receipt can only DISPLAY a completion; current attributable evidence decides
+# whether that completion is real, so a stale ci-ready / done receipt is never
+# certified terminal when current evidence says otherwise:
+#   - actual attributable progress   -> working (a running/fixing/ci run, busy pane);
+#   - owner decision / handoff        -> parked (awaiting firstmate at a gate);
+#   - CI-ready awaiting landing       -> done, but ONLY when current CI evidence
+#     reads POSITIVELY green (nm_ci_checks_state). A running run whose CI log is
+#     unavailable, unknown/empty, not-ready, or only coarsely attributed does NOT
+#     confirm an older ci-ready receipt: it stays working, never done.
+#   - terminal outcome                -> done/failed from the run's own outcome;
+#   - unavailable / conflicting        -> unknown. A FAILED primary run query
+#     (NM_QUERY_FAILED) means current evidence is unavailable, so the status-log
+#     fallback reports unknown rather than certifying ANY older terminal receipt
+#     - both a done and a failed receipt are intercepted, since either would
+#     surface as a captain-facing terminal outcome from a query we could not read.
+# Old logs may explain history but cannot replace missing current evidence, and
+# every negative/refusal path returns working or unknown here, never done.
+#
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
 # of state; exit 2 only on a usage error (no id).
 set -u
@@ -304,17 +323,6 @@ nm_gate_findings_count() {
   case "$rest" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$rest"
 }
-log_reports_ci_ready() {
-  # The ci-ready stage line is the lifecycle's own CI-ready receipt
-  # (bin/fm-stage.sh); the legacy done: sentence is still recognised.
-  [ "$LOG_VERB" != ci-ready ] || return 0
-  [ "$LOG_VERB" = "done" ] || return 1
-  case "$(status_line_note "$LOG_LINE")" in
-    *PR*"checks green"*|*"checks green"*PR*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 nm_ci_step_status() {
   local row rest
   row=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*ci,[[:space:]]*"?(running|fixing)"?[[:space:]]*,' | head -1)
@@ -471,6 +479,14 @@ HAVE_RUN=0
 # run-step block below skips the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+# NM_QUERY_FAILED records that the PRIMARY `axi status` run-attribution read
+# FAILED (nonzero) rather than legitimately returning "no run". A failure means
+# current attributable evidence is UNAVAILABLE, not absent - so the status-log
+# fallback below must not let an older terminal receipt (ci-ready / done / a
+# terminal stage) certify completion from a query we could not read. An
+# empty-but-SUCCESSFUL read leaves this 0: that genuinely means "no active run",
+# where a terminal stage receipt remains the current best evidence.
+NM_QUERY_FAILED=0
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
@@ -483,6 +499,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   # read. An empty-but-successful read still means "no run" as before.
   if ! RUN_OUT=$(nm_run_checked axi status); then
     RUN_OUT=""
+    NM_QUERY_FAILED=1
   fi
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
@@ -597,28 +614,26 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
-    if [ "$RUN_SOURCE" = coarse ]; then
-      emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
-    fi
-    [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
-    if [ "$RUN_STATUS" = fixing ]; then
-      CI_LOG_STATE=not-ready
-    elif [ "$CI_STEP_STATUS" = running ] && [ -z "$CI_LOG_STATE" ]; then
-      CI_LOG_STATE=$(nm_ci_checks_state)
-    elif [ "$CI_STEP_STATUS" = fixing ]; then
-      CI_LOG_STATE=not-ready
-    fi
-    # A crew's own older ci-ready receipt is promoted to done only when current
-    # CI evidence does NOT contradict it. `unavailable` (a FAILED evidence read,
-    # possibly with partial green stdout) is not confirmation: it must never let
-    # a stale self-reported receipt certify done - exactly the counterexample-A
-    # vector (partial-green stdout + a failed command + an older ci-ready row).
-    # Fall through to the run-step verdict (still working / not terminal).
-    if [ "$CI_LOG_STATE" != not-ready ] && [ "$CI_LOG_STATE" != unavailable ]; then
-      emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
-    fi
-  fi
+  # A crew's OWN older ci-ready receipt (an appended ci-ready stage line or the
+  # legacy "done: PR ... checks green" sentence) does NOT independently certify
+  # done while a run is attributed to this crew. The one authority for
+  # "monitoring run + CI actually green -> done" is the run-step CI-log check
+  # above (nm_ci_checks_state -> green), which is attributed to the current run
+  # and rendered from run-step. That check already surfaces done for a green
+  # monitoring run WITHOUT needing the receipt, so the receipt adds nothing a
+  # current run cannot prove - and letting it promote on anything short of a
+  # positive green reading is exactly the residual this task closes:
+  #   - counterexample-A: a matching ci-running run whose CI-log read is empty or
+  #     unrecognized (unknown) - old logs cannot replace missing current
+  #     evidence, so the run stays working, never a stale-receipt done;
+  #   - counterexample-B: a coarse (runs-list) running attribution carries no run
+  #     id and no CI proof, and a running run conflicts with a landed receipt, so
+  #     it stays working ("validating (background run)").
+  # Both fall through to the run-step verdict below. The no-run fallback path
+  # still maps a ci-ready/terminal-stage receipt to done via map_log_state, which
+  # is correct there because a SUCCESSFUL empty query means there is genuinely no
+  # active run to contradict the receipt (counterexample-C guards the FAILED-query
+  # case separately).
 
   # Reconcile the status log. A needs-decision/blocked log line that the run-step
   # has moved past (anything but a genuinely parked run) is deterministically
@@ -672,6 +687,23 @@ fi
 # `unknown` verdict as the "not a state" test needs no second verb list here.
 if [ -n "$LOG_VERB" ]; then
   LOG_STATE=$(map_log_state "$LOG_LINE")
+  # Counterexample-C: the PRIMARY run query FAILED (NM_QUERY_FAILED=1), so
+  # current attributable evidence is UNAVAILABLE - we discarded the failed
+  # query's bytes above. Any older terminal status-log receipt - a `done`
+  # receipt (ci-ready / done / a terminal stage) OR a `failed` receipt, both of
+  # which fm-inactive-reconcile consumes as a captain-facing terminal outcome -
+  # must NOT certify a terminal verdict from a query we could not read: report
+  # the unavailability as unknown, never a terminal receipt, and let the
+  # supervisor inspect the current run. A non-terminal log verb
+  # (working/blocked/paused/parked) is the crew's own current claim rather than a
+  # terminal certification, so it still maps as before - the invariant guards a
+  # false terminal outcome specifically.
+  if [ "$NM_QUERY_FAILED" = 1 ]; then
+    case "$LOG_STATE" in
+      done|failed)
+        emit unknown status-log "$(status_line_note "$LOG_LINE")${SEP}current run evidence unavailable; inspect before treating as a terminal outcome" ;;
+    esac
+  fi
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi

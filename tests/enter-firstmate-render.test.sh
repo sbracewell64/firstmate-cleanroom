@@ -211,4 +211,61 @@ grep -q '^- PASS source: bash -n' "$rpt" || fail "(viii) unrelated checks must s
 case "$OUT" in *'all automated checks passed'*) fail "(viii) the tool must not claim all checks passed when a capability is missing" ;; esac
 pass "(viii) a missing required menu capability is an explicit qualification GAP, never a silent PASS"
 
+# --- rollback + cutover adoption (relaunch checkpoint, gate 2) ------------------
+# The final cases qualify the EXIT + RELAUNCH + ROLLBACK contract the render tool
+# underpins: a rollback snapshot that fully reverts an aborted cutover, and a
+# documented cutover that adopts the new release rather than the donor it replaces.
+
+# (ix) the rollback snapshot records the exact prior launcher + every config scalar
+#      and a restore from it reproduces them byte-for-byte, so an aborted cutover
+#      reverts completely (checkpoint gate 2: rollback restores the exact prior state).
+home=$(mk_home rollback shim "$ROOT_A")
+printf '/prior/tools\n' > "$home/config/tools-root"   # a second captain-local scalar to capture
+pre_launcher=$(sha256sum "$home/enter-firstmate.sh" | cut -d' ' -f1)
+pre_coderoot=$(sha256sum "$home/config/code-root" | cut -d' ' -f1)
+pre_tools=$(sha256sum "$home/config/tools-root" | cut -d' ' -f1)
+run_render "$home" "$ROOT_B"
+[ "$RC" -eq 0 ] || fail "(ix) a genuine move must stage and snapshot (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
+rb=$(find "$stg/rollback" -mindepth 1 -maxdepth 1 -type d | head -1)
+[ -n "$rb" ] || fail "(ix) the render must write a rollback snapshot dir"
+grep -q "$pre_launcher" "$rb/MANIFEST.txt" || fail "(ix) snapshot manifest must record the prior launcher sha"
+grep -q "$pre_coderoot" "$rb/MANIFEST.txt" || fail "(ix) snapshot manifest must record the prior code-root sha"
+grep -q "$pre_tools" "$rb/MANIFEST.txt" || fail "(ix) snapshot manifest must record the prior tools-root sha"
+# simulate an aborted cutover: overwrite the live launcher and mutate config, then restore.
+cp "$stg/enter-firstmate.sh" "$home/enter-firstmate.sh"
+printf 'MUTATED\n' > "$home/config/code-root"
+printf 'MUTATED\n' >> "$home/config/tools-root"
+cp -p "$rb/enter-firstmate.sh.live" "$home/enter-firstmate.sh"
+cp -p "$rb/config/"* "$home/config/"
+[ "$(sha256sum "$home/enter-firstmate.sh" | cut -d' ' -f1)" = "$pre_launcher" ] || fail "(ix) restore must reproduce the prior launcher bytes"
+[ "$(sha256sum "$home/config/code-root" | cut -d' ' -f1)" = "$pre_coderoot" ] || fail "(ix) restore must reproduce the prior code-root bytes"
+[ "$(sha256sum "$home/config/tools-root" | cut -d' ' -f1)" = "$pre_tools" ] || fail "(ix) restore must reproduce the prior tools-root bytes"
+pass "(ix) the rollback snapshot restores the exact prior launcher and config bytes"
+
+# (x) the documented cutover adopts the new release even on a re-adoption where a
+#     donor config/code-root already exists: running the report's OWN emitted cutover
+#     config commands against such a home must leave config/code-root at the ADOPTED
+#     root, never the pre-existing donor. A plain `cp -n` alone (no-clobber) would
+#     silently keep the donor and the adopted launcher would resolve FM_CODE_ROOT
+#     back to it (checkpoint gate 2: a fresh relaunch adopts the new release).
+home=$(mk_home cutover-adopt shim "$ROOT_A")   # config/code-root pre-exists = ROOT_A (donor)
+run_render "$home" "$ADOPTED"
+[ "$RC" -eq 0 ] || fail "(x) a genuine move must stage (rc=$RC, out: $OUT)"
+rpt="$home/state/launcher-staging/qualification-report.md"
+live="$TMP/home-cutover-live"; mkdir -p "$live/config"
+printf '%s\n' "$ROOT_A" > "$live/config/code-root"   # exactly the donor scalar present at cutover
+while IFS= read -r line; do
+  cmd=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//')
+  case "$cmd" in
+    "cp "*config*)
+      cmd=${cmd//$home\/config/$live\/config}       # redirect the destination to the fresh live home
+      bash -c "$cmd" 2>/dev/null || fail "(x) emitted cutover command failed: $cmd"
+      ;;
+  esac
+done < "$rpt"
+got=$(tr -d '[:space:]' < "$live/config/code-root")
+[ "$got" = "$ADOPTED" ] || fail "(x) the documented cutover must adopt the new code root, got '$got' (donor was $ROOT_A)"
+pass "(x) the documented cutover adopts the new code root over a pre-existing donor"
+
 echo "all donor-guard and caller-level qualification tests passed"

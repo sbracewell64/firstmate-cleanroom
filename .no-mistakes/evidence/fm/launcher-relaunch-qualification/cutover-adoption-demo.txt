@@ -1,0 +1,19 @@
+Checkpoint gate 2 — re-adoption cutover adopts the new release over a pre-existing donor
+Source: the render tool's OWN emitted cutover commands (qualification-report.md).
+Scenario: live home already has config/code-root = DONOR (a prior adoption) + a captain-local tools-root.
+PASS iff after cutover config/code-root == ADOPTED and the captain-local tools-root is preserved.
+
+donor   = /tmp/tmp.mFyhTVCvqx/donor-release
+adopted = /tmp/tmp.mFyhTVCvqx/adopted-release
+
+=== BEFORE FIX: base tool emitted only the no-clobber copy (1 command) ===
+     $ cp -n /tmp/tmp.mFyhTVCvqx/home/state/launcher-staging/config/* /tmp/tmp.mFyhTVCvqx/home/config/
+   -> config/code-root = /tmp/tmp.mFyhTVCvqx/donor-release
+   -> config/tools-root = /captain/tools (captain-local, must survive)
+
+=== AFTER FIX: target tool emits the no-clobber copy + forced code-root (2 commands) ===
+     $ cp -n /tmp/tmp.mFyhTVCvqx/home/state/launcher-staging/config/* /tmp/tmp.mFyhTVCvqx/home/config/
+     $ cp /tmp/tmp.mFyhTVCvqx/home/state/launcher-staging/config/code-root /tmp/tmp.mFyhTVCvqx/home/config/code-root
+   -> config/code-root = /tmp/tmp.mFyhTVCvqx/adopted-release
+   -> config/tools-root = /captain/tools (captain-local, must survive)
+

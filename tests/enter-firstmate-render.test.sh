@@ -6,13 +6,25 @@
 # a real path. Drives the real tool against staged scratch homes and asserts the
 # observable refusal / pass-through, never grepping the tool's own source.
 #
+# It also covers the staging tool AS THE ACTUAL CALLER of the launcher's
+# --print-console-menu qualification (runtime-pin-adoption-gap, launcher-test
+# checkpoint), building on the direct --print-console-menu coverage in
+# enter-firstmate-profile.test.sh rather than duplicating it:
+#   - a non-default --console-profile stages and renders that profile as active;
+#   - inherited FM_* environment pollution neither corrupts the staged artifacts
+#     nor leaks into the qualification report;
+#   - a MISSING required menu capability is an explicit qualification GAP (a FAIL
+#     that exits nonzero), never a silent PASS.
+#
 # Usage: bash tests/enter-firstmate-render.test.sh
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RENDER=${FM_ENTRY_RENDER:-$HERE/../bin/fm-render-launcher.sh}
+LAUNCHER=${FM_ENTRY_LAUNCHER:-$HERE/../bin/enter-firstmate.sh}
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 [ -f "$RENDER" ] || fail "render tool not found: $RENDER"
+[ -f "$LAUNCHER" ] || fail "launcher source not found: $LAUNCHER"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-entry-render-test.XXXXXX") || fail mktemp
 trap 'rm -rf "$TMP"' EXIT
@@ -110,4 +122,93 @@ printf '%s' "$OUT" | grep -Eq "$REFUSE_RE" && fail "(v) a genuine different code
 [ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/code-root")" = "$ROOT_B" ] || fail "(v) staging must record the adopted (different) code root"
 pass "(v) a genuine move to a different code root passes the guard and stages"
 
-echo "all donor-guard tests passed"
+# --- caller-level --print-console-menu qualification ---------------------------
+# The remaining cases drive the real staging tool as the ACTUAL CALLER of the
+# launcher's --print-console-menu qualification step, complementing the direct
+# menu coverage in enter-firstmate-profile.test.sh.
+
+# an adopted release skeleton the guard accepts moving TO (differs from every
+# donor built above).
+ADOPTED="$TMP/adopted-release"; mkdir -p "$ADOPTED/bin"
+
+# (vi) a NON-DEFAULT --console-profile stages that profile and its menu
+#      qualification renders it as the active profile. Run the staged source's
+#      menu OFFLINE against the staged config, with the FM_* overrides cleared,
+#      so config/console-profile alone selects the active profile.
+home=$(mk_home altprofile shim "$ROOT_A")
+run_render "$home" "$ADOPTED" --console-profile codex-astra
+[ "$RC" -eq 0 ] || fail "(vi) alternate-profile staging must succeed (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-astra ] || fail "(vi) staging must record the non-default console profile"
+grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vi) the menu qualification must PASS for a staged alternate profile"
+menu=$(unset FM_CONSOLE_PROFILE FM_HARNESS FM_CODE_ROOT FM_TOOLS_ROOT FM_RETIRED_HOME
+       FM_HOME="$stg" FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || fail "(vi) offline staged menu must render"
+case "$menu" in *'active profile:    codex-astra'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
+case "$menu" in *'codex-astra'*'<- active'*) ;; *) fail "(vi) the active row must carry the active marker (got: $menu)" ;; esac
+pass "(vi) a non-default --console-profile stages and renders that profile as active"
+
+# (vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks
+#       into the report: the staged code root and profile come from the flags,
+#       never from the ambient FM_CODE_ROOT / FM_CONSOLE_PROFILE the live console
+#       exports, and no polluted path appears in the qualification report.
+home=$(mk_home pollution shim "$ROOT_A")
+RC=0
+OUT=$(FM_CODE_ROOT=/polluted/donor FM_CONSOLE_PROFILE=opus-4-8 FM_HARNESS=bash \
+      FM_RETIRED_HOME=/polluted/retired FM_TOOLS_ROOT=/polluted/tools \
+      bash "$RENDER" --fm-home "$home" --code-root "$ADOPTED" \
+      --console-profile codex-sol --staging "$home/state/launcher-staging" 2>&1) || RC=$?
+[ "$RC" -eq 0 ] || fail "(vii) pollution must not break staging (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
+[ "$(tr -d '[:space:]' < "$stg/config/code-root")" = "$ADOPTED" ] || fail "(vii) the staged code root must come from --code-root, not ambient FM_CODE_ROOT"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-sol ] || fail "(vii) the staged profile must come from --console-profile, not ambient FM_CONSOLE_PROFILE"
+grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vii) the menu qualification must PASS despite ambient pollution"
+grep -Eq '/polluted/(donor|retired|tools)' "$stg/qualification-report.md" && fail "(vii) no ambient polluted path may leak into the qualification report"
+pass "(vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks into the report"
+
+# (viii) a MISSING required menu capability is an explicit qualification GAP, not
+#        a silent PASS. Drive a COPY of the real staging tool against a scratch
+#        repo whose source launcher renders an INCOMPLETE menu (one profile
+#        missing): the menu check must FAIL and the tool must exit nonzero, while
+#        an otherwise-identical COMPLETE menu passes. Proves the caller surfaces a
+#        missing capability rather than reporting a false clean.
+mk_scratch_repo() {  # <dir> <complete|incomplete> ; echoes the render-tool path
+  local d=$1 kind=$2 t
+  mkdir -p "$d/bin" "$d/tests"
+  cp "$RENDER" "$d/bin/fm-render-launcher.sh"
+  for t in arm launch profile; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tests/enter-firstmate-$t.test.sh"
+  done
+  # shellcheck disable=SC2016 # these are literal shell lines written to a stub, not expansions
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'if [ "${1:-}" = --print-console-menu ]; then'
+    printf '%s\n' '  echo "-- primary console profile menu (stub)"'
+    printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"; echo "  codex-astra"'
+    [ "$kind" = complete ] && printf '%s\n' '  echo "  codex-sol"'
+    printf '%s\n' '  exit 0'
+    printf '%s\n' 'fi'
+    printf '%s\n' 'exit 0'
+  } > "$d/bin/enter-firstmate.sh"
+  chmod 0755 "$d/bin/enter-firstmate.sh"
+  printf '%s' "$d/bin/fm-render-launcher.sh"
+}
+run_scratch() {  # <render-tool> <home> ; sets RC and OUT (a genuine fresh install)
+  local tool=$1 h=$2
+  RC=0
+  OUT=$(bash "$tool" --fm-home "$h" --code-root "$ADOPTED" --allow-same-code-root \
+        --staging "$h/state/launcher-staging" 2>&1) || RC=$?
+}
+good=$(mk_scratch_repo "$TMP/repo-complete" complete)
+run_scratch "$good" "$TMP/repo-complete/home"
+[ "$RC" -eq 0 ] || fail "(viii) a complete menu must qualify clean (rc=$RC, out: $OUT)"
+grep -q '^- PASS print-console-menu' "$TMP/repo-complete/home/state/launcher-staging/qualification-report.md" || fail "(viii) a complete menu must record PASS"
+bad=$(mk_scratch_repo "$TMP/repo-incomplete" incomplete)
+run_scratch "$bad" "$TMP/repo-incomplete/home"
+[ "$RC" -ne 0 ] || fail "(viii) an incomplete menu must exit nonzero, never a silent PASS (rc=$RC)"
+rpt="$TMP/repo-incomplete/home/state/launcher-staging/qualification-report.md"
+grep -q '^- FAIL print-console-menu' "$rpt" || fail "(viii) the missing menu capability must be recorded as a FAIL gap"
+grep -q '^- PASS source: bash -n' "$rpt" || fail "(viii) unrelated checks must still be reported (only the missing capability fails)"
+case "$OUT" in *'all automated checks passed'*) fail "(viii) the tool must not claim all checks passed when a capability is missing" ;; esac
+pass "(viii) a missing required menu capability is an explicit qualification GAP, never a silent PASS"
+
+echo "all donor-guard and caller-level qualification tests passed"

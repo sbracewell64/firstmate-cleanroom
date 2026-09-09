@@ -137,4 +137,61 @@ case "$out" in *'opus-4-8'*'PENDING'*) ;; *) fail "an unqualified profile must r
 case "$out" in *'effective identity'*) fail "--print-console-menu must render only the menu, not the full doctor report" ;; esac
 pass "print-console-menu: renders all four profiles (fable-5.1 default, unqualified PENDING) and exits 0 with no tools root"
 
+# --- --print-console-menu: a non-default config profile renders as active -------
+# Builds on the default-profile case above: a home whose config/console-profile
+# names a non-default profile must render THAT profile as active, with its row
+# carrying the active marker, and still list all four (never a silent swap).
+home_alt=$TMP/home-altprofile; mkdir -p "$home_alt/config"
+printf 'codex-astra\n' > "$home_alt/config/console-profile"
+rc=0
+out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "an alternate config profile must still render and exit 0 (rc=$rc, out: $out)"
+case "$out" in *'active profile:    codex-astra'*) ;; *) fail "config/console-profile must select the active profile (got: $out)" ;; esac
+case "$out" in *'codex-astra'*'<- active'*) ;; *) fail "the active row must carry the active marker (got: $out)" ;; esac
+for _prof in fable-5.1 opus-4-8 codex-astra codex-sol; do
+  case "$out" in *"$_prof"*) ;; *) fail "an alternate profile menu must still list $_prof (got: $out)" ;; esac
+done
+pass "print-console-menu: a non-default config profile renders as active without dropping any profile"
+
+# --- --print-console-menu: inherited FM_* pollution neither corrupts nor leaks --
+# The clean-room console inherits an ambient FM_* environment from the live home.
+# Host-path pollution (FM_CODE_ROOT / FM_TOOLS_ROOT / FM_RETIRED_HOME) must not
+# corrupt the rendered menu nor leak those paths into the output; the menu exits
+# before the host-path gates, so it renders from config alone.
+rc=0
+out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' \
+      FM_CODE_ROOT=/polluted/donor FM_TOOLS_ROOT=/polluted/tools FM_RETIRED_HOME=/polluted/retired \
+      bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "host-path pollution must not break the menu (rc=$rc, out: $out)"
+case "$out" in *'active profile:    codex-astra'*) ;; *) fail "pollution must not change the config-selected active profile (got: $out)" ;; esac
+case "$out" in *'/polluted/'*) fail "no inherited host path may leak into the menu output (got: $out)" ;; esac
+pass "print-console-menu: inherited host-path pollution neither corrupts the render nor leaks into output"
+# FM_CONSOLE_PROFILE is a DOCUMENTED override, not pollution: an ambient value
+# selects the active profile over config, still rendering every profile.
+rc=0
+out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE=opus-4-8 FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "an FM_CONSOLE_PROFILE override must still render (rc=$rc)"
+case "$out" in *'active profile:    opus-4-8'*) ;; *) fail "FM_CONSOLE_PROFILE must override config/console-profile (got: $out)" ;; esac
+case "$out" in *'codex-sol'*) ;; *) fail "the override must still render the full menu (got: $out)" ;; esac
+pass "print-console-menu: FM_CONSOLE_PROFILE is honored as a documented override, still rendering the full menu"
+
+# --- --print-console-menu: side-effect-free, and other invocations stay gated ---
+# The preview must touch nothing in the home (no launch/exec/service/state
+# effect) and, crucially, its early exit must not weaken the mandatory host-path
+# gates on OTHER invocations: the same empty environment that the preview renders
+# cleanly must still refuse a real launch at the code-root gate.
+home_se=$TMP/home-sidefx; mkdir -p "$home_se/config"
+find "$home_se" | LC_ALL=C sort > "$TMP/se-before.txt"
+rc=0
+out=$(FM_HOME=$home_se FM_CODE_ROOT='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "the preview must exit 0 with no usable code/tools root (rc=$rc, out: $out)"
+find "$home_se" | LC_ALL=C sort > "$TMP/se-after.txt"
+diff "$TMP/se-before.txt" "$TMP/se-after.txt" >/dev/null || fail "the preview must create no files in the home (side effects detected)"
+# the same empty environment, run as a real launch, must still be refused
+rc=0
+out=$(FM_HOME=$home_se FM_CODE_ROOT='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail "a real launch with an unset code root must still refuse (the preview must not open a gate hole)"
+case "$out" in *'code root is unset'*) ;; *) fail "the sibling launch must refuse at the code-root gate (got: $out)" ;; esac
+pass "print-console-menu: the preview is side-effect-free and leaves the mandatory gates intact for a real launch"
+
 echo "all four-profile menu, subscription-boundary, and host-path resolution tests passed"

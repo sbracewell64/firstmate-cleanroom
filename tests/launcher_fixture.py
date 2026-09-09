@@ -40,10 +40,11 @@ class LauncherFixture:
                 shutil.copy2(owner, self.code/'bin'/owner.name)
         shutil.copytree(self.entry.parent/'backends', self.code/'bin/backends')
         shutil.copy2(self.entry.parent/'fm-console-codex.py', self.code/'bin/fm-console-codex.py')
+        shutil.copy2(self.entry, self.home/'enter-firstmate.sh')
         self.script(self.tools/'bin/pgrep', 'test -n "${FIXTURE_SERVER_PID:-}" && echo "$FIXTURE_SERVER_PID"\n')
         herdr = self.tools/'bin/herdr'
         herdr.write_text('#!'+sys.executable+'\n'+r'''
-import json, os, pathlib, sys, time
+import json, os, pathlib, sys, time, subprocess
 p=pathlib.Path(os.environ['FIXTURE_ROOT']); args=sys.argv[1:]
 if len(args)<2 or args[-2:]!=['--session','synthetic']:
     print('unscoped fixture Herdr call',file=sys.stderr);sys.exit(92)
@@ -71,12 +72,20 @@ elif args[:2]==['pane','run']:
     with (p/'effects').open('a') as f:f.write('run\n')
     (p/'pane-command').write_text(args[-1])
     if os.environ.get('FAIL_RUN'):sys.exit(76)
+    if os.environ.get('REAL_CONSOLE'):
+        env=dict(os.environ, HERDR_PANE_ID=args[2], HERDR_SESSION='synthetic')
+        with (p/'console-output').open('w') as log:
+            subprocess.run(['bash',str(p/'home/enter-firstmate.sh'),'--console'],env=env,stdout=log,stderr=log)
+        print('{}');sys.exit(0)
     if os.environ.get('UNCONFIRMED'):print('{}');sys.exit(0)
-    record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);data.update({'launch_stage':'exited','exit_rc':1} if os.environ.get('FAIL_RESTART') else {});record.write_text(json.dumps(data));out={}
+    (p/'launch-time').write_text(str(time.monotonic()))
+    record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);data.update({'launch_stage':'exited','exit_rc':1} if os.environ.get('FAIL_RESTART') else {'launch_stage':'launching'});record.write_text(json.dumps(data));out={}
 elif args[:2]==['pane','process-info']:
     if os.environ.get('FAIL_CONVERGE'):sys.exit(75)
     out={'result':{'type':'pane_process_info','process_info':{'pane_id':args[-1], 'shell_pid':1,'foreground_processes':[{'name':'codex','pid':int(os.environ['FIXTURE_CONSOLE_PID'])}]}}}
-    if os.environ.get('IDLE_SHELL_PID'):
+    if os.environ.get('STARTUP_DELAY') and (p/'launch-time').exists() and time.monotonic()-float((p/'launch-time').read_text())<float(os.environ['STARTUP_DELAY']):
+        out['result']['process_info']['foreground_processes'][0]['name']='python3'
+    if os.environ.get('IDLE_SHELL_PID') and not (p/'launch-time').exists():
         pid=int(os.environ['IDLE_SHELL_PID']);out['result']['process_info'].update(shell_pid=pid,foreground_process_group_id=pid,foreground_processes=[{'name':'bash','argv0':'bash','pid':pid}])
 elif args[:2]==['workspace','list']:out={'result':{'workspaces':json.loads((p/'workspaces').read_text() if (p/'workspaces').exists() else os.environ.get('FIXTURE_WORKSPACES','[]'))}}
 else:print('unexpected fixture command '+repr(args),file=sys.stderr);sys.exit(93)

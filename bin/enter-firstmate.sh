@@ -283,6 +283,21 @@ case "${1:-}" in
 esac
 [ -z "$DOCTOR" ] || MODE=doctor
 
+CONSOLE_RECORD=$FM_HOME/state/captain-console.json
+console_record_field() { jq -r --arg k "$1" '.[$k] // empty' "$CONSOLE_RECORD" 2>/dev/null || true; }
+# console_record_update <json-object>: merge launch fields into the record, only
+# when it names the pane this --console runs in (a hand-run --console in some
+# other pane never becomes the captain's console by writing here).
+console_record_update() {
+  local tmp
+  [ -f "$CONSOLE_RECORD" ] || return 1
+  [ "$(console_record_field pane_id)" = "${HERDR_PANE_ID:-}" ] || return 1
+  [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
+  [ "$(console_record_field session)" = "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
+  tmp=$(mktemp "$FM_HOME/state/.captain-console.XXXXXX") || return 1
+  if jq --argjson add "$1" '. + $add' "$CONSOLE_RECORD" > "$tmp" 2>/dev/null; then mv "$tmp" "$CONSOLE_RECORD"; else rm -f "$tmp"; return 1; fi
+}
+
 die() { printf 'enter-firstmate: %s\n' "$*" >&2; exit 1; }
 
 # Keep Desktop and pane failures visible until the operator acknowledges them.
@@ -291,6 +306,9 @@ die() { printf 'enter-firstmate: %s\n' "$*" >&2; exit 1; }
 entry_failure_hold() {
   local rc=$1
   trap - EXIT
+  if [ "$rc" -ne 0 ] && [ "$MODE" = console-run ] && [ "$$:$BASH_SUBSHELL" = "$ENTRY_SHELL" ]; then
+    console_record_update "$(jq -n --arg rc "$rc" --arg t "$(date -u +%FT%TZ)" '{launch_stage:"exited", exit_rc:($rc|tonumber), exited_at:$t}')" || true
+  fi
   if [ "$rc" -ne 0 ] && [ "$$:$BASH_SUBSHELL" = "$ENTRY_SHELL" ] && [ -t 0 ] && [ -t 2 ]; then
     printf '\nFirstMate launch failed (status %s). Press Enter to close... ' "$rc" >&2
     read -r _ || true
@@ -789,6 +807,8 @@ export FM_CONSOLE_PROFILE
 # --- Console record and launch log (this home's own console identity) -------------
 CONSOLE_RECORD=$FM_HOME/state/captain-console.json
 CONSOLE_LOG=$FM_HOME/state/console-launch.log
+CONSOLE_STARTUP_WAIT=${FM_ENTRY_STARTUP_WAIT:-20}
+case "$CONSOLE_STARTUP_WAIT" in ''|*[!0-9]*) CONSOLE_STARTUP_WAIT=20 ;; esac
 CONSOLE_RESUME_WINDOW=${FM_ENTRY_RESUME_WINDOW:-20}
 CONSOLE_RESTORE_SETTLE=${FM_ENTRY_RESTORE_SETTLE:-12}
 CONSOLE_EXIT_WAIT=${FM_ENTRY_EXIT_WAIT:-90}
@@ -800,18 +820,6 @@ case "$CONSOLE_EXIT_WAIT" in ''|*[!0-9]*) CONSOLE_EXIT_WAIT=90 ;; esac
 case "$CONSOLE_ATTACH_WAIT" in ''|*[!0-9]*) CONSOLE_ATTACH_WAIT=120 ;; esac
 case "$CONSOLE_COMPOSER_WAIT" in ''|*[!0-9]*) CONSOLE_COMPOSER_WAIT=60 ;; esac
 console_log() { printf '%s pid=%s %s\n' "$(date -u +%FT%TZ)" "$$" "$*" 2>/dev/null >> "$CONSOLE_LOG" || true; }
-console_record_field() { jq -r --arg k "$1" '.[$k] // empty' "$CONSOLE_RECORD" 2>/dev/null || true; }
-# console_record_update <json-object>: merge launch fields into the record, only
-# when it names the pane this --console runs in (a hand-run --console in some
-# other pane never becomes the captain's console by writing here).
-console_record_update() {
-  local tmp
-  [ -f "$CONSOLE_RECORD" ] || return 1
-  [ "$(console_record_field pane_id)" = "${HERDR_PANE_ID:-}" ] || return 1
-  [ "$(console_record_field session)" = "$FM_HERDR_SESSION" ] || return 1
-  tmp=$(mktemp "$FM_HOME/state/.captain-console.XXXXXX") || return 1
-  if jq --argjson add "$1" '. + $add' "$CONSOLE_RECORD" > "$tmp" 2>/dev/null; then mv "$tmp" "$CONSOLE_RECORD"; else rm -f "$tmp"; return 1; fi
-}
 
 # --- Herdr ancestry -----------------------------------------------------------
 # Herdr injects HERDR_ENV/HERDR_PANE_ID/HERDR_SOCKET_PATH/HERDR_TAB_ID/
@@ -1010,6 +1018,7 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
   # FirstMate action). `pane run` types the command into the pane's shell.
   hs pane run "$pane" "exec '$FM_HOME/enter-firstmate.sh' --console" >/dev/null 2>&1 \
     || die "could not start the console in pane $pane"
+  console_startup_qualify "$ws" "$pane" || return $?
   others=$(console_workspaces | grep -vx "$ws" | tr '\n' ' ' || true)
   [ -z "$others" ] || printf 'enter-firstmate: note: other workspace(s) also carry the label %s (%s); spawns from OUTSIDE this session are ambiguous until they close, spawns from the console are not\n' "$FM_CONSOLE_LABEL" "$others" >&2
   printf '%s %s created\n' "$ws" "$pane"
@@ -1381,12 +1390,37 @@ console_pane_state() {
   cpid=$(console_record_field console_pid); case "$cpid" in ''|*[!0-9]*) cpid=0 ;; esac
   [ "$cpid" = 0 ] || ! kill -0 "$cpid" 2>/dev/null || alive=1
   cls=$(console_pane_classify "$(cold_arm_field "$proc" name)" "$(cold_arm_field "$proc" pid)" "$(cold_arm_field "$proc" ppid)" "$cpid" "$alive" "${FM_HARNESS##*/}")
+  if [ "$alive" = 1 ] && [ "$cls" != canonical ]; then
+    case "$(console_record_field launch_stage)" in starting|launching) cls=starting ;; esac
+  fi
   if [ "$cls" = shell ]; then
     # The upstream idle-shell proof (one lone recognized shell, no child, sleeping)
     # is the only thing that turns "a shell is in the foreground" into "stranded".
     console_backend fm_backend_herdr_pane_idle_shell_pid "$FM_HERDR_SESSION" "$pane" >/dev/null 2>&1 || cls=other
   fi
   echo "$cls"
+}
+console_startup_qualify() {
+  local ws=$1 pane=$2 old_pid=${3:-} deadline rec stage cpid cls
+  deadline=$(( $(date +%s) + CONSOLE_STARTUP_WAIT ))
+  while :; do
+    rec=$(console_record_pane) || return 1
+    [ "$rec" = "$ws $pane" ] || return 1
+    if console_record_failed; then
+      printf 'enter-firstmate: console startup failed in pane %s (recorded status %s); leaving diagnostics visible\n' "$pane" "$(console_record_field exit_rc)" >&2
+      return 1
+    fi
+    stage=$(console_record_field launch_stage)
+    cpid=$(console_record_field console_pid)
+    cls=$(console_pane_state "$pane")
+    if [ "$stage" = launching ] && [ -n "$cpid" ] && [ "$cpid" != "$old_pid" ] && [ "$cls" = canonical ]; then
+      return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || break
+    sleep 0.5
+  done
+  printf 'enter-firstmate: console startup unconfirmed in pane %s within %ss; matching harness startup was not observed\n' "$pane" "$CONSOLE_STARTUP_WAIT" >&2
+  return 1
 }
 # console_restore_settle <pane>: after THIS launch started the server, wait for
 # Herdr's restore to settle on the recorded pane: the pane must exist and its
@@ -1409,7 +1443,7 @@ console_restore_settle() {
 # console_restart_in_pane <ws> <pane> <resume-id|""> <why>: type the canonical
 # console contract into the stranded pane's shell, once per two minutes.
 console_restart_in_pane() {
-  local ws=$1 pane=$2 sid=$3 why=$4 marker cmd old_cpid new_cpid deadline age
+  local ws=$1 pane=$2 sid=$3 why=$4 marker cmd old_cpid age
   marker="$FM_HOME/state/.console-restart.$(printf '%s' "$pane" | tr -c 'A-Za-z0-9' '_')"
   if [ -f "$marker" ]; then
     age=$(( $(date +%s) - $(cat "$marker" 2>/dev/null || echo 0) ))
@@ -1421,23 +1455,9 @@ console_restart_in_pane() {
   date +%s > "$marker"
   hs pane run "$pane" "$cmd" >/dev/null 2>&1 || die "could not restart the console in pane $pane"
   console_log "converge: restarted the console contract in pane $pane ($why) resume=${sid:-none}"
-  deadline=$(( $(date +%s) + 20 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    new_cpid=$(console_record_field console_pid)
-    if console_record_failed; then
-      printf 'enter-firstmate: console restart failed in pane %s (recorded status %s); leaving diagnostics visible\n' "$pane" "$(console_record_field exit_rc)" >&2
-      return 1
-    fi
-    if [ -n "$new_cpid" ] && [ "$new_cpid" != "$old_cpid" ] && kill -0 "$new_cpid" 2>/dev/null; then
-      printf 'enter-firstmate: console restarted in pane %s (%s); the console contract is running there as pid %s\n' "$pane" "$why" "$new_cpid" >&2
-      printf '%s %s restarted\n' "$ws" "$pane"
-      return 0
-    fi
-    sleep 0.5
-  done
-  printf 'enter-firstmate: WARNING: the console contract was typed into pane %s (%s) but did not claim the console record within 20s; watch that pane\n' "$pane" "$why" >&2
-  printf '%s %s restart-unconfirmed\n' "$ws" "$pane"
-  return 1
+  console_startup_qualify "$ws" "$pane" "$old_cpid" || return $?
+  printf '%s %s restarted\n' "$ws" "$pane"
+
 }
 # console_converge <ws> <pane>: the recorded pane exists; decide from what is
 # OBSERVED in it whether the canonical console is live, and converge if not.
@@ -1464,6 +1484,7 @@ console_converge() {
   console_log "converge: pane=$pane class=$cls session_started_now=$SESSION_STARTED_NOW composer=$composer herdr_session_id=${sid:-none} action=$action"
   case "$action" in
     reuse)
+      console_startup_qualify "$ws" "$pane" || return $?
       printf '%s %s existing\n' "$ws" "$pane"
       return 0 ;;
     restart)

@@ -3,6 +3,7 @@ import json
 import os
 import select
 import time
+import threading
 from pathlib import Path
 import subprocess
 import sys
@@ -104,7 +105,7 @@ class LifecycleTests(unittest.TestCase):
             self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
             result = self.f.run(IDLE_SHELL_PID=str(shell.pid), UNCONFIRMED='1')
             self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn('did not claim the console record', result.stderr)
+            self.assertIn('startup unconfirmed', result.stderr)
             self.assertEqual(self.f.effects(), 'run\n')
         finally:
             shell.terminate(); shell.communicate(timeout=5)
@@ -119,12 +120,12 @@ class LifecycleTests(unittest.TestCase):
                 self.assertIn('convergence timed out', result.stderr)
                 self.assertEqual(self.f.effects(), '')
 
-    def test_failed_held_console_is_not_reused(self):
+    def check_failed_held_console(self, args):
         import pty
         master, slave = pty.openpty()
         self.f.record(harness='codex')
         self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
-        child = subprocess.Popen([BASH, shellpath(ENTRY), '--console'],
+        child = subprocess.Popen([BASH, shellpath(ENTRY), '--console', *args],
                                  env=dict(self.f.env, HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic'),
                                  stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
@@ -134,7 +135,7 @@ class LifecycleTests(unittest.TestCase):
             while time.monotonic() < deadline and b'Press Enter to close' not in output:
                 if select.select([master], [], [], .1)[0]:
                     output += os.read(master, 65536)
-            self.assertIn(b'firstmate native console refused', output)
+            self.assertIn(b'FirstMate launch failed', output)
             self.assertIn(b'Press Enter to close', output)
             self.assertIsNone(child.poll())
             record = json.loads((self.f.home/'state/captain-console.json').read_text())
@@ -152,6 +153,73 @@ class LifecycleTests(unittest.TestCase):
                 child.terminate(); child.wait(timeout=5)
             os.close(master)
 
+    def test_failed_held_console_is_not_reused(self):
+        self.check_failed_held_console([])
+
+    def test_early_argument_failure_is_recorded_before_hold(self):
+        self.check_failed_held_console(['--resume'])
+
+    def test_missing_pin_fails_first_creation(self):
+        result = self.f.run(REAL_CONSOLE='1')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('console startup failed', result.stderr)
+        self.assertIn('firstmate native console refused', (self.f.root/'console-output').read_text())
+        self.assertEqual(self.f.effects(), 'create\nrun\n')
+
+    def test_missing_pin_fails_restart(self):
+        shell = subprocess.Popen([BASH, '-c', 'read -r line'], stdin=subprocess.PIPE)
+        try:
+            self.f.record(harness='codex', console_pid=0)
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            result = self.f.run(REAL_CONSOLE='1', IDLE_SHELL_PID=str(shell.pid))
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('console startup failed', result.stderr)
+            self.assertIn('firstmate native console refused', (self.f.root/'console-output').read_text())
+            self.assertEqual(self.f.effects(), 'run\n')
+        finally:
+            shell.terminate(); shell.communicate(timeout=5)
+
+    def test_delayed_startup_is_qualified_before_creation_returns(self):
+        started = time.monotonic()
+        result = self.f.run(STARTUP_DELAY='2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(time.monotonic()-started, 2)
+
+    def test_starting_console_reuse_waits_for_launch(self):
+        self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='starting')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        ready = threading.Timer(2, lambda: self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='launching'))
+        ready.start()
+        try:
+            started = time.monotonic()
+            result = self.f.run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(time.monotonic()-started, 2)
+            self.assertEqual(self.f.effects(), '')
+        finally:
+            ready.cancel(); ready.join()
+
+    def test_starting_pid_alone_is_unconfirmed(self):
+        self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='starting')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run(FM_ENTRY_STARTUP_WAIT='0')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('startup unconfirmed', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
+    def test_delayed_restart_is_qualified(self):
+        shell = subprocess.Popen([BASH, '-c', 'read -r line'], stdin=subprocess.PIPE)
+        try:
+            self.f.record(harness='codex', console_pid=0)
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            started = time.monotonic()
+            result = self.f.run(STARTUP_DELAY='2', IDLE_SHELL_PID=str(shell.pid))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(time.monotonic()-started, 2)
+            self.assertEqual(self.f.effects(), 'run\n')
+        finally:
+            shell.terminate(); shell.communicate(timeout=5)
+
     def test_failed_restart_with_live_pid_is_not_confirmed(self):
         shell = subprocess.Popen([BASH, '--noprofile', '--norc', '-c', 'read -r line'], stdin=subprocess.PIPE)
         try:
@@ -159,7 +227,7 @@ class LifecycleTests(unittest.TestCase):
             self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
             result = self.f.run(IDLE_SHELL_PID=str(shell.pid), FAIL_RESTART='1')
             self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn('console restart failed', result.stderr)
+            self.assertIn('console startup failed', result.stderr)
             self.assertEqual(self.f.effects(), 'run\n')
         finally:
             shell.terminate(); shell.communicate(timeout=5)
@@ -176,7 +244,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.f.effects(), '')
 
     def test_two_clicks_create_one_console(self):
-        children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=self.f.env,
+        children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=dict(self.f.env, STARTUP_DELAY='2'),
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
         try:
             outputs = [child.communicate(timeout=15) for child in children]

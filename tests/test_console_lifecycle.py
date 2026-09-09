@@ -1,5 +1,8 @@
 """Drive the real Desktop caller through workspace ownership and convergence."""
 import json
+import os
+import select
+import time
 from pathlib import Path
 import subprocess
 import sys
@@ -115,6 +118,62 @@ class LifecycleTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stderr)
                 self.assertIn('convergence timed out', result.stderr)
                 self.assertEqual(self.f.effects(), '')
+
+    def test_failed_held_console_is_not_reused(self):
+        import pty
+        master, slave = pty.openpty()
+        self.f.record(harness='codex')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        child = subprocess.Popen([BASH, shellpath(ENTRY), '--console'],
+                                 env=dict(self.f.env, HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic'),
+                                 stdin=slave, stdout=slave, stderr=slave)
+        os.close(slave)
+        output = b''
+        try:
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and b'Press Enter to close' not in output:
+                if select.select([master], [], [], .1)[0]:
+                    output += os.read(master, 65536)
+            self.assertIn(b'firstmate native console refused', output)
+            self.assertIn(b'Press Enter to close', output)
+            self.assertIsNone(child.poll())
+            record = json.loads((self.f.home/'state/captain-console.json').read_text())
+            self.assertEqual(record['launch_stage'], 'exited')
+            self.assertEqual(record['exit_rc'], 1)
+            result = self.f.run(IDLE_SHELL_PID=str(child.pid))
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('convergence is incomplete (failed)', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+            self.assertIsNone(child.poll())
+            os.write(master, b'\n')
+            self.assertEqual(child.wait(timeout=5), 1)
+        finally:
+            if child.poll() is None:
+                child.terminate(); child.wait(timeout=5)
+            os.close(master)
+
+    def test_failed_restart_with_live_pid_is_not_confirmed(self):
+        shell = subprocess.Popen([BASH, '--noprofile', '--norc', '-c', 'read -r line'], stdin=subprocess.PIPE)
+        try:
+            self.f.record(harness='codex', console_pid=0)
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            result = self.f.run(IDLE_SHELL_PID=str(shell.pid), FAIL_RESTART='1')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('console restart failed', result.stderr)
+            self.assertEqual(self.f.effects(), 'run\n')
+        finally:
+            shell.terminate(); shell.communicate(timeout=5)
+
+    def test_deferred_attach_failure_preserves_status_without_timeout(self):
+        self.f.record(harness='codex')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        started = time.monotonic()
+        result = self.f.run(START_SERVER='1', FAIL_CONVERGE='1', FM_ENTRY_ATTACH_WAIT='20',
+                            FM_ENTRY_NO_ATTACH='', FAIL_ATTACH='79')
+        self.assertEqual(result.returncode, 79, result.stderr)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertNotIn('convergence timed out', result.stderr)
+        self.assertEqual(self.f.effects(), '')
 
     def test_two_clicks_create_one_console(self):
         children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=self.f.env,

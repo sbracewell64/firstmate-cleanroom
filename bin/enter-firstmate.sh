@@ -1370,9 +1370,13 @@ console_pane_process() {  # <pane> -> "name=<n> pid=<p> ppid=<pp> shell_pid=<s> 
 console_pane_recorded_session_of() {  # <pane> -> Herdr's own persisted claude session id for the pane, if any
   hs pane get "$1" 2>/dev/null | jq -r '.result.pane.agent_session // empty | select(.agent=="claude" and .kind=="id") | .value // empty' 2>/dev/null || true
 }
+console_record_failed() {
+  jq -e '.launch_stage == "exited" and .exit_rc != 0' "$CONSOLE_RECORD" >/dev/null 2>&1
+}
 # console_pane_state <pane>: the observed class of the recorded console pane.
 console_pane_state() {
   local pane=$1 proc cpid alive=0 cls
+  if console_record_failed; then echo failed; return 0; fi
   proc=$(console_pane_process "$pane") || { echo absent; return 0; }
   cpid=$(console_record_field console_pid); case "$cpid" in ''|*[!0-9]*) cpid=0 ;; esac
   [ "$cpid" = 0 ] || ! kill -0 "$cpid" 2>/dev/null || alive=1
@@ -1420,6 +1424,10 @@ console_restart_in_pane() {
   deadline=$(( $(date +%s) + 20 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     new_cpid=$(console_record_field console_pid)
+    if console_record_failed; then
+      printf 'enter-firstmate: console restart failed in pane %s (recorded status %s); leaving diagnostics visible\n' "$pane" "$(console_record_field exit_rc)" >&2
+      return 1
+    fi
     if [ -n "$new_cpid" ] && [ "$new_cpid" != "$old_cpid" ] && kill -0 "$new_cpid" 2>/dev/null; then
       printf 'enter-firstmate: console restarted in pane %s (%s); the console contract is running there as pid %s\n' "$pane" "$why" "$new_cpid" >&2
       printf '%s %s restarted\n' "$ws" "$pane"
@@ -1896,6 +1904,18 @@ fi
 if [ -n "$converge_pid" ]; then
   herdr --session "$FM_HERDR_SESSION" <&0 &
   attach_pid=$!
+  while kill -0 "$attach_pid" 2>/dev/null && kill -0 "$converge_pid" 2>/dev/null; do
+    sleep 0.1
+  done
+  attach_rc=0
+  if ! kill -0 "$attach_pid" 2>/dev/null; then
+    wait "$attach_pid" || attach_rc=$?
+    if [ "$attach_rc" != 0 ]; then
+      kill "$converge_pid" 2>/dev/null || true
+      wait "$converge_pid" 2>/dev/null || true
+      exit "$attach_rc"
+    fi
+  fi
   converge_rc=0
   wait "$converge_pid" || converge_rc=$?
   if [ "$converge_rc" != 0 ]; then

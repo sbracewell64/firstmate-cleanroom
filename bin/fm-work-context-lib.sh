@@ -83,6 +83,9 @@
 # demonstrate, standing in for that binary. A merge is not activation, and the
 # roadmap flip is `landed`, never `active`.
 
+# shellcheck source=bin/fm-work-context-engineering-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-work-context-engineering-lib.sh"
+
 # Distinct typed exits (mirroring fm-gate-refuse-lib.sh's exit-3 refusal grade):
 FM_WORK_CONTEXT_PASS_EXIT=0
 FM_WORK_CONTEXT_USAGE_EXIT=2
@@ -316,6 +319,8 @@ fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [conf
       fi ;;
   esac
   FM_WORK_CONTEXT_VERDICT=proceed
+  fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+  fm_work_context_engineering_brief "$data" "$id" || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dispatch authority satisfied (classes=$FM_WORK_CONTEXT_CLASSES)"
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
@@ -586,6 +591,7 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   esac
 
   FM_WORK_CONTEXT_VERDICT=proceed
+  fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dependent effect authorized: source, references, owners, and authority current"
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
@@ -646,8 +652,8 @@ _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
   case "$rc" in
     0) : ;;
     10) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=already-landed; return 0 ;;
-    11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-absent; return 1 ;;
-    12) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-not-landed; return 1 ;;
+    11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS="obligation-absent"; return 1 ;;
+    12) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS="obligation-not-landed"; return 1 ;;
     *)  rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=refresh-error; return 1 ;;
   esac
   if mv -f "$tmp" "$file" 2>/dev/null; then
@@ -816,6 +822,11 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     printf 'roadmap_obligation=%s\n' "${roadmap_key:-none}"
     printf 'roadmap_refresh=%s\n' "$roadmap_status"
     printf 'currentness=%s\n' "$currentness"
+    printf 'engineering_context=%s\n' "$(fm_meta_get "$state/$id.meta" stage_context)"
+    printf 'engineering_evidence=%s\n' "$(fm_meta_get "$state/$id.meta" stage_evidence)"
+    fm_work_context_engineering_residuals "$desc" | while IFS= read -r obligation; do
+      printf 'engineering_residual=%s\n' "$obligation"
+    done
     printf 'epoch=%s\n' "$(date +%s 2>/dev/null || echo 0)"
   } > "$tmp" 2>/dev/null || {
     rm -f "$tmp" 2>/dev/null

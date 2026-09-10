@@ -432,7 +432,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?
@@ -493,3 +493,61 @@ test_missing_capacity_produces_pending_and_no_launch
 test_hold_appearing_during_admission_refuses
 test_direct_pr_and_local_only_record_candidate_only
 test_only_read_only_verbs_were_sent
+
+# The result owner must distinguish checked pointers from observed consumption.
+test_engineering_stage_evidence_and_residuals() {
+  local wt head out rc desc pin mutation
+  wt="$TMP_ROOT/wt-engineering"
+  make_worktree "$wt" fm/engineering
+  head=$(git -C "$wt" rev-parse HEAD)
+  make_task engineering no-mistakes "$wt"
+  printf abc > "$DATA/engineering/skill.md"
+  desc="$DATA/engineering/work-context.json"
+  cat > "$desc" <<EOF
+{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"$DATA/engineering/skill.md","release":"r1","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","role":"worker","stage":"test","trigger":"test-change"}],"verification":[{"id":"caller","skill":"tdd","scope":"composition","public_seam":"fm-brief","inputs":"declared source","environment":"controlled and inherited","oracle":"literal expected bytes","allowed_effects":"scratch only","source_identity":"r1","caller_identity":"fixture","command":"receiver-test","negative":"stale source refuses","owner":"crewmate-boundary-repair","next_gate":"ci-ready"},{"id":"consumer","skill":"tdd","scope":"deployed-consumer","public_seam":"next-worker","inputs":"qualified release","environment":"native subscription","oracle":"actual worker artifact","allowed_effects":"authorized receiver work","source_identity":"r1","caller_identity":"next-worker","command":"qualified worker","negative":"old source refuses","owner":"runtime-pin-adoption-gap","next_gate":"next genuine dispatch"}]}}
+EOF
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" engineering committed 2>&1); rc=$?
+  expect_code 0 "$rc" "valid engineering candidate admits: $out"
+  pin=$(meta_get engineering stage_context)
+  [ -n "$pin" ] || fail "stage must bind the declared engineering context"
+  jq '.engineering.generation="g2"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$("$STAGE" engineering show 2>&1); rc=$?
+  expect_code 1 "$rc" "resume must refuse a changed admitted context"
+  assert_contains "$out" 'ENGINEERING_CONTEXT' "resume names stale context"
+  jq '.engineering.generation="g1"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  # Canonical JSON formatting is not a semantic generation change.
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering reviewing "$head")
+  out=$("$STAGE" engineering running --run 01ENG 2>&1); rc=$?
+  expect_code 0 "$rc" "run binding survives unchanged engineering contract: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed https://github.com/o/r/pull/8)
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "green run without required behavioral evidence refuses"
+  assert_contains "$out" 'engineering-evidence' "CI-ready names missing evidence"
+  printf 'native tool read observed\n' > "$DATA/engineering/read.log"
+  printf 'receiver-test: expected stale source refusal and matching bytes\n' > "$DATA/engineering/test.log"
+  jq -n --arg task engineering --arg head "$head" --arg load "$DATA/engineering/read.log" \
+    --arg lsha "$(sha256sum < "$DATA/engineering/read.log" | cut -d' ' -f1)" \
+    --arg behavior "$DATA/engineering/test.log" --arg bsha "$(sha256sum < "$DATA/engineering/test.log" | cut -d' ' -f1)" \
+    '{task:$task,generation:"g1",run:"01ENG",head:$head,results:[{id:"caller",load:{kind:"tool-read",path:$load,sha256:$lsha,source_sha256:"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",role:"worker",stage:"test"},behavior:{scope:"composition",path:$behavior,sha256:$bsha,command:"receiver-test",oracle:"literal expected bytes",exit_code:0}}]}' \
+    > "$DATA/engineering/engineering-evidence.json"
+  cp "$DATA/engineering/engineering-evidence.json" "$DATA/engineering/valid-evidence.json"
+  for mutation in '.results=[]' '.results[0].load.kind="self-report"' '.head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' '.results[0].behavior.exit_code=9' '.results[0].behavior.scope="component"'; do
+    jq "$mutation" "$DATA/engineering/valid-evidence.json" > "$DATA/engineering/engineering-evidence.json"
+    out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+    expect_code 1 "$rc" "incomplete/stale/self-reported/failed/wrong-scope evidence must refuse: $mutation"
+  done
+  cp "$DATA/engineering/valid-evidence.json" "$DATA/engineering/engineering-evidence.json"
+  printf 'changed after indexing' >> "$DATA/engineering/test.log"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "artifact changes after indexing must refuse"
+  printf 'receiver-test: expected stale source refusal and matching bytes\n' > "$DATA/engineering/test.log"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 0 "$rc" "bound independent artifacts allow CI-ready: $out"
+  out=$("$STAGE" engineering activated 2>&1); rc=$?
+  expect_code 0 "$rc" "landed source can record its existing readback: $out"
+  assert_grep 'runtime-pin-adoption-gap' "$STATE/engineering.parent-currentness" "completion lost the actual consumer owner"
+  assert_grep 'consumer' "$STATE/engineering.parent-currentness" "completion lost the open consumer obligation"
+  pass "engineering stage: pins resume context, requires bound evidence, carries consumer residual"
+}
+test_engineering_stage_evidence_and_residuals

@@ -9,6 +9,7 @@
 #   fm-work-context.sh preflight <id> [--effect dependent|independent|recovery]
 #   fm-work-context.sh classify  <id>
 #   fm-work-context.sh reconcile <id> <transition>
+#   fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>
 #   fm-work-context.sh select
 #
 # preflight prints one `verdict=<type> detail=<...>` line and exits:
@@ -71,6 +72,13 @@ require_id() {
 }
 
 case "${1:-}" in
+  engineering)
+    [ "$#" -eq 4 ] || { echo 'usage: engineering <id> <worker|reviewer|all> <stage|all>' >&2; exit 2; }
+    if ! fm_work_context_engineering_render "$DATA" "$2" "$3" "$4"; then
+      printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
+      exit 3
+    fi
+    ;;
   preflight)
     shift
     id=${1:-}; require_id "$id"; shift || true

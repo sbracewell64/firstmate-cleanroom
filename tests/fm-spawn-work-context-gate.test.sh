@@ -140,3 +140,29 @@ assert_absent "$HOME_DIR/state/$ID.meta" "the trusted-path refusal happens befor
 pass "finding A at the real caller: a declared-but-unreachable verifier fails closed before any record, never downgrading to the schema-shaped receipt"
 
 echo "# fm-spawn-work-context-gate.test.sh: all assertions passed"
+
+# Exact source and current generated context are prerequisites at the actual
+# dispatcher. The fake harness is only the external process-launch boundary.
+ID=wcgate-engineering-z6
+REC=$(make_case wcgate-engineering "$ID"); read_case "$REC"
+printf abc > "$HOME_DIR/skill.md"
+write_desc "$HOME_DIR" "$ID" "{\"engineering\":{\"generation\":\"g1\",\"triggers\":[\"test-change\"],\"skills\":[{\"id\":\"tdd\",\"path\":\"$HOME_DIR/skill.md\",\"release\":\"fixture-r1\",\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"role\":\"worker\",\"stage\":\"test\",\"trigger\":\"test-change\"}],\"verification\":[]}}"
+OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR"); STATUS=$?
+expect_code 1 "$STATUS" "an old brief must not bypass current engineering delivery"
+assert_contains "$OUT" 'stale-engineering-brief' "dispatch identifies the stale brief"
+assert_absent "$HOME_DIR/state/$ID.meta" "stale brief created a task record"
+[ ! -s "$LAUNCH_LOG" ] || fail "stale brief reached the harness"
+rm "$HOME_DIR/data/$ID/brief.md"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$ID" receiver --mode no-mistakes >/dev/null || fail "real generator failed"
+sed -i.bak 's/{TASK}/authorized receiver fixture/g' "$HOME_DIR/data/$ID/brief.md"
+printf stale > "$HOME_DIR/skill.md"
+OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR"); STATUS=$?
+expect_code 1 "$STATUS" "stale selected bytes must refuse actual dispatch"
+assert_contains "$OUT" 'stale-skill-source' "dispatch identifies the stale skill"
+assert_absent "$HOME_DIR/state/$ID.meta" "stale source created a task record"
+[ ! -s "$LAUNCH_LOG" ] || fail "stale source reached the harness"
+printf abc > "$HOME_DIR/skill.md"
+OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR"); STATUS=$?
+expect_code 0 "$STATUS" "current source and generated brief dispatch: $OUT"
+assert_present "$HOME_DIR/state/$ID.meta" "valid source/brief never reached actual dispatch"
+pass "engineering source and fresh brief are checked by actual dispatch before endpoint effects"

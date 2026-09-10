@@ -6,6 +6,9 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
+# Worker discipline is owned by bin/fm-work-context-discipline-lib.sh.
+# --shared-boundary and --proof-surface <text> add ship-only evidence requirements.
+# Scouts receive its evidence subset; secondmate charters receive neither.
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
@@ -83,6 +86,10 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-work-context-discipline-lib.sh
+. "$SCRIPT_DIR/fm-work-context-discipline-lib.sh"
+# shellcheck source=bin/fm-work-context-engineering-lib.sh
+. "$SCRIPT_DIR/fm-work-context-engineering-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -114,6 +121,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+SHARED_BOUNDARY=0
+PROOF_SURFACE=
 POS=()
 want_value=
 for a in "$@"; do
@@ -123,6 +132,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      proof-surface) PROOF_SURFACE=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -135,7 +145,10 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
-    # yolo never reaches the worker: it is firstmate's merge authority, not a
+    --shared-boundary) SHARED_BOUNDARY=1 ;;
+    --proof-surface) want_value="proof-surface" ;;
+    --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    # yolo never reaches the worker: it is recorded posture, not authority or a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
     --yolo|--yolo=*) echo "error: --yolo is not a brief input; pass it to bin/fm-spawn.sh, which records the task's merge posture" >&2; exit 1 ;;
@@ -160,6 +173,10 @@ if [ "$KIND" = ship ]; then
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+if [ "$KIND" != ship ] && { [ "$SHARED_BOUNDARY" -eq 1 ] || [ -n "$PROOF_SURFACE" ]; }; then
+  echo "error: --shared-boundary and --proof-surface apply only to ship briefs" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -336,7 +353,19 @@ For a reported malfunction or causal review, read \`$FM_ROOT/.agents/skills/diag
 EOF
 WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
 
+ENGINEERING=
+if [ "$KIND" != secondmate ]; then
+  ENGINEERING_ROLE=all
+  ENGINEERING_STAGE=all
+  [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
+  ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+    echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
+    exit 3
+  }
+fi
+
 if [ "$KIND" = scout ]; then
+DISCIPLINE=$(fm_discipline_block scout) || exit 1
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -376,6 +405,10 @@ The report is the only thing that survives, so anything worth keeping must be in
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
+$DISCIPLINE
+
+$ENGINEERING
+
 $INBOX_SECTION
 
 # Definition of done
@@ -411,6 +444,10 @@ case "$MODE" in
     ;;
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
+DISCIPLINE_ARGS=()
+[ "$SHARED_BOUNDARY" -eq 0 ] || DISCIPLINE_ARGS+=(--shared-boundary)
+[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+DISCIPLINE=$(fm_discipline_block ship "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -460,6 +497,10 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$DISCIPLINE
+
+$ENGINEERING
 
 $INBOX_SECTION
 

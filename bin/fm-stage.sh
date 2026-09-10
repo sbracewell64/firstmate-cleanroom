@@ -89,6 +89,12 @@
 #              A worker resuming after a restart runs this first and continues
 #              from the recorded stage.
 #
+# Engineering declarations are checked before stage effects and on resumed show;
+# stage_context binds the canonical engineering JSON SHA256 for the admitted attempt;
+# stage_evidence binds the admitted evidence-index bytes. Both persist across stages.
+# Status receipts include engineering (context hash) and residuals (open ids).
+# CI-ready requires the declared local evidence at the current run/successor head;
+# activated carries unfulfilled consumer obligations through work-context currentness.
 # Task-record fields (this script is their only writer; docs/configuration.md
 # routes the record's other owners):
 #   stage=<stage>              stage_epoch=<epoch of the last transition>
@@ -160,6 +166,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-work-context-lib.sh
 . "$SCRIPT_DIR/fm-work-context-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 RETRY=0
 RUN_ARG=
@@ -317,12 +325,15 @@ profile_identity() {
 # --- receipt and record -----------------------------------------------------
 
 receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
-  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6
-  printf '%s: task=%s gen=%s branch=%s head=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s\n' \
+  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 residuals=
+  if [ -n "$FM_WC_ENGINEERING" ]; then
+    residuals=$(fm_work_context_engineering_residuals "$DATA/$ID/work-context.json" | jq -sr 'map(.id) | join(",")')
+  fi
+  printf '%s: task=%s gen=%s branch=%s head=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s engineering=%s residuals=%s\n' \
     "$stage" "$ID" "$(enc "$GEN")" "$(enc "$branch")" "$(enc "$(short "$head")")" "$(enc "$(short "$tree")")" \
     "$(intent_identity)" "$(enc "$(closed_decision_keys)")" "$(enc "$MODE")" "$(enc "$YOLO")" "$(enc "$(alloc_identity)")" \
     "$(enc "$(obs nm_home)")" "$(enc "$(profile_identity)")" "$(enc "$(obs attempt_id)")" "$(enc "$(obs run_id)")" \
-    "$(enc "$(obs run_status)")" "$(enc "$(obs outcome_class)")" "$(enc "$STAGE_PR_VALUE")" "$owner" "$(enc "$reason")"
+    "$(enc "$(obs run_status)")" "$(enc "$(obs outcome_class)")" "$(enc "$STAGE_PR_VALUE")" "$owner" "$(enc "$reason")" "$(enc "${FM_WC_ENGINEERING_DIGEST:-}")" "$(enc "$residuals")"
 }
 
 # Append the receipt, then publish the record. A crash between the two leaves a
@@ -349,6 +360,8 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     printf 'stage_head=%s\n' "$head"
     printf 'stage_tree=%s\n' "$tree"
     printf 'stage_gen=%s\n' "$GEN"
+    printf 'stage_context=%s\n' "${FM_WC_ENGINEERING_DIGEST:-$(meta stage_context)}"
+    printf 'stage_evidence=%s\n' "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}"
     for kv in "$@"; do printf '%s\n' "$kv"; done
   } >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE"; then
@@ -378,6 +391,10 @@ next_for() {  # <stage>
     validation-pending)
       printf 'next: worker stops and waits (%s); firstmate clears the hold or repairs the environment, then the worker re-runs `%s committed`\n' "$(dash "$(meta stage_reason)")" "$SELF_CMD" ;;
     validation-admitted)
+      if [ -n "$FM_WC_ENGINEERING" ]; then
+        fm_work_context_engineering_render "$DATA" "$ID" all all || refuse validation-admitted ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+        printf 'intent: include this checked engineering context and its verification obligations in the existing no-mistakes --intent; its review owner loads the reviewer source.\n'
+      fi
       printf 'next: worker starts the pipeline now on head %s: `no-mistakes axi run --intent <the accepted intent>` (never --yes); as soon as the run exists, run `%s running`\n' "$(short "$(meta stage_head)")" "$SELF_CMD" ;;
     validation-running)
       printf 'next: worker drives the gates with `no-mistakes axi respond` (an ask-user finding goes to firstmate as needs-decision, never answered by the worker); when the pipeline reports CI green, run `%s ci-ready --pr <url>`\n' "$SELF_CMD" ;;
@@ -404,11 +421,49 @@ crew_state() {
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-crew-state.sh" "$ID" 2>/dev/null || true
 }
 
+# Reuse the work-context owner at existing stage boundaries. The canonical
+# engineering hash survives every transition; deleting/changing an admitted
+# declaration cannot downgrade its obligations. Only a supported new attempt
+# may accept a changed context, after custody returns to the worker.
+engineering_context() { # <transition>
+  local transition=$1 pin
+  fm_work_context_engineering "$DATA" "$ID" all all || refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+  pin=$(meta stage_context)
+  if [ -n "$pin" ] && [ "$pin" != "$FM_WC_ENGINEERING_DIGEST" ]; then
+    if [ "$transition" != committed ] || [ "$RETRY" -ne 1 ]; then
+      refuse "$transition" ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt'
+    fi
+  fi
+}
+
+engineering_result() {
+  local run output actual run_head
+  [ -n "$FM_WC_ENGINEERING" ] || return 0
+  run=$(obs run_id)
+  [ -n "$run" ] || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: no bound run'
+  output=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi status --run "$run") \
+    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run read failed'
+  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] \
+    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run mismatch'
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+  actual=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
+    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
+  git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" \
+    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
+  fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
+    || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
+  if [ -f "$DATA/$ID/engineering-evidence.json" ]; then
+    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$(_fm_wc_engineering_sha "$DATA/$ID/engineering-evidence.json") \
+      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-unreadable: index changed during admission'
+  fi
+}
+
 # --- transitions ------------------------------------------------------------
 
 do_committed() {
   local current recorded_head
   require_ship committed
+  engineering_context committed
   require_worktree committed
   read_candidate
   [ -n "$BRANCH" ] || refuse committed DETACHED "HEAD is detached; a candidate lives on a branch"
@@ -489,6 +544,7 @@ admit_validation() {
 
 do_running() {  # <transition-label>
   local label=${1:-running} current run
+  engineering_context "$label"
   require_ship "$label"
   [ "$MODE" = no-mistakes ] || refuse "$label" NOT_ADMITTED "mode=$MODE has no validation run"
   require_worktree "$label"
@@ -525,6 +581,7 @@ do_running() {  # <transition-label>
 do_ci_ready() {
   local current verdict
   require_ship ci-ready
+  engineering_context ci-ready
   [ "$MODE" = no-mistakes ] || refuse ci-ready NOT_ADMITTED "mode=$MODE reports its PR with done:, not a ci-ready stage"
   [ -n "$PR_ARG" ] || refuse ci-ready BAD_PR "--pr <url> is required"
   fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse ci-ready BAD_PR "not a canonical PR URL: $PR_ARG"
@@ -544,6 +601,7 @@ do_ci_ready() {
     *) refuse ci-ready NOT_CI_READY "canonical state is not checks green from the run step: ${verdict:-no verdict}" ;;
   esac
   observe refresh "$ID"
+  engineering_result
   STAGE_PR_VALUE=$PR_ARG
   if [ "$current" = ci-ready ] && [ "$(meta stage_pr)" = "$PR_ARG" ]; then
     unchanged ci-ready
@@ -557,6 +615,7 @@ do_ci_ready() {
 do_landing() {
   local current
   require_ship landing
+  engineering_context landing
   current=$(meta stage)
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
@@ -605,7 +664,7 @@ reconcile_currentness() {  # <transition>
   desc="$DATA/$ID/work-context.json"
   command -v jq >/dev/null 2>&1 || return 0
   [ -f "$desc" ] || return 0
-  jq -e '.reconcile != null' "$desc" >/dev/null 2>&1 || return 0
+  jq -e '.reconcile != null or .engineering != null' "$desc" >/dev/null 2>&1 || return 0
   # The stage transition is already the authority; a reconcile that cannot
   # confirm records the discrepancy in the receipt rather than failing the stage.
   fm_work_context_reconcile "$STATE" "$DATA" "$ID" "$transition" || true
@@ -616,6 +675,7 @@ reconcile_currentness() {  # <transition>
 do_activated() {
   local current evidence
   require_ship activated
+  engineering_context activated
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
   evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the candidate head reachable from the project clone's checked-out head"
@@ -631,6 +691,8 @@ do_activated() {
 }
 
 do_show() {
+  engineering_context show
+  fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   local current
   current=$(meta stage)
   printf 'STAGE_RECORDED: %s task=%s gen=%s branch=%s head=%s attempt=%s run=%s pr=%s reason=%s\n' \

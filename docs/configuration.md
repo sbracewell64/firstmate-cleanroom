@@ -414,6 +414,16 @@ Malformed JSON, an empty or malformed rule/default array, an unverified harness,
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Engineering work context
+
+The optional `engineering` object in `data/<id>/work-context.json` binds an accepted task's applicable skill sources and verification obligations; `bin/fm-work-context-engineering-lib.sh` owns its exact schema, trigger mapping, evidence-index fields and scope rules.
+Use `bin/fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>` to read the checked current context before applicable work and after resume.
+The brief and promotion generators deliver the same source pointers, and dispatch rejects stale sources or a stale generated context.
+The stage owner pins the engineering generation, carries reviewer obligations into the existing no-mistakes intent and requires current-run behavioral artifacts before CI-ready.
+A native/tool read records source delivery; the existing review owner assesses the independent behavioral evidence.
+The existing parent-currentness receipt retains runtime and deployed-consumer obligations after source landing, including a consumer obligation for every applicable skill.
+Absent engineering declarations leave unrelated work unchanged; an installed skill, copied heading, successful source merge or self-report never establishes actual consumption.
+
 ## Work-context authority gate (config/work-context-ruling-verifier)
 
 `bin/fm-spawn.sh` consults the work-context authority gate (`bin/fm-work-context-lib.sh`) after its backlog-dispatchability probe and before any endpoint, worktree, or record exists.

@@ -828,6 +828,101 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# Public output is the worker's instruction contract, not implementation text.
+test_worker_kernel_roles_and_promotion() {
+  local home ship scout charter promoted out rc
+  home="$TMP_ROOT/kernel/home"
+  mkdir -p "$home/data" "$home/state"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-ship alpha --mode no-mistakes >/dev/null \
+    || fail "ordinary ship did not render"
+  ship="$home/data/kernel-ship/brief.md"
+  assert_grep '# Worker discipline' "$ship" "ordinary ship is missing the reusable kernel"
+  assert_grep 'could-not-observe (CNO)' "$ship" "ship must retain uncertainty"
+  assert_grep 'authority constraints' "$ship" "minimality must preserve authority"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-scout alpha --scout >/dev/null \
+    || fail "scout did not render"
+  scout="$home/data/kernel-scout/brief.md"
+  assert_grep '# Evidence discipline' "$scout" "scout needs evidence-only discipline"
+  assert_grep 'recommends and never instructs a merge or landing' "$scout" "scout recommendation is not authority"
+  if grep -q '^# Worker discipline\|climb the ladder\|^# Shared boundary' "$scout"; then
+    fail "scout received the ship engineering loop"
+  fi
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='supervise' "$ROOT/bin/fm-brief.sh" kernel-mate --secondmate --no-projects >/dev/null \
+    || fail "charter did not render"
+  charter="$home/data/kernel-mate/brief.md"
+  if grep -q '^# Worker discipline\|^# Evidence discipline' "$charter"; then
+    fail "supervisor received a worker kernel"
+  fi
+  printf '%s\n' 'kind=scout' 'worktree=/tmp/unused-kernel-fixture' > "$home/state/kernel-scout.meta"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-promote.sh" kernel-scout --mode no-mistakes --yolo off 2>&1); rc=$?
+  expect_code 0 "$rc" "promotion did not render: $out"
+  promoted="$home/data/kernel-scout/ship-instructions.md"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" > "$home/ship-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" > "$home/promoted-kernel"
+  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different kernel"
+  [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "ship-only fragment accepted for scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --shared-boundary --proof-surface 'receiver CLI' >/dev/null \
+    || fail "shared-boundary ship did not render"
+  assert_grep '# Shared boundary' "$home/data/kernel-shared/brief.md" "explicit shared seam was lost"
+  assert_grep 'receiver CLI' "$home/data/kernel-shared/brief.md" "explicit proof surface was lost"
+  pass "worker kernel: ship/promotion parity, evidence-only scout, supervisor exclusion, conditional fragments"
+}
+
+test_engineering_context_sources_and_resume() {
+  local home desc brief out rc command
+  home="$TMP_ROOT/engineering/home"
+  mkdir -p "$home/data/engineering" "$home/state"
+  printf abc > "$home/skill.md"
+  desc="$home/data/engineering/work-context.json"
+  cat > "$desc" <<EOF
+{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"$home/skill.md","release":"fixture-r1","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","role":"worker","stage":"test","trigger":"test-change"}],"verification":[]}}
+EOF
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering alpha --mode no-mistakes >/dev/null \
+    || fail "declared engineering brief did not render"
+  brief="$home/data/engineering/brief.md"
+  assert_grep 'fixture-r1' "$brief" "fresh brief lost the selected skill release"
+  assert_grep 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' "$brief" "fresh brief lost exact skill bytes"
+  assert_grep 'engineering engineering worker test' "$brief" "brief needs the current context command at dependent use/resume"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 0 "$rc" "current context should be available on resume: $out"
+  # Stage role is authoritative; a source label cannot request reviewer work
+  # in a worker stage. The scout subset cannot acquire a test-writing loop.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer test 2>&1); rc=$?
+  expect_code 3 "$rc" "reviewer/test role conflict must refuse"
+  mkdir -p "$home/data/engineering-scout"
+  cp "$desc" "$home/data/engineering-scout/work-context.json"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering-scout alpha --scout >/dev/null || fail "scout source fixture failed"
+  if grep -q 'fixture-r1' "$home/data/engineering-scout/brief.md"; then
+    fail "scout received the test-writing skill instead of its evidence subset"
+  fi
+  # shellcheck disable=SC2016 # Extract a literal command from the generated public contract.
+  command=$(sed -n 's/^  Run `\(.*\)`\.$/\1/p' "$brief")
+  out=$(FM_HOME="$home/wrong" FM_DATA_OVERRIDE="$home/wrong" FM_ROOT_OVERRIDE="$home/wrong" bash -c "$command" 2>&1); rc=$?
+  expect_code 0 "$rc" "generated caller must bind its own home/data/source against conflicting ambient inputs: $out"
+  assert_contains "$out" "FM_ROOT_OVERRIDE=$ROOT" "resumed output drifted to the ambient wrong source root"
+  printf stale > "$home/skill.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "resumed context must reject stale skill bytes"
+  assert_contains "$out" 'stale-skill-source' "stale source refusal must name its cause"
+  rm "$home/skill.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "missing source must not become a passing read"
+  assert_contains "$out" 'missing-skill-source' "missing source refusal must name its cause"
+  # No trigger means this absent TDD source is irrelevant to this task.
+  jq '.engineering.triggers=[]' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 0 "$rc" "irrelevant trigger must not require a TDD loop: $out"
+  assert_not_contains "$out" 'fixture-r1' "irrelevant skill leaked into worker obligations"
+  : > "$desc"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "empty/unreadable declaration must not downgrade to ordinary work"
+  pass "engineering context: fresh/resumed exact bytes, missing/stale refusal, irrelevant trigger"
+}
+
+test_engineering_context_sources_and_resume
+test_worker_kernel_roles_and_promotion
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header

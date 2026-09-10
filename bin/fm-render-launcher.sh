@@ -8,8 +8,9 @@
 # host path from $FM_HOME/config (code-root, tools-root, ...). This script:
 #   1. captures a pre-cutover ROLLBACK snapshot of the current host launcher, its
 #      config, and any Windows .lnk bytes named with --lnk (never edited/launched);
-#   2. writes the staging config scalars and the consumer shim under a staging
-#      directory (never the live path);
+#   2. replaces staged config with a fresh independent copy of live config,
+#      materializing linked source files and applying explicit scalar overrides,
+#      then writes the consumer shim (never the live path);
 #   3. QUALIFIES the staged artifacts (syntax, shellcheck, the launcher tests) and
 #      writes a qualification report enumerating the live cutover matrix.
 # It performs NO cutover and starts NO primary: moving staging into the live home,
@@ -19,6 +20,8 @@
 # SAFETY: the adopted --code-root must DIFFER from the current live (donor) code
 # root; adoption that leaves the donor code root in place is refused, because the
 # Windows shortcut's --cd points at the donor and the adopted release must win.
+# Linked staging destinations and overlap with live configuration are refused.
+# Re-rendering removes obsolete staged config while retaining rollback snapshots.
 #
 # Usage:
 #   fm-render-launcher.sh --code-root <adopted-release> [options]

@@ -6,7 +6,7 @@ The files and environment variables you set to operate firstmate.
 
 The managed primary Codex client is selected by `FM_HOME/config/console-codex-client.json`.
 `bin/fm-console-codex.py` owns its package inventory and preflight contract; the pin includes the absolute `path`, main executable `sha256`, and a `files` map of package-relative paths to `bytes` and `sha256`.
-The complete native package, including the code-mode host, search, sandbox and shell resources, must match before launching.
+The complete Linux native package, including the code-mode host, search, sandbox and shell resources, must match before launching.
 A standalone executable hash does not qualify an executable runtime.
 The guard verifies native ChatGPT authentication and the selected built-in OpenAI model before launch, refusing conflicting API/provider inputs.
 Its `--check` performs metadata qualification without inference; deployed primary and worker consumption require separate evidence.
@@ -14,7 +14,10 @@ This primary pin does not configure worker or no-mistakes clients.
 Interactive launcher and console failures retain their diagnostics until Enter is pressed and return the original failing status.
 Noninteractive callers return immediately; successful exits do not pause.
 Unavailable server ownership or console convergence refuses launch instead of reporting a successful attachment.
+Creation, restart, and reuse require observed harness startup matching the selected profile and console record; a live preparation shell alone is insufficient.
+Concurrent Desktop launches serialize console creation, and unknown or conflicting existing ownership blocks another primary.
 `bin/fm-render-launcher.sh --require-complete-config` checks required isolation inputs when preparing activation staging; ordinary menu staging is not activation qualification.
+The renderer's [header](../bin/fm-render-launcher.sh) owns snapshot and override mechanics; deployment and actual consumer qualification remain separate activation obligations.
 
 ## Orchestrator behavior (AGENTS.md)
 

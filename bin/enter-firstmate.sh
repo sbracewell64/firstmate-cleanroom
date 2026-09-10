@@ -53,7 +53,7 @@
 #      root pane (no worker is spawned to build the UI);
 #   5. attaches the Herdr TUI to that session in the current console window.
 # Invoked with --console (only ever by step 4, inside the clean-room session's
-# own pane) it re-validates and execs the harness in place. Closing the TUI
+# own pane) it re-validates and runs the harness as a foreground child. Closing the TUI
 # window leaves the server and the console running; the next click re-attaches.
 #
 # NO-MISTAKES ISOLATION (2026-09-02, control issue #3 no_mistakes ruling). The
@@ -179,16 +179,12 @@
 # or dead/foreign owner is stale-for-this-console; the launcher supersedes that
 # generation (cold_arm_supersede_stale) and arms its own typed-delivery owner,
 # which attaches to the still-healthy watcher rather than starting a second one.
-# Live relaunch 2 (21:50Z) showed the timing that the inline classification
-# cannot see: a headless Herdr server evaluates its restore at start but SPAWNS
-# the restored console pane's terminal only when a TUI client attaches (server
-# log: `client connected` then `pane.spawn.start` 13 s after startup), and this
-# launcher attaches LAST (`exec herdr --session`). The inline convergence saw an
-# unreadable pane for its whole settle window and left it; the native resume
-# then ran unopposed. So when THIS launch started the server, the convergence
-# is delegated to ONE detached owner (`--converge-owner`, the arm owner's
-# setsid idiom) that waits for the pane to materialize after the attach, lets
-# the restore settle, and applies exactly the same classification and actions.
+# Herdr materializes restored console terminals only after a TUI attaches.
+# When THIS launch started the server, one supervised --converge-owner child
+# waits for that terminal, lets restore settle, and applies the same console
+# classification and actions while the caller observes attachment and convergence.
+# The caller propagates either failure; transport acceptance alone is not startup.
+# Executable caller regressions live in tests/test_console_lifecycle.py.
 #
 # HARNESS PERMISSION POLICY (2026-09-03, control issue #7 ruling 3, explicit
 # captain authorization; applied in the recovery session after the live proof).
@@ -217,9 +213,10 @@
 #         FM_ENTRY_RESUME_WINDOW=<s>                     a resume that exits non-zero within this bound is stale (default 20)
 #         FM_ENTRY_RESTORE_SETTLE=<s>                    bound waited for Herdr's restore to settle after this launch started the server (default 12)
 #         FM_ENTRY_EXIT_WAIT=<s>                         bound for a restored non-canonical harness to exit before the canonical relaunch (default 90)
-#         enter-firstmate.sh --converge-owner <ws> <pane>  (internal) detached post-attach convergence owner, started by a launch that started the server
+#         enter-firstmate.sh --converge-owner <ws> <pane>  (internal) supervised post-attach convergence owner, started by a launch that started the server
 #         FM_ENTRY_ATTACH_WAIT=<s>                       bound the convergence owner waits for the restored pane to materialize (default 120)
 #         FM_ENTRY_COMPOSER_WAIT=<s>                     bound the convergence waits for a just-restored harness's composer to read empty (default 60)
+#         FM_ENTRY_STARTUP_WAIT=<s>                      bound for observed matching startup; default includes arm, projection and native preflight budgets
 #         FM_ENTRY_LIB=1 . enter-firstmate.sh            load only the pure decision functions (tests)
 #         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default fable-5.1)
 #         FM_HARNESS=<harness>                           explicit harness override (e.g. bash evidence runs); bypasses the profile menu
@@ -659,7 +656,7 @@ console_pane_classify() {
 # console_converge_plan <session-started-now 0|1> -> inline | deferred
 # A server this launch started restores the console pane's terminal only when
 # the TUI attaches, after the launch path's last step, so its convergence runs
-# in the detached post-attach owner; a running server has a readable pane now.
+# in the supervised post-attach owner; a running server has a readable pane now.
 console_converge_plan() { if [ "${1:-0}" = 1 ]; then echo deferred; else echo inline; fi; }
 # console_converge_action <class> <session-started-now 0|1> <composer> <resume-id>
 # -> reuse | restart | converge | leave
@@ -1029,6 +1026,8 @@ COLD_ARM_SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BA
 COLD_ARM_TIMEOUT=${FM_ENTRY_ARM_TIMEOUT:-40}
 COLD_ARM_DELIVER_WAIT=${FM_ENTRY_DELIVER_WAIT:-900}
 case "$COLD_ARM_TIMEOUT" in ''|*[!0-9]*|0) COLD_ARM_TIMEOUT=40 ;; esac
+# Startup must allow the bounded preparation stages to finish; creation-lock
+# contenders must also allow convergence and startup before attempting reuse.
 CONSOLE_STARTUP_DEFAULT=$(( COLD_ARM_TIMEOUT + 120 + 4 * 25 + 5 + 20 ))
 CONSOLE_STARTUP_WAIT=${FM_ENTRY_STARTUP_WAIT:-$CONSOLE_STARTUP_DEFAULT}
 case "$CONSOLE_STARTUP_WAIT" in ''|*[!0-9]*) CONSOLE_STARTUP_WAIT=$CONSOLE_STARTUP_DEFAULT ;; esac

@@ -1,0 +1,26 @@
+Synthetic Linux executable-caller evidence; no inference or live runtime used.
+Concurrent Desktop caller 1: exit=0
+
+enter-firstmate: console workspace w8 pane w8:p1 (created) in session synthetic at /synthetic.sock
+enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI
+
+Concurrent Desktop caller 2: exit=0
+
+enter-firstmate: console workspace w8 pane w8:p1 (existing) in session synthetic at /synthetic.sock
+enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI
+
+Observed vendor-side mutations:
+create
+run
+
+Recorded failed child, Desktop caller exit=79:
+enter-firstmate: WARNING: console pane w7:p1 foreground is neither the canonical console nor an idle shell (failed); it is left untouched - inspect it
+enter-firstmate: console convergence is incomplete (failed); refusing to report a successful launch
+enter-firstmate: console startup failed in pane w7:p1 (recorded status 79); leaving diagnostics visible
+
+Inherited Codex caller selected argv: --dangerously-bypass-approvals-and-sandbox --model gpt-6-astra
+enter-firstmate: supervision: not required (in-flight 0, event sources 0, relay poll no); watcher not armed
+enter-firstmate: exchange/current: owner absent (); projection not refreshed
+enter-firstmate: console: codex fresh session; permissions --dangerously-bypass-approvals-and-sandbox [QUALIFIED]; style off
+firstmate native console refused: FileNotFoundError
+enter-firstmate: console: codex exited rc=1 after 0s; this pane ends with it (no interactive shell is left behind as a nominal success) - relaunch from the Desktop shortcut, or read <synthetic-fixture>/home/enter-firstmate.sh --doctor

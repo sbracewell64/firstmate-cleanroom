@@ -1,0 +1,12 @@
+Generated consumer, actual launcher, synthetic home. Renderer subordinate validation disabled; generation only, not qualification.
+
+PTY output:
+enter-firstmate: tools root is unset: pass FM_TOOLS_ROOT or write <synthetic-home>/home/config/tools-root
+
+FirstMate launch failed (status 1). Press Enter to close... 
+Observed: process alive until Enter; exit after Enter=1.
+
+Noninteractive output:
+enter-firstmate: tools root is unset: pass FM_TOOLS_ROOT or write <synthetic-home>/home/config/tools-root
+
+Observed: immediate exit=1, no hold prompt.

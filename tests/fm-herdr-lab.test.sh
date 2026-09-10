@@ -28,18 +28,19 @@ done
 [ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
 session=$last
 default_socket=$(cat "$state/default-socket")
+default_running=${FM_FAKE_DEFAULT_RUNNING:-true}
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
   "session list")
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
+      jq -nc --arg socket "$default_socket" --argjson default_running "$default_running" '{sessions:[{default:true,name:"default",running:$default_running,socket_path:$socket}]}'
     else
       running=false
       [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+      jq -nc --arg socket "$default_socket" --argjson default_running "$default_running" --arg name "$session" --argjson running "$running" \
+        '{sessions:[{default:true,name:"default",running:$default_running,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
     fi
     ;;
   "server --session")
@@ -76,6 +77,7 @@ chmod +x "$FAKEBIN/herdr"
 
 run_with_fake() {
   PATH="$FAKEBIN:$PATH" \
+    FM_FAKE_DEFAULT_RUNNING="${FM_FAKE_DEFAULT_RUNNING:-true}" \
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
     FM_FAKE_HERDR_LOG="$FAKE_LOG" \
     FM_FAKE_HERDR_REAL_SLEEP="$REAL_SLEEP" \
@@ -241,3 +243,14 @@ test_changed_default_trips_after_teardown
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch
+
+# A stopped default is a known fleet state, not a reason to start it.
+test_stopped_default_is_preserved() {
+  local name="fm-lab-cold-default-$$" status=0
+  FM_FAKE_DEFAULT_RUNNING=false run_with_fake fm_herdr_lab_provision "$name" || fail "stopped default must allow isolated provision"
+  FM_FAKE_DEFAULT_RUNNING=true run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "changed default state must refuse re-provision"
+  FM_FAKE_DEFAULT_RUNNING=false run_with_fake fm_herdr_lab_teardown "$name" || fail "stopped default must allow guarded teardown"
+  pass "fm-herdr-lab: stopped default preserved through isolated lifecycle"
+}
+test_stopped_default_is_preserved

@@ -269,3 +269,37 @@ got=$(tr -d '[:space:]' < "$live/config/code-root")
 pass "(x) the documented cutover adopts the new code root over a pre-existing donor"
 
 echo "all donor-guard and caller-level qualification tests passed"
+
+# Full staging preserves configured isolation inputs, even without repeated flags.
+home=$(mk_home config-complete shim "$ROOT_A")
+printf 'herdr\n' > "$home/config/backend"
+printf 'firstmate-cleanroom\n' > "$home/config/herdr-session"
+printf '%s\n' "$TMP/tools" > "$home/config/tools-root"
+mkdir -p "$TMP/tools/bin"
+run_render "$home" "$ROOT_B"
+for key in backend herdr-session tools-root; do
+  cmp -s "$home/config/$key" "$home/state/launcher-staging/config/$key" || fail "staging lost configured $key"
+done
+pass "configured isolation scalars survive staging without repeated flags"
+
+# Incomplete staging must not be mistaken for activation qualification.
+home=$(mk_home missing-config shim "$ROOT_A")
+run_render "$home" "$ROOT_B" --require-complete-config
+[ "$RC" -ne 0 ] || fail "activation qualification must refuse missing isolation config"
+case "$OUT" in *'incomplete staged configuration'*) ;; *) fail "missing configuration needs an exact activation gap: $OUT" ;; esac
+pass "incomplete staged configuration refuses activation qualification"
+
+# The generated consumer must reach the same terminal failure-display owner.
+terminal_home=$(mk_home terminal-display shim "$ROOT_A")
+terminal_release="$TMP/terminal-release"
+mkdir -p "$terminal_release/bin"
+cp "$LAUNCHER" "$terminal_release/bin/enter-firstmate.sh"
+chmod +x "$terminal_release/bin/enter-firstmate.sh"
+run_render "$terminal_home" "$terminal_release"
+[ "$RC" -eq 0 ] || fail "terminal consumer staging failed: $OUT"
+python3 "$HERE/test_launcher_terminal.py" \
+  "$terminal_home/state/launcher-staging/enter-firstmate.sh" 'tools root is unset' \
+  || fail "generated consumer failure visibility/status"
+pass "generated consumer preserves terminal diagnostics and failing status"
+
+python3 "$HERE/test_renderer_snapshot.py" "$RENDER" || fail "independent renderer snapshots"

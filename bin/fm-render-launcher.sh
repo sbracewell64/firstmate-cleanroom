@@ -8,8 +8,9 @@
 # host path from $FM_HOME/config (code-root, tools-root, ...). This script:
 #   1. captures a pre-cutover ROLLBACK snapshot of the current host launcher, its
 #      config, and any Windows .lnk bytes named with --lnk (never edited/launched);
-#   2. writes the staging config scalars and the consumer shim under a staging
-#      directory (never the live path);
+#   2. replaces staged config with a fresh independent copy of live config,
+#      materializing linked source files and applying explicit scalar overrides,
+#      then writes the consumer shim (never the live path);
 #   3. QUALIFIES the staged artifacts (syntax, shellcheck, the launcher tests) and
 #      writes a qualification report enumerating the live cutover matrix.
 # It performs NO cutover and starts NO primary: moving staging into the live home,
@@ -19,6 +20,8 @@
 # SAFETY: the adopted --code-root must DIFFER from the current live (donor) code
 # root; adoption that leaves the donor code root in place is refused, because the
 # Windows shortcut's --cd points at the donor and the adopted release must win.
+# Linked staging destinations and overlap with live configuration are refused.
+# Re-rendering removes obsolete staged config while retaining rollback snapshots.
 #
 # Usage:
 #   fm-render-launcher.sh --code-root <adopted-release> [options]
@@ -32,6 +35,7 @@
 #   --console-profile <name>  config/console-profile            (default: fable-5.1)
 #   --staging <dir>           output dir (default: <fm-home>/state/launcher-staging)
 #   --lnk <file>              a Windows .lnk to snapshot for rollback (repeatable; bytes only)
+#   --require-complete-config refuse activation staging with missing isolation inputs
 #   --allow-same-code-root    bypass the donor-guard (evidence/testing only)
 set -euo pipefail
 
@@ -51,6 +55,7 @@ EXCHANGE_OWNER=''
 CONSOLE_PROFILE=fable-5.1
 STAGING=''
 ALLOW_SAME=0
+REQUIRE_COMPLETE=0
 LNKS=()
 
 while [ $# -gt 0 ]; do
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
     --console-profile) CONSOLE_PROFILE=${2:?}; shift 2 ;;
     --staging) STAGING=${2:?}; shift 2 ;;
     --lnk) LNKS+=("${2:?--lnk needs a file}"); shift 2 ;;
+    --require-complete-config) REQUIRE_COMPLETE=1; shift ;;
     --allow-same-code-root) ALLOW_SAME=1; shift ;;
     -h|--help) sed -n '1,40p' "$SELF"; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -126,7 +132,27 @@ else
   die "could not resolve a real current live (donor) code root from $FM_HOME_ARG/config/code-root or $LIVE_LAUNCHER, so adoption cannot be proven to move the code root off the donor. Refusing (pass --allow-same-code-root only for a genuine fresh install with nothing to move off of)."
 fi
 
-mkdir -p "$ROLLBACK" "$STAGE_CONFIG"
+python3 - "$STAGING" "$FM_HOME_ARG" <<'CHECK_PATHS'
+import os, sys
+from pathlib import Path
+stage, home = (Path(os.path.abspath(p)) for p in sys.argv[1:])
+for path in (stage, *stage.parents):
+    if path.is_symlink():
+        sys.exit('fm-render-launcher: linked staging destination refused')
+live = home.resolve()
+config = (home/'config').resolve()
+if stage == live or stage in live.parents or stage == config or config in stage.parents or stage in config.parents:
+    sys.exit('fm-render-launcher: staging overlaps live configuration')
+if stage.exists():
+    for root, dirs, files in os.walk(stage):
+        if any((Path(root)/name).is_symlink() for name in dirs + files):
+            sys.exit('fm-render-launcher: linked staging destination refused')
+CHECK_PATHS
+mkdir -p "$STAGING/rollback"
+ROLLBACK=$(mktemp -d "$STAGING/rollback/$STAMP.XXXXXX")
+rm -f "$REPORT"
+fresh_config=$(mktemp -d "$STAGING/.config.XXXXXX")
+trap 'rm -rf "$fresh_config"' EXIT
 
 # --- 1. rollback snapshot (pre-cutover; bytes preserved, nothing edited) --------
 snap_manifest="$ROLLBACK/MANIFEST.txt"
@@ -159,12 +185,31 @@ for lnk in "${LNKS[@]:-}"; do
 done
 
 # --- 2. staged config scalars + the consumer shim (never the live path) ---------
-printf '%s\n' "$CODE_ROOT" > "$STAGE_CONFIG/code-root"
-[ -z "$TOOLS_ROOT" ]        || printf '%s\n' "$TOOLS_ROOT"        > "$STAGE_CONFIG/tools-root"
-[ -z "$CONTROL_RESOLVER" ]  || printf '%s\n' "$CONTROL_RESOLVER"  > "$STAGE_CONFIG/control-resolver"
-[ -z "$RETIRED_HOME" ]      || printf '%s\n' "$RETIRED_HOME"      > "$STAGE_CONFIG/retired-home"
-[ -z "$EXCHANGE_OWNER" ]    || printf '%s\n' "$EXCHANGE_OWNER"    > "$STAGE_CONFIG/exchange-owner"
-printf '%s\n' "$CONSOLE_PROFILE" > "$STAGE_CONFIG/console-profile"
+# Carry the home's existing configuration into the staged home. Explicit
+# renderer selections below replace their corresponding scalar values.
+if [ -d "$FM_HOME_ARG/config" ]; then
+  cp -RLp "$FM_HOME_ARG/config/." "$fresh_config/"
+fi
+printf '%s\n' "$CODE_ROOT" > "$fresh_config/code-root"
+[ -z "$TOOLS_ROOT" ]        || printf '%s\n' "$TOOLS_ROOT"        > "$fresh_config/tools-root"
+[ -z "$CONTROL_RESOLVER" ]  || printf '%s\n' "$CONTROL_RESOLVER"  > "$fresh_config/control-resolver"
+[ -z "$RETIRED_HOME" ]      || printf '%s\n' "$RETIRED_HOME"      > "$fresh_config/retired-home"
+[ -z "$EXCHANGE_OWNER" ]    || printf '%s\n' "$EXCHANGE_OWNER"    > "$fresh_config/exchange-owner"
+printf '%s\n' "$CONSOLE_PROFILE" > "$fresh_config/console-profile"
+
+rm -rf "$STAGE_CONFIG"
+mv "$fresh_config" "$STAGE_CONFIG"
+
+if [ "$REQUIRE_COMPLETE" = 1 ]; then
+  for key in code-root tools-root backend herdr-session; do
+    [ -s "$STAGE_CONFIG/$key" ] || die "incomplete staged configuration: $key is required"
+  done
+  [ "$(cat "$STAGE_CONFIG/backend")" = herdr ] || die "incomplete staged configuration: backend must be herdr"
+  session=$(cat "$STAGE_CONFIG/herdr-session")
+  case "$session" in default|''|*[!A-Za-z0-9._-]*) die "incomplete staged configuration: a named non-default Herdr session is required" ;; esac
+  [ -d "$(cat "$STAGE_CONFIG/tools-root")/bin" ] || die "incomplete staged configuration: tools surface is missing"
+  [ -x "$CODE_ROOT/bin/enter-firstmate.sh" ] || die "incomplete staged configuration: adopted launcher is missing"
+fi
 
 cat > "$STAGE_CONSUMER" <<SHIM
 #!/usr/bin/env bash
@@ -233,6 +278,8 @@ rm -rf "$scratch"
   echo "## Automated qualification (this run)"
   for p in "${q_pass[@]:-}"; do [ -n "$p" ] && echo "- PASS $p"; done
   for f in "${q_fail[@]:-}"; do [ -n "$f" ] && echo "- FAIL $f"; done
+  echo
+  echo "Staging completeness required: $REQUIRE_COMPLETE (menu checks alone do not qualify activation)."
   echo
   echo "## Live cutover matrix (captain-run; NOT performed here)"
   echo "Each item is verified live at cutover, not by this staging run:"

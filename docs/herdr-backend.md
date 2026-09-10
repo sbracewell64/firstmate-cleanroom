@@ -312,7 +312,7 @@ An environment-only session selection can silently reach a different running ser
 `bin/fm-herdr-lab.sh` is the sole supported lifecycle helper for isolated verification.
 It provisions only non-default names beginning with `fm-lab-`, appends an explicit `--session` to allowed task commands, refuses caller-supplied session flags and server/session lifecycle subcommands, and performs destructive stop/delete only through its guarded lifecycle actions.
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
-Its before/after tripwire requires the live default-session snapshot to remain byte-identical.
+Its before/after tripwire requires exactly one default session with a known running or stopped state and nonempty socket identity, and requires that snapshot to remain byte-identical.
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.

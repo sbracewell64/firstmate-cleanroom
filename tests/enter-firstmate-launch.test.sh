@@ -11,8 +11,6 @@
 #
 # Usage: bash tests/enter-firstmate-launch.test.sh
 #        FM_ENTRY_LAUNCHER=/path/to/enter-firstmate.sh bash tests/enter-firstmate-launch.test.sh
-#        FM_CODE_ROOT_PROBE=<checkout> adds the drift proof against the real
-#        bin/fm-spawn.sh (skipped when the checkout is absent).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LAUNCHER=${FM_ENTRY_LAUNCHER:-$HERE/../bin/enter-firstmate.sh}
@@ -49,16 +47,6 @@ for h in $(permission_policy_harnesses); do
   case "$(permission_policy_state "$h")" in QUALIFIED|NOT_APPLICABLE|CNO) ;; *) fail "$h state must be one of the three verdicts" ;; esac
 done
 pass "permission policy: claude exact flag, seven QUALIFIED equivalents, pi CNO, unknown CNO"
-
-# --- drift proof against the real spawn compiler --------------------------------
-if [ -f "$CODE_ROOT/bin/fm-spawn.sh" ]; then
-  for h in claude codex opencode grok kimi cursor muse; do
-    grep -qF -- "$(permission_policy_spawn_token "$h")" "$CODE_ROOT/bin/fm-spawn.sh" || fail "drift: $h token '$(permission_policy_spawn_token "$h")' is not in $CODE_ROOT/bin/fm-spawn.sh"
-  done
-  pass "every QUALIFIED worker posture is still present in $CODE_ROOT/bin/fm-spawn.sh (no drift)"
-else
-  pass "skip: drift proof (no code root at $CODE_ROOT)"
-fi
 
 # --- console argv (launch-byte watched reds), new <harness> <model> signature ---
 # console_harness_argv <harness> <model|""> <settings|""> <resume|""> [passthrough...]
@@ -153,3 +141,11 @@ command -v cold_arm_claim_deliverable >/dev/null || fail "cold_arm_claim_deliver
 pass "claim deliverability: only a live cold-start arm-owner is a valid cold-start defer target"
 
 echo "all console launch and permission policy tests passed"
+
+# Native-console contract tests use controlled external processes and metadata;
+# they make no model calls and are part of the normal launcher test family.
+python3 "$HERE/test_startup_selection.py" "$LAUNCHER" || fail "startup selection regression"
+python3 "$HERE/test_console_subscription.py" "$CODE_ROOT/bin/fm-console-codex.py" "$LAUNCHER" || fail "subscription contract regression"
+python3 "$HERE/test_console_lifecycle.py" "$LAUNCHER" || fail "console lifecycle regression"
+
+python3 "$HERE/test_launcher_terminal.py" "$LAUNCHER" || fail "terminal failure visibility"

@@ -2262,6 +2262,42 @@ test_captain_completion_preserves_registered_poll() {
   pass "captain completion preserves authenticated PR snapshot"
 }
 
+test_stage_activation_preserves_registered_poll() {
+  local dir bad
+  dir=$(make_case stage-activation)
+  write_task_meta "$dir"
+  printf '%s\n' 'stage=landing' 'stage_branch=feature' \
+    'stage_head=0123456789abcdef0123456789abcdef01234567' \
+    'stage_tree=0123456789abcdef0123456789abcdef01234567' \
+    'stage_gen=fixture' 'stage_attempt=attempt-1' 'stage_run=run-1' \
+    'stage_pr=https://github.com/o/r/pull/38' >> "$dir/home/state/task-a.meta"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/38 >/dev/null \
+    || fail "stage fixture registration failed"
+  fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
+    || fail "registered stage fixture snapshot failed"
+  printf '%s\n' fm-pr-poll-merge-notified-v1 github github.com o/r 38 \
+    > "$dir/home/state/task-a.pr-poll-merge-notified"
+  FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    FM_DATA_OVERRIDE="$dir/home/data" FM_CONFIG_OVERRIDE="$dir/home/config" \
+    "$ROOT/bin/fm-stage.sh" task-a activated > "$dir/stage.out" 2> "$dir/stage.err" \
+    || fail "maintained activation failed: $(cat "$dir/stage.err")"
+  assert_grep 'STAGE: activated:' "$dir/stage.out" "activation must actually publish"
+  fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
+    || fail "maintained activation invalidated authenticated PR snapshot"
+  cp "$dir/home/state/task-a.meta" "$dir/valid.meta"
+  for bad in 'stage_unrecognized=1' 'stage_pr_extra=1' 'pr=https://github.com/o/r/pull/39' \
+    'pr_head=invalid' 'echo unsafe' 'window=foreign'; do
+    cp "$dir/valid.meta" "$dir/home/state/task-a.meta"
+    printf '%s\n' "$bad" >> "$dir/home/state/task-a.meta"
+    if fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL"; then
+      fail "stage allowance admitted invalid trailing record: $bad"
+    fi
+  done
+  pass "maintained activation preserves authenticated PR snapshot without broadening unknown keys"
+}
+
+test_stage_activation_preserves_registered_poll
+
 test_captain_completion_preserves_registered_poll
 test_identity_obligation_refuses_unreadable_head
 test_identity_obligation_refuses_missing_required_input

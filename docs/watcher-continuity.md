@@ -111,6 +111,20 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 
 ## Active limits and verification
 
+### Release adoption and authenticated stage polling
+
+A running watcher retains the parser loaded from its code root; staging a new release or reconnecting Desktop does not replace that process or update its loaded parser.
+The [watcher identity predicate](../bin/fm-wake-lib.sh) requires the recorded watcher path to match the caller's expected path as well as the home and process identity, so a healthy old-root watcher is not proof that supervision from the new root is active.
+Treat an old-root Doctor/checkpoint mismatch as read-only diagnosis and reporting, not authority to interrupt the primary, replace its watcher, or alter live task registration.
+For Codex, after the old foreground checkpoint returns naturally, the adoption candidate is the next bare foreground checkpoint invoked from the qualified new release directory with the same explicit `FM_HOME` and scoped environment.
+The [checkpoint entrypoint](../bin/fm-watch-checkpoint.sh) launches its sibling watcher; follow the [Codex foreground protocol](supervision-protocols/codex.md) without a background wrapper or a primary restart.
+This invocation path does not itself establish live adoption; verify the resulting watcher's code path and identity before claiming the new release is supervising.
+The separate Doctor configuration-reporting limitation remains owned by [configuration.md](configuration.md#native-primary-console-client).
+
+The [PR identity parser](../bin/fm-pr-lib.sh) admits the lifecycle owner's exact stage fields after authenticated PR registration; [fm-stage.sh](../bin/fm-stage.sh) owns their schema.
+The isolated registration-to-activation-to-authenticated-snapshot regression in [fm-pr-check-security.test.sh](../tests/fm-pr-check-security.test.sh) covers this ordering while retaining unknown-field, malformed-record, and duplicate-identity refusals.
+That guarantee is independent of harness and backend recognition and does not qualify other metadata writers: [fm-promote.sh](../bin/fm-promote.sh) applies to scout promotion, while [fm-spawn.sh](../bin/fm-spawn.sh) recovery metadata may require separate PR-registration reconciliation.
+
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.

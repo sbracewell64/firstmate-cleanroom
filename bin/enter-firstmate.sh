@@ -845,7 +845,7 @@ if [ "$MODE" = console-run ]; then
   if console_record_update "$(jq -n --arg pid "$$" --arg t "$(date -u +%FT%TZ)" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" '{profile:$profile, model:$model, console_pid:($pid|tonumber), launch_stage:"starting", started_at:$t, launch_mode:"", resume_id:"", exit_rc:null}')"; then
     console_log "console: starting in pane $HERDR_PANE_ID (record claimed)"
   else
-    console_log "console: starting in pane $HERDR_PANE_ID but the console record names another pane or is absent; launch fields not recorded"
+    die "console ownership claim rejected for pane $HERDR_PANE_ID; an existing matching session/pane record is required before startup"
   fi
 fi
 

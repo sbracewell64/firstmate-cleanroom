@@ -216,6 +216,17 @@ cleanup_extension_binding_invocations() {  # <binding-digest>
   run_extension_invocation_cleanup --binding-digest "$1"
 }
 
+cleanup_extension_claim_invocations_locked() {  # <source-id>; loaded same-home claim
+  # Extension groups are detached from the runner. A caller using the home's
+  # default state must still reap groups from the claim's recorded state root
+  # before releasing the last durable ownership record.
+  [ -n "${FM_PROCEVENT_CLAIM_STATE_ROOT:-}" ] || return 0
+  fm_procevent_claim_recorded_state_root_valid || return 1
+  [ -x "$EXTENSION_HOST" ] && [ ! -L "$EXTENSION_HOST" ] || return 1
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$FM_PROCEVENT_CLAIM_STATE_ROOT" \
+    "$EXTENSION_HOST" cleanup-invocations --source-id "$1" >/dev/null 2>&1
+}
+
 cleanup_extension_registration_invocations_locked() {  # <source-id>
   local owner_state
   fm_procevent_extension_registration_load_locked "$STATE" "$1"
@@ -1021,7 +1032,8 @@ cmd_reconcile() {
     stop_state=$?
     case "$stop_state" in
       0|1)
-        if fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
+        if cleanup_extension_claim_invocations_locked "$id" \
+          && fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
           rm -f -- "$(staging_file "$id" "$token")"
           rm -f -- "$(runner_file "$id")"
           stopped=$((stopped + 1))
@@ -1497,12 +1509,54 @@ cmd_binding_retirement_preflight() {
   printf 'binding retirement preflight: ready\n'
 }
 
+# A nonce greeting binds descriptor 3 to the public Node delegate.  EOF or a
+# cancellation frame prevents a queued lifecycle operation from outliving its
+# caller.  This is cancellation custody only, never capture/lock authority.
+extension_caller_check() {
+  local rc=0
+  # Perl is already required by this adapter.  select avoids fractional read
+  # timeouts, unsupported by the stock macOS Bash 3.2 caller.
+  perl -e '
+    my $ready = "";
+    vec($ready, 0, 1) = 1;
+    my $count = select($ready, undef, undef, 0);
+    exit 0 if defined($count) && $count == 0;
+    exit 143 unless defined($count) && $count == 1;
+    my $frame = "";
+    my $bytes = sysread(STDIN, $frame, 16);
+    exit 130 if defined($bytes) && $frame eq "SIGINT\n";
+    exit 143;
+  ' <&3 || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  extension_lifecycle_lock_release
+  exit "$rc"
+}
+
+extension_caller_lock_acquire() {
+  local greeting=
+  if [ -z "${FM_EXTENSION_CALLER_TOKEN:-}" ]; then
+    extension_lifecycle_lock_acquire
+    return
+  fi
+  [[ "$FM_EXTENSION_CALLER_TOKEN" =~ ^[0-9a-f]{64}$ ]] || die "invalid lifecycle caller token"
+  IFS= read -r -t 5 greeting <&3 || die "missing lifecycle caller channel"
+  [ "$greeting" = "$FM_EXTENSION_CALLER_TOKEN" ] || die "invalid lifecycle caller greeting"
+  (umask 077; mkdir -p "$REG") || return 1
+  [ -d "$REG" ] && [ ! -L "$REG" ] || return 1
+  while :; do
+    extension_caller_check
+    fm_lock_try_acquire "$EXTENSION_LIFECYCLE_LOCK" && break
+    sleep 0.1
+  done
+  extension_caller_check
+}
+
 cmd_extension_retirement() {
   local mode=${1-} owner
   [ "$#" -ge 1 ] || die "extension-retirement requires a retirement mode"
   shift
   case "$mode" in binding|transfer) ;; *) die "unsupported extension retirement mode: $mode" ;; esac
-  extension_lifecycle_lock_acquire || die "cannot lock the extension lifecycle"
+  extension_caller_lock_acquire || die "cannot lock the extension lifecycle"
   owner=${FM_LOCK_OWNER_DIR:-}
   [ -n "$owner" ] || die "extension lifecycle lock has no owner identity"
   export FM_EXTENSION_RETIREMENT_MODE="$mode"
@@ -1514,7 +1568,7 @@ cmd_extension_retirement() {
 cmd_extension_bind() {
   local binding_command=${1-} owner
   case "$binding_command" in bind|receive-transfer-bind) ;; *) die "unsupported extension binding command: $binding_command" ;; esac
-  extension_lifecycle_lock_acquire || die "cannot lock the extension lifecycle"
+  extension_caller_lock_acquire || die "cannot lock the extension lifecycle"
   owner=${FM_LOCK_OWNER_DIR:-}
   [ -n "$owner" ] || die "extension lifecycle lock has no owner identity"
   export FM_EXTENSION_RETIREMENT_MODE=bind
@@ -1529,7 +1583,7 @@ cmd_extension_process_event() {
   for arg in "$@"; do
     [ "$arg" != --capture-reservation ] || die "capture reservation is internal"
   done
-  extension_lifecycle_lock_acquire || die "cannot lock the extension lifecycle"
+  extension_caller_lock_acquire || die "cannot lock the extension lifecycle"
   owner=${FM_LOCK_OWNER_DIR:-}
   [ -n "$owner" ] || die "extension lifecycle lock has no owner identity"
   export FM_EXTENSION_RETIREMENT_MODE=process-event

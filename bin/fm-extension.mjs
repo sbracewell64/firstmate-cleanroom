@@ -55,6 +55,7 @@
 // mutation, or stronger-operation capability.
 
 import { spawn } from "node:child_process";
+import { Socket } from "node:net";
 import { constants as fsConstants, fstat, read } from "node:fs";
 import {
   chmod,
@@ -875,6 +876,9 @@ function childEnvironment(binding, statePath = "") {
 }
 
 let activeInvocation = null;
+let invocationSetup = null;
+let activeLifecycleChild = null;
+let callerChannel = null;
 let terminatingForSignal = false;
 let signalCleanupFailureHold = null;
 let activeLifecycleLock = null;
@@ -1342,7 +1346,14 @@ async function runExtensionProcess(home, record, verb, request, timeoutMs, state
   if (!entryInfo.isFile() || entryInfo.isSymbolicLink() || entryInfo.nlink !== 1 || entryInfo.uid !== currentUid()) {
     fail("entrypoint-invalid", "bound extension entrypoint identity is unsafe");
   }
-  const { invocation, owner } = await reserveInvocation(home, record, verb, request, statePath);
+  if (terminatingForSignal) fail("interrupted", "extension invocation cancelled");
+  invocationSetup = reserveInvocation(home, record, verb, request, statePath);
+  const { invocation, owner } = await invocationSetup;
+  invocationSetup = null;
+  if (terminatingForSignal) {
+    await finalizeInvocation(invocation);
+    fail("interrupted", "extension invocation cancelled");
+  }
   const { child } = invocation;
   let stdoutBytes = 0;
   let stderrBytes = 0;
@@ -1409,6 +1420,16 @@ async function handleSignal(signal) {
   if (terminatingForSignal) return;
   terminatingForSignal = true;
   try {
+    if (activeLifecycleChild) {
+      // The channel belongs to the exact child created here, including while
+      // that child is still acquiring its lock; no PID or group lookup occurs.
+      const { channel, completion } = activeLifecycleChild;
+      channel.end(`${signal}\n`);
+      const outcome = await completion;
+      const expected = signal === "SIGTERM" ? 143 : 130;
+      process.exit(outcome.code === expected ? expected : 1);
+    }
+    await invocationSetup?.catch(() => {});
     await finalizeInvocation(activeInvocation);
     process.exit(signal === "SIGTERM" ? 143 : 130);
   } catch (error) {
@@ -2246,55 +2267,32 @@ async function cmdRetireBindingLocked(args) {
   process.stdout.write(`retained-at: ${destination}\n`);
 }
 
-async function runLifecycleRetirement(mode, args) {
+// One cancellation channel spans the shell lock wait and its execed host.
+// The shell consumes the nonce greeting; descriptor 3 remains private to the
+// delegate and is never passed to an extension package or a preflight child.
+async function runLifecycleChild(args, failureCode, { input = false, processEvent = false } = {}) {
   const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
   const home = await activeHome();
   const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
-  const child = spawn(command, ["extension-retirement", mode, ...args], {
-    cwd: CODE_ROOT,
-    env,
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const stdout = [];
-  const stderr = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  child.stdout.on("data", (chunk) => {
-    stdoutBytes += chunk.length;
-    if (stdoutBytes <= MAX_JSON_BYTES) stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
-  });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("retirement-failed", "extension lifecycle retirement could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.code !== 0 || outcome.signal) {
-    const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("retirement-failed", diagnostic || "extension lifecycle retirement failed");
+  for (const key of ["FM_STATE_OVERRIDE", "XDG_STATE_HOME"]) {
+    if (process.env[key]) env[key] = process.env[key];
   }
-  process.stdout.write(Buffer.concat(stdout));
-}
-
-async function runLifecycleProcessEvent(args) {
-  const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
-  const home = await activeHome();
-  const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD === "1") env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD = "1";
-  const child = spawn(command, ["extension-process-event", ...args], {
+  if (!processEvent && process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
+  if (processEvent && process.env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD === "1") env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD = "1";
+  env.FM_EXTENSION_CALLER_TOKEN = randomBytes(32).toString("hex");
+  const child = spawn(command, args, {
     cwd: CODE_ROOT,
     env,
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [input ? "pipe" : "ignore", "pipe", "pipe", "pipe"],
   });
+  const channel = child.stdio[3];
+  channel.on("error", () => {}); // Child failure is reported by completion.
+  channel.write(`${env.FM_EXTENSION_CALLER_TOKEN}\n`);
+  if (input) {
+    child.stdin.on("error", () => {});
+    process.stdin.pipe(child.stdin);
+  }
   const stdout = [];
   const stderr = [];
   let stdoutBytes = 0;
@@ -2307,54 +2305,54 @@ async function runLifecycleProcessEvent(args) {
     stderrBytes += chunk.length;
     if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
   });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
+  const completion = new Promise((resolve) => {
+    child.once("error", () => resolve({ code: 1, signal: null }));
     child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("process-event-failed", "extension lifecycle process-event could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.signal) {
+  });
+  activeLifecycleChild = { channel, completion };
+  const outcome = await completion;
+  activeLifecycleChild = null;
+  channel.destroy();
+  if (input) process.stdin.unpipe(child.stdin);
+  if (terminatingForSignal) {
+    process.stderr.write(Buffer.concat(stderr));
+    return;
+  }
+  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.signal || (!processEvent && outcome.code !== 0)) {
     const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("process-event-failed", diagnostic || "extension lifecycle process-event failed");
+    fail(failureCode, diagnostic || "extension lifecycle child failed");
   }
   process.stdout.write(Buffer.concat(stdout));
   if (outcome.code !== 0) process.stderr.write(Buffer.concat(stderr));
   process.exitCode = outcome.code || 0;
 }
 
+async function runLifecycleRetirement(mode, args) {
+  await runLifecycleChild(["extension-retirement", mode, ...args], "retirement-failed");
+}
+
+async function runLifecycleProcessEvent(args) {
+  await runLifecycleChild(["extension-process-event", ...args], "process-event-failed", { processEvent: true });
+}
+
 async function runLifecycleBinding(commandName, args) {
-  const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
-  const home = await activeHome();
-  const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
-  const child = spawn(command, ["extension-bind", commandName, ...args], {
-    cwd: CODE_ROOT,
-    env,
-    shell: false,
-    stdio: [commandName === "receive-transfer-bind" ? "pipe" : "ignore", "pipe", "pipe"],
+  await runLifecycleChild(["extension-bind", commandName, ...args], "binding-failed", { input: commandName === "receive-transfer-bind" });
+}
+
+function watchLifecycleCaller() {
+  if (!process.env.FM_EXTENSION_CALLER_TOKEN) return;
+  if (!/^[0-9a-f]{64}$/u.test(process.env.FM_EXTENSION_CALLER_TOKEN)) fail("lifecycle-caller-invalid", "invalid lifecycle caller channel");
+  // This descriptor was authenticated before acquiring the inherited lock.
+  // A regular file or an absent descriptor must never act as a live caller.
+  callerChannel = new Socket({ fd: 3, readable: true, writable: false });
+  let message = "";
+  callerChannel.on("data", (bytes) => {
+    message += bytes.toString("utf8");
+    if (message === "SIGINT\n") void handleSignal("SIGINT");
+    else if (message === "SIGTERM\n" || message.length > 8 || message.includes("\n")) void handleSignal("SIGTERM");
   });
-  if (commandName === "receive-transfer-bind") process.stdin.pipe(child.stdin);
-  const stdout = [];
-  const stderr = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  child.stdout.on("data", (chunk) => {
-    stdoutBytes += chunk.length;
-    if (stdoutBytes <= MAX_JSON_BYTES) stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
-  });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("binding-failed", "extension lifecycle binding could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.code !== 0 || outcome.signal) {
-    const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("binding-failed", diagnostic || "extension lifecycle binding failed");
-  }
-  process.stdout.write(Buffer.concat(stdout));
+  callerChannel.on("end", () => { void handleSignal("SIGTERM"); });
+  callerChannel.on("error", () => { void handleSignal("SIGTERM"); });
 }
 
 async function cmdRetireBinding(args) {
@@ -2368,6 +2366,7 @@ async function cmdRetireTransfer(args) {
 async function runInheritedLifecycleRetirement(args) {
   const home = await activeHome();
   const mode = await claimInheritedLifecycleLock(home);
+  watchLifecycleCaller();
   try {
     if (mode === "process-event") {
       const [command, ...commandArgs] = args;
@@ -2382,6 +2381,7 @@ async function runInheritedLifecycleRetirement(args) {
       else fail("lifecycle-lock-invalid", "extension lifecycle binding command is invalid");
     }
   } finally {
+    callerChannel?.destroy();
     await releaseLifecycleLock();
   }
 }

@@ -1,0 +1,7 @@
+ok - owner-matched retirement refuses a stale generation and accepts the current one
+ok - caller environment, descriptors, and lifecycle entry cannot forge capture authority
+ok - extension capture reservations are bounded to their runner lifecycle
+ok - control-byte state roots cannot serialize claims or reservations
+Immediate reservation count: 1 (expected 2)
+.extension-capture-.claim.BeAGqJ-3138994.b581fbfc525b6d60094e66f62101485d72ebb1c310ab4e0ed0ecf9eead7e5df9.json
+not ok - overridden-state crash fixture did not create both immediate reservations

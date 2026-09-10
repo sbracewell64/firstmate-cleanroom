@@ -1,0 +1,27 @@
+ok - an exact request id is matched and supports idempotent replay
+ok - the generic runner reuses one request id until that source sequence is durably captured
+reconcile with live runner: error: cannot safely retire orphan runner record: orphan-source
+reconciled: published=0 started=0 stopped=0 uncertain=1
+reconcile with malformed runner: error: cannot safely retire orphan runner record: orphan-source
+reconciled: published=0 started=0 stopped=0 uncertain=1
+reconcile with symlink runner: error: cannot safely retire orphan runner record: orphan-source
+reconciled: published=0 started=0 stopped=0 uncertain=1
+reconcile with hardlink runner: error: cannot safely retire orphan runner record: orphan-source
+reconciled: published=0 started=0 stopped=0 uncertain=1
+reconcile with fifo runner: error: cannot safely retire orphan runner record: orphan-source
+reconciled: published=0 started=0 stopped=0 uncertain=1
+reconcile with dead runner: reconciled: published=0 started=1 stopped=0 uncertain=0
+Captured extension result:
+external evidence: good
+
+Durable watcher queue:
+1789039641	1	check	procevent:orphan-source:1	check: procevent ext-matrix orphan-source 1
+handled: orphan-source 1
+Acknowledged source status:
+SOURCE                       ADAPTER      OWNER      PENDING
+orphan-source                ext-matrix   live       0
+ok - reconcile recovers a dead orphan runner and preserves live or unsafe records
+ok - timeout escalates through invocation-group cleanup and reaps descendants
+ok - a missing package executable refuses instead of falling back
+
+all extension-binding tests passed

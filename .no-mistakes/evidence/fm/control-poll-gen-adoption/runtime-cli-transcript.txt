@@ -1,0 +1,41 @@
+Isolated CLI qualification; no live primary, control publication, or model call.
+$ fm-extension.mjs bind <shipped-example> --adapter file-signal --trust-same-user-code --consent artifact-references
+bound: org.firstmate.example.file-signal@1.0.0
+binding: /var/tmp/fm-runtime-evidence.GkQ34v/home/config/extensions.d/org.firstmate.example.file-signal.json
+binding-digest: sha256:12e34790c6c61ed1c52771d590c9dfba19213b7b6644799f6fa315eb38deb45f
+package: /var/tmp/fm-runtime-evidence.GkQ34v/home/data/extensions/packages/org.firstmate.example.file-signal/1.0.0/a670d3f1353bbfa659564b86f6af7783cd47d32ae9a04e7962b28aedf5bc0e76
+package-digest: sha256:a670d3f1353bbfa659564b86f6af7783cd47d32ae9a04e7962b28aedf5bc0e76
+verified: process-event-adapter/1 (file-signal)
+$ fm-procevent.sh register-extension file-signal evidence-source --config-ref file:<signal>
+registered: evidence-source (file-signal from org.firstmate.example.file-signal@1.0.0)
+owner-token: sha256:2c57d9c4e1d399fda8850ed68c585fad5e0e9d9eeb5b818debf045b8b5fd9b78
+retire: bin/fm-procevent.sh retire evidence-source --if-owner sha256:2c57d9c4e1d399fda8850ed68c585fad5e0e9d9eeb5b818debf045b8b5fd9b78
+Fixture: private runner record for exited PID 3291657, before any signal exists.
+$ fm-procevent.sh reconcile
+reconciled: published=0 started=1 stopped=0 uncertain=0
+$ fm-procevent.sh list
+SOURCE                       ADAPTER      OWNER      PENDING
+evidence-source              file-signal  live       0
+Publish a local fixture signal after detached startup.
+$ cat <durably captured result>
+later fixture message: build 42 complete
+$ fm-procevent.sh classify <captured-result>
+file-signal
+$ cat <durable wake queue>
+1789040051	1	check	procevent:evidence-source:1	check: procevent file-signal evidence-source 1
+1789040052	2	check	procevent:evidence-source:1	check: procevent file-signal evidence-source 1
+$ fm-procevent.sh handled evidence-source 1
+handled: evidence-source 1
+$ fm-procevent.sh handled evidence-source 1
+already-handled: evidence-source 1
+$ fm-procevent.sh reconcile
+reconciled: published=0 started=0 stopped=0 uncertain=0
+$ cat <durable handled marker>
+Legacy built-in source using a symlinked state root:
+registered: legacy-evidence (lavish)
+not-autohandled: legacy-evidence (left for the handler; still unacknowledged)
+captured: /var/tmp/fm-runtime-evidence.GkQ34v/state-link/procevent-inbox/legacy-evidence.1.result
+$ cat <legacy durably captured result>
+legacy-capture
+handled: legacy-evidence 1
+retired: legacy-evidence

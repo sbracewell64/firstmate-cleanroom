@@ -1,0 +1,4 @@
+    PID    PPID ELAPSED COMMAND
+3112102 3031242      66 bash tests/fm-extension-binding.test.sh
+3113849 3112102      65 bash tests/fm-extension-binding.test.sh
+3113852 3113849      65 bash /home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M25GW8NWG020TTNBBH3P7MPB/bin/fm-procevent.sh register-extension ext-flow active-source --config-ref replacement

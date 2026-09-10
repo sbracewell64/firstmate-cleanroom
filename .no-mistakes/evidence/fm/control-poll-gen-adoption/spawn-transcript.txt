@@ -1,0 +1,34 @@
+
+scout client invocation receipt:
+selected
+--model
+test-model
+-c
+model_reasoning_effort="high"
+--dangerously-bypass-approvals-and-sandbox
+-c
+notify=["bash","-c","touch '/tmp/fm-spawn-codex.l2n0yg/scout/home/state/codex-path-scout-3111308.turn-ended'"]
+⁣FIRSTMATE_OP: v1 launch-brief: brief bytes
+ok - scout executes the caller-selected Codex despite a stale pane PATH
+
+secondmate client invocation receipt:
+selected
+--model
+test-model
+-c
+model_reasoning_effort="high"
+--dangerously-bypass-approvals-and-sandbox
+⁣FIRSTMATE_OP: v1 launch-brief: charter bytes
+ok - secondmate executes the caller-selected Codex despite a stale pane PATH
+error: codex executable not found on caller PATH; select the intended client before dispatch
+ok - missing caller client refuses without a pane fallback
+
+raw client invocation receipt:
+selected
+--model
+test-model
+-c
+model_reasoning_effort="high"
+--dangerously-bypass-approvals-and-sandbox
+⁣FIRSTMATE_OP: v1 launch-brief: brief bytes
+ok - raw executes the caller-selected Codex despite a stale pane PATH

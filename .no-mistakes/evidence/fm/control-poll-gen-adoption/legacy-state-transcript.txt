@@ -1,0 +1,6 @@
+Register built-in source through symlinked legacy state root:
+registered: legacy-link-source (lavish)
+Start registered source:
+error: cannot claim source: legacy-link-source
+start exit: 1
+Expected captured result: absent

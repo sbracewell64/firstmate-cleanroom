@@ -45,6 +45,13 @@
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
 #            start a runner for any registered source that has no live owner.
+#            Each start waits at most five seconds for claim and staging
+#            acknowledgment, never for source output. A rejected or unconfirmed
+#            start increments uncertain and reports its startup cause on stderr;
+#            a timeout preserves the pending child for identity-based recovery.
+#            An orphan extension runner record is retired only under the source
+#            lock, with a stale/absent claim, a private regular single-link record,
+#            and proof that both its PID and process group have disappeared.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
 # handled    Durably and idempotently record that a captured result has been
@@ -173,7 +180,16 @@ MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 EXTENSION_HOST="$SCRIPT_DIR/fm-extension.mjs"
 EXTENSION_LIFECYCLE_LOCK="$REG/.extension-binding-lifecycle.lock"
 
-die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+# Only runner-owned startup facts cross this pipe; adapter output never does.
+startup_notify() {
+  local fd=${FM_PROCEVENT_STARTUP_FD:-}
+  case "$fd" in ''|*[!0-9]*) return 0 ;; esac
+  (printf '%s\n' "$1" >&"$fd") 2>/dev/null || true
+  eval "exec $fd>&-"
+  unset FM_PROCEVENT_STARTUP_FD
+}
+
+die() { startup_notify "error: $1"; printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
@@ -553,14 +569,49 @@ isolate_runner() {  # <wait|detach> <source-id>
   local mode=$1 id=$2 program
   # shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
   program='my $mode = shift @ARGV;
+    use Fcntl qw(F_DUPFD F_SETFD);
+    use IO::Select;
+    my ($reader, $writer);
+    if ($mode eq "detach") {
+      pipe($reader, $writer) or exit 125;
+      my $fd = fcntl($writer, F_DUPFD, 20);
+      defined($fd) or exit 125;
+      close $writer;
+      open($writer, ">&=$fd") or exit 125;
+      fcntl($writer, F_SETFD, 0) or exit 125;
+    }
     defined(my $pid = fork) or exit 125;
     if ($pid == 0) {
+      if ($mode eq "detach") {
+        close $reader;
+        $ENV{FM_PROCEVENT_STARTUP_FD} = fileno($writer);
+        open STDIN, "<", "/dev/null" or exit 125;
+        open STDOUT, ">", "/dev/null" or exit 125;
+        open STDERR, ">", "/dev/null" or exit 125;
+      }
       setpgrp(0, 0) or exit 125;
       $ENV{FM_PROCEVENT_RUNNER_GROUP} = $$;
       exec @ARGV;
       exit 125;
     }
-    exit 0 if $mode eq "detach";
+    if ($mode eq "detach") {
+      close $writer;
+      my $select = IO::Select->new($reader);
+      if (!$select->can_read(5)) {
+        print STDERR "runner startup unconfirmed (timeout)\n";
+        exit 125;
+      }
+      my $count = sysread($reader, my $status, 2048);
+      close $reader;
+      if (defined($count) && $count && $status eq "ready\n") { exit 0; }
+      if (defined($count) && $count && $status eq "owned\n") { exit 2; }
+      if (defined($count) && $count && $status =~ /^error: [^\r\n]+\n$/) {
+        print STDERR $status;
+      } else {
+        print STDERR "runner exited before startup acknowledgment\n";
+      }
+      exit 125;
+    }
     waitpid($pid, 0) == $pid or exit 125;
     my $status = $?;
     exit(128 + ($status & 127)) if $status & 127;
@@ -568,7 +619,41 @@ isolate_runner() {  # <wait|detach> <source-id>
   if [ "$mode" = wait ]; then
     exec perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id"
   fi
-  perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id" >/dev/null 2>&1 &
+  perl -e "$program" "$mode" "$SCRIPT_DIR/fm-procevent.sh" _start "$id"
+}
+
+# Caller holds the source lock and has proved the claim generation absent or
+# stale. A leftover extension runner record is evidence, not an overwrite target.
+# Reap only a private single-link record whose PID AND process group are gone.
+retire_orphan_runner_locked() {
+  local record
+  record=$(runner_file "$1")
+  [ -e "$record" ] || [ -L "$record" ] || return 0
+  fm_procevent_private_directory_valid "$REG" 1 || return 1
+  # shellcheck disable=SC2016 # Perl owns the literal program variables.
+  perl -e '
+    use strict;
+    use warnings;
+    use Fcntl qw(O_RDONLY O_NOFOLLOW O_NONBLOCK);
+    use Errno qw(ESRCH);
+    my $path = shift;
+    sysopen(my $record, $path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
+    my @opened = stat($record);
+    exit 1 unless @opened && -f $record && $opened[4] == $<
+      && ($opened[2] & 07777) == 0600 && $opened[3] == 1 && $opened[7] <= 32;
+    my $count = sysread($record, my $bytes, 33);
+    exit 1 unless defined($count) && $bytes =~ /\A([1-9][0-9]{0,9})\n\z/;
+    my $pid = $1;
+    exit 1 if $pid > 2147483647;
+    for my $target ($pid, -$pid) {
+      $! = 0;
+      exit 1 if kill(0, $target) || $! != ESRCH;
+    }
+    my @current = lstat($path);
+    exit 1 unless @current && $current[0] == $opened[0]
+      && $current[1] == $opened[1] && $current[3] == 1;
+    unlink($path) or exit 1;
+  ' "$record"
 }
 
 require_runner_group() {
@@ -645,12 +730,19 @@ cmd_start() {
       die "extension registration owner is unreadable: $id"
       ;;
   esac
+  if [ "$extension_owner" -eq 1 ]; then
+    fm_procevent_claim_state_locked "$id"
+    if [ "$?" -eq 1 ] && ! retire_orphan_runner_locked "$id"; then
+      fm_procevent_source_lock_release "$id"
+      die "cannot safely retire orphan runner record: $id"
+    fi
+  fi
   fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")"
   claimed=$?
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
     0) ;;
-    2) printf 'already owned: %s\n' "$id"; exit 0 ;;
+    2) startup_notify owned; printf 'already owned: %s\n' "$id"; exit 0 ;;
     *) die "cannot claim source: $id" ;;
   esac
   CLAIM_ID=$id
@@ -709,6 +801,7 @@ cmd_start() {
     printf '%s\n' "$$" > "$runner" 2>/dev/null || true
     chmod 0600 "$runner" 2>/dev/null || true
   fi
+  startup_notify ready
   # Built-in adapters do not run the extension capture helper, so keep this
   # sentinel defined while sharing the no-result branch below under `set -u`.
   local truncated=0 capture_state='' durable='' reservation_terminal='' reservation_silent=''
@@ -952,7 +1045,11 @@ cmd_reconcile() {
           fi
           fm_procevent_source_lock_release "$id"
           detach_runner "$id"
-          started=$((started + 1))
+          case "$?" in
+            0) started=$((started + 1)) ;;
+            2) ;; # Another caller claimed the same source first.
+            *) uncertain=$((uncertain + 1)) ;;
+          esac
           continue
         elif [ "$claim_state" -eq 4 ]; then
           owner=$FM_PROCEVENT_CLAIM_HOME
@@ -989,7 +1086,11 @@ cmd_reconcile() {
             rm -f -- "$(runner_file "$id")"
             fm_procevent_source_lock_release "$id"
             detach_runner "$id"
-            started=$((started + 1))
+            case "$?" in
+              0) started=$((started + 1)) ;;
+              2) ;;
+              *) uncertain=$((uncertain + 1)) ;;
+            esac
             continue
           fi
           uncertain=$((uncertain + 1))

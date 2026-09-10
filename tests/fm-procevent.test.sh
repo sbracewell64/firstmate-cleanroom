@@ -150,6 +150,18 @@ sup=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
   '. "$1/bin/fm-supervision-lib.sh"; fm_supervision_needed "$2" && echo yes || echo no' _ "$ROOT" "$IDLE/state")
 assert_contains "$sup" no "an unconfigured home does not need supervision"
 
+# A malformed registration must report startup rejection to the real reconcile
+# caller, rather than counting a fork whose child fails before it claims.
+HBAD="$TMP_ROOT/start-rejected"; new_home "$HBAD"
+pe_register "$HBAD" lavish src-rejected -- "$BLOCKER" "$TMP_ROOT/never" >/dev/null
+printf 'adapter=not/a/valid-adapter\nargc=1\nargv:\n/bin/false\n' > "$HBAD/state/procevent/src-rejected.source"
+out=$(pe "$HBAD" reconcile 2>&1)
+assert_contains "$out" "started=0 stopped=0 uncertain=1" "rejected child was counted as started"
+assert_contains "$out" "registration names an invalid adapter" "startup failure cause was discarded"
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/src-rejected.claim" "rejected child acquired a claim"
+rm "$HBAD/state/procevent/src-rejected.source"
+pass "reconcile reports a rejected child before claiming a successful start"
+
 # --- a blocking source completes into exactly one normalized event ----------
 H1="$TMP_ROOT/h1"; new_home "$H1"
 TRIG="$TMP_ROOT/trigger-one"

@@ -978,6 +978,38 @@ core_request_ids="$H_CORE_REPLAY/state/extensions/org.example.matrix/request-ids
 FM_HOME="$H_CORE_REPLAY" "$PROCEVENT" retire replay-source --if-owner "$core_token" >/dev/null
 pass "the generic runner reuses one request id until that source sequence is durably captured"
 
+# Replay a crash after the runner record survives but its claim is gone.
+# The old record blocks O_EXCL staging unless reconcile retires that exact dead
+# owner. Unsafe or live records must survive without any source invocation.
+H_ORPHAN="$HOMES/orphan-runner"; new_home "$H_ORPHAN"
+bind_package "$H_ORPHAN" "$P_MATRIX" ext-matrix >/dev/null
+orphan_registration=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" register-extension ext-matrix orphan-source --config-ref good)
+orphan_token=$(printf '%s\n' "$orphan_registration" | sed -n 's/^owner-token: //p')
+orphan_record="$H_ORPHAN/state/procevent/orphan-source.runner"
+for shape in live malformed symlink hardlink fifo; do
+  case "$shape" in
+    live) printf '%s\n' "$$" > "$orphan_record"; chmod 600 "$orphan_record" ;;
+    malformed) printf 'not-a-pid\n' > "$orphan_record"; chmod 600 "$orphan_record" ;;
+    symlink) printf 'preserve\n' > "$TMP_ROOT/runner-target"; ln -s "$TMP_ROOT/runner-target" "$orphan_record" ;;
+    hardlink) printf 'preserve\n' > "$TMP_ROOT/runner-target"; ln "$TMP_ROOT/runner-target" "$orphan_record" ;;
+    fifo) mkfifo "$orphan_record" ;;
+  esac
+  orphan_out=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" reconcile 2>&1)
+  assert_contains "$orphan_out" 'started=0 stopped=0 uncertain=1' "$shape orphan runner was treated as recovered"
+  [ -e "$orphan_record" ] || fail "$shape orphan evidence was removed"
+  assert_absent "$H_ORPHAN/state/procevent-inbox/orphan-source.1.result" "$shape orphan invoked the source"
+  rm "$orphan_record"
+done
+# Derive a real, already-reaped PID instead of assuming a number is unused.
+sleep 0.01 & orphan_dead_pid=$!; wait "$orphan_dead_pid"
+printf '%s\n' "$orphan_dead_pid" > "$orphan_record"; chmod 600 "$orphan_record"
+orphan_out=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" reconcile 2>&1)
+assert_contains "$orphan_out" 'started=1 stopped=0 uncertain=0' 'dead orphan runner did not recover'
+wait_for_file "$H_ORPHAN/state/procevent-inbox/orphan-source.1.result" || fail 'recovered runner never captured the source'
+FM_HOME="$H_ORPHAN" "$PROCEVENT" handled orphan-source 1 >/dev/null
+FM_HOME="$H_ORPHAN" "$PROCEVENT" retire orphan-source --if-owner "$orphan_token" >/dev/null
+pass 'reconcile recovers a dead orphan runner and preserves live or unsafe records'
+
 P_TIMEOUT="$PACKAGES/timeout"
 make_package "$P_TIMEOUT" org.example.timeout ext-timeout
 H_TIMEOUT="$HOMES/timeout"; new_home "$H_TIMEOUT"
@@ -1449,7 +1481,7 @@ for control_kind in tab newline; do
   chmod 0700 "$control_state"
   FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
     "$PROCEVENT" register lavish "$control_source" -- /bin/echo control >/dev/null
-  expect_failure "cannot acquire source ownership" env FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
+  expect_failure "cannot claim source" env FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
     "$PROCEVENT" start "$control_source"
   assert_absent "$TMP_ROOT/claims/$control_source.claim" "control-byte state root created a malformed claim"
   assert_absent "$control_state/procevent-capture-reservations" "control-byte state root created reservation state"

@@ -208,6 +208,7 @@ make_fake_spawn_toolchain() {
   local dir=$1 fakebin
   fakebin="$dir/fakebin"
   mkdir -p "$fakebin"
+  fm_fake_exit0 "$fakebin" codex
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -219,7 +220,7 @@ SH
 # Version-aware stubs so bootstrap's tool floors stay quiet in fixture PATH.
 add_bootstrap_compatible_tools() {
   local fakebin=$1
-  fm_fake_exit0 "$fakebin" node chrome-devtools-axi gh treehouse
+  fm_fake_exit0 "$fakebin" node chrome-devtools-axi gh treehouse codex
   fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.46
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash

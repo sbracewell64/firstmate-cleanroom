@@ -49,9 +49,7 @@
 #            acknowledgment, never for source output. A rejected or unconfirmed
 #            start increments uncertain and reports its startup cause on stderr;
 #            a timeout preserves the pending child for identity-based recovery.
-#            An orphan extension runner record is retired only under the source
-#            lock, with a stale/absent claim, a private regular single-link record,
-#            and proof that both its PID and process group have disappeared.
+#            docs/configuration.md owns the orphan runner recovery contract.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
 # handled    Durably and idempotently record that a captured result has been

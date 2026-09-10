@@ -744,6 +744,8 @@ A durable handled acknowledgement stops future source re-announcement, while a r
 
 Discovery is never a timer.
 Each registered source has its own child process blocking on that source, and the watcher's per-cycle `reconcile` republishes every captured result with no durable handled acknowledgement yet - regardless of any earlier publication - restarts a source whose owner is gone, and stops this home's runner when reconciliation runs after its registration disappeared unexpectedly.
+Reconciliation counts a start only after the child acknowledges claim acquisition and staging preparation; this does not prove ongoing source health, result capture, primary delivery, or handling.
+The bounded startup wait, counters, and core-only failure diagnostics are defined in [`fm-procevent.sh`](../bin/fm-procevent.sh)'s command header.
 In supported steady state, a home with no registered source runs nothing, generates no state, and keeps its ordinary cadence.
 
 Whether a captured result is a routine no-op is adapter knowledge too, and the runner names no adapter-specific condition for it either.
@@ -786,6 +788,8 @@ Retirement and orphan reconciliation signal a runner process group only while it
 A runner leads its own process group, so a claim counts as reclaimable only when that whole generation is gone: a crashed leader whose group still has members is not stale, and reconcile stops that surviving group and releases its generation before starting any replacement.
 If identity cannot be established for a live PID, or a surviving owned group cannot be proved stopped, the operation preserves the registration and claim for safe retry rather than adding a second owner.
 A live PID whose identity no longer matches is a reused PID, so it is treated as stale and its process group is never signalled.
+An orphan extension runner record can be retired under the source lock only when the claim is absent or stale, the record is private, regular, and single-link, and both its recorded PID and process group are proved absent.
+Live, malformed, or uncertain orphan records remain intact and prevent replacement startup.
 
 Supported secondmate retirement preflights each target home's bounded `sweep-home` command before destructive teardown, snapshots its registrations outside the target, then runs the sweep at that home's final deletion or return boundary.
 If deletion or return fails, teardown restores those registrations and reconciles them before returning the refusal.

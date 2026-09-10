@@ -140,7 +140,7 @@ ROWS
   printf 'Required proof (JSON; scopes do not substitute for each other):\n'
   printf '%s' "$FM_WC_ENGINEERING" | jq -c --arg role "$role" --arg stage "$stage" '
     . as $e | .verification[] | . as $v | select(any($e.skills[];
-      .id == $v.skill and ($role == "all" or .role == $role) and ($stage == "all" or .stage == $stage)))' 
+      .id == $v.skill and ($role == "all" or .role == $role) and ($stage == "all" or .stage == $stage)))'
 }
 
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>

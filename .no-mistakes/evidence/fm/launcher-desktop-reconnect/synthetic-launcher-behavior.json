@@ -1,0 +1,44 @@
+{
+  "scope": "Executable Desktop caller with synthetic Herdr responses; not native Desktop qualification",
+  "scenarios": [
+    {
+      "scenario": "shell-first",
+      "exit_status": 0,
+      "attached": true,
+      "workspace_operations": [],
+      "workspace_preserved": true,
+      "console_pid_preserved": true,
+      "harness_process_alive": true,
+      "progress_lines": []
+    },
+    {
+      "scenario": "harness-first",
+      "exit_status": 0,
+      "attached": true,
+      "workspace_operations": [],
+      "workspace_preserved": true,
+      "console_pid_preserved": true,
+      "harness_process_alive": true,
+      "progress_lines": []
+    },
+    {
+      "scenario": "starting",
+      "exit_status": 0,
+      "attached": true,
+      "workspace_operations": [],
+      "workspace_preserved": true,
+      "console_pid_preserved": true,
+      "harness_process_alive": true,
+      "progress_lines": [
+        "Waiting for the console to become ready..."
+      ]
+    }
+  ],
+  "progress_before_readiness": {
+    "visible_line": "Waiting for the console to become ready...",
+    "launcher_still_waiting": true,
+    "attached_before_ready": false,
+    "attached_after_ready": true,
+    "additional_progress_lines": 0
+  }
+}

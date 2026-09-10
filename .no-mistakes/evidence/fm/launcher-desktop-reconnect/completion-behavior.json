@@ -1,0 +1,12 @@
+{
+  "scope": "Synthetic task and forge; maintained registration and captain-hold completion, authenticated snapshot consumer.",
+  "canonical_pr": "https://github.com/o/r/pull/37",
+  "completion_inventory": {
+    "decisions_reviewed": 1,
+    "decision_keys": []
+  },
+  "registration_unchanged": true,
+  "authenticated_after_completion": true,
+  "base_rejects_same_completed_metadata": true,
+  "target_accepts_same_completed_metadata": true
+}

@@ -1,0 +1,70 @@
+{
+  "scope": "Synthetic Herdr boundary; real launcher caller and parent/child processes. No native Desktop activation or qualification.",
+  "base": "76c7f3527052dac1cf17fd909df0e99fe63b5f6d",
+  "target": "0a078b48aa53d7a4b23e8495057d06342e4d9abb",
+  "observations": [
+    {
+      "revision": "base",
+      "foreground_order": [
+        "bash",
+        "codex"
+      ],
+      "exit_status": 1,
+      "attached": false,
+      "workspace_or_process_mutations": [],
+      "console_record_unchanged": true,
+      "harness_process_still_alive": true,
+      "readiness_progress_lines": 0
+    },
+    {
+      "revision": "base",
+      "foreground_order": [
+        "codex",
+        "bash"
+      ],
+      "exit_status": 0,
+      "attached": true,
+      "workspace_or_process_mutations": [],
+      "console_record_unchanged": true,
+      "harness_process_still_alive": true,
+      "readiness_progress_lines": 0
+    },
+    {
+      "revision": "target",
+      "foreground_order": [
+        "bash",
+        "codex"
+      ],
+      "exit_status": 0,
+      "attached": true,
+      "workspace_or_process_mutations": [],
+      "console_record_unchanged": true,
+      "harness_process_still_alive": true,
+      "readiness_progress_lines": 0
+    },
+    {
+      "revision": "target",
+      "foreground_order": [
+        "codex",
+        "bash"
+      ],
+      "exit_status": 0,
+      "attached": true,
+      "workspace_or_process_mutations": [],
+      "console_record_unchanged": true,
+      "harness_process_still_alive": true,
+      "readiness_progress_lines": 0
+    },
+    {
+      "revision": "target",
+      "scenario": "genuine startup wait",
+      "exit_status": 0,
+      "attached": true,
+      "workspace_or_process_mutations": [],
+      "elapsed_seconds": 2.1,
+      "visible_progress": [
+        "Waiting for the console to become ready..."
+      ]
+    }
+  ]
+}

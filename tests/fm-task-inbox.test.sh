@@ -246,6 +246,39 @@ test_handled_mv_dedups_by_sequence() {
   pass "inbox: the handled mv is the idempotent ack and sequences are never reissued"
 }
 
+test_writer_retries_after_competitor_releases_lock() {
+  local state fakebin rec original_path=$PATH real_ln
+  real_ln=$(command -v ln)
+  state="$TMP_ROOT/released-lock/state"; mkdir -p "$state"
+  fakebin="$TMP_ROOT/released-lock/fakebin"; mkdir -p "$fakebin"
+  # Schedule the losing writer at the filesystem boundary: by the time its
+  # failed link returns, the winning writer has already published and unlocked.
+  cat > "$fakebin/ln" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" = 3 ] && [ "$3" = "$FM_RACE_STATE/t1.inbox/.seq.lock" ] &&
+    [ ! -e "$FM_RACE_STATE/competitor-done" ]; then
+  PATH="$FM_RACE_PATH" bash -c '
+    . "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_write "$2" t1 "winning steer"
+  ' _ "$FM_RACE_ROOT" "$FM_RACE_STATE" > "$FM_RACE_STATE/winner" || exit 2
+  touch "$FM_RACE_STATE/competitor-done"
+  exit 1
+fi
+exec "$FM_RACE_LN" "$@"
+SH
+  chmod +x "$fakebin/ln"
+  rec=$(FM_RACE_STATE="$state" FM_RACE_PATH="$original_path" FM_RACE_ROOT="$ROOT" \
+    FM_RACE_LN="$real_ln" PATH="$fakebin:$original_path" \
+    inbox_lib "$state" fm_task_inbox_write "$state" t1 "losing steer") \
+    || fail "writer failed after its competitor had already released the lock"
+  [ -f "$state/competitor-done" ] || fail "competing write was not exercised"
+  [ "$(inbox_lib "$state" fm_task_inbox_body "$(cat "$state/winner")")" = "winning steer" ] \
+    || fail "winning steer was clobbered"
+  [ "$(inbox_lib "$state" fm_task_inbox_body "$rec")" = "losing steer" ] \
+    || fail "losing steer was not durably retried"
+  pass "inbox: a writer retries when a competing lock is released before failure returns"
+}
+
 test_concurrent_writers_never_clobber() {
   local state i pids=() count
   state="$TMP_ROOT/race/state"; mkdir -p "$state"
@@ -501,6 +534,7 @@ test_write_is_durable_and_exact
 test_idempotent_write_dedups_exact_body
 test_idempotent_write_follows_concurrent_ack
 test_handled_mv_dedups_by_sequence
+test_writer_retries_after_competitor_releases_lock
 test_concurrent_writers_never_clobber
 test_ladder_writes_ignore_vanished_inbox
 test_fire_and_forget_records_never_enter_the_ladder

@@ -123,10 +123,10 @@
 #      core, then commits `rewake` in the ledger so the next Stop takes the next
 #      generation. Nothing turns a queued wake into a model turn otherwise.
 # The owner runs under setsid with stdio detached (state/cold-start-arm.log), so
-# it outlives this shell's exec into the harness and the console's exit; the
+# it outlives the foreground harness and the console shell's exit; the
 # next launch then attaches to its watcher instead of starting a second one.
 # The launcher waits for the arm line plus a verified fresh beacon
-# (fm_watcher_healthy) before exec, bounded by FM_ENTRY_ARM_TIMEOUT (default
+# (fm_watcher_healthy) before harness launch, bounded by FM_ENTRY_ARM_TIMEOUT (default
 # 40s). Supervision required but unverifiable: the console starts VISIBLY
 # DEGRADED with a loud banner (the session-start digest's guard alarm and the
 # first Stop's auto-arm are the existing recovery), except an unwritable

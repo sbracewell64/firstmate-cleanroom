@@ -15,7 +15,7 @@ Interactive launcher and console failures retain their diagnostics until Enter i
 Noninteractive callers return immediately; successful exits do not pause.
 Unavailable server ownership or console convergence refuses launch instead of reporting a successful attachment.
 Creation, restart, and reuse require observed harness startup matching the selected profile and console record; a live preparation shell alone is insufficient.
-Concurrent Desktop launches serialize console creation, and unknown or conflicting existing ownership blocks another primary.
+Concurrent Desktop launches serialize console creation, and unknown or conflicting existing ownership blocks another primary, including a direct console invocation without an existing matching session/pane record.
 `bin/fm-render-launcher.sh --require-complete-config` checks required isolation inputs when preparing activation staging; ordinary menu staging is not activation qualification.
 The renderer's [header](../bin/fm-render-launcher.sh) owns snapshot and override mechanics; deployment and actual consumer qualification remain separate activation obligations.
 

@@ -315,6 +315,11 @@ fm_pr_metadata_identity_parse() {
           fm_pr_head_valid "$value" || post_pr_invalid=1
         fi
         ;;
+      # The lifecycle owner rewrites these exact fields after registration.
+      # They are not PR identity; unknown stage_* fields remain refused.
+      # Field schema: bin/fm-stage.sh.
+      stage=*|stage_epoch=*|stage_branch=*|stage_head=*|stage_tree=*|stage_gen=*|stage_attempt=*|stage_run=*|stage_pr=*|stage_reason=*)
+        ;;
       # Completion may append its inventory after PR registration. These
       # fields are unrelated to PR identity, like the Relay fields below.
       decisions_reviewed=*|decision_keys=*|x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)

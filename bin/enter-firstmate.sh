@@ -982,7 +982,7 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
   mkdir -p "$FM_HOME/state" || return 2
   command -v flock >/dev/null 2>&1 || { printf 'enter-firstmate: flock required for console ownership\n' >&2; return 2; }
   exec 9>"$FM_HOME/state/console-launch.lock" || return 2
-  flock -w 10 9 || { printf 'enter-firstmate: another launcher owns console creation\n' >&2; return 2; }
+  flock -w "$CONSOLE_LOCK_WAIT" 9 || { printf 'enter-firstmate: another launcher owns console creation\n' >&2; return 2; }
   trap 'flock -u 9' EXIT
   # The console is identified by THIS HOME'S OWN RECORD, never by the label alone:
   # the upstream adapter also creates a "firstmate"-labeled workspace for a
@@ -1032,6 +1032,7 @@ case "$COLD_ARM_TIMEOUT" in ''|*[!0-9]*|0) COLD_ARM_TIMEOUT=40 ;; esac
 CONSOLE_STARTUP_DEFAULT=$(( COLD_ARM_TIMEOUT + 120 + 4 * 25 + 5 + 20 ))
 CONSOLE_STARTUP_WAIT=${FM_ENTRY_STARTUP_WAIT:-$CONSOLE_STARTUP_DEFAULT}
 case "$CONSOLE_STARTUP_WAIT" in ''|*[!0-9]*) CONSOLE_STARTUP_WAIT=$CONSOLE_STARTUP_DEFAULT ;; esac
+CONSOLE_LOCK_WAIT=$(( CONSOLE_STARTUP_WAIT + CONSOLE_RESTORE_SETTLE + CONSOLE_COMPOSER_WAIT + CONSOLE_EXIT_WAIT + 10 ))
 case "$COLD_ARM_DELIVER_WAIT" in ''|*[!0-9]*) COLD_ARM_DELIVER_WAIT=900 ;; esac
 cold_arm_log() { printf '%s pid=%s %s\n' "$(date -u +%FT%TZ)" "$$" "$*" 2>/dev/null >> "$COLD_ARM_LOG" || true; }
 
@@ -1635,7 +1636,7 @@ if [ "$MODE" = converge-owner ]; then
   done
   console_log "converge-owner: pane $2 materialized; settling and classifying"
   exec 9>"$FM_HOME/state/console-launch.lock" || exit 2
-  flock -w 10 9 || exit 2
+  flock -w "$CONSOLE_LOCK_WAIT" 9 || exit 2
   rec=$(console_record_pane) || exit $?
   [ "$rec" = "$1 $2" ] || exit 2
   console_converge "$1" "$2"

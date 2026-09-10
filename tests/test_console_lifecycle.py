@@ -269,13 +269,27 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(result.returncode, expected, result.stderr)
                 self.assertEqual(self.f.effects(), '')
 
+    def test_held_creation_lock_respects_shortened_bounds(self):
+        import fcntl
+        with (self.f.home/'state/console-launch.lock').open('w') as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            started = time.monotonic()
+            result = self.f.run(FM_ENTRY_STARTUP_WAIT='0', FM_ENTRY_RESTORE_SETTLE='0',
+                                FM_ENTRY_COMPOSER_WAIT='0', FM_ENTRY_EXIT_WAIT='0')
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertLess(time.monotonic()-started, 15)
+            self.assertIn('another launcher owns console creation', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+
     def test_two_clicks_create_one_console(self):
-        children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=dict(self.f.env, STARTUP_DELAY='2'),
+        children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=dict(self.f.env, STARTUP_DELAY='25'),
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
         try:
-            outputs = [child.communicate(timeout=15) for child in children]
+            outputs = [child.communicate(timeout=40) for child in children]
             for child, (out, err) in zip(children, outputs):
                 self.assertEqual(child.returncode, 0, out+err)
+            self.assertEqual(sum('(created)' in err for _, err in outputs), 1)
+            self.assertEqual(sum('(existing)' in err for _, err in outputs), 1)
         finally:
             for child in children:
                 if child.poll() is None:

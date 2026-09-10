@@ -243,6 +243,32 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn('convergence timed out', result.stderr)
         self.assertEqual(self.f.effects(), '')
 
+    def test_creation_preserves_recorded_child_status(self):
+        result = self.f.run(FAIL_RESTART='1', FAIL_RESTART_STATUS='79')
+        self.assertEqual(result.returncode, 79, result.stderr)
+        self.assertEqual(self.f.effects(), 'create\nrun\n')
+
+    def test_restart_preserves_recorded_child_status(self):
+        shell = subprocess.Popen([BASH, '-c', 'read -r line'], stdin=subprocess.PIPE)
+        try:
+            self.f.record(harness='codex', console_pid=0)
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            result = self.f.run(IDLE_SHELL_PID=str(shell.pid), FAIL_RESTART='1', FAIL_RESTART_STATUS='79')
+            self.assertEqual(result.returncode, 79, result.stderr)
+            self.assertEqual(self.f.effects(), 'run\n')
+        finally:
+            shell.terminate(); shell.communicate(timeout=5)
+
+    def test_reuse_preserves_valid_status_and_rejects_invalid_status(self):
+        for status, expected in [(1, 1), (79, 79), (255, 255), (256, 1), (-1, 1),
+                                 (1.5, 1), ('79', 1), ('malformed', 1), (None, 1), ({}, 1), (0, 1)]:
+            with self.subTest(status=status):
+                self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='exited', exit_rc=status)
+                self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+                result = self.f.run(FM_ENTRY_STARTUP_WAIT='0')
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(self.f.effects(), '')
+
     def test_two_clicks_create_one_console(self):
         children = [subprocess.Popen([BASH, shellpath(ENTRY)], env=dict(self.f.env, STARTUP_DELAY='2'),
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]

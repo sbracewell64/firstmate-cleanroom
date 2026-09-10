@@ -1401,14 +1401,17 @@ console_pane_state() {
   echo "$cls"
 }
 console_startup_qualify() {
-  local ws=$1 pane=$2 old_pid=${3:-} deadline rec stage cpid cls
+  local ws=$1 pane=$2 old_pid=${3:-} deadline rec stage cpid cls failure_rc
   deadline=$(( $(date +%s) + CONSOLE_STARTUP_WAIT ))
   while :; do
     rec=$(console_record_pane) || return 1
     [ "$rec" = "$ws $pane" ] || return 1
     if console_record_failed; then
       printf 'enter-firstmate: console startup failed in pane %s (recorded status %s); leaving diagnostics visible\n' "$pane" "$(console_record_field exit_rc)" >&2
-      return 1
+      failure_rc=$(jq -r '.exit_rc | if type == "number" then
+        if . >= 1 and . <= 255 and . == floor then . else 1 end
+        else 1 end' "$CONSOLE_RECORD" 2>/dev/null) || failure_rc=1
+      return "$failure_rc"
     fi
     stage=$(console_record_field launch_stage)
     cpid=$(console_record_field console_pid)
@@ -1519,6 +1522,7 @@ console_converge() {
           printf 'enter-firstmate: WARNING: console pane %s foreground is neither the canonical console nor an idle shell (%s); it is left untouched - inspect it\n' "$pane" "$cls" >&2 ;;
       esac
       printf 'enter-firstmate: console convergence is incomplete (%s); refusing to report a successful launch\n' "$cls" >&2
+      if [ "$cls" = failed ]; then console_startup_qualify "$ws" "$pane"; return $?; fi
       return 1 ;;
   esac
 }

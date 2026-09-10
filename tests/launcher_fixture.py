@@ -79,7 +79,7 @@ elif args[:2]==['pane','run']:
         print('{}');sys.exit(0)
     if os.environ.get('UNCONFIRMED'):print('{}');sys.exit(0)
     (p/'launch-time').write_text(str(time.monotonic()))
-    record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);data.update({'launch_stage':'exited','exit_rc':1} if os.environ.get('FAIL_RESTART') else {'launch_stage':'launching'});record.write_text(json.dumps(data));out={}
+    record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);data.update({'launch_stage':'exited','exit_rc':json.loads(os.environ.get('FAIL_RESTART_STATUS','1'))} if os.environ.get('FAIL_RESTART') else {'launch_stage':'launching'});record.write_text(json.dumps(data));out={}
 elif args[:2]==['pane','process-info']:
     if os.environ.get('FAIL_CONVERGE'):sys.exit(75)
     out={'result':{'type':'pane_process_info','process_info':{'pane_id':args[-1], 'shell_pid':1,'foreground_processes':[{'name':'codex','pid':int(os.environ['FIXTURE_CONSOLE_PID'])}]}}}

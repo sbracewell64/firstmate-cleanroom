@@ -1,0 +1,44 @@
+Isolated registration -> stage activation -> authenticated snapshot
+Forge and guard use existing test fixtures; no live registration or API calls.
+
+$ fm-pr-check.sh task-a https://github.com/o/r/pull/38
+armed: state/task-a.check.sh
+Base parser before activation: authenticated
+
+$ fm-stage.sh task-a activated
+STAGE: activated: task=task-a gen=- branch=feature head=0123456789ab tree=0123456789ab intent=- decisions=- mode=no-mistakes yolo=- alloc=-/-/-/tmux nm_home=- profile=- attempt=- run=- step=- outcome=- pr=https://github.com/o/r/pull/38 owner=firstmate reason=merged:github:github.com:o/r:38
+next: nothing; cleanup follows through bin/fm-teardown.sh
+
+Persisted task metadata after activation:
+window=firstmate:fm-task-a
+endpoint_task_id=task-a
+worktree=/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M24QJGZN7X1427D1BSBBVZAR/.test-tmp/fm-pr-check-security.wr0Vei/evidence-stage/wt
+project=/home/shane/.firstmate-cleanroom/no-mistakes/worktrees/56044c3a23d6/01M24QJGZN7X1427D1BSBBVZAR/.test-tmp/fm-pr-check-security.wr0Vei/evidence-stage/project
+kind=ship
+mode=no-mistakes
+pr=https://github.com/o/r/pull/38
+pr_head=0123456789abcdef0123456789abcdef01234567
+stage=activated
+stage_epoch=1789012990
+stage_branch=feature
+stage_head=0123456789abcdef0123456789abcdef01234567
+stage_tree=0123456789abcdef0123456789abcdef01234567
+stage_gen=
+stage_attempt=attempt-1
+stage_run=run-1
+stage_pr=https://github.com/o/r/pull/38
+stage_reason=merged:github:github.com:o/r:38
+
+Base 5c588ff parser after activation: REJECTED (reproduced regression)
+Target 8c6a300 parser after activation: authenticated id=task-a provider=github url=https://github.com/o/r/pull/38
+
+$ fm-pr-poll.sh --validated [authenticated snapshot fields; forge response MERGED]
+merged
+
+Security negatives on activated registered metadata:
+REJECTED: stage_unrecognized=1
+REJECTED: stage_pr_extra=1
+REJECTED: pr=https://github.com/o/r/pull/39
+REJECTED: pr_head=invalid
+REJECTED: echo unsafe
+REJECTED: window=foreign

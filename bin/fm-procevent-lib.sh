@@ -481,7 +481,7 @@ fm_procevent_claim_acquire_locked() {
   fi
   if [ "$status" -eq 0 ]; then
     state=${FM_STATE_OVERRIDE:-$home/state}
-    state_root= state_device= state_inode= state_owner= state_mode=
+    state_root='' state_device='' state_inode='' state_owner='' state_mode=''
     # Only external captures have reservations requiring a pinned private
     # state root. Built-in sources retain their legacy state-path contract.
     fm_procevent_extension_registration_load_locked "$state" "$id"

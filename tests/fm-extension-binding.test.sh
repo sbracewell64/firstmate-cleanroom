@@ -1501,9 +1501,20 @@ override_crash_claim="$TMP_ROOT/claims/override-crash-source.claim"
 assert_present "$override_crash_claim" "overridden-state crash fixture did not retain its claim"
 override_crash_runner_pid=$(sed -n '2p' "$override_crash_claim")
 override_crash_token=$(sed -n '3p' "$override_crash_claim")
-override_crash_records=$(find "$STATE_OVERRIDE/procevent-capture-reservations" -type f \
-  -name ".extension-capture-$override_crash_token.*" -print | wc -l | tr -d '[:space:]')
-[ "$override_crash_records" -eq 2 ] || fail "overridden-state crash fixture did not create both immediate reservations"
+# Entering result.silent consumes its reservation; the terminal reservation
+# remains durable until the blocked invocation completes or crash recovery runs.
+python3 - "$STATE_OVERRIDE/procevent-capture-reservations" "$override_crash_token" <<'PY' \
+  || fail "overridden-state crash fixture lost its remaining terminal reservation"
+import json, pathlib, sys
+records = [json.loads(p.read_text()) for p in pathlib.Path(sys.argv[1]).glob(f".extension-capture-{sys.argv[2]}.*")]
+assert len(records) == 1
+record = records[0]
+assert record["schema"] == "fm-procevent-capture-reservation.v1"
+assert record["operation"] == "result.terminal"
+assert record["source_id"] == "override-crash-source"
+assert record["claim_token"] == sys.argv[2]
+assert record["sequence"] == 1
+PY
 mkdir -p "$H_STATE_OVERRIDE/state/procevent-capture-reservations"
 chmod 0700 "$H_STATE_OVERRIDE/state" "$H_STATE_OVERRIDE/state/procevent-capture-reservations"
 override_crash_decoy="$H_STATE_OVERRIDE/state/procevent-capture-reservations/.extension-capture-$override_crash_token.decoy.json"

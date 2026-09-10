@@ -461,6 +461,14 @@ cmd_register_extension() {
   if [ ! -x "$EXTENSION_HOST" ] || [ -L "$EXTENSION_HOST" ]; then
     die "the tracked extension host is unavailable"
   fi
+  # A poll holds the lifecycle lock until it returns. Refuse an active owner
+  # before waiting there, then recheck under both locks before publication.
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock the source"
+  if ! extension_registration_replacement_safe_locked "$id"; then
+    fm_procevent_source_lock_release "$id"
+    die "cannot replace extension registration while its prior runner remains active: $id"
+  fi
+  fm_procevent_source_lock_release "$id"
   extension_lifecycle_lock_acquire || die "cannot lock the extension lifecycle"
   if ! resolution=$("$EXTENSION_HOST" resolve-process-event "$adapter"); then
     extension_lifecycle_lock_release

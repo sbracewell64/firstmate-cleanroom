@@ -1,0 +1,35 @@
+Synthetic launcher caller evidence (Linux; no inference or live deployment).
+
+$ Desktop launcher click 1
+enter-firstmate: console workspace w8 pane w8:p1 (created) in session synthetic at /synthetic.sock
+enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI
+exit status: 0
+
+$ Desktop launcher click 2
+enter-firstmate: console workspace w8 pane w8:p1 (existing) in session synthetic at /synthetic.sock
+enter-firstmate: FM_ENTRY_NO_ATTACH set; not attaching the TUI
+exit status: 0
+Herdr mutation journal:
+create
+run
+Recorded selection: {"harness": "codex", "profile": "codex-astra", "model": "gpt-6-astra"}
+
+$ Desktop launcher with child failure 79
+enter-firstmate: console startup failed in pane w8:p1 (recorded status 79); leaving diagnostics visible
+exit status: 79
+
+$ console caller with missing ownership
+enter-firstmate: console ownership claim rejected for pane w7:p1; an existing matching session/pane record is required before startup
+exit status: 1
+
+$ generated-consumer (PTY)
+enter-firstmate: tools root is unset: pass FM_TOOLS_ROOT or write <fixture>/home/config/tools-root
+
+FirstMate launch failed (status 1). Press Enter to close...
+Process remains alive with diagnostics visible before acknowledgement.
+After Enter: exit status 1
+
+$ generated-consumer (noninteractive)
+enter-firstmate: tools root is unset: pass FM_TOOLS_ROOT or write <fixture>/home/config/tools-root
+exit status: 1
+Renderer completed staged qualification; no activation performed.

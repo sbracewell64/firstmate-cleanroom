@@ -129,7 +129,27 @@ else
   die "could not resolve a real current live (donor) code root from $FM_HOME_ARG/config/code-root or $LIVE_LAUNCHER, so adoption cannot be proven to move the code root off the donor. Refusing (pass --allow-same-code-root only for a genuine fresh install with nothing to move off of)."
 fi
 
-mkdir -p "$ROLLBACK" "$STAGE_CONFIG"
+python3 - "$STAGING" "$FM_HOME_ARG" <<'CHECK_PATHS'
+import os, sys
+from pathlib import Path
+stage, home = (Path(os.path.abspath(p)) for p in sys.argv[1:])
+for path in (stage, *stage.parents):
+    if path.is_symlink():
+        sys.exit('fm-render-launcher: linked staging destination refused')
+live = home.resolve()
+config = (home/'config').resolve()
+if stage == live or stage in live.parents or stage == config or config in stage.parents or stage in config.parents:
+    sys.exit('fm-render-launcher: staging overlaps live configuration')
+if stage.exists():
+    for root, dirs, files in os.walk(stage):
+        if any((Path(root)/name).is_symlink() for name in dirs + files):
+            sys.exit('fm-render-launcher: linked staging destination refused')
+CHECK_PATHS
+mkdir -p "$STAGING/rollback"
+ROLLBACK=$(mktemp -d "$STAGING/rollback/$STAMP.XXXXXX")
+rm -f "$REPORT"
+fresh_config=$(mktemp -d "$STAGING/.config.XXXXXX")
+trap 'rm -rf "$fresh_config"' EXIT
 
 # --- 1. rollback snapshot (pre-cutover; bytes preserved, nothing edited) --------
 snap_manifest="$ROLLBACK/MANIFEST.txt"
@@ -165,14 +185,17 @@ done
 # Carry the home's existing configuration into the staged home. Explicit
 # renderer selections below replace their corresponding scalar values.
 if [ -d "$FM_HOME_ARG/config" ]; then
-  cp -a "$FM_HOME_ARG/config/." "$STAGE_CONFIG/"
+  cp -RLp "$FM_HOME_ARG/config/." "$fresh_config/"
 fi
-printf '%s\n' "$CODE_ROOT" > "$STAGE_CONFIG/code-root"
-[ -z "$TOOLS_ROOT" ]        || printf '%s\n' "$TOOLS_ROOT"        > "$STAGE_CONFIG/tools-root"
-[ -z "$CONTROL_RESOLVER" ]  || printf '%s\n' "$CONTROL_RESOLVER"  > "$STAGE_CONFIG/control-resolver"
-[ -z "$RETIRED_HOME" ]      || printf '%s\n' "$RETIRED_HOME"      > "$STAGE_CONFIG/retired-home"
-[ -z "$EXCHANGE_OWNER" ]    || printf '%s\n' "$EXCHANGE_OWNER"    > "$STAGE_CONFIG/exchange-owner"
-printf '%s\n' "$CONSOLE_PROFILE" > "$STAGE_CONFIG/console-profile"
+printf '%s\n' "$CODE_ROOT" > "$fresh_config/code-root"
+[ -z "$TOOLS_ROOT" ]        || printf '%s\n' "$TOOLS_ROOT"        > "$fresh_config/tools-root"
+[ -z "$CONTROL_RESOLVER" ]  || printf '%s\n' "$CONTROL_RESOLVER"  > "$fresh_config/control-resolver"
+[ -z "$RETIRED_HOME" ]      || printf '%s\n' "$RETIRED_HOME"      > "$fresh_config/retired-home"
+[ -z "$EXCHANGE_OWNER" ]    || printf '%s\n' "$EXCHANGE_OWNER"    > "$fresh_config/exchange-owner"
+printf '%s\n' "$CONSOLE_PROFILE" > "$fresh_config/console-profile"
+
+rm -rf "$STAGE_CONFIG"
+mv "$fresh_config" "$STAGE_CONFIG"
 
 if [ "$REQUIRE_COMPLETE" = 1 ]; then
   for key in code-root tools-root backend herdr-session; do

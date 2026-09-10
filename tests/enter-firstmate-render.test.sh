@@ -301,3 +301,5 @@ python3 "$HERE/test_launcher_terminal.py" \
   "$terminal_home/state/launcher-staging/enter-firstmate.sh" 'tools root is unset' \
   || fail "generated consumer failure visibility/status"
 pass "generated consumer preserves terminal diagnostics and failing status"
+
+python3 "$HERE/test_renderer_snapshot.py" "$RENDER" || fail "independent renderer snapshots"

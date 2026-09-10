@@ -103,7 +103,7 @@ class LifecycleTests(unittest.TestCase):
         try:
             self.f.record(harness='codex', console_pid=0)
             self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
-            result = self.f.run(IDLE_SHELL_PID=str(shell.pid), UNCONFIRMED='1')
+            result = self.f.run(IDLE_SHELL_PID=str(shell.pid), UNCONFIRMED='1', FM_ENTRY_STARTUP_WAIT='1')
             self.assertNotEqual(result.returncode, 0, result.stderr)
             self.assertIn('startup unconfirmed', result.stderr)
             self.assertEqual(self.f.effects(), 'run\n')
@@ -181,9 +181,9 @@ class LifecycleTests(unittest.TestCase):
 
     def test_delayed_startup_is_qualified_before_creation_returns(self):
         started = time.monotonic()
-        result = self.f.run(STARTUP_DELAY='2')
+        result = self.f.run(STARTUP_DELAY='25')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertGreaterEqual(time.monotonic()-started, 2)
+        self.assertGreaterEqual(time.monotonic()-started, 25)
 
     def test_starting_console_reuse_waits_for_launch(self):
         self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='starting')

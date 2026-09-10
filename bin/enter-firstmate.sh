@@ -807,8 +807,6 @@ export FM_CONSOLE_PROFILE
 # --- Console record and launch log (this home's own console identity) -------------
 CONSOLE_RECORD=$FM_HOME/state/captain-console.json
 CONSOLE_LOG=$FM_HOME/state/console-launch.log
-CONSOLE_STARTUP_WAIT=${FM_ENTRY_STARTUP_WAIT:-20}
-case "$CONSOLE_STARTUP_WAIT" in ''|*[!0-9]*) CONSOLE_STARTUP_WAIT=20 ;; esac
 CONSOLE_RESUME_WINDOW=${FM_ENTRY_RESUME_WINDOW:-20}
 CONSOLE_RESTORE_SETTLE=${FM_ENTRY_RESTORE_SETTLE:-12}
 CONSOLE_EXIT_WAIT=${FM_ENTRY_EXIT_WAIT:-90}
@@ -1031,6 +1029,9 @@ COLD_ARM_SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BA
 COLD_ARM_TIMEOUT=${FM_ENTRY_ARM_TIMEOUT:-40}
 COLD_ARM_DELIVER_WAIT=${FM_ENTRY_DELIVER_WAIT:-900}
 case "$COLD_ARM_TIMEOUT" in ''|*[!0-9]*|0) COLD_ARM_TIMEOUT=40 ;; esac
+CONSOLE_STARTUP_DEFAULT=$(( COLD_ARM_TIMEOUT + 120 + 4 * 25 + 5 + 20 ))
+CONSOLE_STARTUP_WAIT=${FM_ENTRY_STARTUP_WAIT:-$CONSOLE_STARTUP_DEFAULT}
+case "$CONSOLE_STARTUP_WAIT" in ''|*[!0-9]*) CONSOLE_STARTUP_WAIT=$CONSOLE_STARTUP_DEFAULT ;; esac
 case "$COLD_ARM_DELIVER_WAIT" in ''|*[!0-9]*) COLD_ARM_DELIVER_WAIT=900 ;; esac
 cold_arm_log() { printf '%s pid=%s %s\n' "$(date -u +%FT%TZ)" "$$" "$*" 2>/dev/null >> "$COLD_ARM_LOG" || true; }
 

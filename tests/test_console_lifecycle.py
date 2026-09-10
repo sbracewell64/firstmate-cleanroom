@@ -16,6 +16,72 @@ ENTRY = Path(sys.argv.pop(1)).resolve()
 class LifecycleTests(unittest.TestCase):
     def setUp(self): self.f = LauncherFixture(ENTRY)
     def tearDown(self): self.f.close()
+    def test_existing_shell_and_harness_attach_without_wait(self):
+        # Real Herdr reports the wrapper and its harness in one foreground group.
+        # Only this external process observation is substituted; the Desktop
+        # caller, ownership validation, readiness and attach path all execute.
+        child = subprocess.Popen(['/bin/sleep', '30'])
+        try:
+            self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='launching')
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            processes = [{'name':'bash','pid':os.getpid()}, {'name':'codex','pid':child.pid}]
+            for rows in (processes, list(reversed(processes))):
+                with self.subTest(order=[row['name'] for row in rows]):
+                    (self.f.root/'attached').unlink(missing_ok=True)
+                    (self.f.root/'process-info').write_text(json.dumps({'result': {
+                        'type':'pane_process_info', 'process_info': {
+                            'pane_id':'w7:p1', 'shell_pid':os.getpid(),
+                            'foreground_process_group_id':os.getpid(),
+                            'foreground_processes':rows}}}))
+                    result = self.f.run(FM_ENTRY_STARTUP_WAIT='0', FM_ENTRY_NO_ATTACH='')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue((self.f.root/'attached').exists())
+                    self.assertEqual(self.f.effects(), '')
+        finally:
+            child.terminate(); child.wait(timeout=5)
+
+    def test_ambiguous_or_unreadable_process_group_never_attaches(self):
+        children = [subprocess.Popen(['/bin/sleep', '30']) for _ in range(2)]
+        try:
+            self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='launching')
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            rows = [{'name':'bash','pid':os.getpid()}] + [
+                {'name':'codex','pid':child.pid} for child in children]
+            cases = [rows, list(reversed(rows)), [],
+                     [{'name':'codex','pid':children[0].pid}] * 2,
+                     [{'name':'codex','pid':'not-a-pid'}],
+                     [{'name':'codex','pid':children[0].pid + .5}]]
+            for processes in cases:
+                with self.subTest(processes=processes):
+                    (self.f.root/'process-info').write_text(json.dumps({'result': {
+                        'type':'pane_process_info', 'process_info': {
+                            'pane_id':'w7:p1', 'shell_pid':os.getpid(),
+                            'foreground_processes':processes}}}))
+                    result = self.f.run(FM_ENTRY_STARTUP_WAIT='0', FM_ENTRY_NO_ATTACH='')
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse((self.f.root/'attached').exists())
+                    self.assertEqual(self.f.effects(), '')
+        finally:
+            for child in children:
+                child.terminate(); child.wait(timeout=5)
+
+    def test_foreign_harness_in_group_is_not_owned(self):
+        console = subprocess.Popen(['/bin/sleep', '30'])
+        try:
+            self.f.record(harness='codex', console_pid=console.pid, launch_stage='launching')
+            self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+            (self.f.root/'process-info').write_text(json.dumps({'result': {
+                'type':'pane_process_info', 'process_info': {
+                    'pane_id':'w7:p1', 'shell_pid':console.pid,
+                    'foreground_processes':[{'name':'bash','pid':console.pid},
+                        {'name':'codex','pid':os.getpid()}]}}}))
+            result = self.f.run(FM_ENTRY_STARTUP_WAIT='0', FM_ENTRY_NO_ATTACH='')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((self.f.root/'attached').exists())
+            self.assertEqual(self.f.effects(), '')
+        finally:
+            console.terminate(); console.wait(timeout=5)
+
     def test_stale_other_harness_creates_successor(self):
         result = self.f.run()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -195,6 +261,7 @@ class LifecycleTests(unittest.TestCase):
             result = self.f.run()
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertGreaterEqual(time.monotonic()-started, 2)
+            self.assertEqual(result.stderr.count('Waiting for the console to become ready'), 1)
             self.assertEqual(self.f.effects(), '')
         finally:
             ready.cancel(); ready.join()

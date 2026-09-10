@@ -49,7 +49,9 @@ p=pathlib.Path(os.environ['FIXTURE_ROOT']); args=sys.argv[1:]
 if len(args)<2 or args[-2:]!=['--session','synthetic']:
     print('unscoped fixture Herdr call',file=sys.stderr);sys.exit(92)
 args=args[:-2]
-if not args:sys.exit(int(os.environ.get('FAIL_ATTACH','0')))
+if not args:
+    (p/'attached').touch()
+    sys.exit(int(os.environ.get('FAIL_ATTACH','0')))
 if args[:2]==['session','list']: out={'sessions':[{'name':'synthetic','socket_path':'/synthetic.sock'}]}
 elif args[:1]==['server']: sys.exit(0)
 elif args[:1]==['status']:
@@ -82,6 +84,8 @@ elif args[:2]==['pane','run']:
     record=p/'home/state/captain-console.json';data=json.loads(record.read_text());data['console_pid']=int(os.environ['FIXTURE_CONSOLE_PID']);data.update({'launch_stage':'exited','exit_rc':json.loads(os.environ.get('FAIL_RESTART_STATUS','1'))} if os.environ.get('FAIL_RESTART') else {'launch_stage':'launching'});record.write_text(json.dumps(data));out={}
 elif args[:2]==['pane','process-info']:
     if os.environ.get('FAIL_CONVERGE'):sys.exit(75)
+    if (p/'process-info').exists():
+        print((p/'process-info').read_text());sys.exit(0)
     out={'result':{'type':'pane_process_info','process_info':{'pane_id':args[-1], 'shell_pid':1,'foreground_processes':[{'name':'codex','pid':int(os.environ['FIXTURE_CONSOLE_PID'])}]}}}
     if os.environ.get('STARTUP_DELAY') and (p/'launch-time').exists() and time.monotonic()-float((p/'launch-time').read_text())<float(os.environ['STARTUP_DELAY']):
         out['result']['process_info']['foreground_processes'][0]['name']='python3'

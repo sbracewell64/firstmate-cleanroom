@@ -1366,15 +1366,35 @@ console_backend() {
   ' _ "$FM_CODE_ROOT" "$@"
 }
 console_pane_process() {  # <pane> -> "name=<n> pid=<p> ppid=<pp> shell_pid=<s> count=<c>" or nothing when the pane is unreadable
-  local info name pid ppid shell_pid count
+  local info selected name pid ppid shell_pid count cpid
   info=$(hs pane process-info --pane "$1" 2>/dev/null) || return 1
-  printf '%s' "$info" | jq -e --arg pane "$1" '.result.type == "pane_process_info" and .result.process_info.pane_id == $pane' >/dev/null 2>&1 || return 1
-  name=$(printf '%s' "$info" | jq -r '.result.process_info.foreground_processes[0].name // empty')
-  pid=$(printf '%s' "$info" | jq -r '.result.process_info.foreground_processes[0].pid // empty')
+  printf '%s' "$info" | jq -e --arg pane "$1" '
+    .result.type == "pane_process_info" and .result.process_info.pane_id == $pane and
+    (.result.process_info.foreground_processes | type == "array" and length > 0 and
+      all(.[]; (.name | type == "string" and length > 0) and
+        (.pid | type == "number" and . > 0 and . == floor)) and
+      (length == (unique_by(.pid) | length)))' >/dev/null 2>&1 || return 1
+  cpid=$(console_record_field console_pid); case "$cpid" in ''|*[!0-9]*) cpid=0 ;; esac
+  # Herdr returns a foreground process GROUP, including the waiting wrapper.
+  # Select one matching harness independent of array order; the state classifier
+  # still proves its relationship to the recorded console. Ambiguity is no proof.
+  selected=$(printf '%s' "$info" | jq -ce --arg harness "${FM_HARNESS##*/}" --argjson cpid "$cpid" '
+    .result.process_info.foreground_processes as $all |
+    [$all[] | select((.name | split("/") | last) == $harness)] as $harnesses |
+    if ($harnesses | length) == 1 then $harnesses[0]
+    elif ($harnesses | length) > 1 then empty
+    else [$all[] | select(.pid == $cpid)] as $console |
+      if ($console | length) == 1 then $console[0]
+      elif ($all | length) == 1 then $all[0]
+      else empty end
+    end') || return 1
+  name=$(printf '%s' "$selected" | jq -r '.name')
+  pid=$(printf '%s' "$selected" | jq -r '.pid')
   shell_pid=$(printf '%s' "$info" | jq -r '.result.process_info.shell_pid // empty')
   count=$(printf '%s' "$info" | jq -r '.result.process_info.foreground_processes | length')
-  ppid=''
-  [ -z "$pid" ] || ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+  ppid=$(ps -o ppid= -p "$pid" 2>/dev/null) || return 1
+  ppid=$(printf '%s' "$ppid" | tr -d '[:space:]')
+  case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
   printf 'name=%s pid=%s ppid=%s shell_pid=%s count=%s\n' "${name:-none}" "${pid:-0}" "${ppid:-0}" "${shell_pid:-0}" "${count:-0}"
 }
 console_pane_recorded_session_of() {  # <pane> -> Herdr's own persisted claude session id for the pane, if any
@@ -1402,7 +1422,7 @@ console_pane_state() {
   echo "$cls"
 }
 console_startup_qualify() {
-  local ws=$1 pane=$2 old_pid=${3:-} deadline rec stage cpid cls failure_rc
+  local ws=$1 pane=$2 old_pid=${3:-} deadline rec stage cpid cls failure_rc progress_shown=0
   deadline=$(( $(date +%s) + CONSOLE_STARTUP_WAIT ))
   while :; do
     rec=$(console_record_pane) || return 1
@@ -1421,6 +1441,10 @@ console_startup_qualify() {
       return 0
     fi
     [ "$(date +%s)" -lt "$deadline" ] || break
+    if [ "$progress_shown" = 0 ]; then
+      printf 'Waiting for the console to become ready...\n' >&2
+      progress_shown=1
+    fi
     sleep 0.5
   done
   printf 'enter-firstmate: console startup unconfirmed in pane %s within %ss; matching harness startup was not observed\n' "$pane" "$CONSOLE_STARTUP_WAIT" >&2

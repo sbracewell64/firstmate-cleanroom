@@ -2130,11 +2130,15 @@ setup_ident_wt() {
   local dir=$1 pn=$2 pe=$3 base
   local wt="$dir/wt"
   git -C "$wt" init -q
-  git -C "$wt" -c user.name=Base -c user.email=base@example.invalid commit -q --allow-empty -m base
+  GIT_AUTHOR_NAME=Base GIT_AUTHOR_EMAIL=base@example.invalid \
+    GIT_COMMITTER_NAME=Base GIT_COMMITTER_EMAIL=base@example.invalid \
+    git -C "$wt" commit -q --allow-empty -m base
   base=$(git -C "$wt" rev-parse HEAD)
   git -C "$wt" update-ref refs/remotes/origin/main "$base"
   git -C "$wt" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
-  git -C "$wt" -c user.name="$pn" -c user.email="$pe" commit -q --allow-empty -m "no-mistakes(document): generated docs"
+  GIT_AUTHOR_NAME="$pn" GIT_AUTHOR_EMAIL="$pe" \
+    GIT_COMMITTER_NAME="$pn" GIT_COMMITTER_EMAIL="$pe" \
+    git -C "$wt" commit -q --allow-empty -m "no-mistakes(document): generated docs"
   git -C "$wt" rev-parse HEAD
 }
 
@@ -2235,6 +2239,30 @@ test_identity_obligation_gitlab_arms_without_enforcement() {
   pass "an obligated GitLab ship arms without identity enforcement"
 }
 
+test_captain_completion_preserves_registered_poll() {
+  local dir
+  dir=$(make_case captain-completion)
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/37 >/dev/null \
+    || fail "initial registration failed"
+  fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
+    || fail "initial registered snapshot failed"
+  FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    FM_DATA_OVERRIDE="$dir/home/data" FM_CONFIG_OVERRIDE="$dir/home/config" \
+    "$ROOT/bin/fm-captain-hold.sh" complete task-a --none \
+    > "$dir/complete.out" 2> "$dir/complete.err" \
+    || fail "maintained captain completion failed: $(cat "$dir/complete.err")"
+  if ! fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL"; then
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/37 >/dev/null \
+      || fail "counterfactual re-registration failed"
+    fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
+      || fail "counterfactual re-registration did not restore validation"
+    fail "captain completion invalidated registered poll; re-registration alone restored it"
+  fi
+  pass "captain completion preserves authenticated PR snapshot"
+}
+
+test_captain_completion_preserves_registered_poll
 test_identity_obligation_refuses_unreadable_head
 test_identity_obligation_refuses_missing_required_input
 test_identity_obligation_gitlab_arms_without_enforcement

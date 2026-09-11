@@ -15,6 +15,44 @@
 //   fm-extension.mjs resolve-process-event <adapter>
 //   fm-extension.mjs process-event <adapter> <operation> [internal options]
 //   fm-extension.mjs cleanup-invocations [--source-id <id> | --binding-digest <sha256:digest>]
+//   fm-extension.mjs cleanup-invocations --historical <private-evidence.json>
+//     [--retrospective [--apply <sha256:evidence-digest>]]
+//
+// Historical recovery is an explicit lifecycle-owner operation, never automatic.
+// Inspect without --apply; --retrospective acknowledges existing authorization
+// for missing original provenance, not reconstructed launch-time ownership.
+// --apply requires the exact inspected file digest and fresh predicates. The
+// caller must retain inspection output for independent review before effect.
+// Effect creates <evidence>.retirement.jsonl exclusively, syncs intent before
+// each signal and retains the outcome. A partial journal is never overwritten;
+// a reviewed retry needs newly captured evidence at a new private path.
+// This Linux-only evidence file is bounded to 64KiB, mode0600, one link, and
+// canonical beneath FM_HOME; FM_STATE_OVERRIDE is refused. Exact JSON fields:
+// schema="firstmate.extension-historical-evidence.v1", home=canonical FM_HOME,
+// observed_at=ISO timestamp (at most five minutes old), boot_id, pid_namespace,
+// mount_namespace, pgid, root=absent historical fixture root, launcher=absolute
+// historical fm-extension-launch-barrier.mjs, token, host_pid=absent former host,
+// members=[{pid,start_ticks,ppid,pgid,sid,uid,exe,exe_sha256,cmdline_sha256,cwd}],
+// protected_pids=[all current primary/worker/watcher/publisher/other owner PIDs],
+// predicates=[{established:boolean,path:absolute private evidence path,digest}].
+// Digests use sha256:<64 lowercase hex>; cmdline hashes cover raw proc bytes.
+// Members include the leader and the complete finite group; cwd must be in the
+// deleted root. Namespace strings are readlink(/proc/<pid>/ns/{pid,mnt}).
+// The seven predicates are ordered: exact identity; task/run/worktree/candidate;
+// terminal prior owner; no live owner claim; no unique state loss; evidence
+// captured; current canonical owner authorizes this effect. Their evidence
+// files are bounded private regular files beneath FM_HOME, checked by digest.
+// These are operator-established facts, not an authority or approval schema.
+// The command checks kernel identity, current home invocation claims, enumerated
+// protected PIDs and caller ancestors; it cannot infer all external ownership
+// or whether process memory/pipe contents are unique. Unproved predicates refuse.
+// Only actual proc disappearance reports completed/absent; zombies remain open.
+// Fresh membership checks precede TERM and KILL, including exact surviving
+// members after TERM reparents children. Proc inspection plus killpg is not an
+// atomic OS custody transfer and does not contain trusted code that escapes.
+// stdout is private JSON: ready/absent/refused/completed/partial, evidence digest,
+// before/after identities where available, effects and reason. Refusal is nonzero.
+// No evidence, worktree, package or invocation registry is deleted.
 //
 // bind      Validate a package, copy its complete tree into this home's
 //           content-addressed read-only package store, perform the protocol
@@ -2415,7 +2453,244 @@ async function bindingRetirementPreflight(home, bindingDigest) {
   }
 }
 
+// Historical recovery is explicit operator work, never a fallback in ordinary
+// cleanup. The private evidence describes retrospective custody; it does not
+// authenticate lost launch records or decide the operator's seven predicates.
+async function historicalBytes(file) {
+  if (!path.isAbsolute(file) || await realpath(file) !== file) fail("historical-file-unsafe", "recovery evidence must have a canonical path");
+  const handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.uid !== currentUid() || modeOf(info) !== 0o600
+        || info.size < 1 || info.size > MAX_JSON_BYTES) fail("historical-file-unsafe", "recovery evidence must be one bounded private regular file");
+    const buffer = Buffer.alloc(MAX_JSON_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead !== info.size) fail("historical-file-changed", "recovery evidence changed during read");
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function historicalStat(pid) {
+  try {
+    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = text.slice(text.lastIndexOf(")") + 1).trim().split(/\s+/u);
+    if (fields.length < 20) fail("historical-identity-uncertain", "process stat is incomplete");
+    return { pid, state: fields[0], ppid: Number(fields[1]), pgid: Number(fields[2]), sid: Number(fields[3]), start_ticks: fields[19] };
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ESRCH") return null;
+    throw error;
+  }
+}
+
+async function historicalMember(pid) {
+  const before = await historicalStat(pid);
+  if (!before) return null;
+  if (before.state === "Z") return before; // Exited but not reaped: never call this extinction.
+  const root = `/proc/${pid}`;
+  const result = {
+    ...before, uid: (await lstat(root)).uid, exe: await readlink(`${root}/exe`),
+    exe_sha256: digestBytes(await readFile(`${root}/exe`)),
+    cmdline_sha256: digestBytes(await readFile(`${root}/cmdline`)), cwd: await readlink(`${root}/cwd`),
+    pid_namespace: await readlink(`${root}/ns/pid`), mount_namespace: await readlink(`${root}/ns/mnt`),
+  };
+  const after = await historicalStat(pid);
+  if (!after || before.start_ticks !== after.start_ticks || before.pgid !== after.pgid) {
+    fail("historical-identity-changed", "process changed during inspection");
+  }
+  return result;
+}
+
+function validateHistoricalEvidence(record, home) {
+  exactKeys(record, ["schema", "home", "observed_at", "boot_id", "pid_namespace", "mount_namespace", "pgid",
+    "root", "launcher", "token", "host_pid", "members", "protected_pids", "predicates"], "historical evidence");
+  if (record.schema !== "firstmate.extension-historical-evidence.v1" || record.home !== home) fail("historical-home-mismatch", "recovery evidence belongs to a different home or schema");
+  if (!DIGEST_RE.test(record.token)) fail("historical-evidence-invalid", "invalid historical token");
+  for (const name of ["root", "launcher"]) {
+    boundedString(record[name], 4096, name);
+    if (!path.isAbsolute(record[name]) || path.resolve(record[name]) !== record[name]) fail("historical-path-invalid", "historical paths must be absolute and normalized");
+  }
+  if (record.root === "/" || isInside(record.root, home) || path.basename(record.launcher) !== "fm-extension-launch-barrier.mjs") fail("historical-path-invalid", "historical root or launcher is invalid");
+  integerIn(record.pgid, 2, 2147483647, "historical pgid");
+  integerIn(record.host_pid, 2, 2147483647, "historical host");
+  for (const name of ["boot_id", "pid_namespace", "mount_namespace", "observed_at"]) boundedString(record[name], 128, name);
+  if (!Array.isArray(record.members) || record.members.length < 1 || record.members.length > 32) fail("historical-evidence-invalid", "one finite member set is required");
+  const pids = new Set();
+  for (const member of record.members) {
+    exactKeys(member, ["pid", "start_ticks", "ppid", "pgid", "sid", "uid", "exe", "exe_sha256", "cmdline_sha256", "cwd"], "historical member");
+    for (const key of ["pid", "ppid", "pgid", "sid"]) integerIn(member[key], 1, 2147483647, key);
+    if (member.uid !== currentUid() || member.pgid !== record.pgid || member.sid !== record.pgid || pids.has(member.pid)) fail("historical-evidence-invalid", "member group, user or uniqueness is invalid");
+    pids.add(member.pid);
+    boundedString(member.start_ticks, 32, "start ticks", /^[0-9]+$/u);
+    for (const key of ["exe", "cwd"]) boundedString(member[key], 4096, key);
+    if (!DIGEST_RE.test(member.exe_sha256) || !DIGEST_RE.test(member.cmdline_sha256)) fail("historical-evidence-invalid", "member digest is invalid");
+    if (!member.cwd.endsWith(" (deleted)") || !isInside(record.root, member.cwd.slice(0, -10))) fail("historical-root-mismatch", "member cwd is not in the deleted historical root");
+  }
+  if (!pids.has(record.pgid) || pids.has(record.host_pid)) fail("historical-evidence-invalid", "historical leader or host is invalid");
+  if (!Array.isArray(record.protected_pids) || record.protected_pids.length < 1 || record.protected_pids.length > 256) fail("historical-evidence-invalid", "current protected owners must be enumerated");
+  for (const pid of record.protected_pids) integerIn(pid, 1, 2147483647, "protected owner");
+  if (!Array.isArray(record.predicates) || record.predicates.length !== 7) fail("historical-evidence-invalid", "all seven operator predicates are required in order");
+  for (const predicate of record.predicates) {
+    exactKeys(predicate, ["established", "path", "digest"], "historical predicate");
+    if (typeof predicate.established !== "boolean" || !DIGEST_RE.test(predicate.digest)) fail("historical-evidence-invalid", "predicate evidence is invalid");
+    boundedString(predicate.path, 4096, "predicate evidence path");
+    if (!isInside(home, predicate.path)) fail("historical-home-mismatch", "predicate evidence is outside this home");
+  }
+}
+
+async function inspectHistorical(record, afterEffect = false) {
+  if (process.platform !== "linux") fail("historical-platform-unsupported", "historical recovery requires Linux proc identity");
+  if ((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim() !== record.boot_id
+      || await readlink("/proc/self/ns/pid") !== record.pid_namespace
+      || await readlink("/proc/self/ns/mnt") !== record.mount_namespace) fail("historical-namespace-changed", "boot or namespace differs from the recovery evidence");
+  const members = [];
+  const expected = new Map(record.members.map((member) => [member.pid, member]));
+  for (const entry of await readdir("/proc")) {
+    if (!/^[0-9]+$/u.test(entry)) continue;
+    const stat = await historicalStat(Number(entry));
+    if (stat?.pgid === record.pgid && !expected.has(stat.pid)) fail("historical-members-changed", "an unrecorded member now belongs to the group");
+  }
+  for (const member of record.members) {
+    const actual = await historicalMember(member.pid);
+    if (!actual) continue;
+    if (actual.start_ticks !== member.start_ticks || actual.pgid !== member.pgid || actual.sid !== member.sid) fail("historical-identity-changed", "recorded PID or group identity changed");
+    if (actual.state !== "Z") {
+      for (const [key, value] of Object.entries(member)) {
+        if (afterEffect && key === "ppid") continue; // TERM can reparent an exact surviving child.
+        if (actual[key] !== value) fail("historical-identity-changed", `recorded member ${key} changed`);
+      }
+      if (actual.pid_namespace !== record.pid_namespace || actual.mount_namespace !== record.mount_namespace) fail("historical-namespace-changed", "member namespace changed");
+    }
+    members.push(actual);
+  }
+  if (members.length === 0) return members;
+  if (!afterEffect && members.length !== record.members.length) fail("historical-members-changed", "a recorded member disappeared before effect");
+  if (await maybeLstat(record.root)) fail("historical-root-recreated", "historical root exists again");
+  // Do not traverse a replacement parent symlink to an apparently absent leaf.
+  let parent = path.dirname(record.root);
+  while (!(await maybeLstat(parent))) parent = path.dirname(parent);
+  if (await realpath(parent) !== parent) fail("historical-root-recreated", "historical root ancestry changed");
+  if (await historicalStat(record.host_pid)) fail("historical-host-live", "the historical host PID is occupied");
+  const protectedPids = new Set(record.protected_pids);
+  let ancestor = process.pid;
+  const visited = new Set();
+  while (ancestor > 0 && !visited.has(ancestor)) {
+    visited.add(ancestor);
+    protectedPids.add(ancestor);
+    const stat = await historicalStat(ancestor);
+    if (!stat || stat.ppid === ancestor) break;
+    ancestor = stat.ppid;
+  }
+  if (members.some((member) => protectedPids.has(member.pid))) fail("historical-protected-owner", "subject intersects a protected live owner or caller ancestor");
+  const registry = path.join(record.home, "state", "extension-invocations");
+  for (const name of await readdir(registry).catch((error) => { if (error.code === "ENOENT") return []; throw error; })) {
+    if (!name.endsWith(".owner.json")) continue;
+    const owner = validateInvocationOwner(await readPrivateJson(path.join(registry, name), "current invocation owner"));
+    if (owner.group_pid === record.pgid || expected.has(owner.host_pid)) fail("historical-live-claim", "a current invocation record claims this subject");
+  }
+  const leader = members.find((member) => member.pid === record.pgid);
+  if (leader && leader.state !== "Z") {
+    const argv = (await readFile(`/proc/${record.pgid}/cmdline`)).toString("utf8").split("\0");
+    if (argv.at(-1) === "") argv.pop();
+    const paths = invocationPaths(path.dirname(argv[3] || ""), record.token);
+    if (argv.length !== 10 || argv[1] !== record.launcher || argv[2] !== record.token
+        || argv[3] !== paths.ownerFile || argv[4] !== paths.readyFile || argv[5] !== paths.releaseFile
+        || argv[6] !== String(record.host_pid) || !isInside(record.root, argv[3])
+        || !isInside(record.root, argv[7]) || !isInside(record.root, argv[8])) fail("historical-launcher-mismatch", "historical launch arguments do not match the finite evidence");
+  } else if (!afterEffect) fail("historical-leader-unavailable", "historical leader cannot be inspected");
+  return members;
+}
+
+async function cmdHistoricalCleanup(args) {
+  const outcome = { status: "refused", effects: [], reason: null };
+  let journal = null;
+  const retain = async (entry) => {
+    await journal.write(`${JSON.stringify(entry)}\n`);
+    await journal.sync();
+  };
+  try {
+    if (![1, 2, 4].includes(args.length) || (args.length > 1 && args[1] !== "--retrospective")
+        || (args.length === 4 && (args[2] !== "--apply" || !DIGEST_RE.test(args[3])))) fail("usage", "--historical <file> [--retrospective [--apply <evidence-digest>]]");
+    if (process.env.FM_STATE_OVERRIDE) fail("historical-state-override", "historical recovery requires the canonical home state");
+    const home = await activeHome();
+    const file = args[0];
+    if (!path.isAbsolute(file) || !isInside(home, file)) fail("historical-home-mismatch", "recovery evidence must be in its owning home");
+    const bytes = await historicalBytes(file);
+    outcome.evidence_digest = digestBytes(bytes);
+    const record = parseStrictJson(bytes, "historical recovery evidence");
+    validateHistoricalEvidence(record, home);
+    outcome.pgid = record.pgid;
+    const check = async (afterEffect = false) => {
+      if (digestBytes(await historicalBytes(file)) !== outcome.evidence_digest) fail("historical-evidence-changed", "recovery evidence changed");
+      const members = await inspectHistorical(record, afterEffect);
+      if (members.length === 0) return members;
+      if (args.length === 1) fail("retrospective-authorization-required", "missing original custody requires explicit retrospective recovery authorization");
+      const age = Date.now() - Date.parse(record.observed_at);
+      if (!Number.isFinite(age) || age < 0 || age > 300000) fail("historical-evidence-stale", "refresh the operator evidence within five minutes before effect");
+      for (let i = 0; i < record.predicates.length; i += 1) {
+        const predicate = record.predicates[i];
+        if (!predicate.established) fail("historical-predicate-unproved", `operator predicate ${i + 1} is unproved`);
+        if (digestBytes(await historicalBytes(predicate.path)) !== predicate.digest) fail("historical-predicate-changed", `operator predicate ${i + 1} evidence changed`);
+      }
+      return members;
+    };
+    outcome.before = await check();
+    if (outcome.before.length === 0) outcome.status = "absent";
+    else if (args.length !== 4) outcome.status = "ready";
+    else {
+      if (args[3] !== outcome.evidence_digest) fail("historical-inspection-mismatch", "effect requires the exact reviewed evidence digest");
+      outcome.journal = `${file}.retirement.jsonl`;
+      journal = await open(outcome.journal, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      await retain({ ...outcome, status: "prepared" });
+      const journalDirectory = await open(path.dirname(file), fsConstants.O_RDONLY);
+      try { await journalDirectory.sync(); } finally { await journalDirectory.close(); }
+      for (const [signal, wait] of [["SIGTERM", TERMINATE_GRACE_MS], ["SIGKILL", CLEANUP_WAIT_MS]]) {
+        const live = await check(outcome.effects.length > 0);
+        if (live.length === 0) break;
+        // Revalidate before every group signal, including escalation after a
+        // leader's exit. Only the exact surviving subset remains authorized.
+        if (live.some((member) => member.state !== "Z")) {
+          await retain({ status: "signal-intent", signal, members: live });
+          const current = await check(outcome.effects.length > 0);
+          if (current.length === 0) break;
+          process.kill(-record.pgid, signal);
+          outcome.effects.push(signal);
+          await retain({ status: "signal-sent", signal });
+        }
+        const until = Date.now() + wait;
+        while (Date.now() < until) {
+          const remaining = await Promise.all(record.members.map((member) => historicalStat(member.pid)));
+          if (remaining.every((member) => !member)) break;
+          await sleep(INVOCATION_POLL_MS);
+        }
+      }
+      outcome.after = await check(true);
+      if (outcome.after.length) fail("historical-extinction-unproved", "recorded processes have not all disappeared");
+      outcome.status = "completed";
+    }
+  } catch (error) {
+    outcome.status = outcome.effects.length ? "partial" : "refused";
+    outcome.reason = error instanceof HostError ? error.code : "historical-inspection-failed";
+    outcome.detail = error instanceof Error ? error.message : "historical inspection failed";
+    process.exitCode = 1;
+  }
+  if (journal) {
+    try {
+      await retain(outcome);
+    } catch {
+      outcome.status = "partial";
+      outcome.reason = "historical-journal-failed";
+      process.exitCode = 1;
+    } finally {
+      await journal.close();
+    }
+  }
+  process.stdout.write(prettyJson(outcome));
+}
+
 async function cmdCleanupInvocations(args) {
+  if (args[0] === "--historical") return cmdHistoricalCleanup(args.slice(1));
   let sourceId = null;
   let bindingDigest = null;
   if (args.length !== 0) {
@@ -2536,6 +2811,8 @@ Usage:
   bin/fm-extension.mjs list
   bin/fm-extension.mjs inspect <extension-id>
   bin/fm-extension.mjs verify [extension-id]
+
+Historical recovery: cleanup-invocations --historical <private-evidence.json> [--retrospective [--apply <sha256:evidence-digest>]]. See this script header for the evidence contract.
 
 The manifest file is firstmate-extension.json. Supported consent facts are network, credential-store, task-metadata, and artifact-references. The host supports only process-event-adapter/1; see docs/extension-bindings.md for its manifest, binding, handshake, and invocation contracts.
 `);

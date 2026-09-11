@@ -117,6 +117,22 @@ Extension children must remain foreground members of their invocation group and 
 Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee. The host never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group.
 Extension stderr and failure diagnostics are never copied into a wake or authority-bearing record.
 
+### Explicit historical invocation recovery
+
+Ordinary cleanup requires the original private invocation records and never adopts a process found by scanning argv.
+When those records were lost, the existing lifecycle owner can inspect a finite retrospective evidence file with `fm-extension.mjs cleanup-invocations --historical <file>`.
+The command's header owns the exact evidence fields and inspect/effect options.
+An explicit existing recovery authorization and seven established custody predicates are required; unknown ownership or potentially unique process recovery state remains a refusal.
+The operator supplies the current protected-owner inventory and independently reviewed evidence, then retains the read-only inspection before the exact digest-bound effect.
+This does not recreate original binding/request provenance or broaden routine source reconciliation.
+
+The Linux-only path revalidates boot, namespaces, exact member identities, current invocation claims, protected owners and the absent historical root before TERM and before any KILL escalation.
+A changed member set or recreated root after TERM produces a partial outcome and prevents escalation.
+The private journal records prepared custody, signal intent, sent signals and the final outcome; it is never overwritten and no associated evidence or worktree is removed.
+Only disappearance of every exact member and absence of any replacement group member proves extinction; zombies remain unresolved.
+A process-table read followed by group signalling is not an atomic custody transfer, and trusted same-user code must continue to obey the foreground group contract.
+The isolated `lifecycle-historical-cleanup` segment of `tests/fm-extension-binding.test.sh` exercises the public cleanup command with real fixture-owned launch barriers, including graceful termination, escalation, refusal and post-TERM churn.
+
 ### Handshake
 
 Before enablement, registration resolution, and every invocation, the host runs the entrypoint with verb `handshake`.

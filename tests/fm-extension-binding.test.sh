@@ -18,7 +18,7 @@ fi
 
 extension_segment=${FM_EXTENSION_BINDING_SEGMENT:-all}
 case "$extension_segment" in
-  all|coordinator|early-bind|early-validation|early-handshake|early-integrity|matrix|matrix-runtime|lifecycle-flow|lifecycle-lock|lifecycle-runner|lifecycle-state|lifecycle-invocation-cleanup|remote-envelope|remote-activation|remote-lifecycle|remote-retirement|example|coordinator-fail|coordinator-wait|coordinator-stubborn|coordinator-pass|coordinator-late-pass|coordinator-scheduler-block|coordinator-scheduler-late) ;;
+  all|coordinator|early-bind|early-validation|early-handshake|early-integrity|matrix|matrix-runtime|lifecycle-flow|lifecycle-lock|lifecycle-runner|lifecycle-state|lifecycle-invocation-cleanup|lifecycle-historical-cleanup|remote-envelope|remote-activation|remote-lifecycle|remote-retirement|example|coordinator-fail|coordinator-wait|coordinator-stubborn|coordinator-pass|coordinator-late-pass|coordinator-scheduler-block|coordinator-scheduler-late) ;;
   *) printf 'unknown extension-binding segment: %s\n' "$extension_segment" >&2; exit 64 ;;
 esac
 
@@ -123,12 +123,28 @@ extension_test_cleanup() {
     kill -TERM "$second_bind_pid" 2>/dev/null || true
     wait "$second_bind_pid" 2>/dev/null || true
   fi
+  if [ -f "$TMP_ROOT/historical-cleanup-retain" ]; then
+    # Preserve the authentic marker without leaving this unresolved fixture
+    # eligible for the generic age-based orphan directory sweep.
+    if [ -f "$TMP_ROOT/.fm-test-fixture" ]; then
+      mv "$TMP_ROOT/.fm-test-fixture" "$TMP_ROOT/.fm-test-fixture.retained"
+    fi
+    printf 'historical cleanup evidence retained at %s\n' "$TMP_ROOT" >&2
+    return 1
+  fi
   chmod -R u+w "$TMP_ROOT_RAW" 2>/dev/null || true
   fm_test_cleanup
 }
 trap extension_test_cleanup EXIT
 trap 'extension_test_cleanup; exit 130' INT
 trap 'extension_test_cleanup; exit 143' TERM
+if [ "$extension_segment" = lifecycle-historical-cleanup ] || [ "$extension_segment" = all ]; then
+  for historical_case in graceful stubborn root-churn member-churn; do
+    python3 "$ROOT/tests/fixtures/extension-historical-cleanup.py" "$HOST" "$TMP_ROOT" "$historical_case" || fail "historical invocation cleanup regression: $historical_case"
+  done
+  pass "historical invocation cleanup preserves custody and verifies extinction"
+  [ "$extension_segment" != lifecycle-historical-cleanup ] || exit 0
+fi
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 PACKAGES="$TMP_ROOT/packages"
 HOMES="$TMP_ROOT/homes"

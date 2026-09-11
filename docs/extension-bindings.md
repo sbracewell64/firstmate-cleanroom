@@ -96,7 +96,7 @@ Binding publication prints the binding digest used as its conditional retirement
 One home-local lifecycle lock serializes extension resolution through registration publication against dependency preflight through exact binding removal, and the retirement worker owns that lock with its own process identity for the full mutation lifetime.
 Public process-event, binding and retirement callers retain cancellation custody of their exact lifecycle child across lock acquisition and the shell-to-host exec.
 A private inherited channel carries cancellation and detects caller loss, including an uncatchable caller exit; queued operations cancel before mutation, while an active host cleans its exact invocation group.
-The public caller waits for child completion on catchable cancellation and preserves failure outcomes.
+The public caller waits for child completion on catchable cancellation and preserves failure outcomes; cancellation during invocation reservation waits for setup before cleaning the reserved group.
 The channel grants no lock or capture authority, and the inner host remains the actual recorded invocation owner.
 Before either retirement form, the process-event owner refuses while an exact registration or unhandled captured result still depends on the binding.
 Retirement disables discovery and invocation without deleting the content-addressed installed package, and retained binding state can be restored deliberately.
@@ -211,6 +211,7 @@ Before an external result can be captured, core applies the same boundary checks
 These external-only checks refuse before a staging or capture write when a post-registration link, ownership, mode, or canonical-path substitution is detected, while the legacy four-argument built-in capture path retains its existing behavior.
 For `result.terminal` and `result.silent`, the live core runner passes the host an internal one-shot handoff that pins the exact active claim, inbox, and result identities before the host reads a regular mode-`0600` result and sends only bounded UTF-8 content.
 Public lifecycle entry, environment, paths, and caller-supplied descriptors cannot create that handoff or authorize capture; runner claim release and dead-owner reconciliation remove its pending or consumed reservation state from the claim's recorded, revalidated state root.
+Reconciliation also cleans recorded extension invocation groups in that root before releasing the claim, even when the reconciling caller uses the home's default state directory.
 A source failure becomes a small host-produced `firstmate.process-event-extension-error.v1` result, so missing packages, invalid responses, crashes, nonzero exits, and timeouts become actionable evidence rather than silent fallback.
 Unknown or malformed terminal and silent responses take the safe false path.
 

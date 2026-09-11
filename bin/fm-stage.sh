@@ -34,7 +34,8 @@
 #   STAGE_REFUSED: transition=<t> task=<id> reason=<CODE> <detail>
 # Reason codes: NOT_SHIP, NO_WORKTREE, DETACHED, UNCOMMITTED, STALE_CANDIDATE
 # (the worktree head is neither the admitted candidate nor its descendant nor
-# the current head of its bound active pipeline-owned run),
+# the current head of its bound active pipeline-owned run; CI-ready also
+# accepts a mechanically verified completed successor through fm-nm-run-lib.sh),
 # NOT_ADMITTED, RUN_ACTIVE, HOLD_APPEARED, MISSING_BINDING, DAEMON_RESET,
 # RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK, ENGINEERING_CONTEXT,
 # ENGINEERING_EVIDENCE. Exit 2 is a usage error or an
@@ -100,7 +101,10 @@
 # only after admission succeeds; tests/fm-stage.test.sh covers retry preservation.
 # Status receipts include engineering (context hash) and residuals (open ids).
 # CI-ready requires the declared local evidence at the current run/successor head;
-# an exact full successor identity from the bound active pipeline-owned run need
+# completed non-ancestor evidence requires the tooling owner's fresh successor
+# proof and exact clean caller/preservation binding; sync-check may fetch its
+# private ref but cannot move the caller. An exact full successor identity
+# from the bound active pipeline-owned run need
 # not have a commit object in the worker worktree (tests/fm-stage.test.sh).
 # activated carries unfulfilled consumer obligations through work-context currentness.
 # Task-record fields (this script is their only writer; docs/configuration.md
@@ -267,16 +271,19 @@ worktree_dirty() { [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; }
 
 # 0 when the recorded candidate head is an ancestor of (or equal to) the
 # worktree head: pipeline fix commits advance the candidate, a rewrite or reset
-# abandons it.
-candidate_current() {  # <recorded-head> <head>
+# abandons it unless an existing run-custody proof applies.
+candidate_current() {  # <recorded-head> <head> [ci-ready]
   [ -n "$1" ] && [ -n "$2" ] || return 1
   [ "$1" = "$2" ] && return 0
   git -C "$WT" merge-base --is-ancestor "$1" "$2" 2>/dev/null && return 0
   local output run_head
   output=$(bound_run_status) || return 1
-  fm_nm_run_is_pipeline_owned_active "$output" || return 1
-  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
-  [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$2" ]
+  if fm_nm_run_is_pipeline_owned_active "$output"; then
+    run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+    [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$2" ]
+  else
+    [ "${3:-}" = ci-ready ] && completed_successor_current "$output" "$2"
+  fi
 }
 
 bound_run_status() {
@@ -290,6 +297,21 @@ bound_run_status() {
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] || return 1
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" branch)")" = "$(meta stage_branch)" ] || return 1
   printf '%s\n' "$output"
+}
+
+# Only CI-ready may consume a completed successor. The bound run read comes
+# from bound_run_status; sync-check supplies fresh qualification readback.
+completed_successor_current() { # <bound-run-toon> <expected-current-head>
+  local output=$1 head=$2 home proof run_head
+  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" status)")" = completed ] || return 1
+  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" outcome)")" = passed ] || return 1
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+  [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$head" ] || return 1
+  home=$(obs nm_home)
+  case "$home" in /*) ;; *) return 1 ;; esac
+  [ -d "$home" ] || return 1
+  proof=$(NM_HOME="$home" fm_nm_run_checked "$WT" 10 axi sync --check) || return 1
+  fm_nm_verified_terminal_successor "$WT" "$(obs run_id)" "$(meta stage_head)" "$head" "$(meta stage_branch)" "$proof"
 }
 
 sha256_of() {  # <file...>
@@ -486,7 +508,8 @@ engineering_result() {
       || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
   fi
   { git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" 2>/dev/null \
-    || fm_nm_run_is_pipeline_owned_active "$output"; } \
+    || fm_nm_run_is_pipeline_owned_active "$output" \
+    || completed_successor_current "$output" "$actual"; } \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
     || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
@@ -655,7 +678,7 @@ do_ci_ready() {
     validation-running|ci-ready) ;;
     *) refuse ci-ready NOT_ADMITTED "stage=${current:-none}; validation must be admitted and running first" ;;
   esac
-  candidate_current "$(meta stage_head)" "$HEAD" \
+  candidate_current "$(meta stage_head)" "$HEAD" ci-ready \
     || refuse ci-ready STALE_CANDIDATE "recorded candidate $(short "$(meta stage_head)") is not an ancestor of head $(short "$HEAD")"
   verdict=$(crew_state)
   case "$verdict" in

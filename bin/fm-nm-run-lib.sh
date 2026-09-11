@@ -11,6 +11,8 @@
 # below. Getting this wrong in either direction is unsafe: a false negative
 # hides a genuinely parked run, and a false positive lets teardown act on a
 # run it does not own.
+# CI-ready alone may consume the separate verified completed-successor
+# projection below; it never changes active attribution or teardown rules.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -134,4 +136,79 @@ fm_nm_run_is_active() {  # <toon-output>
 fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
   fm_nm_run_is_active "$1"
+}
+
+# Read one scalar from the documented two-level sync object. Reject duplicate
+# roots, sections, or requested fields instead of combining ambiguous proof
+# fragments. This is a wire reader, not a second qualification algorithm.
+fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
+  local raw
+  raw=$(printf '%s\n' "$1" | awk -v section="$2" -v key="$3" '
+    /^branch_sync:$/ { roots++; inside=1; group=""; next }
+    /^[^ ]/ { inside=0 }
+    inside && /^  [a-z_]+:/ {
+      line=substr($0,3); name=line; sub(/:.*/,"",name)
+      value=line; sub(/^[^:]*:[ ]*/,"",value)
+      group=name; groups[name]++
+      if (section == "" && name == key) { count++; found=value }
+      next
+    }
+    inside && /^    [a-z_]+:/ && group == section {
+      line=substr($0,5); name=line; sub(/:.*/,"",name)
+      value=line; sub(/^[^:]*:[ ]*/,"",value)
+      if (name == key) { count++; found=value }
+    }
+    END {
+      if (roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
+      print found
+    }') || return 1
+  if [ "${4:-}" = raw ]; then printf '%s' "$raw"; else fm_nm_strip_quotes "$raw"; fi
+}
+
+# Completed non-ancestor admission is separate from active run attribution.
+# The tooling service owns qualification; CI-ready checks its fresh successor
+# projection against the bound attempt and actual clean caller/preservation.
+# Ordinary equality, a local anchor, or completed status alone grants nothing.
+# No teardown or ordinary run-attribution caller uses this predicate.
+fm_nm_verified_terminal_successor() { # <worktree> <run> <submitted> <head> <branch> <sync-toon>
+  local wt=$1 run=$2 submitted=$3 head=$4 branch=$5 output=$6 generation fingerprint anchor actual dirty
+  [[ "$submitted" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] && [ "$submitted" != "$head" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" '' state)" = synchronized ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" '' relation)" = equal ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" '' safety)" = already_synchronized ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor verified raw)" = true ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor run_id)" = "$run" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor submitted_head)" = "$submitted" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor qualified_head)" = "$head" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline run)" = "$run" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline status)" = completed ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline submitted_head)" = "$submitted" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline current_head)" = "$head" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline pushed_head)" = "$head" ] || return 1
+  generation=$(fm_nm_sync_scalar "$output" successor push_generation raw) || return 1
+  [[ "$generation" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$(fm_nm_sync_scalar "$output" pipeline push_generation raw)" = "$generation" ] || return 1
+  actual=$(fm_nm_sync_scalar "$output" successor target_kind) || return 1
+  case "$actual" in upstream|fork) ;; *) return 1 ;; esac
+  [ "$(fm_nm_sync_scalar "$output" target kind)" = "$actual" ] || return 1
+  fingerprint=$(fm_nm_sync_scalar "$output" successor target_fingerprint) || return 1
+  [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor target_ref)" = "refs/heads/$branch" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" target ref)" = "refs/heads/$branch" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" remote freshness)" = live ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" remote observed_head)" = "$head" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" local branch)" = "$branch" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" local head)" = "$head" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" local clean raw)" = true ] || return 1
+  anchor="refs/no-mistakes/sync-anchor/$run"
+  [ "$(fm_nm_sync_scalar "$output" successor preserved_ref)" = "$anchor" ] || return 1
+  [ "$(fm_nm_sync_scalar "$output" successor preserved_head)" = "$submitted" ] || return 1
+  git -C "$wt" symbolic-ref --quiet "$anchor" >/dev/null 2>&1 && return 1
+  [ "$(git -C "$wt" cat-file -t "$anchor" 2>/dev/null)" = commit ] || return 1
+  [ "$(git -C "$wt" rev-parse --verify "$anchor" 2>/dev/null)" = "$submitted" ] || return 1
+  [ "$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" = "$branch" ] || return 1
+  [ "$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)" = "$head" ] || return 1
+  dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || return 1
+  [ -z "$dirty" ]
 }

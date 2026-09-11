@@ -53,6 +53,7 @@ case "${1:-}" in
     shift
     case "${1:-}" in
       status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_STATUS_EXIT:-0}" ;;
+      sync) printf '%s\n' "${FM_FAKE_SYNC:-}"; exit "${FM_FAKE_SYNC_RC:-0}" ;;
       logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit 0 ;;
     esac ;;
   runs) printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"; exit 0 ;;
@@ -740,3 +741,116 @@ branch_sync:
   pass "isolated pipeline rebase admits exact current-run evidence without local objects and refuses invalid attribution"
 }
 test_isolated_pipeline_successor
+
+# Terminal successors need the producer's explicit verified readback, not the
+# active-only exemption or ordinary synchronized equality.
+test_completed_successor_stage() {
+  local wt submitted head out rc proof saved_meta saved_obs mutation valid_status desc
+  wt="$TMP_ROOT/wt-terminal"
+  make_worktree "$wt" fm/terminal
+  submitted=$(git -C "$wt" rev-parse HEAD)
+  make_task terminal no-mistakes "$wt"
+  printf abc > "$DATA/terminal/skill.md"
+  desc="$DATA/terminal/work-context.json"
+  cat > "$desc" <<EOF
+{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"$DATA/terminal/skill.md","release":"r1","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","role":"worker","stage":"test","trigger":"test-change"}],"verification":[{"id":"caller","skill":"tdd","scope":"composition","public_seam":"fm-brief","inputs":"declared source","environment":"controlled and inherited","oracle":"literal expected bytes","allowed_effects":"scratch only","source_identity":"r1","caller_identity":"fixture","command":"receiver-test","negative":"stale source refuses","owner":"crewmate-boundary-repair","next_gate":"ci-ready"},{"id":"consumer","skill":"tdd","scope":"deployed-consumer","public_seam":"next-worker","inputs":"qualified release","environment":"native subscription","oracle":"actual worker artifact","allowed_effects":"authorized receiver work","source_identity":"r1","caller_identity":"next-worker","command":"qualified worker","negative":"old source refuses","owner":"runtime-pin-adoption-gap","next_gate":"next genuine dispatch"}]}}
+EOF
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" terminal committed 2>&1); rc=$?
+  expect_code 0 "$rc" "terminal fixture admission: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/terminal reviewing "$submitted")
+  out=$("$STAGE" terminal running --run 01TERMINAL00000000000000001 2>&1); rc=$?
+  expect_code 0 "$rc" "terminal fixture binding: $out"
+  git -C "$wt" checkout -q -b new-base HEAD^
+  printf 'upstream\n' > "$wt/upstream.txt"
+  git -C "$wt" add upstream.txt
+  git -C "$wt" commit -q -m upstream
+  git -C "$wt" checkout -q fm/terminal
+  git -C "$wt" rebase new-base >/dev/null 2>&1 || fail 'terminal fixture rebase'
+  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "$wt" update-ref refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 "$submitted"
+  FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/terminal completed "$head" passed)
+  valid_status=$FM_FAKE_AXI_STATUS
+  jq --arg head "$head" '.task="terminal" | .run="01TERMINAL00000000000000001" | .head=$head' \
+    "$DATA/engineering/valid-evidence.json" > "$DATA/terminal/engineering-evidence.json"
+  cp "$DATA/terminal/engineering-evidence.json" "$DATA/terminal/valid-evidence.json"
+  proof="branch_sync:
+  state: synchronized
+  relation: equal
+  safety: already_synchronized
+  local:
+    branch: fm/terminal
+    head: $head
+    clean: true
+  pipeline:
+    run: 01TERMINAL00000000000000001
+    status: completed
+    submitted_head: $submitted
+    current_head: $head
+    pushed_head: $head
+    push_generation: 2
+  target:
+    kind: upstream
+    ref: refs/heads/fm/terminal
+  remote:
+    freshness: live
+    observed_head: $head
+  successor:
+    verified: true
+    run_id: 01TERMINAL00000000000000001
+    submitted_head: $submitted
+    qualified_head: $head
+    push_generation: 2
+    target_kind: upstream
+    target_fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    target_ref: refs/heads/fm/terminal
+    preserved_ref: refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001
+    preserved_head: $submitted"
+  export FM_FAKE_SYNC="$proof" FM_FAKE_SYNC_RC=0
+  saved_meta=$(cat "$STATE/terminal.meta")
+  saved_obs=$(cat "$STATE/terminal.nm-observe")
+  out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "verified completed same-run rebase admits: $out"
+  [ "$(meta_get terminal stage_head)" = "$submitted" ] || fail 'admission replaced original candidate'
+  [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
+  [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
+  for mutation in absent false quoted-boolean duplicate duplicate-root malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
+    printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
+    printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
+    FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
+    case "$mutation" in
+      absent) FM_FAKE_SYNC='' ;;
+      quoted-boolean) FM_FAKE_SYNC=${proof/verified: true/verified: \"true\"} ;;
+      duplicate-root) FM_FAKE_SYNC="$proof
+branch_sync:
+  state: synchronized" ;;
+      malformed-digest) FM_FAKE_SYNC=${proof/target_fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/target_fingerprint: bad} ;;
+      foreign-branch) FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/foreign completed "$head" passed) ;;
+      symbolic-anchor) git -C "$wt" symbolic-ref refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 refs/heads/new-base ;;
+      wrong-evidence) jq --arg head "$submitted" '.head=$head' "$DATA/terminal/valid-evidence.json" > "$DATA/terminal/engineering-evidence.json" ;;
+      false) FM_FAKE_SYNC=${proof/verified: true/verified: false} ;;
+      duplicate) FM_FAKE_SYNC="$proof
+    verified: true" ;;
+      foreign-run) FM_FAKE_SYNC=${proof/run_id: 01TERMINAL00000000000000001/run_id: 01FOREIGN000000000000000001} ;;
+      foreign-submission) FM_FAKE_SYNC=$(printf '%s\n' "$proof" | sed "s/submitted_head: $submitted/submitted_head: $head/g") ;;
+      foreign-head) FM_FAKE_SYNC=${proof/qualified_head: $head/qualified_head: $submitted} ;;
+      foreign-target) FM_FAKE_SYNC=${proof/target_ref: refs\/heads\/fm\/terminal/target_ref: refs\/heads\/foreign} ;;
+      stale-generation) FM_FAKE_SYNC=$(printf '%s\n' "$proof" | awk '!changed && /push_generation: 2/ { sub(/push_generation: 2/, "push_generation: 3"); changed=1 } { print }' ) ;;
+      stale-attempt) printf 'attempt_id=foreign\n' >> "$STATE/terminal.nm-observe" ;;
+      failed-read) FM_FAKE_SYNC_RC=1 ;;
+      dirty) printf dirty > "$wt/untracked" ;;
+      manual-rewrite) git -C "$wt" update-ref refs/heads/fm/terminal "$submitted" ;;
+      missing-anchor) git -C "$wt" update-ref -d refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 ;;
+    esac
+    out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+    expect_code 1 "$rc" "terminal successor refuses $mutation: $out"
+    [ "$(meta_get terminal stage)" = validation-running ] || fail "$mutation admitted a stage"
+    rm -f "$wt/untracked"
+    git -C "$wt" update-ref refs/heads/fm/terminal "$head"
+    git -C "$wt" update-ref --no-deref refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 "$submitted"
+    cp "$DATA/terminal/valid-evidence.json" "$DATA/terminal/engineering-evidence.json"
+  done
+  FM_FAKE_SYNC=''; FM_FAKE_SYNC_RC=0
+  pass 'completed same-run successor requires verified exact bindings and preserves original candidate'
+}
+test_completed_successor_stage

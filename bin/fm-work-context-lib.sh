@@ -297,12 +297,12 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor> [config-di
 }
 
 # The dispatch-seam authority gate: the narrow predicate the fm-spawn dispatch
-# path consults before the launch effect. It refuses ONLY when the operation's
-# authoritative binding classifies it Class-C and no consumed affirmative bound
-# ruling is present; it is inert (no jq, proceed) for every ordinary op whose
-# meta declares no Class-C requirement, so existing dispatch behavior is
-# unchanged. Sets FM_WORK_CONTEXT_VERDICT/DETAIL. Returns 0 proceed, 3 refuse.
-fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir]
+# path consults before the launch effect. Authority classification and consumed
+# ruling checks precede the engineering checks owned by
+# fm-work-context-engineering-lib.sh; docs/configuration.md describes dispatch
+# applicability by kind. Sets FM_WORK_CONTEXT_VERDICT/DETAIL.
+# Returns 0 proceed, 3 refuse.
+fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir] [kind=ship]
   local state=$1 data=$2 id=$3 config=${4:-} kind=${5:-ship}
   fm_work_context_reset
   if ! fm_work_context_authority_classify "$state" "$data" "$id" "$config"; then

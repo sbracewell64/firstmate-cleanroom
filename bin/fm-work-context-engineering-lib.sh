@@ -15,8 +15,11 @@
 # CI-ready; runtime/consumer obligations survive landing in the existing
 # currentness receipt until their existing owner qualifies them.
 # data/<id>/engineering-evidence.json is the evidence index, not a success token:
-# {task,generation,run,head,results:[{id,load:{kind,path,sha256},
-# behavior:{path,sha256,command,oracle,exit_code}}]}.
+# {task,generation,run,head,results:[{id,
+# load:{kind,path,sha256,source_sha256,role,stage},
+# behavior:{scope,path,sha256,command,oracle,exit_code}}]}.
+# Load source_sha256/role/stage match the selected skill; behavior scope,
+# command and oracle match the verification row, and exit_code must be zero.
 # Load kind is native-read or tool-read, never self-report. Referenced artifacts
 # must be readable exact bytes. The index must match the actual pipeline run/head
 # and descriptor generation. The existing no-mistakes review still assesses the

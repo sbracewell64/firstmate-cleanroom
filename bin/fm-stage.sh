@@ -33,8 +33,8 @@
 # be proven prints one typed refusal and exits 1 with nothing recorded:
 #   STAGE_REFUSED: transition=<t> task=<id> reason=<CODE> <detail>
 # Reason codes: NOT_SHIP, NO_WORKTREE, DETACHED, UNCOMMITTED, STALE_CANDIDATE
-# (the recorded candidate head is no longer an ancestor of the worktree head:
-# the worker rewrote or reset the candidate under an admitted attempt),
+# (the worktree head is neither the admitted candidate nor its descendant nor
+# the current head of its bound active pipeline-owned run),
 # NOT_ADMITTED, RUN_ACTIVE, HOLD_APPEARED, MISSING_BINDING, DAEMON_RESET,
 # RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK. Exit 2 is a usage error or an
 # unreadable record.
@@ -67,9 +67,8 @@
 #              It binds the actual run id through the observer (`bind`, under
 #              bin/fm-nm-run-lib.sh's attribution rules; --run names it) and
 #              records `validation-running` with the run id, canonical status,
-#              and class. A head that is no longer a descendant of the admitted
-#              candidate refuses as STALE_CANDIDATE; pipeline fix commits on top
-#              of the candidate are descendants and are fine.
+#              and class. Candidate currentness uses the STALE_CANDIDATE rule
+#              above, with pipeline custody owned by bin/fm-nm-run-lib.sh.
 #   ci-ready   The worker runs this when the pipeline reports CI green. The
 #              verdict is the canonical one bin/fm-crew-state.sh renders from the
 #              run step (`state: done` from `source: run-step`), never the
@@ -91,9 +90,13 @@
 #
 # Engineering declarations are checked before stage effects and on resumed show;
 # stage_context binds the canonical engineering JSON SHA256 for the admitted attempt;
-# stage_evidence binds the admitted evidence-index bytes. Both persist across stages.
+# stage_evidence binds the admitted evidence-index bytes, refreshed even on a
+# repeated CI-ready call when valid evidence changes. A supported new attempt
+# replaces stage_context (including an empty context) and clears stage_evidence.
 # Status receipts include engineering (context hash) and residuals (open ids).
 # CI-ready requires the declared local evidence at the current run/successor head;
+# an exact full successor identity from the bound active pipeline-owned run need
+# not have a commit object in the worker worktree (tests/fm-stage.test.sh).
 # activated carries unfulfilled consumer obligations through work-context currentness.
 # Task-record fields (this script is their only writer; docs/configuration.md
 # routes the record's other owners):
@@ -115,7 +118,7 @@
 # profile (<no-mistakes version>+<build> from the observer's qualified-profile
 # read), attempt, run, step (the run's canonical status), outcome (the
 # observer's outcome class), pr, owner (who acts next: worker, firstmate, or
-# merge-authority), reason.
+# merge-authority), reason, engineering, residuals.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

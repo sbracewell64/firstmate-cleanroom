@@ -318,7 +318,7 @@ fm_pr_metadata_identity_parse() {
       # The lifecycle owner rewrites these exact fields after registration.
       # They are not PR identity; unknown stage_* fields remain refused.
       # Field schema: bin/fm-stage.sh.
-      stage=*|stage_epoch=*|stage_branch=*|stage_head=*|stage_tree=*|stage_gen=*|stage_attempt=*|stage_run=*|stage_pr=*|stage_reason=*)
+      stage=*|stage_epoch=*|stage_branch=*|stage_head=*|stage_tree=*|stage_gen=*|stage_attempt=*|stage_run=*|stage_pr=*|stage_reason=*|stage_context=*|stage_evidence=*)
         ;;
       # Completion may append its inventory after PR registration. These
       # fields are unrelated to PR identity, like the Relay fields below.

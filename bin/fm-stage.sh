@@ -36,7 +36,8 @@
 # (the worktree head is neither the admitted candidate nor its descendant nor
 # the current head of its bound active pipeline-owned run),
 # NOT_ADMITTED, RUN_ACTIVE, HOLD_APPEARED, MISSING_BINDING, DAEMON_RESET,
-# RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK. Exit 2 is a usage error or an
+# RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK, ENGINEERING_CONTEXT,
+# ENGINEERING_EVIDENCE. Exit 2 is a usage error or an
 # unreadable record.
 #
 # Transitions:
@@ -52,9 +53,9 @@
 #              bin/fm-classify-lib.sh's status_open_decisions) or when capacity
 #              is missing (the observer's launch admission, bin/fm-nm-observe.sh
 #              `launch`, refused the qualified tool profile or daemon identity).
-#              Both facts are re-read immediately before the admitted line is
-#              written, so a hold that appeared or a head that moved during the
-#              admission read refuses instead of admitting a stale candidate. On
+#              Candidate and hold checks run at the admission boundary; a retry
+#              uses the observer's guarded launch before replacing either
+#              owner's attempt bindings. On
 #              `validation-admitted` the worker starts `no-mistakes axi run` at
 #              once; on `validation-pending` it stops and waits, and re-runs this
 #              same command when firstmate says the wait cleared. direct-PR and
@@ -63,6 +64,9 @@
 #              same head is a no-op; --retry opens a new observer attempt for a
 #              genuinely new run (a failed or cancelled run, or a re-committed
 #              candidate after custody was returned).
+#              When replacing a recorded no-mistakes attempt, retained custody,
+#              an open hold, or failed admission refuses without replacing its
+#              stage or observer bindings, rather than recording a pending stage.
 #   running    The worker runs this as soon as the pipeline created the run.
 #              It binds the actual run id through the observer (`bind`, under
 #              bin/fm-nm-run-lib.sh's attribution rules; --run names it) and
@@ -92,7 +96,8 @@
 # stage_context binds the canonical engineering JSON SHA256 for the admitted attempt;
 # stage_evidence binds the admitted evidence-index bytes, refreshed even on a
 # repeated CI-ready call when valid evidence changes. A supported new attempt
-# replaces stage_context (including an empty context) and clears stage_evidence.
+# replaces stage_context (including an empty context) and clears stage_evidence
+# only after admission succeeds; tests/fm-stage.test.sh covers retry preservation.
 # Status receipts include engineering (context hash) and residuals (open ids).
 # CI-ready requires the declared local evidence at the current run/successor head;
 # an exact full successor identity from the bound active pipeline-owned run need

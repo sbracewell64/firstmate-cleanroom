@@ -76,11 +76,20 @@
 #             nm_build record `unobserved`. An unready profile is recorded as
 #             stage=launch-refused with outcome_class=preflight-refused, keeps
 #             the attempt id, never fabricates a run id, prints one typed
-#             PREFLIGHT_REFUSED line, and exits 1. A second launch while the
+#             PREFLIGHT_REFUSED line, and exits 1. The --retry exception
+#             preserves an existing attempt unchanged on an
+#             unready profile instead of recording a refused replacement.
+#             A second launch while the
 #             current attempt has no run, or while its bound run is still
 #             active, keeps that attempt (a resumed run keeps its identity);
 #             --retry, or a bound run that is already terminal, opens a new
 #             attempt linked to its predecessor attempt and run.
+#             Stage retries may supply --expect-head, --expect-tree and
+#             --expect-branch together (only with --entrypoint stage --retry).
+#             After profile and policy reads, launch rechecks these identities,
+#             worktree cleanliness and open holds before replacing the attempt;
+#             STALE_CANDIDATE or HOLD_APPEARED exits 1 with the old binding intact.
+#             bin/fm-stage.sh owns subsequent stage publication.
 #   bind      After no-mistakes created the run, bind the ACTUAL run id from
 #             `axi status` (or `axi status --run <id>` with --run) under
 #             bin/fm-nm-run-lib.sh's attribution rules: same branch, and the

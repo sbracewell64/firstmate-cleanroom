@@ -481,8 +481,18 @@ fm_procevent_claim_acquire_locked() {
   fi
   if [ "$status" -eq 0 ]; then
     state=${FM_STATE_OVERRIDE:-$home/state}
-    IFS=$'\t' read -r state_root state_device state_inode state_owner state_mode \
-      < <(fm_procevent_claim_state_root_identity "$state") || status=1
+    state_root='' state_device='' state_inode='' state_owner='' state_mode=''
+    # Only external captures have reservations requiring a pinned private
+    # state root. Built-in sources retain their legacy state-path contract.
+    fm_procevent_extension_registration_load_locked "$state" "$id"
+    case "$?" in
+      0)
+        IFS=$'\t' read -r state_root state_device state_inode state_owner state_mode \
+          < <(fm_procevent_claim_state_root_identity "$state") || status=1
+        ;;
+      1) fm_procevent_claim_state_root_field_valid "$state" || status=1 ;;
+      *) status=1 ;;
+    esac
   fi
   if [ "$status" -eq 0 ]; then
     token=${tmp##*/}-$pid

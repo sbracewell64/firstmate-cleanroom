@@ -15,6 +15,10 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-batch)
 export FM_BACKEND=tmux
+# These routing cases need a resolvable client but never launch one.
+FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+fm_fake_exit0 "$FAKEBIN" codex
+export PATH="$FAKEBIN:$PATH"
 
 # Clear ambient firstmate overrides so the behavior test owns its environment.
 run_spawn() {

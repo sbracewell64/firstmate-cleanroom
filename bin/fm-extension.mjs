@@ -15,6 +15,44 @@
 //   fm-extension.mjs resolve-process-event <adapter>
 //   fm-extension.mjs process-event <adapter> <operation> [internal options]
 //   fm-extension.mjs cleanup-invocations [--source-id <id> | --binding-digest <sha256:digest>]
+//   fm-extension.mjs cleanup-invocations --historical <private-evidence.json>
+//     [--retrospective [--apply <sha256:evidence-digest>]]
+//
+// Historical recovery is an explicit lifecycle-owner operation, never automatic.
+// Inspect without --apply; --retrospective acknowledges existing authorization
+// for missing original provenance, not reconstructed launch-time ownership.
+// --apply requires the exact inspected file digest and fresh predicates. The
+// caller must retain inspection output for independent review before effect.
+// Effect creates <evidence>.retirement.jsonl exclusively, syncs intent before
+// each signal and retains the outcome. A partial journal is never overwritten;
+// a reviewed retry needs newly captured evidence at a new private path.
+// This Linux-only evidence file is bounded to 64KiB, mode0600, one link, and
+// canonical beneath FM_HOME; FM_STATE_OVERRIDE is refused. Exact JSON fields:
+// schema="firstmate.extension-historical-evidence.v1", home=canonical FM_HOME,
+// observed_at=ISO timestamp (at most five minutes old), boot_id, pid_namespace,
+// mount_namespace, pgid, root=absent historical fixture root, launcher=absolute
+// historical fm-extension-launch-barrier.mjs, token, host_pid=absent former host,
+// members=[{pid,start_ticks,ppid,pgid,sid,uid,exe,exe_sha256,cmdline_sha256,cwd}],
+// protected_pids=[all current primary/worker/watcher/publisher/other owner PIDs],
+// predicates=[{established:boolean,path:absolute private evidence path,digest}].
+// Digests use sha256:<64 lowercase hex>; cmdline hashes cover raw proc bytes.
+// Members include the leader and the complete finite group; cwd must be in the
+// deleted root. Namespace strings are readlink(/proc/<pid>/ns/{pid,mnt}).
+// The seven predicates are ordered: exact identity; task/run/worktree/candidate;
+// terminal prior owner; no live owner claim; no unique state loss; evidence
+// captured; current canonical owner authorizes this effect. Their evidence
+// files are bounded private regular files beneath FM_HOME, checked by digest.
+// These are operator-established facts, not an authority or approval schema.
+// The command checks kernel identity, current home invocation claims, enumerated
+// protected PIDs and caller ancestors; it cannot infer all external ownership
+// or whether process memory/pipe contents are unique. Unproved predicates refuse.
+// Only actual proc disappearance reports completed/absent; zombies remain open.
+// Fresh membership checks precede TERM and KILL, including exact surviving
+// members after TERM reparents children. Proc inspection plus killpg is not an
+// atomic OS custody transfer and does not contain trusted code that escapes.
+// stdout is private JSON: ready/absent/refused/completed/partial, evidence digest,
+// before/after identities where available, effects and reason. Refusal is nonzero.
+// No evidence, worktree, package or invocation registry is deleted.
 //
 // bind      Validate a package, copy its complete tree into this home's
 //           content-addressed read-only package store, perform the protocol
@@ -55,6 +93,7 @@
 // mutation, or stronger-operation capability.
 
 import { spawn } from "node:child_process";
+import { Socket } from "node:net";
 import { constants as fsConstants, fstat, read } from "node:fs";
 import {
   chmod,
@@ -875,6 +914,9 @@ function childEnvironment(binding, statePath = "") {
 }
 
 let activeInvocation = null;
+let invocationSetup = null;
+let activeLifecycleChild = null;
+let callerChannel = null;
 let terminatingForSignal = false;
 let signalCleanupFailureHold = null;
 let activeLifecycleLock = null;
@@ -1198,13 +1240,12 @@ async function finalizeInvocation(invocation) {
   if (activeInvocation === invocation) activeInvocation = null;
 }
 
-async function reserveInvocation(home, record, verb, request, statePath) {
+async function reserveInvocation(home, record, verb, request, statePath, sourceId) {
   if (process.platform === "win32") fail("platform-unsupported", "extension launch cleanup requires POSIX process groups");
   const root = await invocationRoot(home, true);
   const token = makeRequestId();
   const paths = invocationPaths(root, token);
   const hostIdentity = await selfIdentity();
-  const sourceId = request?.input?.source_id || null;
   const owner = {
     schema: INVOCATION_OWNER_SCHEMA,
     token,
@@ -1335,14 +1376,21 @@ async function cleanupRecordedInvocations(home, { sourceId = null, bindingDigest
   return cleaned;
 }
 
-async function runExtensionProcess(home, record, verb, request, timeoutMs, statePath = "") {
+async function runExtensionProcess(home, record, verb, request, timeoutMs, statePath = "", sourceId = request?.input?.source_id || null) {
   const requestBytes = Buffer.from(`${canonicalJson(request)}\n`, "utf8");
   if (requestBytes.length > MAX_JSON_BYTES) fail("request-oversized", `extension request exceeds ${MAX_JSON_BYTES} bytes`);
   const entryInfo = await lstat(record.packageInfo.entrypoint).catch(() => fail("entrypoint-missing", "bound extension entrypoint is missing"));
   if (!entryInfo.isFile() || entryInfo.isSymbolicLink() || entryInfo.nlink !== 1 || entryInfo.uid !== currentUid()) {
     fail("entrypoint-invalid", "bound extension entrypoint identity is unsafe");
   }
-  const { invocation, owner } = await reserveInvocation(home, record, verb, request, statePath);
+  if (terminatingForSignal) fail("interrupted", "extension invocation cancelled");
+  invocationSetup = reserveInvocation(home, record, verb, request, statePath, sourceId);
+  const { invocation, owner } = await invocationSetup;
+  invocationSetup = null;
+  if (terminatingForSignal) {
+    await finalizeInvocation(invocation);
+    fail("interrupted", "extension invocation cancelled");
+  }
   const { child } = invocation;
   let stdoutBytes = 0;
   let stderrBytes = 0;
@@ -1409,6 +1457,16 @@ async function handleSignal(signal) {
   if (terminatingForSignal) return;
   terminatingForSignal = true;
   try {
+    if (activeLifecycleChild) {
+      // The channel belongs to the exact child created here, including while
+      // that child is still acquiring its lock; no PID or group lookup occurs.
+      const { channel, completion } = activeLifecycleChild;
+      channel.end(`${signal}\n`);
+      const outcome = await completion;
+      const expected = signal === "SIGTERM" ? 143 : 130;
+      process.exit(outcome.code === expected ? expected : 1);
+    }
+    await invocationSetup?.catch(() => {});
     await finalizeInvocation(activeInvocation);
     process.exit(signal === "SIGTERM" ? 143 : 130);
   } catch (error) {
@@ -1440,7 +1498,7 @@ function validateHandshakeResponse(response, request, binding) {
   }
 }
 
-async function handshake(home, record, statePath = "") {
+async function handshake(home, record, statePath = "", sourceId = null) {
   const binding = record.binding;
   const request = {
     schema: HANDSHAKE_REQUEST_SCHEMA,
@@ -1455,7 +1513,7 @@ async function handshake(home, record, statePath = "") {
       adapter_names: binding.capabilities[0].adapter_names,
     },
   };
-  const response = await runExtensionProcess(home, record, "handshake", request, HANDSHAKE_TIMEOUT_MS, statePath);
+  const response = await runExtensionProcess(home, record, "handshake", request, HANDSHAKE_TIMEOUT_MS, statePath, sourceId);
   validateHandshakeResponse(response, request, binding);
 }
 
@@ -1699,7 +1757,6 @@ async function invokeProcessEvent(home, adapter, operation, options) {
   const record = selectAdapter(bindings, adapter);
   assertExpectedRecord(record, options);
   const statePath = await ensureExtensionState(home, record.binding);
-  await handshake(home, record, statePath);
   let input;
   if (operation === "source.poll") {
     const sourceId = boundedString(options["--source-id"], 64, "source id", /^[A-Za-z0-9._-]+$/);
@@ -1710,6 +1767,7 @@ async function invokeProcessEvent(home, adapter, operation, options) {
     const captured = await readCapturedResult(home, options["--result-file"], operation, options);
     input = { source_id: captured.sourceId, sequence: captured.sequence, content: captured.content };
   }
+  await handshake(home, record, statePath, input.source_id);
   const requestId = options["--request-id"] || makeRequestId();
   if (!REQUEST_ID_RE.test(requestId)) fail("usage", "--request-id must be sha256:<64 lowercase hex>");
   const request = {
@@ -2246,55 +2304,32 @@ async function cmdRetireBindingLocked(args) {
   process.stdout.write(`retained-at: ${destination}\n`);
 }
 
-async function runLifecycleRetirement(mode, args) {
+// One cancellation channel spans the shell lock wait and its execed host.
+// The shell consumes the nonce greeting; descriptor 3 remains private to the
+// delegate and is never passed to an extension package or a preflight child.
+async function runLifecycleChild(args, failureCode, { input = false, processEvent = false } = {}) {
   const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
   const home = await activeHome();
   const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
-  const child = spawn(command, ["extension-retirement", mode, ...args], {
-    cwd: CODE_ROOT,
-    env,
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const stdout = [];
-  const stderr = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  child.stdout.on("data", (chunk) => {
-    stdoutBytes += chunk.length;
-    if (stdoutBytes <= MAX_JSON_BYTES) stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
-  });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("retirement-failed", "extension lifecycle retirement could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.code !== 0 || outcome.signal) {
-    const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("retirement-failed", diagnostic || "extension lifecycle retirement failed");
+  for (const key of ["FM_STATE_OVERRIDE", "XDG_STATE_HOME"]) {
+    if (process.env[key]) env[key] = process.env[key];
   }
-  process.stdout.write(Buffer.concat(stdout));
-}
-
-async function runLifecycleProcessEvent(args) {
-  const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
-  const home = await activeHome();
-  const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD === "1") env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD = "1";
-  const child = spawn(command, ["extension-process-event", ...args], {
+  if (!processEvent && process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
+  if (processEvent && process.env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD === "1") env.FM_PROCEVENT_CAPTURE_SOURCE_LOCK_HELD = "1";
+  env.FM_EXTENSION_CALLER_TOKEN = randomBytes(32).toString("hex");
+  const child = spawn(command, args, {
     cwd: CODE_ROOT,
     env,
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [input ? "pipe" : "ignore", "pipe", "pipe", "pipe"],
   });
+  const channel = child.stdio[3];
+  channel.on("error", () => {}); // Child failure is reported by completion.
+  channel.write(`${env.FM_EXTENSION_CALLER_TOKEN}\n`);
+  if (input) {
+    child.stdin.on("error", () => {});
+    process.stdin.pipe(child.stdin);
+  }
   const stdout = [];
   const stderr = [];
   let stdoutBytes = 0;
@@ -2307,54 +2342,54 @@ async function runLifecycleProcessEvent(args) {
     stderrBytes += chunk.length;
     if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
   });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
+  const completion = new Promise((resolve) => {
+    child.once("error", () => resolve({ code: 1, signal: null }));
     child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("process-event-failed", "extension lifecycle process-event could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.signal) {
+  });
+  activeLifecycleChild = { channel, completion };
+  const outcome = await completion;
+  activeLifecycleChild = null;
+  channel.destroy();
+  if (input) process.stdin.unpipe(child.stdin);
+  if (terminatingForSignal) {
+    process.stderr.write(Buffer.concat(stderr));
+    return;
+  }
+  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.signal || (!processEvent && outcome.code !== 0)) {
     const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("process-event-failed", diagnostic || "extension lifecycle process-event failed");
+    fail(failureCode, diagnostic || "extension lifecycle child failed");
   }
   process.stdout.write(Buffer.concat(stdout));
   if (outcome.code !== 0) process.stderr.write(Buffer.concat(stderr));
   process.exitCode = outcome.code || 0;
 }
 
+async function runLifecycleRetirement(mode, args) {
+  await runLifecycleChild(["extension-retirement", mode, ...args], "retirement-failed");
+}
+
+async function runLifecycleProcessEvent(args) {
+  await runLifecycleChild(["extension-process-event", ...args], "process-event-failed", { processEvent: true });
+}
+
 async function runLifecycleBinding(commandName, args) {
-  const command = path.join(CODE_ROOT, "bin", "fm-procevent.sh");
-  const home = await activeHome();
-  const env = { PATH: sanitizedPath(), LANG: "C", LC_ALL: "C", HOME: process.env.HOME || home, FM_HOME: home, FM_ROOT_OVERRIDE: CODE_ROOT };
-  if (process.env.FM_STATE_OVERRIDE) env.FM_STATE_OVERRIDE = process.env.FM_STATE_OVERRIDE;
-  if (process.env.XDG_STATE_HOME) env.XDG_STATE_HOME = process.env.XDG_STATE_HOME;
-  if (process.env.FM_PROCEVENT_CLAIM_ROOT) env.FM_PROCEVENT_CLAIM_ROOT = process.env.FM_PROCEVENT_CLAIM_ROOT;
-  const child = spawn(command, ["extension-bind", commandName, ...args], {
-    cwd: CODE_ROOT,
-    env,
-    shell: false,
-    stdio: [commandName === "receive-transfer-bind" ? "pipe" : "ignore", "pipe", "pipe"],
+  await runLifecycleChild(["extension-bind", commandName, ...args], "binding-failed", { input: commandName === "receive-transfer-bind" });
+}
+
+function watchLifecycleCaller() {
+  if (!process.env.FM_EXTENSION_CALLER_TOKEN) return;
+  if (!/^[0-9a-f]{64}$/u.test(process.env.FM_EXTENSION_CALLER_TOKEN)) fail("lifecycle-caller-invalid", "invalid lifecycle caller channel");
+  // This descriptor was authenticated before acquiring the inherited lock.
+  // A regular file or an absent descriptor must never act as a live caller.
+  callerChannel = new Socket({ fd: 3, readable: true, writable: false });
+  let message = "";
+  callerChannel.on("data", (bytes) => {
+    message += bytes.toString("utf8");
+    if (message === "SIGINT\n") void handleSignal("SIGINT");
+    else if (message === "SIGTERM\n" || message.length > 8 || message.includes("\n")) void handleSignal("SIGTERM");
   });
-  if (commandName === "receive-transfer-bind") process.stdin.pipe(child.stdin);
-  const stdout = [];
-  const stderr = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  child.stdout.on("data", (chunk) => {
-    stdoutBytes += chunk.length;
-    if (stdoutBytes <= MAX_JSON_BYTES) stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk) => {
-    stderrBytes += chunk.length;
-    if (stderrBytes <= MAX_STDERR_BYTES) stderr.push(chunk);
-  });
-  const outcome = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  }).catch(() => fail("binding-failed", "extension lifecycle binding could not start"));
-  if (stdoutBytes > MAX_JSON_BYTES || stderrBytes > MAX_STDERR_BYTES || outcome.code !== 0 || outcome.signal) {
-    const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
-    fail("binding-failed", diagnostic || "extension lifecycle binding failed");
-  }
-  process.stdout.write(Buffer.concat(stdout));
+  callerChannel.on("end", () => { void handleSignal("SIGTERM"); });
+  callerChannel.on("error", () => { void handleSignal("SIGTERM"); });
 }
 
 async function cmdRetireBinding(args) {
@@ -2368,6 +2403,7 @@ async function cmdRetireTransfer(args) {
 async function runInheritedLifecycleRetirement(args) {
   const home = await activeHome();
   const mode = await claimInheritedLifecycleLock(home);
+  watchLifecycleCaller();
   try {
     if (mode === "process-event") {
       const [command, ...commandArgs] = args;
@@ -2382,6 +2418,7 @@ async function runInheritedLifecycleRetirement(args) {
       else fail("lifecycle-lock-invalid", "extension lifecycle binding command is invalid");
     }
   } finally {
+    callerChannel?.destroy();
     await releaseLifecycleLock();
   }
 }
@@ -2415,7 +2452,252 @@ async function bindingRetirementPreflight(home, bindingDigest) {
   }
 }
 
+// Historical recovery is explicit operator work, never a fallback in ordinary
+// cleanup. The private evidence describes retrospective custody; it does not
+// authenticate lost launch records or decide the operator's seven predicates.
+async function historicalBytes(file) {
+  if (!path.isAbsolute(file) || await realpath(file) !== file) fail("historical-file-unsafe", "recovery evidence must have a canonical path");
+  const handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.uid !== currentUid() || modeOf(info) !== 0o600
+        || info.size < 1 || info.size > MAX_JSON_BYTES) fail("historical-file-unsafe", "recovery evidence must be one bounded private regular file");
+    const buffer = Buffer.alloc(MAX_JSON_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead !== info.size) fail("historical-file-changed", "recovery evidence changed during read");
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function historicalStat(pid) {
+  try {
+    const text = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = text.slice(text.lastIndexOf(")") + 1).trim().split(/\s+/u);
+    if (fields.length < 20) fail("historical-identity-uncertain", "process stat is incomplete");
+    return { pid, state: fields[0], ppid: Number(fields[1]), pgid: Number(fields[2]), sid: Number(fields[3]), start_ticks: fields[19] };
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ESRCH") return null;
+    throw error;
+  }
+}
+
+async function historicalMember(pid) {
+  const before = await historicalStat(pid);
+  if (!before) return null;
+  if (before.state === "Z") return before; // Exited but not reaped: never call this extinction.
+  const root = `/proc/${pid}`;
+  const result = {
+    ...before, uid: (await lstat(root)).uid, exe: await readlink(`${root}/exe`),
+    exe_sha256: digestBytes(await readFile(`${root}/exe`)),
+    cmdline_sha256: digestBytes(await readFile(`${root}/cmdline`)), cwd: await readlink(`${root}/cwd`),
+    pid_namespace: await readlink(`${root}/ns/pid`), mount_namespace: await readlink(`${root}/ns/mnt`),
+  };
+  const after = await historicalStat(pid);
+  if (!after || before.start_ticks !== after.start_ticks || before.pgid !== after.pgid) {
+    fail("historical-identity-changed", "process changed during inspection");
+  }
+  return result;
+}
+
+function validateHistoricalEvidence(record, home) {
+  exactKeys(record, ["schema", "home", "observed_at", "boot_id", "pid_namespace", "mount_namespace", "pgid",
+    "root", "launcher", "token", "host_pid", "members", "protected_pids", "predicates"], "historical evidence");
+  if (record.schema !== "firstmate.extension-historical-evidence.v1" || record.home !== home) fail("historical-home-mismatch", "recovery evidence belongs to a different home or schema");
+  if (!DIGEST_RE.test(record.token)) fail("historical-evidence-invalid", "invalid historical token");
+  for (const name of ["root", "launcher"]) {
+    boundedString(record[name], 4096, name);
+    if (!path.isAbsolute(record[name]) || path.resolve(record[name]) !== record[name]) fail("historical-path-invalid", "historical paths must be absolute and normalized");
+  }
+  if (record.root === "/" || isInside(record.root, home) || path.basename(record.launcher) !== "fm-extension-launch-barrier.mjs") fail("historical-path-invalid", "historical root or launcher is invalid");
+  integerIn(record.pgid, 2, 2147483647, "historical pgid");
+  integerIn(record.host_pid, 2, 2147483647, "historical host");
+  for (const name of ["boot_id", "pid_namespace", "mount_namespace", "observed_at"]) boundedString(record[name], 128, name);
+  if (!Array.isArray(record.members) || record.members.length < 1 || record.members.length > 32) fail("historical-evidence-invalid", "one finite member set is required");
+  const pids = new Set();
+  for (const member of record.members) {
+    exactKeys(member, ["pid", "start_ticks", "ppid", "pgid", "sid", "uid", "exe", "exe_sha256", "cmdline_sha256", "cwd"], "historical member");
+    for (const key of ["pid", "ppid", "pgid", "sid"]) integerIn(member[key], 1, 2147483647, key);
+    if (member.uid !== currentUid() || member.pgid !== record.pgid || member.sid !== record.pgid || pids.has(member.pid)) fail("historical-evidence-invalid", "member group, user or uniqueness is invalid");
+    pids.add(member.pid);
+    boundedString(member.start_ticks, 32, "start ticks", /^[0-9]+$/u);
+    for (const key of ["exe", "cwd"]) boundedString(member[key], 4096, key);
+    if (!DIGEST_RE.test(member.exe_sha256) || !DIGEST_RE.test(member.cmdline_sha256)) fail("historical-evidence-invalid", "member digest is invalid");
+    if (!member.cwd.endsWith(" (deleted)") || !isInside(record.root, member.cwd.slice(0, -10))) fail("historical-root-mismatch", "member cwd is not in the deleted historical root");
+  }
+  if (!pids.has(record.pgid) || pids.has(record.host_pid)) fail("historical-evidence-invalid", "historical leader or host is invalid");
+  if (!Array.isArray(record.protected_pids) || record.protected_pids.length < 1 || record.protected_pids.length > 256) fail("historical-evidence-invalid", "current protected owners must be enumerated");
+  for (const pid of record.protected_pids) integerIn(pid, 1, 2147483647, "protected owner");
+  if (!Array.isArray(record.predicates) || record.predicates.length !== 7) fail("historical-evidence-invalid", "all seven operator predicates are required in order");
+  for (const predicate of record.predicates) {
+    exactKeys(predicate, ["established", "path", "digest"], "historical predicate");
+    if (typeof predicate.established !== "boolean" || !DIGEST_RE.test(predicate.digest)) fail("historical-evidence-invalid", "predicate evidence is invalid");
+    boundedString(predicate.path, 4096, "predicate evidence path");
+    if (!isInside(home, predicate.path)) fail("historical-home-mismatch", "predicate evidence is outside this home");
+  }
+}
+
+async function inspectHistorical(record, afterEffect = false) {
+  if (process.platform !== "linux") fail("historical-platform-unsupported", "historical recovery requires Linux proc identity");
+  if ((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim() !== record.boot_id
+      || await readlink("/proc/self/ns/pid") !== record.pid_namespace
+      || await readlink("/proc/self/ns/mnt") !== record.mount_namespace) fail("historical-namespace-changed", "boot or namespace differs from the recovery evidence");
+  const members = [];
+  const expected = new Map(record.members.map((member) => [member.pid, member]));
+  for (const entry of await readdir("/proc")) {
+    if (!/^[0-9]+$/u.test(entry)) continue;
+    const stat = await historicalStat(Number(entry));
+    if (stat?.pgid === record.pgid && !expected.has(stat.pid)) fail("historical-members-changed", "an unrecorded member now belongs to the group");
+  }
+  for (const member of record.members) {
+    const actual = await historicalMember(member.pid);
+    if (!actual) continue;
+    if (actual.start_ticks !== member.start_ticks || actual.pgid !== member.pgid || actual.sid !== member.sid) fail("historical-identity-changed", "recorded PID or group identity changed");
+    if (actual.state !== "Z") {
+      for (const [key, value] of Object.entries(member)) {
+        if (afterEffect && key === "ppid") continue; // TERM can reparent an exact surviving child.
+        if (actual[key] !== value) fail("historical-identity-changed", `recorded member ${key} changed`);
+      }
+      if (actual.pid_namespace !== record.pid_namespace || actual.mount_namespace !== record.mount_namespace) fail("historical-namespace-changed", "member namespace changed");
+    }
+    members.push(actual);
+  }
+  if (members.length === 0) return members;
+  if (!afterEffect && members.length !== record.members.length) fail("historical-members-changed", "a recorded member disappeared before effect");
+  if (await maybeLstat(record.root)) fail("historical-root-recreated", "historical root exists again");
+  // Do not traverse a replacement parent symlink to an apparently absent leaf.
+  let parent = path.dirname(record.root);
+  while (!(await maybeLstat(parent))) parent = path.dirname(parent);
+  if (await realpath(parent) !== parent) fail("historical-root-recreated", "historical root ancestry changed");
+  if (await historicalStat(record.host_pid)) fail("historical-host-live", "the historical host PID is occupied");
+  const protectedPids = new Set(record.protected_pids);
+  let ancestor = process.pid;
+  const visited = new Set();
+  while (ancestor > 0 && !visited.has(ancestor)) {
+    visited.add(ancestor);
+    protectedPids.add(ancestor);
+    const stat = await historicalStat(ancestor);
+    if (!stat || stat.ppid === ancestor) break;
+    ancestor = stat.ppid;
+  }
+  if (members.some((member) => protectedPids.has(member.pid))) fail("historical-protected-owner", "subject intersects a protected live owner or caller ancestor");
+  const registry = path.join(record.home, "state", "extension-invocations");
+  for (const name of await readdir(registry).catch((error) => { if (error.code === "ENOENT") return []; throw error; })) {
+    if (!name.endsWith(".owner.json")) continue;
+    const owner = validateInvocationOwner(await readPrivateJson(path.join(registry, name), "current invocation owner"));
+    if (owner.group_pid === record.pgid || expected.has(owner.host_pid)) fail("historical-live-claim", "a current invocation record claims this subject");
+  }
+  const leader = members.find((member) => member.pid === record.pgid);
+  if (leader && leader.state !== "Z") {
+    const argv = (await readFile(`/proc/${record.pgid}/cmdline`)).toString("utf8").split("\0");
+    if (argv.at(-1) === "") argv.pop();
+    const paths = invocationPaths(path.dirname(argv[3] || ""), record.token);
+    if (argv.length !== 10 || argv[1] !== record.launcher || argv[2] !== record.token
+        || argv[3] !== paths.ownerFile || argv[4] !== paths.readyFile || argv[5] !== paths.releaseFile
+        || argv[6] !== String(record.host_pid) || !isInside(record.root, argv[3])
+        || !isInside(record.root, argv[7]) || !isInside(record.root, argv[8])) fail("historical-launcher-mismatch", "historical launch arguments do not match the finite evidence");
+  } else if (!afterEffect) fail("historical-leader-unavailable", "historical leader cannot be inspected");
+  return members;
+}
+
+async function cmdHistoricalCleanup(args) {
+  const outcome = { status: "refused", effects: [], reason: null };
+  let journal = null;
+  const retain = async (entry) => {
+    const bytes = Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesWritten } = await journal.write(bytes, offset, bytes.length - offset, null);
+      if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > bytes.length - offset) {
+        fail("historical-journal-failed", "journal write made no valid progress");
+      }
+      offset += bytesWritten;
+    }
+    await journal.sync();
+  };
+  try {
+    if (![1, 2, 4].includes(args.length) || (args.length > 1 && args[1] !== "--retrospective")
+        || (args.length === 4 && (args[2] !== "--apply" || !DIGEST_RE.test(args[3])))) fail("usage", "--historical <file> [--retrospective [--apply <evidence-digest>]]");
+    if (process.env.FM_STATE_OVERRIDE) fail("historical-state-override", "historical recovery requires the canonical home state");
+    const home = await activeHome();
+    const file = args[0];
+    if (!path.isAbsolute(file) || !isInside(home, file)) fail("historical-home-mismatch", "recovery evidence must be in its owning home");
+    const bytes = await historicalBytes(file);
+    outcome.evidence_digest = digestBytes(bytes);
+    const record = parseStrictJson(bytes, "historical recovery evidence");
+    validateHistoricalEvidence(record, home);
+    outcome.pgid = record.pgid;
+    const check = async (afterEffect = false) => {
+      if (digestBytes(await historicalBytes(file)) !== outcome.evidence_digest) fail("historical-evidence-changed", "recovery evidence changed");
+      const members = await inspectHistorical(record, afterEffect);
+      if (members.length === 0) return members;
+      if (args.length === 1) fail("retrospective-authorization-required", "missing original custody requires explicit retrospective recovery authorization");
+      const age = Date.now() - Date.parse(record.observed_at);
+      if (!Number.isFinite(age) || age < 0 || age > 300000) fail("historical-evidence-stale", "refresh the operator evidence within five minutes before effect");
+      for (let i = 0; i < record.predicates.length; i += 1) {
+        const predicate = record.predicates[i];
+        if (!predicate.established) fail("historical-predicate-unproved", `operator predicate ${i + 1} is unproved`);
+        if (digestBytes(await historicalBytes(predicate.path)) !== predicate.digest) fail("historical-predicate-changed", `operator predicate ${i + 1} evidence changed`);
+      }
+      return members;
+    };
+    outcome.before = await check();
+    if (outcome.before.length === 0) outcome.status = "absent";
+    else if (args.length !== 4) outcome.status = "ready";
+    else {
+      if (args[3] !== outcome.evidence_digest) fail("historical-inspection-mismatch", "effect requires the exact reviewed evidence digest");
+      outcome.journal = `${file}.retirement.jsonl`;
+      journal = await open(outcome.journal, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      await retain({ ...outcome, status: "prepared" });
+      const journalDirectory = await open(path.dirname(file), fsConstants.O_RDONLY);
+      try { await journalDirectory.sync(); } finally { await journalDirectory.close(); }
+      for (const [signal, wait] of [["SIGTERM", TERMINATE_GRACE_MS], ["SIGKILL", CLEANUP_WAIT_MS]]) {
+        const live = await check(outcome.effects.length > 0);
+        if (live.length === 0) break;
+        // Revalidate before every group signal, including escalation after a
+        // leader's exit. Only the exact surviving subset remains authorized.
+        if (live.some((member) => member.state !== "Z")) {
+          await retain({ status: "signal-intent", signal, members: live });
+          const current = await check(outcome.effects.length > 0);
+          if (current.length === 0) break;
+          process.kill(-record.pgid, signal);
+          outcome.effects.push(signal);
+          await retain({ status: "signal-sent", signal });
+        }
+        const until = Date.now() + wait;
+        while (Date.now() < until) {
+          const remaining = await Promise.all(record.members.map((member) => historicalStat(member.pid)));
+          if (remaining.every((member) => !member)) break;
+          await sleep(INVOCATION_POLL_MS);
+        }
+      }
+      outcome.after = await check(true);
+      if (outcome.after.length) fail("historical-extinction-unproved", "recorded processes have not all disappeared");
+      outcome.status = "completed";
+    }
+  } catch (error) {
+    outcome.status = outcome.effects.length ? "partial" : "refused";
+    outcome.reason = error instanceof HostError ? error.code : "historical-inspection-failed";
+    outcome.detail = error instanceof Error ? error.message : "historical inspection failed";
+    process.exitCode = 1;
+  }
+  if (journal) {
+    try {
+      await retain(outcome);
+    } catch {
+      outcome.status = "partial";
+      outcome.reason = "historical-journal-failed";
+      process.exitCode = 1;
+    } finally {
+      await journal.close();
+    }
+  }
+  process.stdout.write(prettyJson(outcome));
+}
+
 async function cmdCleanupInvocations(args) {
+  if (args[0] === "--historical") return cmdHistoricalCleanup(args.slice(1));
   let sourceId = null;
   let bindingDigest = null;
   if (args.length !== 0) {
@@ -2536,6 +2818,8 @@ Usage:
   bin/fm-extension.mjs list
   bin/fm-extension.mjs inspect <extension-id>
   bin/fm-extension.mjs verify [extension-id]
+
+Historical recovery: cleanup-invocations --historical <private-evidence.json> [--retrospective [--apply <sha256:evidence-digest>]]. See this script header for the evidence contract.
 
 The manifest file is firstmate-extension.json. Supported consent facts are network, credential-store, task-metadata, and artifact-references. The host supports only process-event-adapter/1; see docs/extension-bindings.md for its manifest, binding, handshake, and invocation contracts.
 `);

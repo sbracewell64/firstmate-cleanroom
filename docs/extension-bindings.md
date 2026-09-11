@@ -94,6 +94,10 @@ Binding publication is atomic and does not replace a concurrent file.
 Binding publication prints the binding digest used as its conditional retirement identity.
 `retire-binding` fully validates the current binding and installed package, refuses a stale digest or a transferred source, and atomically moves only that exact local binding into `data/extensions/retired-bindings`.
 One home-local lifecycle lock serializes extension resolution through registration publication against dependency preflight through exact binding removal, and the retirement worker owns that lock with its own process identity for the full mutation lifetime.
+Public process-event, binding and retirement callers retain cancellation custody of their exact lifecycle child across lock acquisition and the shell-to-host exec.
+A private inherited channel carries cancellation and detects caller loss, including an uncatchable caller exit; queued operations cancel before mutation, while an active host cleans its exact invocation group.
+The public caller waits for child completion on catchable cancellation and preserves failure outcomes; cancellation during invocation reservation waits for setup before cleaning the reserved group.
+The channel grants no lock or capture authority, and the inner host remains the actual recorded invocation owner.
 Before either retirement form, the process-event owner refuses while an exact registration or unhandled captured result still depends on the binding.
 Retirement disables discovery and invocation without deleting the content-addressed installed package, and retained binding state can be restored deliberately.
 
@@ -108,10 +112,32 @@ Each JSON envelope is limited to 65,536 bytes, extension stderr is limited to 8,
 The parser rejects malformed UTF-8, a byte-order mark, duplicate object keys, unknown fields, unescaped controls, unpaired surrogates, multiple documents, and trailing bytes.
 A tracked static core launch barrier publishes one exact host-created process group before the host releases package code, without `eval`, generated source, a shell, or a package-controlled bootstrap.
 A timeout, output-bound violation, failed response, host interruption, or successful parent that leaves that group live sends `TERM`, escalates to `KILL`, and rejects the invocation until that exact group is proved gone.
-If the host dies first, its private identity-bound cleanup record keeps source reconciliation, home cleanup, and binding retirement from releasing ownership until a later core invocation proves that exact group extinct; an uncertain or reused live identity is retained and never signalled.
+If the host dies first, its private identity-bound cleanup record keeps source reconciliation, replacement startup, home cleanup, and binding retirement from releasing ownership until a later core invocation proves that exact group extinct; an uncertain or reused live identity is retained and never signalled.
+Process-event invocation records include the source identity for the preliminary handshake as well as the requested operation.
+Before releasing a dead runner's claim, reconciliation cleans its recorded invocation groups from the claim's revalidated state root, even when the caller uses the home's default state directory.
+Public source startup performs the same recorded-claim cleanup and checks the current state's source invocation records under the source lock before retiring an orphan runner record or replacing its claim.
+Cleanup refusal preserves the runner record and claim instead of starting a second poller.
 Extension children must remain foreground members of their invocation group and be owned and reaped by the live entrypoint. Starting another session or process group, changing process groups, double-forking, reparenting, or surviving the entrypoint response violates this protocol contract.
-Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee. The host never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group.
+Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee.
+Ordinary invocation cleanup never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group; the explicit historical recovery path below has a separate evidence contract.
 Extension stderr and failure diagnostics are never copied into a wake or authority-bearing record.
+
+### Explicit historical invocation recovery
+
+Ordinary cleanup requires the original private invocation records and never adopts a process found by scanning argv.
+When those records were lost, the existing lifecycle owner supports explicit historical recovery from a finite retrospective evidence file.
+The [`fm-extension.mjs` command header](../bin/fm-extension.mjs) owns the exact evidence fields and inspect/effect options, including retrospective authorization for inspecting a live subject.
+An explicit existing recovery authorization and seven established custody predicates are required; unknown ownership or potentially unique process recovery state remains a refusal.
+The operator supplies the current protected-owner inventory and independently reviewed evidence, then retains the read-only inspection before the exact digest-bound effect.
+This does not recreate original binding/request provenance or broaden routine source reconciliation.
+
+The Linux-only path revalidates boot, namespaces, exact member identities, current invocation claims, protected owners and the absent historical root before TERM and before any KILL escalation.
+A changed member set or recreated root after TERM produces a partial outcome and prevents escalation.
+The private journal records prepared custody, signal intent, sent signals and the final outcome; it is never overwritten and no associated evidence or worktree is removed.
+Each journal entry must finish writing every encoded byte before synchronization returns; short writes continue over the remainder, while invalid progress or write/sync failure prevents the next signal or escalation.
+Only disappearance of every exact member and absence of any replacement group member proves extinction; zombies remain unresolved.
+A process-table read followed by group signalling is not an atomic custody transfer, and trusted same-user code must continue to obey the foreground group contract.
+The isolated `lifecycle-historical-cleanup` segment of `tests/fm-extension-binding.test.sh` exercises the public cleanup command with real fixture-owned launch barriers, including graceful termination, escalation, refusal and post-TERM churn.
 
 ### Handshake
 

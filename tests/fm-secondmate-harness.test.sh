@@ -426,6 +426,7 @@ make_noop_tmux() {
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" codex
   printf '%s\n' "$fakebin"
 }
 
@@ -660,7 +661,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" pi
+  fm_fake_exit0 "$fakebin" pi codex
   printf '%s\n' "$fakebin"
 }
 
@@ -854,7 +855,7 @@ test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens() {
   [ "$(meta_field "$meta" model)" = default ] || fail "explicit-harness-no-tokens: meta model should stay default"
   [ "$(meta_field "$meta" effort)" = default ] || fail "explicit-harness-no-tokens: meta effort should stay default"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "codex --dangerously-bypass-approvals-and-sandbox" \
+  assert_contains "$launch" "codex' --dangerously-bypass-approvals-and-sandbox" \
     "explicit-harness-no-tokens: launch did not use codex"
   assert_not_contains "$launch" "--model" "explicit-harness-no-tokens: launch must not carry a --model flag"
   assert_not_contains "$launch" "model_reasoning_effort" \

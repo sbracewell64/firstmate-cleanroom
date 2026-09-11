@@ -18,7 +18,7 @@ fi
 
 extension_segment=${FM_EXTENSION_BINDING_SEGMENT:-all}
 case "$extension_segment" in
-  all|coordinator|early-bind|early-validation|early-handshake|early-integrity|matrix|matrix-runtime|lifecycle-flow|lifecycle-lock|lifecycle-runner|lifecycle-state|lifecycle-invocation-cleanup|remote-envelope|remote-activation|remote-lifecycle|remote-retirement|example|coordinator-fail|coordinator-wait|coordinator-stubborn|coordinator-pass|coordinator-late-pass|coordinator-scheduler-block|coordinator-scheduler-late) ;;
+  all|coordinator|early-bind|early-validation|early-handshake|early-integrity|matrix|matrix-runtime|lifecycle-flow|lifecycle-lock|lifecycle-runner|lifecycle-state|lifecycle-invocation-cleanup|lifecycle-historical-cleanup|remote-envelope|remote-activation|remote-lifecycle|remote-retirement|example|coordinator-fail|coordinator-wait|coordinator-stubborn|coordinator-pass|coordinator-late-pass|coordinator-scheduler-block|coordinator-scheduler-late) ;;
   *) printf 'unknown extension-binding segment: %s\n' "$extension_segment" >&2; exit 64 ;;
 esac
 
@@ -55,10 +55,14 @@ signal_cleanup_group_pid=
 crash_cleanup_host_pid=
 crash_cleanup_group_pid=
 crash_cleanup_release=
+custody_blocker_pid=
+custody_blocker_release=
+custody_caller_pid=
 crash_silent_start_pid=
 crash_silent_runner_pid=
 override_crash_start_pid=
 override_crash_runner_pid=
+override_crash_release=
 section_coordinator_pid=
 extension_test_cleanup() {
   [ -z "$concurrent_release" ] || touch "$concurrent_release" 2>/dev/null || true
@@ -89,10 +93,14 @@ extension_test_cleanup() {
   [ -z "$crash_cleanup_host_pid" ] || kill -KILL "$crash_cleanup_host_pid" 2>/dev/null || true
   [ -z "$crash_cleanup_group_pid" ] || kill -KILL -"$crash_cleanup_group_pid" 2>/dev/null || true
   [ -z "$crash_cleanup_release" ] || touch "$crash_cleanup_release" 2>/dev/null || true
+  [ -z "$custody_blocker_release" ] || touch "$custody_blocker_release" 2>/dev/null || true
+  [ -z "$custody_caller_pid" ] || kill -TERM "$custody_caller_pid" 2>/dev/null || true
+  [ -z "$custody_blocker_pid" ] || kill -TERM "$custody_blocker_pid" 2>/dev/null || true
   [ -z "$crash_silent_start_pid" ] || kill -TERM "$crash_silent_start_pid" 2>/dev/null || true
   [ -z "$crash_silent_runner_pid" ] || kill -TERM -"$crash_silent_runner_pid" 2>/dev/null || true
   [ -z "$override_crash_start_pid" ] || kill -TERM "$override_crash_start_pid" 2>/dev/null || true
   [ -z "$override_crash_runner_pid" ] || kill -TERM -"$override_crash_runner_pid" 2>/dev/null || true
+  [ -z "$override_crash_release" ] || touch "$override_crash_release" 2>/dev/null || true
   [ -z "$handshake_orphan_pid" ] || kill -KILL "$handshake_orphan_pid" 2>/dev/null || true
   if [ -n "$section_coordinator_pid" ]; then
     kill -TERM "$section_coordinator_pid" 2>/dev/null || true
@@ -115,12 +123,28 @@ extension_test_cleanup() {
     kill -TERM "$second_bind_pid" 2>/dev/null || true
     wait "$second_bind_pid" 2>/dev/null || true
   fi
+  if [ -f "$TMP_ROOT/historical-cleanup-retain" ]; then
+    # Preserve the authentic marker without leaving this unresolved fixture
+    # eligible for the generic age-based orphan directory sweep.
+    if [ -f "$TMP_ROOT/.fm-test-fixture" ]; then
+      mv "$TMP_ROOT/.fm-test-fixture" "$TMP_ROOT/.fm-test-fixture.retained"
+    fi
+    printf 'historical cleanup evidence retained at %s\n' "$TMP_ROOT" >&2
+    return 1
+  fi
   chmod -R u+w "$TMP_ROOT_RAW" 2>/dev/null || true
   fm_test_cleanup
 }
 trap extension_test_cleanup EXIT
 trap 'extension_test_cleanup; exit 130' INT
 trap 'extension_test_cleanup; exit 143' TERM
+if [ "$extension_segment" = lifecycle-historical-cleanup ] || [ "$extension_segment" = all ]; then
+  for historical_case in graceful stubborn root-churn member-churn journal-prepared journal-intent journal-escalation; do
+    python3 "$ROOT/tests/fixtures/extension-historical-cleanup.py" "$HOST" "$TMP_ROOT" "$historical_case" || fail "historical invocation cleanup regression: $historical_case"
+  done
+  pass "historical invocation cleanup preserves custody and verifies extinction"
+  [ "$extension_segment" != lifecycle-historical-cleanup ] || exit 0
+fi
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 PACKAGES="$TMP_ROOT/packages"
 HOMES="$TMP_ROOT/homes"
@@ -245,6 +269,18 @@ elif mode in ("replay", "replay-no-result"):
         except FileNotFoundError: prior = 0
         open(count_path, "w", encoding="utf-8").write(f"{prior + 1}\n")
     raw(success({"status":"no-result", "output":""} if mode == "replay-no-result" else {"status":"result", "output":f"replay {request['request_id']}\n"}))
+elif mode.startswith("restart-block|"):
+    _, block_marker, block_release = mode.split("|", 2)
+    first = not os.path.exists(block_marker)
+    with open(block_marker, "a", encoding="utf-8") as output: output.write(f"{os.getpid()}\n")
+    if first:
+        while not os.path.exists(block_release): time.sleep(.01)
+    else:
+        with open(block_marker + ".group", encoding="utf-8") as source: prior_group = int(source.read())
+        try: os.killpg(prior_group, 0)
+        except ProcessLookupError: pass
+        else: write_exclusive(block_marker + ".overlap", "prior group survived replacement entry\n")
+    raw(success({"status":"no-result", "output":""}))
 elif mode.startswith("active-block|"):
     _, block_marker, block_release = mode.split("|", 2)
     write_exclusive(block_marker, f"{os.getpid()}\n")
@@ -978,6 +1014,38 @@ core_request_ids="$H_CORE_REPLAY/state/extensions/org.example.matrix/request-ids
 FM_HOME="$H_CORE_REPLAY" "$PROCEVENT" retire replay-source --if-owner "$core_token" >/dev/null
 pass "the generic runner reuses one request id until that source sequence is durably captured"
 
+# Replay a crash after the runner record survives but its claim is gone.
+# The old record blocks O_EXCL staging unless reconcile retires that exact dead
+# owner. Unsafe or live records must survive without any source invocation.
+H_ORPHAN="$HOMES/orphan-runner"; new_home "$H_ORPHAN"
+bind_package "$H_ORPHAN" "$P_MATRIX" ext-matrix >/dev/null
+orphan_registration=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" register-extension ext-matrix orphan-source --config-ref good)
+orphan_token=$(printf '%s\n' "$orphan_registration" | sed -n 's/^owner-token: //p')
+orphan_record="$H_ORPHAN/state/procevent/orphan-source.runner"
+for shape in live malformed symlink hardlink fifo; do
+  case "$shape" in
+    live) printf '%s\n' "$$" > "$orphan_record"; chmod 600 "$orphan_record" ;;
+    malformed) printf 'not-a-pid\n' > "$orphan_record"; chmod 600 "$orphan_record" ;;
+    symlink) printf 'preserve\n' > "$TMP_ROOT/runner-target"; ln -s "$TMP_ROOT/runner-target" "$orphan_record" ;;
+    hardlink) printf 'preserve\n' > "$TMP_ROOT/runner-target"; ln "$TMP_ROOT/runner-target" "$orphan_record" ;;
+    fifo) mkfifo "$orphan_record" ;;
+  esac
+  orphan_out=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" reconcile 2>&1)
+  assert_contains "$orphan_out" 'started=0 stopped=0 uncertain=1' "$shape orphan runner was treated as recovered"
+  [ -e "$orphan_record" ] || fail "$shape orphan evidence was removed"
+  assert_absent "$H_ORPHAN/state/procevent-inbox/orphan-source.1.result" "$shape orphan invoked the source"
+  rm "$orphan_record"
+done
+# Derive a real, already-reaped PID instead of assuming a number is unused.
+sleep 0.01 & orphan_dead_pid=$!; wait "$orphan_dead_pid"
+printf '%s\n' "$orphan_dead_pid" > "$orphan_record"; chmod 600 "$orphan_record"
+orphan_out=$(FM_HOME="$H_ORPHAN" "$PROCEVENT" reconcile 2>&1)
+assert_contains "$orphan_out" 'started=1 stopped=0 uncertain=0' 'dead orphan runner did not recover'
+wait_for_file "$H_ORPHAN/state/procevent-inbox/orphan-source.1.result" || fail 'recovered runner never captured the source'
+FM_HOME="$H_ORPHAN" "$PROCEVENT" handled orphan-source 1 >/dev/null
+FM_HOME="$H_ORPHAN" "$PROCEVENT" retire orphan-source --if-owner "$orphan_token" >/dev/null
+pass 'reconcile recovers a dead orphan runner and preserves live or unsafe records'
+
 P_TIMEOUT="$PACKAGES/timeout"
 make_package "$P_TIMEOUT" org.example.timeout ext-timeout
 H_TIMEOUT="$HOMES/timeout"; new_home "$H_TIMEOUT"
@@ -1161,7 +1229,6 @@ process_race_retire_pid=
 assert_contains "$(cat "$TMP_ROOT/process-retire-race-retire.out")" "still owns process-event registration" "retirement did not observe the reserved process-event registration"
 assert_present "$H_PROCESS_RETIRE_RACE/state/procevent-inbox/process-race-source.1.result" "reserved process-event did not capture its result"
 pass "process-event resolution reserves the lifecycle before invocation"
-process_race_release=
 
 process_race_result="$H_PROCESS_RETIRE_RACE/state/procevent-inbox/process-race-source.1.result"
 process_race_resolution=$(FM_HOME="$H_PROCESS_RETIRE_RACE" "$HOST" resolve-process-event ext-process-retire-race)
@@ -1199,6 +1266,7 @@ for process_race_operation in result.classify result.terminal result.silent; do
   FM_HOME="$H_PROCESS_RETIRE_RACE" "$PROCEVENT" retire "$process_race_guard" --if-owner "$process_race_owner" >/dev/null
 done
 process_race_release=
+process_race_release=
 pass "every external result operation reserves the lifecycle before invocation"
 
 expect_failure "unknown command" env FM_HOME="$H_RETIRE_RACE" "$HOST" retire-binding-locked org.example.retire-race --if-binding-digest "$race_binding_digest"
@@ -1226,7 +1294,12 @@ for _ in $(seq 1 400); do
 done
 [ -n "$owner_worker_pid" ] || fail "retirement worker never acquired its lifecycle lock"
 [ "$owner_worker_pid" != "$owner_retire_pid" ] || fail "retirement fixture did not cross the public wrapper boundary"
-kill -TERM "$owner_retire_pid" 2>/dev/null || true
+kill -TERM "$owner_retire_pid" 2>/dev/null || fail "cannot cancel public retirement"
+sleep 0.1
+kill -0 "$owner_retire_pid" 2>/dev/null || fail "catchable cancellation abandoned a stopped lifecycle child"
+# An uncatchable caller death is the lock-recovery cut.  TERM now retains
+# custody until the child completes, so it must not be used as a crash proxy.
+kill -KILL "$owner_retire_pid" 2>/dev/null || fail "cannot crash public retirement"
 wait "$owner_retire_pid" 2>/dev/null || true
 owner_retire_pid=
 FM_HOME="$H_LOCK_OWNER" "$PROCEVENT" register-extension ext-lock-owner owner-source --config-ref good > "$TMP_ROOT/lock-owner-register.out" 2>&1 &
@@ -1449,13 +1522,146 @@ for control_kind in tab newline; do
   chmod 0700 "$control_state"
   FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
     "$PROCEVENT" register lavish "$control_source" -- /bin/echo control >/dev/null
-  expect_failure "cannot acquire source ownership" env FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
+  expect_failure "cannot claim source" env FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$control_state" \
     "$PROCEVENT" start "$control_source"
   assert_absent "$TMP_ROOT/claims/$control_source.claim" "control-byte state root created a malformed claim"
   assert_absent "$control_state/procevent-capture-reservations" "control-byte state root created reservation state"
   assert_present "$state_path_decoy" "control-byte state root touched unrelated reservation state"
 done
 pass "control-byte state roots cannot serialize claims or reservations"
+for restart_case in success refusals absent-claim; do
+  restart_home="$HOMES/restart-$restart_case"; new_home "$restart_home"
+  restart_state="$TMP_ROOT/restart-state-$restart_case"
+  restart_marker="$TMP_ROOT/restart-$restart_case.marker"
+  override_crash_release="$TMP_ROOT/restart-$restart_case.release"
+  bind_package "$restart_home" "$P_FLOW" ext-flow >/dev/null
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" register-extension ext-flow restart-source \
+    --config-ref "restart-block|$restart_marker|$override_crash_release" >/dev/null
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" start restart-source > "$TMP_ROOT/restart-first.out" 2>&1 &
+  override_crash_start_pid=$!
+  wait_for_file "$restart_marker" || fail "public start never entered blocking poll"
+  restart_claim="$TMP_ROOT/claims/restart-source.claim"
+  restart_runner="$restart_state/procevent/restart-source.runner"
+  override_crash_runner_pid=$(sed -n '2p' "$restart_claim")
+  restart_owner=$(find "$restart_state/extension-invocations" -name '*.owner.json' -print)
+  crash_cleanup_group_pid=$(python3 - "$restart_owner" <<'PYOWNER'
+import json, sys
+owner = json.load(open(sys.argv[1]))
+assert owner["operation"] == "source.poll" and owner["phase"] == "group"
+print(owner["group_pid"])
+PYOWNER
+  ) || fail "blocking poll lacks exact invocation ownership"
+  kill -KILL -"$override_crash_runner_pid" || fail "cannot kill isolated runner group"
+  wait "$override_crash_start_pid" 2>/dev/null || true
+  override_crash_start_pid=
+  override_crash_runner_pid=
+  kill -0 -"$crash_cleanup_group_pid" || fail "detached poll did not survive runner crash"
+  printf '%s\n' "$crash_cleanup_group_pid" > "$restart_marker.group"
+  cp "$restart_claim" "$TMP_ROOT/restart-claim.saved"
+  cp "$restart_runner" "$TMP_ROOT/restart-runner.saved"
+  cp "$restart_owner" "$TMP_ROOT/restart-owner.saved"
+  if [ "$restart_case" = refusals ]; then
+    for refusal in unsafe stale live uncertain foreign; do
+      python3 - "$restart_owner" "$restart_claim" "$refusal" <<'PYREFUSAL'
+import json, os, pathlib, subprocess, sys
+owner_path, claim_path, mode = map(str, sys.argv[1:])
+owner = json.loads(pathlib.Path(owner_path).read_text())
+if mode == "unsafe":
+    os.chmod(owner_path, 0o644)
+elif mode == "foreign":
+    lines = pathlib.Path(claim_path).read_text().splitlines()
+    lines[0] += "/foreign-home"
+    pathlib.Path(claim_path).write_text("\n".join(lines) + "\n")
+else:
+    if mode == "stale":
+        owner["group_identity"] = "barrier-token:sha256:" + "0" * 64
+    else:
+        owner["host_pid"] = owner["group_pid"]
+        if mode == "live":
+            pid = owner["host_pid"]
+            if sys.platform == "linux":
+                stat = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                cmd = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+                owner["host_identity"] = f"linux-starttime={stat[19]} cmdline-hex={cmd.hex()}"
+            else:
+                owner["host_identity"] = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "command="], text=True).strip()
+        else:
+            owner["host_identity"] = "host-token:sha256:" + "0" * 64
+    pathlib.Path(owner_path).write_text(json.dumps(owner))
+PYREFUSAL
+      cp "$restart_claim" "$TMP_ROOT/restart-claim.expected"
+      expect_failure "error:" env FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+        "$PROCEVENT" start restart-source
+      cmp -s "$restart_claim" "$TMP_ROOT/restart-claim.expected" || fail "$refusal start replaced claim"
+      cmp -s "$restart_runner" "$TMP_ROOT/restart-runner.saved" || fail "$refusal start removed runner ownership"
+      kill -0 -"$crash_cleanup_group_pid" || fail "$refusal start signaled unproved invocation"
+      [ "$(wc -l < "$restart_marker" | tr -d ' ')" = 1 ] || fail "$refusal start invoked another poller"
+      cp "$TMP_ROOT/restart-owner.saved" "$restart_owner"
+      chmod 0600 "$restart_owner"
+      cp "$TMP_ROOT/restart-claim.saved" "$restart_claim"
+    done
+  fi
+  [ "$restart_case" != absent-claim ] || rm "$restart_claim"
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" start restart-source > "$TMP_ROOT/restart-second.out" 2>&1 \
+    || fail "public start could not recover exact dead owner"
+  [ "$(wc -l < "$restart_marker" | tr -d ' ')" = 2 ] || fail "replacement poll never ran"
+  if kill -0 -"$crash_cleanup_group_pid" 2>/dev/null; then
+    printf 'public start invoked replacement while recorded detached poll survived\n'
+    fail "public start bypassed invocation custody"
+  fi
+  crash_cleanup_group_pid=
+  assert_absent "$restart_marker.overlap" "replacement entered before old invocation extinction"
+  assert_absent "$restart_owner" "replacement retained old invocation owner"
+  assert_absent "$restart_claim" "completed replacement retained claim"
+  pass "public start crash recovery preserves invocation custody: $restart_case"
+done
+handshake_home="$HOMES/override-handshake"; new_home "$handshake_home"
+handshake_state="$TMP_ROOT/handshake-state"
+override_crash_marker="$TMP_ROOT/override-handshake.marker"
+override_crash_release="$TMP_ROOT/override-handshake.release"
+handshake_package="$PACKAGES/override-handshake"
+make_package "$handshake_package" org.example.handshake ext-handshake "$(printf 'handshake-block\n%s\n%s' "$override_crash_marker" "$override_crash_release")"
+touch "$override_crash_marker"
+bind_package "$handshake_home" "$handshake_package" ext-handshake >/dev/null
+FM_HOME="$handshake_home" FM_STATE_OVERRIDE="$handshake_state" \
+  "$PROCEVENT" register-extension ext-handshake override-handshake --config-ref no-result >/dev/null
+rm "$override_crash_marker"
+FM_HOME="$handshake_home" FM_STATE_OVERRIDE="$handshake_state" \
+  "$PROCEVENT" start override-handshake > "$TMP_ROOT/override-handshake-start.out" 2>&1 &
+override_crash_start_pid=$!
+wait_for_file "$override_crash_marker" || fail "overridden-state runner never entered handshake"
+handshake_claim="$TMP_ROOT/claims/override-handshake.claim"
+override_crash_runner_pid=$(sed -n '2p' "$handshake_claim")
+handshake_owner=$(find "$handshake_state/extension-invocations" -name '*.owner.json' -print)
+crash_cleanup_group_pid=$(python3 - "$handshake_owner" <<'PYOWNER'
+import json, sys
+owner = json.load(open(sys.argv[1]))
+assert owner["operation"] == "handshake" and owner["phase"] == "group"
+print(owner["group_pid"])
+PYOWNER
+) || fail "handshake lacks exact recorded group"
+kill -KILL -"$override_crash_runner_pid" || fail "could not kill isolated handshake runner"
+wait "$override_crash_start_pid" 2>/dev/null || true
+override_crash_start_pid=
+override_crash_runner_pid=
+kill -0 -"$crash_cleanup_group_pid" || fail "handshake did not survive runner crash"
+ln "$handshake_owner" "$TMP_ROOT/handshake-owner-link"
+FM_HOME="$handshake_home" "$PROCEVENT" reconcile > "$TMP_ROOT/handshake-refusal.out" 2>&1 || true
+assert_present "$handshake_claim" "unsafe invocation owner did not retain claim"
+kill -0 -"$crash_cleanup_group_pid" || fail "unsafe owner permitted group signaling"
+rm "$TMP_ROOT/handshake-owner-link"
+FM_HOME="$handshake_home" "$PROCEVENT" reconcile >/dev/null
+if kill -0 -"$crash_cleanup_group_pid" 2>/dev/null; then
+  printf 'handshake survived; claim present=%s\n' "$(test -e "$handshake_claim" && echo yes || echo no)"
+  fail "reconcile released the overridden-state claim while its handshake group survived"
+fi
+crash_cleanup_group_pid=
+assert_absent "$handshake_claim" "cleaned handshake retained claim"
+assert_absent "$handshake_owner" "cleaned handshake retained invocation owner"
+pass "overridden-state handshake crash retains claims on refusal and cleans exact groups"
 override_crash_marker="$TMP_ROOT/override-crash.marker"
 override_crash_release="$TMP_ROOT/override-crash.release"
 FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$STATE_OVERRIDE" \
@@ -1469,9 +1675,28 @@ override_crash_claim="$TMP_ROOT/claims/override-crash-source.claim"
 assert_present "$override_crash_claim" "overridden-state crash fixture did not retain its claim"
 override_crash_runner_pid=$(sed -n '2p' "$override_crash_claim")
 override_crash_token=$(sed -n '3p' "$override_crash_claim")
-override_crash_records=$(find "$STATE_OVERRIDE/procevent-capture-reservations" -type f \
-  -name ".extension-capture-$override_crash_token.*" -print | wc -l | tr -d '[:space:]')
-[ "$override_crash_records" -eq 2 ] || fail "overridden-state crash fixture did not create both immediate reservations"
+override_crash_group_pid=$(python3 - "$STATE_OVERRIDE/extension-invocations" <<'PY'
+import json, pathlib, sys
+owners = [json.loads(p.read_text()) for p in pathlib.Path(sys.argv[1]).glob("*.owner.json")]
+owners = [owner for owner in owners if owner["source_id"] == "override-crash-source"]
+assert len(owners) == 1 and owners[0]["phase"] == "group"
+print(owners[0]["group_pid"])
+PY
+) || fail "overridden-state crash fixture lacks exact invocation group ownership"
+# Entering result.silent consumes its reservation; the terminal reservation
+# remains durable until the blocked invocation completes or crash recovery runs.
+python3 - "$STATE_OVERRIDE/procevent-capture-reservations" "$override_crash_token" <<'PY' \
+  || fail "overridden-state crash fixture lost its remaining terminal reservation"
+import json, pathlib, sys
+records = [json.loads(p.read_text()) for p in pathlib.Path(sys.argv[1]).glob(f".extension-capture-{sys.argv[2]}.*")]
+assert len(records) == 1
+record = records[0]
+assert record["schema"] == "fm-procevent-capture-reservation.v1"
+assert record["operation"] == "result.terminal"
+assert record["source_id"] == "override-crash-source"
+assert record["claim_token"] == sys.argv[2]
+assert record["sequence"] == 1
+PY
 mkdir -p "$H_STATE_OVERRIDE/state/procevent-capture-reservations"
 chmod 0700 "$H_STATE_OVERRIDE/state" "$H_STATE_OVERRIDE/state/procevent-capture-reservations"
 override_crash_decoy="$H_STATE_OVERRIDE/state/procevent-capture-reservations/.extension-capture-$override_crash_token.decoy.json"
@@ -1482,6 +1707,9 @@ wait "$override_crash_start_pid" 2>/dev/null || true
 override_crash_start_pid=
 override_crash_runner_pid=
 FM_HOME="$H_STATE_OVERRIDE" "$PROCEVENT" reconcile >/dev/null
+if kill -0 -"$override_crash_group_pid" 2>/dev/null; then
+  fail "reconcile released the overridden-state claim while its extension group survived"
+fi
 assert_absent "$override_crash_claim" "reconcile retained a dead overridden-state claim"
 override_crash_records=$(find "$STATE_OVERRIDE/procevent-capture-reservations" -type f \
   -name ".extension-capture-$override_crash_token.*" -print -quit)
@@ -1766,6 +1994,138 @@ if first_invocation_owner "$H_INVOCATION_CLEANUP" >/dev/null 2>&1; then
   fail "successful signal cleanup retained stale invocation ownership"
 fi
 pass "signal interruption proves exact invocation-group extinction before host exit"
+
+# The waited public CLI and the durable inner owner are separate failure cuts.
+rm -f "$signal_state/descendant.pid"
+FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" process-event ext-invocation-cleanup source.poll \
+  --source-id invocation-cleanup-source --config-ref timeout \
+  --expect-extension "$cleanup_id" --expect-version "$cleanup_version" \
+  --expect-capability-version "$cleanup_cap" \
+  --expect-package-digest "$cleanup_package" --expect-binding-digest "$cleanup_binding" \
+  > "$TMP_ROOT/invocation-inner-signal.out" 2>&1 &
+signal_cleanup_host_pid=$!
+wait_for_file "$signal_state/descendant.pid" || fail "inner signal fixture did not enter extension code"
+signal_owner=$(wait_for_invocation_owner "$H_INVOCATION_CLEANUP") || fail "inner signal fixture has no owner"
+for _ in $(seq 1 200); do
+  signal_cleanup_group_pid=$(owner_group_pid "$signal_owner" 2>/dev/null || true)
+  [ -z "$signal_cleanup_group_pid" ] || break
+  sleep .01
+done
+[ -n "$signal_cleanup_group_pid" ] || fail "inner signal fixture has no group"
+inner_host=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).host_pid' "$signal_owner")
+kill -TERM "$inner_host" || fail "cannot interrupt recorded inner host"
+inner_rc=0
+wait "$signal_cleanup_host_pid" || inner_rc=$?
+signal_cleanup_host_pid=
+[ "$inner_rc" -ne 0 ] || fail "inner signal failure became public success"
+kill -0 -"$signal_cleanup_group_pid" 2>/dev/null && fail "inner signal left a live group"
+signal_cleanup_group_pid=
+pass "direct inner host cancellation cleans its group and propagates public failure"
+
+# Hold the real lifecycle lock in an invocation, then cancel each public
+# sibling before it acquires that lock.  It must neither wait for release nor
+# mutate the home after the holder completes.
+P_CUSTODY_QUEUED="$PACKAGES/custody-queued"
+make_package "$P_CUSTODY_QUEUED" org.example.custody-queued ext-custody-queued
+for queued_operation in process-event bind retire-binding; do
+  for queued_signal in TERM INT KILL; do
+    queued_name="$queued_operation-$queued_signal"
+    custody_blocker_marker="$TMP_ROOT/custody-$queued_name.blocked"
+    custody_blocker_release="$TMP_ROOT/custody-$queued_name.release"
+    queued_marker="$TMP_ROOT/custody-$queued_name.executed"
+    invoke_cleanup "active-block|$custody_blocker_marker|$custody_blocker_release" "$HOST" \
+      > "$TMP_ROOT/custody-$queued_name.holder.out" 2>&1 &
+    custody_blocker_pid=$!
+    wait_for_file "$custody_blocker_marker" || fail "custody fixture did not acquire the lifecycle lock"
+    case "$queued_operation" in
+      process-event)
+        FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" process-event ext-invocation-cleanup source.poll \
+          --source-id queued-custody-source --config-ref "active-block|$queued_marker|$custody_blocker_release" \
+          --expect-extension "$cleanup_id" --expect-version "$cleanup_version" \
+          --expect-capability-version "$cleanup_cap" \
+          --expect-package-digest "$cleanup_package" --expect-binding-digest "$cleanup_binding" \
+          > "$TMP_ROOT/custody-$queued_name.out" 2>&1 & ;;
+      bind)
+        FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" bind "$P_CUSTODY_QUEUED" --adapter ext-custody-queued \
+          --trust-same-user-code > "$TMP_ROOT/custody-$queued_name.out" 2>&1 & ;;
+      retire-binding)
+        FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" retire-binding org.example.invocation-cleanup \
+          --if-binding-digest "$cleanup_binding_digest" > "$TMP_ROOT/custody-$queued_name.out" 2>&1 & ;;
+    esac
+    custody_caller_pid=$!
+    queued_child=
+    for _ in $(seq 1 200); do
+      queued_child=$(ps -eo pid=,ppid= | awk -v parent="$custody_caller_pid" '$2 == parent {print $1; exit}')
+      [ -z "$queued_child" ] || break
+      sleep .01
+    done
+    [ -n "$queued_child" ] || fail "queued $queued_name did not start its delegate"
+    kill -"$queued_signal" "$custody_caller_pid" || fail "cannot cancel queued $queued_name"
+    queued_rc=0
+    wait "$custody_caller_pid" 2>/dev/null || queued_rc=$?
+    custody_caller_pid=
+    [ "$queued_rc" -ne 0 ] || fail "queued $queued_name cancellation became success"
+    for _ in $(seq 1 200); do
+      kill -0 "$queued_child" 2>/dev/null || break
+      sleep .01
+    done
+    kill -0 "$queued_child" 2>/dev/null && fail "queued $queued_name child survived caller cancellation"
+    touch "$custody_blocker_release"
+    wait "$custody_blocker_pid" || fail "queued cancellation damaged the independent lock holder"
+    custody_blocker_pid=
+    custody_blocker_release=
+    assert_absent "$queued_marker" "cancelled queued invocation executed after lock release"
+    assert_absent "$H_INVOCATION_CLEANUP/config/extensions.d/org.example.custody-queued.json" "cancelled queued binding was published"
+    assert_present "$H_INVOCATION_CLEANUP/config/extensions.d/org.example.invocation-cleanup.json" "cancelled queued retirement removed the binding"
+    pass "queued $queued_name cancellation preserves lock owner and prevents later mutation"
+  done
+done
+
+P_CUSTODY_BIND="$PACKAGES/custody-bind"
+custody_bind_marker="$TMP_ROOT/custody-bind.marker"
+crash_cleanup_release="$TMP_ROOT/custody-bind.release"
+make_package "$P_CUSTODY_BIND" org.example.custody-bind ext-custody-bind \
+  "$(printf 'handshake-block\n%s\n%s' "$custody_bind_marker" "$crash_cleanup_release")"
+FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" bind "$P_CUSTODY_BIND" --adapter ext-custody-bind \
+  --trust-same-user-code > "$TMP_ROOT/custody-bind.out" 2>&1 &
+signal_cleanup_host_pid=$!
+wait_for_file "$custody_bind_marker" || fail "binding custody fixture never entered handshake"
+signal_owner=$(wait_for_invocation_owner "$H_INVOCATION_CLEANUP") || fail "binding custody fixture has no owner"
+signal_cleanup_group_pid=$(owner_group_pid "$signal_owner") || fail "binding custody fixture has no group"
+kill -TERM "$signal_cleanup_host_pid" || fail "cannot cancel public binding"
+bind_cancel_rc=0
+wait "$signal_cleanup_host_pid" || bind_cancel_rc=$?
+signal_cleanup_host_pid=
+[ "$bind_cancel_rc" -ne 0 ] || fail "cancelled binding became success"
+kill -0 -"$signal_cleanup_group_pid" 2>/dev/null && fail "binding exited before its handshake group was gone"
+signal_cleanup_group_pid=
+assert_absent "$H_INVOCATION_CLEANUP/config/extensions.d/org.example.custody-bind.json" "cancelled binding published discovery"
+crash_cleanup_release=
+pass "public binding cancellation waits for handshake cleanup without publication"
+
+inner_crash_marker="$TMP_ROOT/invocation-inner-crash.marker"
+crash_cleanup_release="$TMP_ROOT/invocation-inner-crash.release"
+FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" process-event ext-invocation-cleanup source.poll \
+  --source-id invocation-cleanup-source --config-ref "active-block|$inner_crash_marker|$crash_cleanup_release" \
+  --expect-extension "$cleanup_id" --expect-version "$cleanup_version" \
+  --expect-capability-version "$cleanup_cap" \
+  --expect-package-digest "$cleanup_package" --expect-binding-digest "$cleanup_binding" \
+  > "$TMP_ROOT/invocation-inner-crash.out" 2>&1 &
+crash_cleanup_host_pid=$!
+wait_for_file "$inner_crash_marker" || fail "inner crash fixture did not enter extension code"
+crash_owner=$(wait_for_invocation_owner "$H_INVOCATION_CLEANUP") || fail "inner crash fixture has no owner"
+crash_cleanup_group_pid=$(owner_group_pid "$crash_owner") || fail "inner crash fixture has no group"
+inner_host=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).host_pid' "$crash_owner")
+kill -KILL "$inner_host" || fail "cannot kill recorded inner host"
+inner_rc=0
+wait "$crash_cleanup_host_pid" || inner_rc=$?
+crash_cleanup_host_pid=
+[ "$inner_rc" -ne 0 ] || fail "inner host crash became public success"
+FM_HOME="$H_INVOCATION_CLEANUP" "$HOST" cleanup-invocations --source-id invocation-cleanup-source >/dev/null
+kill -0 -"$crash_cleanup_group_pid" 2>/dev/null && fail "inner host crash recovery retained the group"
+crash_cleanup_group_pid=
+crash_cleanup_release=
+pass "inner host crash propagates failure and retains exact recoverable ownership"
 
 crash_marker="$TMP_ROOT/invocation-crash.marker"
 crash_cleanup_release="$TMP_ROOT/invocation-crash.release"

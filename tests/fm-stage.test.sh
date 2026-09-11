@@ -563,6 +563,44 @@ branch_sync:
   expect_code 0 "$rc" "repeated CI-ready accepts a new valid evidence index: $out"
   [ "$(meta_get engineering stage_evidence)" != "$pin" ] || fail "CI-ready retained obsolete evidence identity"
   [ "$(meta_get engineering stage_evidence)" = "$(sha256sum < "$DATA/engineering/engineering-evidence.json" | cut -d' ' -f1)" ] || fail "CI-ready did not persist exact evidence bytes"
+  local saved_context saved_meta saved_observer saved_status retry_case
+  saved_context=$(cat "$desc")
+  saved_meta=$(cat "$STATE/engineering.meta")
+  saved_observer=$(cat "$STATE/engineering.nm-observe")
+  saved_status=$(cat "$STATE/engineering.status")
+  for retry_case in changed removed; do
+    if [ "$retry_case" = changed ]; then
+      printf '%s' "$saved_context" | jq '.engineering.generation="replacement"' > "$desc"
+    else
+      printf '{}\n' > "$desc"
+    fi
+    printf 'needs-decision [key=retry-hold]: wait\n' >> "$STATE/engineering.status"
+    out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "active run with $retry_case context and hold refuses retry: $out"
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "held retry replaced stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "held retry replaced run custody"
+    printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+    out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "active run with $retry_case context refuses retry without hold: $out"
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "refused retry replaced stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "refused retry replaced run custody"
+  done
+  local active_status
+  active_status=$FM_FAKE_AXI_STATUS
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed)
+  printf 'needs-decision [key=retry-hold]: wait\n' >> "$STATE/engineering.status"
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "released run with open hold preserves the previous attempt: $out"
+  [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "released held retry replaced bindings"
+  printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+  FM_FAKE_NM_VERSION=1.0.0
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  FM_FAKE_NM_VERSION=
+  expect_code 1 "$rc" "unqualified retry preserves the previous attempt: $out"
+  [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "preflight refusal replaced stage bindings"
+  [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "preflight refusal replaced observer bindings"
+  printf '%s\n' "$saved_context" > "$desc"
+  FM_FAKE_AXI_STATUS=$active_status
   local valid_status saved_attempt
   valid_status=$FM_FAKE_AXI_STATUS
   for mutation in foreign-id foreign-branch terminal wrong-head; do

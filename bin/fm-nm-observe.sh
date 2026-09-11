@@ -597,6 +597,10 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
   [ "$ver" != null ] || ver=
   [ "$build" != null ] || build=
   [ "$(profile_tool_field "$json" no-mistakes state)" = QUALIFIED ] || ready=false
+  if [ "$ready" != true ] && [ "$retry" -eq 1 ] && [ -n "$attempt" ]; then
+    printf 'NM_OBSERVE: PREFLIGHT_REFUSED task=%s attempt=%s profile=unqualified (previous attempt preserved)\n' "$id" "$attempt"
+    return 1
+  fi
   epoch=$(daemon_epoch "$nm_home")
   seq=$(( ${seq:-0} + 1 ))
   attempt=$(attempt_id)

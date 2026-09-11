@@ -173,6 +173,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 RETRY=0
+REPLACING_ATTEMPT=0
 RUN_ARG=
 PR_ARG=
 EXPECT_NM_HOME=
@@ -493,7 +494,7 @@ engineering_result() {
 # --- transitions ------------------------------------------------------------
 
 do_committed() {
-  local current recorded_head
+  local current recorded_head output holds
   require_ship committed
   engineering_context committed
   require_worktree committed
@@ -513,6 +514,19 @@ do_committed() {
       fi
       ;;
   esac
+  if [ "$RETRY" -eq 1 ] && [ "$MODE" = no-mistakes ] && [ -n "$current" ]; then
+    if [ -n "$(obs run_id)" ]; then
+      output=$(bound_run_status) || refuse committed NOT_ADMITTED 'cannot verify custody of the bound run'
+      if fm_nm_run_is_active "$output" || [ "$(fm_nm_branch_sync_state "$output")" = pipeline_owned ]; then
+        refuse committed RUN_ACTIVE 'the bound run retains custody; existing stage bindings preserved'
+      fi
+    fi
+    holds=$(open_hold_keys)
+    [ -z "$holds" ] || refuse committed HOLD_APPEARED "hold:$holds prevents retry admission; existing stage bindings preserved"
+    REPLACING_ATTEMPT=1
+    admit_validation
+    return 0
+  fi
   if [ -z "$current" ] || [ "$(meta stage_context)" != "$FM_WC_ENGINEERING_DIGEST" ] || [ "$recorded_head" != "$HEAD" ] || [ "$(meta stage_branch)" != "$BRANCH" ] \
       || { [ "$RETRY" -eq 1 ] && [ "$current" != candidate-committed ] && [ "$current" != validation-pending ]; }; then
     issue candidate-committed worker "" "$BRANCH" "$HEAD" "$TREE"
@@ -528,6 +542,7 @@ do_committed() {
 
 pending() {  # <reason>
   local reason=$1
+  [ "$REPLACING_ATTEMPT" -eq 0 ] || refuse validation-admitted NOT_ADMITTED "$reason; existing stage bindings preserved"
   if [ "$(meta stage)" = validation-pending ] && [ "$(meta stage_head)" = "$HEAD" ] && [ "$(meta stage_reason)" = "$reason" ]; then
     unchanged validation-pending
   else
@@ -566,6 +581,9 @@ admit_validation() {
   fi
   holds=$(open_hold_keys)
   [ -z "$holds" ] || refuse validation-admitted HOLD_APPEARED "hold:$holds opened during admission; re-run once it is resolved"
+  if [ "$REPLACING_ATTEMPT" -eq 1 ]; then
+    issue candidate-committed worker "" "$BRANCH" "$HEAD" "$TREE"
+  fi
   if [ "$(meta stage)" = validation-admitted ] && [ "$(meta stage_attempt)" = "$attempt" ] && [ "$(meta stage_head)" = "$HEAD" ]; then
     unchanged validation-admitted
   else

@@ -1517,6 +1517,50 @@ for control_kind in tab newline; do
   assert_present "$state_path_decoy" "control-byte state root touched unrelated reservation state"
 done
 pass "control-byte state roots cannot serialize claims or reservations"
+handshake_home="$HOMES/override-handshake"; new_home "$handshake_home"
+handshake_state="$TMP_ROOT/handshake-state"
+override_crash_marker="$TMP_ROOT/override-handshake.marker"
+override_crash_release="$TMP_ROOT/override-handshake.release"
+handshake_package="$PACKAGES/override-handshake"
+make_package "$handshake_package" org.example.handshake ext-handshake "$(printf 'handshake-block\n%s\n%s' "$override_crash_marker" "$override_crash_release")"
+touch "$override_crash_marker"
+bind_package "$handshake_home" "$handshake_package" ext-handshake >/dev/null
+FM_HOME="$handshake_home" FM_STATE_OVERRIDE="$handshake_state" \
+  "$PROCEVENT" register-extension ext-handshake override-handshake --config-ref no-result >/dev/null
+rm "$override_crash_marker"
+FM_HOME="$handshake_home" FM_STATE_OVERRIDE="$handshake_state" \
+  "$PROCEVENT" start override-handshake > "$TMP_ROOT/override-handshake-start.out" 2>&1 &
+override_crash_start_pid=$!
+wait_for_file "$override_crash_marker" || fail "overridden-state runner never entered handshake"
+handshake_claim="$TMP_ROOT/claims/override-handshake.claim"
+override_crash_runner_pid=$(sed -n '2p' "$handshake_claim")
+handshake_owner=$(find "$handshake_state/extension-invocations" -name '*.owner.json' -print)
+crash_cleanup_group_pid=$(python3 - "$handshake_owner" <<'PYOWNER'
+import json, sys
+owner = json.load(open(sys.argv[1]))
+assert owner["operation"] == "handshake" and owner["phase"] == "group"
+print(owner["group_pid"])
+PYOWNER
+) || fail "handshake lacks exact recorded group"
+kill -KILL -"$override_crash_runner_pid" || fail "could not kill isolated handshake runner"
+wait "$override_crash_start_pid" 2>/dev/null || true
+override_crash_start_pid=
+override_crash_runner_pid=
+kill -0 -"$crash_cleanup_group_pid" || fail "handshake did not survive runner crash"
+ln "$handshake_owner" "$TMP_ROOT/handshake-owner-link"
+FM_HOME="$handshake_home" "$PROCEVENT" reconcile > "$TMP_ROOT/handshake-refusal.out" 2>&1 || true
+assert_present "$handshake_claim" "unsafe invocation owner did not retain claim"
+kill -0 -"$crash_cleanup_group_pid" || fail "unsafe owner permitted group signaling"
+rm "$TMP_ROOT/handshake-owner-link"
+FM_HOME="$handshake_home" "$PROCEVENT" reconcile >/dev/null
+if kill -0 -"$crash_cleanup_group_pid" 2>/dev/null; then
+  printf 'handshake survived; claim present=%s\n' "$(test -e "$handshake_claim" && echo yes || echo no)"
+  fail "reconcile released the overridden-state claim while its handshake group survived"
+fi
+crash_cleanup_group_pid=
+assert_absent "$handshake_claim" "cleaned handshake retained claim"
+assert_absent "$handshake_owner" "cleaned handshake retained invocation owner"
+pass "overridden-state handshake crash retains claims on refusal and cleans exact groups"
 override_crash_marker="$TMP_ROOT/override-crash.marker"
 override_crash_release="$TMP_ROOT/override-crash.release"
 FM_HOME="$H_STATE_OVERRIDE" FM_STATE_OVERRIDE="$STATE_OVERRIDE" \

@@ -2606,7 +2606,15 @@ async function cmdHistoricalCleanup(args) {
   const outcome = { status: "refused", effects: [], reason: null };
   let journal = null;
   const retain = async (entry) => {
-    await journal.write(`${JSON.stringify(entry)}\n`);
+    const bytes = Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesWritten } = await journal.write(bytes, offset, bytes.length - offset, null);
+      if (!Number.isInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > bytes.length - offset) {
+        fail("historical-journal-failed", "journal write made no valid progress");
+      }
+      offset += bytesWritten;
+    }
     await journal.sync();
   };
   try {

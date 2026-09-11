@@ -16,6 +16,8 @@ HOST, ROOT = Path(sys.argv[1]), Path(sys.argv[2])
 if sys.platform != 'linux':
     print('SKIP: historical recovery requires Linux proc identities')
     sys.exit(0)
+import resource
+
 MODE = sys.argv[3] if len(sys.argv) > 3 else 'graceful'
 ROOT = ROOT / MODE
 ROOT.mkdir()
@@ -72,7 +74,7 @@ import os,signal,time
 from pathlib import Path
 def stop(*args):
  Path({str(terminated)!r}).write_text('TERM')
- if {MODE!r} == 'stubborn': return
+ if {MODE!r} in ['stubborn', 'journal-escalation']: return
  if {MODE!r} == 'root-churn':
   Path({str(fixture)!r}).mkdir(exist_ok=True)
   return
@@ -196,6 +198,52 @@ try:
         assert json.loads(denied.stdout)['reason'] == 'historical-inspection-mismatch'
         assert child.poll() is None and not terminated.exists()
         print('PASS boot/namespace/member identity, protected owner, live/malformed claims, roots, predicates and unsafe evidence refuse without signals')
+    if MODE.startswith('journal-'):
+        # Impose a real kernel file-size limit, without replacing any file API.
+        # Size complete public journal frames, then allow only a 100-byte prefix
+        # of the next frame. Field ordering does not affect the encoded length.
+        def frame(value):
+            return (json.dumps(value, separators=(',', ':'), ensure_ascii=False) + '\n').encode()
+
+        prepared = dict(approved, status='prepared', journal=str(record) + '.retirement.jsonl')
+        term_intent = dict(status='signal-intent', signal='SIGTERM', members=approved['before'])
+        term_sent = dict(status='signal-sent', signal='SIGTERM')
+        complete = []
+        if MODE != 'journal-prepared':
+            complete.append(prepared)
+        if MODE == 'journal-escalation':
+            complete.extend([term_intent, term_sent])
+        limit = sum(len(frame(row)) for row in complete) + 100
+
+        def bound_journal_file():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+        completed = subprocess.run([NODE, str(HOST), 'cleanup-invocations', '--historical',
+                                    str(record), '--retrospective', '--apply', approved['evidence_digest']],
+                                   env=ENV, capture_output=True, text=True, timeout=10,
+                                   preexec_fn=bound_journal_file)
+        raw = Path(str(record) + '.retirement.jsonl').read_bytes()
+        lines = raw.splitlines(keepends=True)
+        valid = [json.loads(line) for line in lines if line.endswith(b'\n')]
+        # Ensure this exercised the intended short-write boundary, rather than
+        # an unrelated earlier refusal or a fixture setup failure.
+        assert len(raw) == limit and len(lines[-1]) == 100 and not raw.endswith(b'\n')
+        assert [row['status'] for row in valid] == [row['status'] for row in complete]
+        receipt = json.loads(completed.stdout)
+        evidence = dict(mode=MODE, limit=limit, journal_bytes=len(raw), journal=raw.decode(),
+                        complete_records=valid, receipt=receipt, term_observed=terminated.exists(),
+                        leader_alive=child.poll() is None, member_alive=Path('/proc', str(member)).exists())
+        write(ROOT / 'short-write-result.json', evidence)
+        print(json.dumps(evidence), flush=True)
+        assert completed.returncode != 0 and receipt['status'] != 'completed', receipt
+        if MODE == 'journal-escalation':
+            assert terminated.exists() and Path('/proc', str(member)).exists(), 'KILL sent without complete durable escalation intent'
+            assert receipt['status'] == 'partial' and receipt['effects'] == ['SIGTERM'], receipt
+        else:
+            assert not terminated.exists() and child.poll() is None, 'TERM sent without complete durable prepared custody/intent'
+            assert receipt['effects'] == [], receipt
+        print('PASS ' + MODE + ' short write preserves journal and prevents the next signal')
+        sys.exit(0)
     completed = call(record, '--retrospective', '--apply', approved['evidence_digest'])
     receipt = json.loads(completed.stdout)
     journal = [json.loads(line) for line in Path(str(record) + '.retirement.jsonl').read_text().splitlines()]

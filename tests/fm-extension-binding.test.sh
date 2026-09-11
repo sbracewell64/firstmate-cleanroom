@@ -139,7 +139,7 @@ trap extension_test_cleanup EXIT
 trap 'extension_test_cleanup; exit 130' INT
 trap 'extension_test_cleanup; exit 143' TERM
 if [ "$extension_segment" = lifecycle-historical-cleanup ] || [ "$extension_segment" = all ]; then
-  for historical_case in graceful stubborn root-churn member-churn; do
+  for historical_case in graceful stubborn root-churn member-churn journal-prepared journal-intent journal-escalation; do
     python3 "$ROOT/tests/fixtures/extension-historical-cleanup.py" "$HOST" "$TMP_ROOT" "$historical_case" || fail "historical invocation cleanup regression: $historical_case"
   done
   pass "historical invocation cleanup preserves custody and verifies extinction"

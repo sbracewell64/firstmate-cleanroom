@@ -114,14 +114,15 @@ A tracked static core launch barrier publishes one exact host-created process gr
 A timeout, output-bound violation, failed response, host interruption, or successful parent that leaves that group live sends `TERM`, escalates to `KILL`, and rejects the invocation until that exact group is proved gone.
 If the host dies first, its private identity-bound cleanup record keeps source reconciliation, home cleanup, and binding retirement from releasing ownership until a later core invocation proves that exact group extinct; an uncertain or reused live identity is retained and never signalled.
 Extension children must remain foreground members of their invocation group and be owned and reaped by the live entrypoint. Starting another session or process group, changing process groups, double-forking, reparenting, or surviving the entrypoint response violates this protocol contract.
-Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee. The host never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group.
+Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee.
+Ordinary invocation cleanup never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group; the explicit historical recovery path below has a separate evidence contract.
 Extension stderr and failure diagnostics are never copied into a wake or authority-bearing record.
 
 ### Explicit historical invocation recovery
 
 Ordinary cleanup requires the original private invocation records and never adopts a process found by scanning argv.
-When those records were lost, the existing lifecycle owner can inspect a finite retrospective evidence file with `fm-extension.mjs cleanup-invocations --historical <file>`.
-The command's header owns the exact evidence fields and inspect/effect options.
+When those records were lost, the existing lifecycle owner supports explicit historical recovery from a finite retrospective evidence file.
+The [`fm-extension.mjs` command header](../bin/fm-extension.mjs) owns the exact evidence fields and inspect/effect options, including retrospective authorization for inspecting a live subject.
 An explicit existing recovery authorization and seven established custody predicates are required; unknown ownership or potentially unique process recovery state remains a refusal.
 The operator supplies the current protected-owner inventory and independently reviewed evidence, then retains the read-only inspection before the exact digest-bound effect.
 This does not recreate original binding/request provenance or broaden routine source reconciliation.
@@ -129,6 +130,7 @@ This does not recreate original binding/request provenance or broaden routine so
 The Linux-only path revalidates boot, namespaces, exact member identities, current invocation claims, protected owners and the absent historical root before TERM and before any KILL escalation.
 A changed member set or recreated root after TERM produces a partial outcome and prevents escalation.
 The private journal records prepared custody, signal intent, sent signals and the final outcome; it is never overwritten and no associated evidence or worktree is removed.
+Each journal entry must finish writing every encoded byte before synchronization returns; short writes continue over the remainder, while invalid progress or write/sync failure prevents the next signal or escalation.
 Only disappearance of every exact member and absence of any replacement group member proves extinction; zombies remain unresolved.
 A process-table read followed by group signalling is not an atomic custody transfer, and trusted same-user code must continue to obey the foreground group contract.
 The isolated `lifecycle-historical-cleanup` segment of `tests/fm-extension-binding.test.sh` exercises the public cleanup command with real fixture-owned launch barriers, including graceful termination, escalation, refusal and post-TERM churn.

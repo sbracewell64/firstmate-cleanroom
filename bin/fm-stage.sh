@@ -557,6 +557,9 @@ admit_validation() {
   holds=$(open_hold_keys)
   [ -z "$holds" ] || { pending "hold:$holds"; return 0; }
   set -- launch "$ID" --entrypoint stage
+  if [ "$REPLACING_ATTEMPT" -eq 1 ]; then
+    set -- "$@" --expect-head "$HEAD" --expect-tree "$TREE" --expect-branch "$BRANCH"
+  fi
   [ "$RETRY" -eq 0 ] || set -- "$@" --retry
   [ -z "$EXPECT_NM_HOME" ] || set -- "$@" --expect-nm-home "$EXPECT_NM_HOME"
   [ -z "$EXPECT_PATH0" ] || set -- "$@" --expect-path0 "$EXPECT_PATH0"
@@ -565,6 +568,8 @@ admit_validation() {
     0) ;;
     1)
       case "$OBS_OUT" in
+        *STALE_CANDIDATE*) refuse validation-admitted STALE_CANDIDATE "$OBS_OUT" ;;
+        *HOLD_APPEARED*) refuse validation-admitted HOLD_APPEARED "$OBS_OUT" ;;
         *PREFLIGHT_REFUSED*) pending "capacity:$(printf '%s' "$OBS_OUT" | grep -o 'PREFLIGHT_REFUSED.*' | head -1)"; return 0 ;;
         *RUN_BOUND*) refuse validation-admitted RUN_ACTIVE "an active run is already bound to this task ($OBS_OUT); continue that run and record it with \`$SELF_CMD running\`" ;;
         *) refuse validation-admitted NOT_ADMITTED "$OBS_OUT" ;;
@@ -573,14 +578,16 @@ admit_validation() {
   esac
   attempt=$(obs attempt_id)
   [ -n "$attempt" ] || refuse validation-admitted NOT_ADMITTED "the observer accepted the launch but recorded no attempt id"
-  # Revalidate immediately before issuing: the head, the tree, and the fold.
-  head2=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
-  tree2=$(git -C "$WT" rev-parse 'HEAD^{tree}' 2>/dev/null || true)
-  if [ "$head2" != "$HEAD" ] || [ "$tree2" != "$TREE" ] || worktree_dirty; then
-    refuse validation-admitted STALE_CANDIDATE "the candidate changed during admission (recorded $(short "$HEAD"), now $(short "$head2")); commit and re-run"
+  if [ "$REPLACING_ATTEMPT" -eq 0 ]; then
+    # Revalidate immediately before issuing: the head, the tree, and the fold.
+    head2=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
+    tree2=$(git -C "$WT" rev-parse 'HEAD^{tree}' 2>/dev/null || true)
+    if [ "$head2" != "$HEAD" ] || [ "$tree2" != "$TREE" ] || worktree_dirty; then
+      refuse validation-admitted STALE_CANDIDATE "the candidate changed during admission (recorded $(short "$HEAD"), now $(short "$head2")); commit and re-run"
+    fi
+    holds=$(open_hold_keys)
+    [ -z "$holds" ] || refuse validation-admitted HOLD_APPEARED "hold:$holds opened during admission; re-run once it is resolved"
   fi
-  holds=$(open_hold_keys)
-  [ -z "$holds" ] || refuse validation-admitted HOLD_APPEARED "hold:$holds opened during admission; re-run once it is resolved"
   if [ "$REPLACING_ATTEMPT" -eq 1 ]; then
     issue candidate-committed worker "" "$BRANCH" "$HEAD" "$TREE"
   fi

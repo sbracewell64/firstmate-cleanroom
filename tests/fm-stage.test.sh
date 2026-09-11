@@ -43,7 +43,12 @@ cat > "$FAKEBIN/no-mistakes" <<'SH'
 set -u
 printf '%s\n' "$*" >> "${FM_FAKE_NM_LOG:?}"
 case "${1:-}" in
-  --version) printf 'no-mistakes version v%s (0af0be6) 2026-08-31T14:04:25Z\n' "${FM_FAKE_NM_VERSION:-1.61.0}"; exit 0 ;;
+  --version)
+    case "${FM_FAKE_PREFLIGHT_EFFECT:-}" in
+      hold) printf 'needs-decision [key=late-retry]: opened during preflight\n' >> "$FM_STATE_OVERRIDE/engineering.status" ;;
+      head) git -C "$FM_FAKE_PREFLIGHT_WT" commit -q --allow-empty -m 'head changed during preflight' ;;
+    esac
+    printf 'no-mistakes version v%s (0af0be6) 2026-08-31T14:04:25Z\n' "${FM_FAKE_NM_VERSION:-1.61.0}"; exit 0 ;;
   axi)
     shift
     case "${1:-}" in
@@ -599,6 +604,23 @@ branch_sync:
   expect_code 1 "$rc" "unqualified retry preserves the previous attempt: $out"
   [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "preflight refusal replaced stage bindings"
   [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "preflight refusal replaced observer bindings"
+  local late_case
+  for late_case in hold head; do
+    out=$(FM_FAKE_PREFLIGHT_EFFECT="$late_case" FM_FAKE_PREFLIGHT_WT="$wt" "$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "late $late_case refuses released retry: $out"
+    case "$late_case" in
+      hold)
+        assert_contains "$out" 'HOLD_APPEARED' "late hold was not checked at admission"
+        assert_grep 'late-retry' "$STATE/engineering.status" "preflight did not inject the late hold" ;;
+      head)
+        assert_contains "$out" 'STALE_CANDIDATE' "late head was not checked at admission"
+        [ "$(git -C "$wt" rev-parse HEAD)" != "$head" ] || fail "preflight did not move the candidate" ;;
+    esac
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "late refusal changed stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "late refusal changed observer bindings"
+    printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+    git -C "$wt" reset -q --hard "$head"
+  done
   printf '%s\n' "$saved_context" > "$desc"
   FM_FAKE_AXI_STATUS=$active_status
   local valid_status saved_attempt
@@ -633,6 +655,9 @@ branch_sync:
   expect_code 0 "$rc" "new attempt can remove engineering context: $out"
   [ -z "$(meta_get engineering stage_context)" ] || fail "new attempt retained old context"
   [ -z "$(meta_get engineering stage_evidence)" ] || fail "new attempt retained old evidence"
+  [ "$(meta_get engineering stage_attempt)" = "$(obs_get engineering attempt_id)" ] || fail "successful retry published different attempts"
+  [ "$(meta_get engineering stage_run)" = "$(obs_get engineering run_id)" ] || fail "successful retry published different run bindings"
+  [ "$(obs_get engineering run_id)" = '' ] || fail "successful retry retained the predecessor run"
   out=$("$STAGE" engineering show 2>&1); rc=$?
   expect_code 0 "$rc" "new empty context resumes: $out"
   FM_FAKE_AXI_STATUS=$(run_toon 01ENGNEXT fm/engineering reviewing "$head")

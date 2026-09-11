@@ -47,7 +47,7 @@ case "${1:-}" in
   axi)
     shift
     case "${1:-}" in
-      status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit 0 ;;
+      status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_STATUS_EXIT:-0}" ;;
       logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit 0 ;;
     esac ;;
   runs) printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"; exit 0 ;;
@@ -603,3 +603,77 @@ branch_sync:
   pass "engineering stage: rebase custody, exact evidence refresh, context replacement, and residuals"
 }
 test_engineering_stage_evidence_and_residuals
+
+
+test_isolated_pipeline_successor() {
+  local wt lane admitted head out rc valid_status mutation saved_attempt before
+  wt="$TMP_ROOT/wt-isolated"
+  lane="$TMP_ROOT/pipeline-isolated"
+  make_worktree "$wt" fm/isolated
+  admitted=$(git -C "$wt" rev-parse HEAD)
+  make_task isolated no-mistakes "$wt"
+  cp "$DATA/engineering/valid-evidence.json" "$DATA/isolated/engineering-evidence.json"
+  jq -n --arg path "$DATA/engineering/skill.md" '{engineering:{generation:"g1",triggers:["test-change"],skills:[{id:"tdd",path:$path,release:"r1",sha256:"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",role:"worker",stage:"test",trigger:"test-change"}],verification:[{id:"caller",skill:"tdd",scope:"composition",public_seam:"fm-brief",inputs:"declared source",environment:"controlled and inherited",oracle:"literal expected bytes",allowed_effects:"scratch only",source_identity:"r1",caller_identity:"fixture",command:"receiver-test",negative:"stale source refuses",owner:"crewmate-boundary-repair",next_gate:"ci-ready"}]}}' > "$DATA/isolated/work-context.json"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" isolated committed 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated candidate admits: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated reviewing "$admitted")
+  out=$("$STAGE" isolated running --run 01ISOLATED 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated candidate binds: $out"
+  git clone -q --no-local "$wt" "$lane" || fail "isolated pipeline clone failed"
+  git -C "$lane" checkout -q -b current-main HEAD^
+  printf 'pipeline base advance\n' > "$lane/main.txt"
+  git -C "$lane" add main.txt
+  git -C "$lane" commit -q -m 'advance pipeline base'
+  git -C "$lane" checkout -q fm/isolated
+  git -C "$lane" rebase current-main >/dev/null 2>&1 || fail "isolated pipeline rebase failed"
+  head=$(git -C "$lane" rev-parse HEAD)
+  git -C "$lane" merge-base --is-ancestor "$admitted" "$head" && fail "pipeline history was not rewritten"
+  git -C "$wt" cat-file -e "$head" 2>/dev/null && fail "successor unexpectedly exists in worker object store"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$admitted" ] || fail "worker moved from admitted candidate"
+  jq --arg head "$head" '.task="isolated" | .run="01ISOLATED" | .head=$head' "$DATA/isolated/engineering-evidence.json" > "$DATA/isolated/index.tmp"
+  mv "$DATA/isolated/index.tmp" "$DATA/isolated/engineering-evidence.json"
+  valid_status="$(run_toon 01ISOLATED fm/isolated ci "$head")
+branch_sync:
+  state: pipeline_owned"
+  FM_FAKE_AXI_STATUS=$valid_status
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated successor evidence admits without a worker-local object: $out"
+  before=$(meta_get isolated stage_evidence)
+  for mutation in foreign-id foreign-branch stale-run wrong-head short-head malformed-head missing-head terminal released failed-read; do
+    case "$mutation" in
+      foreign-id|stale-run) FM_FAKE_AXI_STATUS=$(run_toon 01OTHER fm/isolated ci "$head") ;;
+      foreign-branch) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/foreign ci "$head") ;;
+      wrong-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "$admitted") ;;
+      short-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "${head:0:8}") ;;
+      malformed-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci HEAD) ;;
+      missing-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci '') ;;
+      terminal) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated completed "$head" checks-passed) ;;
+      released|failed-read) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "$head") ;;
+    esac
+    if [ "$mutation" != released ]; then
+      FM_FAKE_AXI_STATUS="$FM_FAKE_AXI_STATUS
+branch_sync:
+  state: pipeline_owned"
+    fi
+    export FM_FAKE_STATUS_EXIT=0
+    [ "$mutation" != failed-read ] || FM_FAKE_STATUS_EXIT=1
+    out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+    expect_code 1 "$rc" "isolated successor refuses $mutation: $out"
+    [ "$(meta_get isolated stage_evidence)" = "$before" ] || fail "refusal changed evidence binding"
+  done
+  FM_FAKE_STATUS_EXIT=0
+  FM_FAKE_AXI_STATUS=$valid_status
+  saved_attempt=$(obs_get isolated attempt_id)
+  printf 'attempt_id=stale\n' >> "$STATE/isolated.nm-observe"
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 1 "$rc" "isolated successor refuses stale attempt: $out"
+  printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/isolated.nm-observe"
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "valid isolated successor remains admissible: $out"
+  git -C "$wt" cat-file -e "$head" 2>/dev/null && fail "admission imported the pipeline successor"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$admitted" ] || fail "admission moved the worker"
+  pass "isolated pipeline rebase admits exact current-run evidence without local objects and refuses invalid attribution"
+}
+test_isolated_pipeline_successor

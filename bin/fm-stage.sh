@@ -468,9 +468,15 @@ engineering_result() {
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run mismatch'
   run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
-  actual=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
-    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
-  { git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" \
+  if fm_nm_run_is_pipeline_owned_active "$output"; then
+    [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] \
+      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head must be an exact commit identity'
+    actual=$run_head
+  else
+    actual=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
+      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
+  fi
+  { git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" 2>/dev/null \
     || fm_nm_run_is_pipeline_owned_active "$output"; } \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \

@@ -814,12 +814,19 @@ EOF
   [ "$(meta_get terminal stage_head)" = "$submitted" ] || fail 'admission replaced original candidate'
   [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
   [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
-  for mutation in absent false quoted-boolean duplicate duplicate-root malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
+  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean duplicate duplicate-root malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
     printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
     printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
     FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
     case "$mutation" in
       absent) FM_FAKE_SYNC='' ;;
+      scalar-successor) FM_FAKE_SYNC=${proof/  successor:/  successor: false} ;;
+      scalar-pipeline) FM_FAKE_SYNC=${proof/  pipeline:/  pipeline: unavailable} ;;
+      scalar-local) FM_FAKE_SYNC=${proof/  local:/  local: false} ;;
+      scalar-target) FM_FAKE_SYNC=${proof/  target:/  target: unavailable} ;;
+      scalar-remote) FM_FAKE_SYNC=${proof/  remote:/  remote: false} ;;
+      inline-object) FM_FAKE_SYNC=${proof/  successor:/  successor: \{\}} ;;
+      inline-array) FM_FAKE_SYNC=${proof/  successor:/  successor: []} ;;
       quoted-boolean) FM_FAKE_SYNC=${proof/verified: true/verified: \"true\"} ;;
       duplicate-root) FM_FAKE_SYNC="$proof
 branch_sync:

@@ -140,7 +140,8 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 
 # Read one scalar from the documented two-level sync object. Reject duplicate
 # roots, sections, or requested fields instead of combining ambiguous proof
-# fragments. This is a wire reader, not a second qualification algorithm.
+# fragments. A consumed section must be an empty-valued object header.
+# This is a wire reader, not a second qualification algorithm.
 fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
   local raw
   raw=$(printf '%s\n' "$1" | awk -v section="$2" -v key="$3" '
@@ -150,6 +151,7 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
       line=substr($0,3); name=line; sub(/:.*/,"",name)
       value=line; sub(/^[^:]*:[ ]*/,"",value)
       group=name; groups[name]++
+      if (name == section && value != "") invalid_section=1
       if (section == "" && name == key) { count++; found=value }
       next
     }
@@ -159,7 +161,7 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
       if (name == key) { count++; found=value }
     }
     END {
-      if (roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
+      if (invalid_section || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
       print found
     }') || return 1
   if [ "${4:-}" = raw ]; then printf '%s' "$raw"; else fm_nm_strip_quotes "$raw"; fi

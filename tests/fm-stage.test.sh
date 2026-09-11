@@ -520,7 +520,20 @@ EOF
   FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering reviewing "$head")
   out=$("$STAGE" engineering running --run 01ENG 2>&1); rc=$?
   expect_code 0 "$rc" "run binding survives unchanged engineering contract: $out"
-  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed https://github.com/o/r/pull/8)
+  git -C "$wt" checkout -q -b newer-main HEAD^
+  printf 'new main\n' > "$wt/main.txt"
+  git -C "$wt" add main.txt
+  git -C "$wt" commit -q -m 'advance main'
+  git -C "$wt" checkout -q fm/engineering
+  git -C "$wt" rebase newer-main >/dev/null 2>&1 || fail "normal current-base rebase failed"
+  git -C "$wt" merge-base --is-ancestor "$head" HEAD && fail "fixture did not rewrite admitted history"
+  head=$(git -C "$wt" rev-parse HEAD)
+  FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering ci "$head")
+branch_sync:
+  state: pipeline_owned"
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$("$STAGE" engineering running --run 01ENG 2>&1); rc=$?
+  expect_code 0 "$rc" "same-run normal rebase remains current: $out"
   out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
   expect_code 1 "$rc" "green run without required behavioral evidence refuses"
   assert_contains "$out" 'engineering-evidence' "CI-ready names missing evidence"
@@ -544,10 +557,49 @@ EOF
   printf 'receiver-test: expected stale source refusal and matching bytes\n' > "$DATA/engineering/test.log"
   out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
   expect_code 0 "$rc" "bound independent artifacts allow CI-ready: $out"
+  pin=$(meta_get engineering stage_evidence)
+  jq '.receipt="refreshed"' "$DATA/engineering/engineering-evidence.json" > "$desc.tmp" && mv "$desc.tmp" "$DATA/engineering/engineering-evidence.json"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 0 "$rc" "repeated CI-ready accepts a new valid evidence index: $out"
+  [ "$(meta_get engineering stage_evidence)" != "$pin" ] || fail "CI-ready retained obsolete evidence identity"
+  [ "$(meta_get engineering stage_evidence)" = "$(sha256sum < "$DATA/engineering/engineering-evidence.json" | cut -d' ' -f1)" ] || fail "CI-ready did not persist exact evidence bytes"
+  local valid_status saved_attempt
+  valid_status=$FM_FAKE_AXI_STATUS
+  for mutation in foreign-id foreign-branch terminal wrong-head; do
+    case "$mutation" in
+      foreign-id) FM_FAKE_AXI_STATUS="$(run_toon 01FOREIGN fm/engineering ci "$head")" ;;
+      foreign-branch) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/foreign ci "$head")" ;;
+      terminal) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering completed "$head" checks-passed)" ;;
+      wrong-head) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering ci "$(git -C "$wt" rev-parse HEAD^)")" ;;
+    esac
+    FM_FAKE_AXI_STATUS="$FM_FAKE_AXI_STATUS
+branch_sync:
+  state: pipeline_owned"
+    out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+    expect_code 1 "$rc" "rebased candidate refuses $mutation attribution: $out"
+  done
+  FM_FAKE_AXI_STATUS=$valid_status
+  saved_attempt=$(obs_get engineering attempt_id)
+  printf 'attempt_id=stale-attempt\n' >> "$STATE/engineering.nm-observe"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "rebased candidate refuses stale attempt"
+  printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/engineering.nm-observe"
+  printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n8\n' > "$STATE/engineering.pr-poll-merge-notified"
   out=$("$STAGE" engineering activated 2>&1); rc=$?
   expect_code 0 "$rc" "landed source can record its existing readback: $out"
   assert_grep 'runtime-pin-adoption-gap' "$STATE/engineering.parent-currentness" "completion lost the actual consumer owner"
   assert_grep 'consumer' "$STATE/engineering.parent-currentness" "completion lost the open consumer obligation"
-  pass "engineering stage: pins resume context, requires bound evidence, carries consumer residual"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed)
+  printf '{}\n' > "$desc"
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "new attempt can remove engineering context: $out"
+  [ -z "$(meta_get engineering stage_context)" ] || fail "new attempt retained old context"
+  [ -z "$(meta_get engineering stage_evidence)" ] || fail "new attempt retained old evidence"
+  out=$("$STAGE" engineering show 2>&1); rc=$?
+  expect_code 0 "$rc" "new empty context resumes: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENGNEXT fm/engineering reviewing "$head")
+  out=$("$STAGE" engineering running --run 01ENGNEXT 2>&1); rc=$?
+  expect_code 0 "$rc" "new empty context binds the next run: $out"
+  pass "engineering stage: rebase custody, exact evidence refresh, context replacement, and residuals"
 }
 test_engineering_stage_evidence_and_residuals

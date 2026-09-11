@@ -166,3 +166,14 @@ OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$
 expect_code 0 "$STATUS" "current source and generated brief dispatch: $OUT"
 assert_present "$HOME_DIR/state/$ID.meta" "valid source/brief never reached actual dispatch"
 pass "engineering source and fresh brief are checked by actual dispatch before endpoint effects"
+
+ID=wcgate-scout-z7
+REC=$(make_case wcgate-scout "$ID"); read_case "$REC"
+write_desc "$HOME_DIR" "$ID" "{\"engineering\":{\"generation\":\"g1\",\"triggers\":[\"test-change\"],\"skills\":[{\"id\":\"tdd\",\"path\":\"$HOME_DIR/missing-tdd.md\",\"release\":\"fixture-r1\",\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"role\":\"worker\",\"stage\":\"test\",\"trigger\":\"test-change\"}],\"verification\":[]}}"
+rm "$HOME_DIR/data/$ID/brief.md"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$ID" receiver --scout >/dev/null || fail "scout generator checked irrelevant TDD source"
+sed -i.bak 's/{TASK}/authorized receiver investigation/g' "$HOME_DIR/data/$ID/brief.md"
+OUT=$(CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$ID" "$PROJ_DIR" --scout); STATUS=$?
+expect_code 0 "$STATUS" "scout dispatch uses the generated diagnosis subset: $OUT"
+assert_present "$HOME_DIR/state/$ID.meta" "scout did not dispatch with irrelevant missing TDD"
+pass "scout generation and dispatch agree on applicable skill sources"

@@ -303,7 +303,7 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor> [config-di
 # meta declares no Class-C requirement, so existing dispatch behavior is
 # unchanged. Sets FM_WORK_CONTEXT_VERDICT/DETAIL. Returns 0 proceed, 3 refuse.
 fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir]
-  local state=$1 data=$2 id=$3 config=${4:-}
+  local state=$1 data=$2 id=$3 config=${4:-} kind=${5:-ship}
   fm_work_context_reset
   if ! fm_work_context_authority_classify "$state" "$data" "$id" "$config"; then
     FM_WORK_CONTEXT_VERDICT=refuse
@@ -319,7 +319,11 @@ fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [conf
       fi ;;
   esac
   FM_WORK_CONTEXT_VERDICT=proceed
-  fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+  case "$kind" in
+    scout) fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+    secondmate) return "$FM_WORK_CONTEXT_PASS_EXIT" ;;
+    *) fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+  esac
   fm_work_context_engineering_brief "$data" "$id" || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dispatch authority satisfied (classes=$FM_WORK_CONTEXT_CLASSES)"
   return "$FM_WORK_CONTEXT_PASS_EXIT"

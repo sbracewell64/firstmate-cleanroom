@@ -262,7 +262,25 @@ worktree_dirty() { [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; }
 candidate_current() {  # <recorded-head> <head>
   [ -n "$1" ] && [ -n "$2" ] || return 1
   [ "$1" = "$2" ] && return 0
-  git -C "$WT" merge-base --is-ancestor "$1" "$2" 2>/dev/null
+  git -C "$WT" merge-base --is-ancestor "$1" "$2" 2>/dev/null && return 0
+  local output run_head
+  output=$(bound_run_status) || return 1
+  fm_nm_run_is_pipeline_owned_active "$output" || return 1
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+  [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$2" ]
+}
+
+bound_run_status() {
+  local run output
+  run=$(obs run_id)
+  [ -n "$run" ] && [ "$run" = "$(meta stage_run)" ] || return 1
+  [ -n "$(meta stage_attempt)" ] && [ "$(meta stage_attempt)" = "$(obs attempt_id)" ] || return 1
+  [ "$(meta stage_head)" = "$(obs candidate_head)" ] || return 1
+  [ "$(meta stage_branch)" = "$(obs candidate_branch)" ] || return 1
+  output=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi status --run "$run") || return 1
+  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] || return 1
+  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" branch)")" = "$(meta stage_branch)" ] || return 1
+  printf '%s\n' "$output"
 }
 
 sha256_of() {  # <file...>
@@ -360,8 +378,12 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     printf 'stage_head=%s\n' "$head"
     printf 'stage_tree=%s\n' "$tree"
     printf 'stage_gen=%s\n' "$GEN"
-    printf 'stage_context=%s\n' "${FM_WC_ENGINEERING_DIGEST:-$(meta stage_context)}"
-    printf 'stage_evidence=%s\n' "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}"
+    printf 'stage_context=%s\n' "$FM_WC_ENGINEERING_DIGEST"
+    if [ "$stage" = candidate-committed ]; then
+      printf 'stage_evidence=\n'
+    else
+      printf 'stage_evidence=%s\n' "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}"
+    fi
     for kv in "$@"; do printf '%s\n' "$kv"; done
   } >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE"; then
@@ -441,14 +463,15 @@ engineering_result() {
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   run=$(obs run_id)
   [ -n "$run" ] || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: no bound run'
-  output=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi status --run "$run") \
+  output=$(bound_run_status) \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run read failed'
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run mismatch'
   run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
   actual=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
-  git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" \
+  { git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" \
+    || fm_nm_run_is_pipeline_owned_active "$output"; } \
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
     || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
@@ -481,7 +504,7 @@ do_committed() {
       fi
       ;;
   esac
-  if [ -z "$current" ] || [ "$recorded_head" != "$HEAD" ] || [ "$(meta stage_branch)" != "$BRANCH" ] \
+  if [ -z "$current" ] || [ "$(meta stage_context)" != "$FM_WC_ENGINEERING_DIGEST" ] || [ "$recorded_head" != "$HEAD" ] || [ "$(meta stage_branch)" != "$BRANCH" ] \
       || { [ "$RETRY" -eq 1 ] && [ "$current" != candidate-committed ] && [ "$current" != validation-pending ]; }; then
     issue candidate-committed worker "" "$BRANCH" "$HEAD" "$TREE"
   else
@@ -603,7 +626,8 @@ do_ci_ready() {
   observe refresh "$ID"
   engineering_result
   STAGE_PR_VALUE=$PR_ARG
-  if [ "$current" = ci-ready ] && [ "$(meta stage_pr)" = "$PR_ARG" ]; then
+  if [ "$current" = ci-ready ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
+      && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
     unchanged ci-ready
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \

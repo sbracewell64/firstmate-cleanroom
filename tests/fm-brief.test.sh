@@ -36,6 +36,7 @@ test_script_parses() {
 test_bash32_generates_brief() {
   local interpreter version home out rc brief
   interpreter=${FM_TEST_BASH32:-/bin/bash}
+  # shellcheck disable=SC2016 # Expand BASH_VERSION inside the selected interpreter.
   version=$("$interpreter" -c 'printf "%s" "$BASH_VERSION"') || fail "cannot read Bash version"
   case "$version" in
     3.2.*) ;;

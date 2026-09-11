@@ -693,7 +693,7 @@ cmd_start_public() {
 
 cmd_start() {
   local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
-  local extension_owner=0 extension_load_state extension_sequence='' extension_request_id=''
+  local extension_owner=0 extension_load_state extension_sequence='' extension_request_id='' prior_claim
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -749,9 +749,20 @@ cmd_start() {
   esac
   if [ "$extension_owner" -eq 1 ]; then
     fm_procevent_claim_state_locked "$id"
-    if [ "$?" -eq 1 ] && ! retire_orphan_runner_locked "$id"; then
-      fm_procevent_source_lock_release "$id"
-      die "cannot safely retire orphan runner record: $id"
+    if [ "$?" -eq 1 ]; then
+      prior_claim=$(fm_procevent_claim_path "$id")
+      if { [ -e "$prior_claim" ] || [ -L "$prior_claim" ]; } \
+        && { ! fm_procevent_claim_load_locked "$id" \
+          || [ "$FM_PROCEVENT_CLAIM_HOME" != "$FM_HOME" ] \
+          || ! cleanup_extension_claim_invocations_locked "$id"; }; then
+        fm_procevent_source_lock_release "$id"
+        die "cannot safely clean prior extension claim: $id"
+      fi
+      if ! run_extension_invocation_cleanup --source-id "$id" \
+        || ! retire_orphan_runner_locked "$id"; then
+        fm_procevent_source_lock_release "$id"
+        die "cannot safely retire orphan runner record: $id"
+      fi
     fi
   fi
   fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")"

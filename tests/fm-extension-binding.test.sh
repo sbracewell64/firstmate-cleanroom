@@ -269,6 +269,18 @@ elif mode in ("replay", "replay-no-result"):
         except FileNotFoundError: prior = 0
         open(count_path, "w", encoding="utf-8").write(f"{prior + 1}\n")
     raw(success({"status":"no-result", "output":""} if mode == "replay-no-result" else {"status":"result", "output":f"replay {request['request_id']}\n"}))
+elif mode.startswith("restart-block|"):
+    _, block_marker, block_release = mode.split("|", 2)
+    first = not os.path.exists(block_marker)
+    with open(block_marker, "a", encoding="utf-8") as output: output.write(f"{os.getpid()}\n")
+    if first:
+        while not os.path.exists(block_release): time.sleep(.01)
+    else:
+        with open(block_marker + ".group", encoding="utf-8") as source: prior_group = int(source.read())
+        try: os.killpg(prior_group, 0)
+        except ProcessLookupError: pass
+        else: write_exclusive(block_marker + ".overlap", "prior group survived replacement entry\n")
+    raw(success({"status":"no-result", "output":""}))
 elif mode.startswith("active-block|"):
     _, block_marker, block_release = mode.split("|", 2)
     write_exclusive(block_marker, f"{os.getpid()}\n")
@@ -1517,6 +1529,95 @@ for control_kind in tab newline; do
   assert_present "$state_path_decoy" "control-byte state root touched unrelated reservation state"
 done
 pass "control-byte state roots cannot serialize claims or reservations"
+for restart_case in success refusals absent-claim; do
+  restart_home="$HOMES/restart-$restart_case"; new_home "$restart_home"
+  restart_state="$TMP_ROOT/restart-state-$restart_case"
+  restart_marker="$TMP_ROOT/restart-$restart_case.marker"
+  override_crash_release="$TMP_ROOT/restart-$restart_case.release"
+  bind_package "$restart_home" "$P_FLOW" ext-flow >/dev/null
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" register-extension ext-flow restart-source \
+    --config-ref "restart-block|$restart_marker|$override_crash_release" >/dev/null
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" start restart-source > "$TMP_ROOT/restart-first.out" 2>&1 &
+  override_crash_start_pid=$!
+  wait_for_file "$restart_marker" || fail "public start never entered blocking poll"
+  restart_claim="$TMP_ROOT/claims/restart-source.claim"
+  restart_runner="$restart_state/procevent/restart-source.runner"
+  override_crash_runner_pid=$(sed -n '2p' "$restart_claim")
+  restart_owner=$(find "$restart_state/extension-invocations" -name '*.owner.json' -print)
+  crash_cleanup_group_pid=$(python3 - "$restart_owner" <<'PYOWNER'
+import json, sys
+owner = json.load(open(sys.argv[1]))
+assert owner["operation"] == "source.poll" and owner["phase"] == "group"
+print(owner["group_pid"])
+PYOWNER
+  ) || fail "blocking poll lacks exact invocation ownership"
+  kill -KILL -"$override_crash_runner_pid" || fail "cannot kill isolated runner group"
+  wait "$override_crash_start_pid" 2>/dev/null || true
+  override_crash_start_pid=
+  override_crash_runner_pid=
+  kill -0 -"$crash_cleanup_group_pid" || fail "detached poll did not survive runner crash"
+  printf '%s\n' "$crash_cleanup_group_pid" > "$restart_marker.group"
+  cp "$restart_claim" "$TMP_ROOT/restart-claim.saved"
+  cp "$restart_runner" "$TMP_ROOT/restart-runner.saved"
+  cp "$restart_owner" "$TMP_ROOT/restart-owner.saved"
+  if [ "$restart_case" = refusals ]; then
+    for refusal in unsafe stale live uncertain foreign; do
+      python3 - "$restart_owner" "$restart_claim" "$refusal" <<'PYREFUSAL'
+import json, os, pathlib, subprocess, sys
+owner_path, claim_path, mode = map(str, sys.argv[1:])
+owner = json.loads(pathlib.Path(owner_path).read_text())
+if mode == "unsafe":
+    os.chmod(owner_path, 0o644)
+elif mode == "foreign":
+    lines = pathlib.Path(claim_path).read_text().splitlines()
+    lines[0] += "/foreign-home"
+    pathlib.Path(claim_path).write_text("\n".join(lines) + "\n")
+else:
+    if mode == "stale":
+        owner["group_identity"] = "barrier-token:sha256:" + "0" * 64
+    else:
+        owner["host_pid"] = owner["group_pid"]
+        if mode == "live":
+            pid = owner["host_pid"]
+            if sys.platform == "linux":
+                stat = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                cmd = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+                owner["host_identity"] = f"linux-starttime={stat[19]} cmdline-hex={cmd.hex()}"
+            else:
+                owner["host_identity"] = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "command="], text=True).strip()
+        else:
+            owner["host_identity"] = "host-token:sha256:" + "0" * 64
+    pathlib.Path(owner_path).write_text(json.dumps(owner))
+PYREFUSAL
+      cp "$restart_claim" "$TMP_ROOT/restart-claim.expected"
+      expect_failure "error:" env FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+        "$PROCEVENT" start restart-source
+      cmp -s "$restart_claim" "$TMP_ROOT/restart-claim.expected" || fail "$refusal start replaced claim"
+      cmp -s "$restart_runner" "$TMP_ROOT/restart-runner.saved" || fail "$refusal start removed runner ownership"
+      kill -0 -"$crash_cleanup_group_pid" || fail "$refusal start signaled unproved invocation"
+      [ "$(wc -l < "$restart_marker" | tr -d ' ')" = 1 ] || fail "$refusal start invoked another poller"
+      cp "$TMP_ROOT/restart-owner.saved" "$restart_owner"
+      chmod 0600 "$restart_owner"
+      cp "$TMP_ROOT/restart-claim.saved" "$restart_claim"
+    done
+  fi
+  [ "$restart_case" != absent-claim ] || rm "$restart_claim"
+  FM_HOME="$restart_home" FM_STATE_OVERRIDE="$restart_state" \
+    "$PROCEVENT" start restart-source > "$TMP_ROOT/restart-second.out" 2>&1 \
+    || fail "public start could not recover exact dead owner"
+  [ "$(wc -l < "$restart_marker" | tr -d ' ')" = 2 ] || fail "replacement poll never ran"
+  if kill -0 -"$crash_cleanup_group_pid" 2>/dev/null; then
+    printf 'public start invoked replacement while recorded detached poll survived\n'
+    fail "public start bypassed invocation custody"
+  fi
+  crash_cleanup_group_pid=
+  assert_absent "$restart_marker.overlap" "replacement entered before old invocation extinction"
+  assert_absent "$restart_owner" "replacement retained old invocation owner"
+  assert_absent "$restart_claim" "completed replacement retained claim"
+  pass "public start crash recovery preserves invocation custody: $restart_case"
+done
 handshake_home="$HOMES/override-handshake"; new_home "$handshake_home"
 handshake_state="$TMP_ROOT/handshake-state"
 override_crash_marker="$TMP_ROOT/override-handshake.marker"

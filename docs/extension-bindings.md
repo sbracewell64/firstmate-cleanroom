@@ -112,7 +112,11 @@ Each JSON envelope is limited to 65,536 bytes, extension stderr is limited to 8,
 The parser rejects malformed UTF-8, a byte-order mark, duplicate object keys, unknown fields, unescaped controls, unpaired surrogates, multiple documents, and trailing bytes.
 A tracked static core launch barrier publishes one exact host-created process group before the host releases package code, without `eval`, generated source, a shell, or a package-controlled bootstrap.
 A timeout, output-bound violation, failed response, host interruption, or successful parent that leaves that group live sends `TERM`, escalates to `KILL`, and rejects the invocation until that exact group is proved gone.
-If the host dies first, its private identity-bound cleanup record keeps source reconciliation, home cleanup, and binding retirement from releasing ownership until a later core invocation proves that exact group extinct; an uncertain or reused live identity is retained and never signalled.
+If the host dies first, its private identity-bound cleanup record keeps source reconciliation, replacement startup, home cleanup, and binding retirement from releasing ownership until a later core invocation proves that exact group extinct; an uncertain or reused live identity is retained and never signalled.
+Process-event invocation records include the source identity for the preliminary handshake as well as the requested operation.
+Before releasing a dead runner's claim, reconciliation cleans its recorded invocation groups from the claim's revalidated state root, even when the caller uses the home's default state directory.
+Public source startup performs the same recorded-claim cleanup and checks the current state's source invocation records under the source lock before retiring an orphan runner record or replacing its claim.
+Cleanup refusal preserves the runner record and claim instead of starting a second poller.
 Extension children must remain foreground members of their invocation group and be owned and reaped by the live entrypoint. Starting another session or process group, changing process groups, double-forking, reparenting, or surviving the entrypoint response violates this protocol contract.
 Trusted same-user code is not an operating-system sandbox: deliberate process-group escape is outside this protocol guarantee.
 Ordinary invocation cleanup never infers ownership from process-table scans or signals contemporaneous same-user processes outside the exact invocation group; the explicit historical recovery path below has a separate evidence contract.
@@ -211,7 +215,6 @@ Before an external result can be captured, core applies the same boundary checks
 These external-only checks refuse before a staging or capture write when a post-registration link, ownership, mode, or canonical-path substitution is detected, while the legacy four-argument built-in capture path retains its existing behavior.
 For `result.terminal` and `result.silent`, the live core runner passes the host an internal one-shot handoff that pins the exact active claim, inbox, and result identities before the host reads a regular mode-`0600` result and sends only bounded UTF-8 content.
 Public lifecycle entry, environment, paths, and caller-supplied descriptors cannot create that handoff or authorize capture; runner claim release and dead-owner reconciliation remove its pending or consumed reservation state from the claim's recorded, revalidated state root.
-Reconciliation also cleans recorded extension invocation groups in that root before releasing the claim, even when the reconciling caller uses the home's default state directory.
 A source failure becomes a small host-produced `firstmate.process-event-extension-error.v1` result, so missing packages, invalid responses, crashes, nonzero exits, and timeouts become actionable evidence rather than silent fallback.
 Unknown or malformed terminal and silent responses take the safe false path.
 

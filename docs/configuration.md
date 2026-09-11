@@ -790,6 +790,7 @@ If identity cannot be established for a live PID, or a surviving owned group can
 A live PID whose identity no longer matches is a reused PID, so it is treated as stale and its process group is never signalled.
 An orphan extension runner record can be retired under the source lock only when the claim is absent or stale, the record is private, regular, and single-link, and both its recorded PID and process group are proved absent.
 Live, malformed, or uncertain orphan records remain intact and prevent replacement startup.
+Detached extension invocation custody adds a cleanup prerequisite before orphan retirement or claim replacement; [`extension-bindings.md`](extension-bindings.md#executable-protocol) owns that contract.
 
 Supported secondmate retirement preflights each target home's bounded `sweep-home` command before destructive teardown, snapshots its registrations outside the target, then runs the sweep at that home's final deletion or return boundary.
 If deletion or return fails, teardown restores those registrations and reconciles them before returning the refusal.

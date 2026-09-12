@@ -899,6 +899,99 @@ test_monitoring_qualification_and_revocation() (
   pass 'monitoring uses exact revocable qualification; recovery and repeat dedupe; invalidated current uses refuse'
 )
 
+test_report_changes_during_qualification() (
+  local boundary mutation identity saved before out rc
+  export FM_STATE_OVERRIDE="$TMP_ROOT/qualification-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  mkdir -p "$TMP_ROOT/qualification-bin"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/qualification-bin/tmux"
+  chmod +x "$TMP_ROOT/qualification-bin/tmux"
+  export PATH="$TMP_ROOT/qualification-bin:$PATH"
+  for boundary in ${1:-stage recovery retirement}; do
+    for mutation in changed deleted unchanged; do
+      prepare_delivery
+      printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
+      stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'qualification race admission'
+      identity=$(meta completion_handoff | jq -r .identity)
+      if [ "$boundary" != stage ]; then
+        stage handoff-release --identity "$identity" >/dev/null || fail 'qualification race initial effect'
+        if [ "$boundary" = recovery ]; then
+          saved=$(meta completion_handoff | jq -c '.status="pending" | .receipt=null')
+          sed '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/recovery.meta"
+          printf 'completion_handoff=%s\n' "$saved" >> "$TMP_ROOT/recovery.meta"
+          mv "$TMP_ROOT/recovery.meta" "$FM_STATE_OVERRIDE/source.meta"
+        fi
+      else
+        canonical running
+        stage handoff-release --identity "$identity" >/dev/null || fail 'qualification race release'
+        canonical completed checks-passed
+      fi
+      before=$(cat "$FM_STATE_OVERRIDE/source.meta")
+      cp "$FM_STATE_OVERRIDE/source.status" "$TMP_ROOT/qualification-status"
+      export FM_TEST_REPORT_MUTATION="$mutation" FM_TEST_REPORT_PATH="$FM_DATA_OVERRIDE/source/report.md"
+      export FM_TEST_REPORT_COUNTER="$TMP_ROOT/qualification-counter" FM_TEST_REPORT_TRIGGER=2
+      [ "$boundary" != stage ] || export FM_TEST_REPORT_TRIGGER=1
+      printf '0' > "$FM_TEST_REPORT_COUNTER"
+      cp "$FAKEBIN/no-mistakes" "$TMP_ROOT/qualification-original"
+      cat > "$FAKEBIN/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  'axi qualification'*)
+    result=$(python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:3}") || exit 1
+    if [[ " $* " == *' --attempt '* ]]; then
+      count=$(cat "$FM_TEST_REPORT_COUNTER")
+      count=$((count + 1))
+      printf '%s' "$count" > "$FM_TEST_REPORT_COUNTER"
+      if [ "$count" = "$FM_TEST_REPORT_TRIGGER" ]; then
+        case "$FM_TEST_REPORT_MUTATION" in
+          changed) printf 'changed during qualification\n' >> "$FM_TEST_REPORT_PATH" ;;
+          deleted) rm "$FM_TEST_REPORT_PATH" ;;
+        esac
+      fi
+    fi
+    printf '%s\n' "$result"
+    ;;
+  'axi status'*) cat "$FM_COMPLETION_TEST_CANONICAL" ;;
+  --version) echo 'no-mistakes version v1.61.0 (0af0be6) 2026-08-31T14:04:25Z' ;;
+  *) exit 90 ;;
+esac
+SH
+      rc=0
+      if [ "$boundary" = retirement ]; then
+        rm -f "$FM_DATA_OVERRIDE/source/completion-receipt.json"
+        out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+      else
+        out=$(stage resume-handoff 2>&1) || rc=$?
+      fi
+      mv "$TMP_ROOT/qualification-original" "$FAKEBIN/no-mistakes"
+      [ "$(cat "$FM_TEST_REPORT_COUNTER")" -ge "$FM_TEST_REPORT_TRIGGER" ] || fail "$boundary did not reach selected qualification boundary: $out"
+      if [ "$mutation" != unchanged ]; then
+        expect_code 1 "$rc" "$boundary $mutation during qualification"
+        [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail "$boundary published metadata after report $mutation"
+        cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail "$boundary emitted stage effect after report $mutation"
+        if [ "$boundary" = retirement ]; then
+          assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'qualification race archived receipt'
+          assert_contains "$out" 'completion handoff remains unresolved' 'retirement must refuse at completion owner'
+        fi
+      elif [ "$boundary" = retirement ]; then
+        assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'unchanged report did not archive'
+      else
+        expect_code 0 "$rc" "$boundary unchanged qualification"
+        [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'unchanged receipt missing'
+        if [ "$boundary" = recovery ]; then
+          cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail 'recovery repeated stage effect'
+        fi
+      fi
+      pass "$boundary refuses $mutation report during qualification or preserves unchanged success"
+    done
+  done
+)
+
+if [ "${1:-}" = qualification-report ]; then
+  test_report_changes_during_qualification "${2:-stage recovery retirement}" || exit 1
+  exit 0
+fi
+
 if [ "${1:-}" = report-integrity ]; then
   case "${2:-all}" in
     retirement) test_retirement_revalidates_report_and_effect || exit 1 ;;
@@ -915,6 +1008,7 @@ if [ "${1:-}" = report-integrity ]; then
 fi
 
 test_monitoring_qualification_and_revocation || exit 1
+test_report_changes_during_qualification || exit 1
 
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake

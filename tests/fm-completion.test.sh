@@ -899,6 +899,69 @@ test_monitoring_qualification_and_revocation() (
   pass 'monitoring uses exact revocable qualification; recovery and repeat dedupe; invalidated current uses refuse'
 )
 
+test_report_changes_during_teardown_status() (
+  local mutation out rc original_wt=$WT
+  export FM_STATE_OVERRIDE="$TMP_ROOT/teardown-state"
+  mkdir -p "$FM_STATE_OVERRIDE" "$TMP_ROOT/teardown-bin"
+  for tool in tmux treehouse lsof; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/teardown-bin/$tool"
+  done
+  for tool in gh gh-axi; do
+    printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/teardown-bin/$tool"
+  done
+  chmod +x "$TMP_ROOT/teardown-bin/"*
+  export PATH="$TMP_ROOT/teardown-bin:$PATH"
+  for mutation in ${1:-changed deleted unchanged}; do
+    WT="$TMP_ROOT/teardown-wt-$mutation"
+    git clone -q --no-hardlinks "$original_wt" "$WT" || fail 'private teardown clone'
+    git -C "$WT" remote remove origin
+    git -C "$WT" branch main "$HEAD"
+    prepare_delivery
+    sed -e "s|^worktree=.*|worktree=$WT|" -e "s|^project=.*|project=$WT|" "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/teardown.meta"
+    mv "$TMP_ROOT/teardown.meta" "$FM_STATE_OVERRIDE/source.meta"
+    printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
+    stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'teardown handoff'
+    stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'teardown dispatch'
+    export FM_TEST_TEARDOWN_MUTATION=$mutation FM_TEST_TEARDOWN_REACHED="$TMP_ROOT/teardown-status-reached"
+    rm -f "$FM_TEST_TEARDOWN_REACHED" "$FM_DATA_OVERRIDE/source/completion-receipt.json"
+    cp "$FAKEBIN/no-mistakes" "$TMP_ROOT/teardown-no-mistakes"
+    cat > "$FAKEBIN/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  'axi qualification'*) exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:3}" ;;
+  'axi status')
+    : > "$FM_TEST_TEARDOWN_REACHED"
+    case "$FM_TEST_TEARDOWN_MUTATION" in
+      changed) printf 'changed during conclude\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
+      deleted) rm -f "$FM_DATA_OVERRIDE/source/report.md" ;;
+    esac
+    cat "$FM_COMPLETION_TEST_CANONICAL"
+    ;;
+  'axi status'*) cat "$FM_COMPLETION_TEST_CANONICAL" ;;
+  --version) echo 'no-mistakes version v1.61.0 (0af0be6) 2026-08-31T14:04:25Z' ;;
+  *) exit 90 ;;
+esac
+SH
+    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+    mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
+    assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
+    if [ "$mutation" = unchanged ]; then
+      expect_code 0 "$rc" "unchanged actual teardown: $out"
+      assert_absent "$FM_STATE_OVERRIDE/source.meta" 'unchanged teardown retained metadata'
+      assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing'
+    else
+      expect_code 1 "$rc" "$mutation report during teardown status"
+      assert_contains "$out" 'completion handoff remains unresolved' 'final retirement must refuse'
+      assert_present "$FM_STATE_OVERRIDE/source.meta" 'teardown erased unresolved metadata'
+      assert_present "$FM_STATE_OVERRIDE/source.nm-observe" 'teardown erased observation obligation'
+      if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
+      [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
+      assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'preflight archived invalidated handoff'
+    fi
+    pass "actual teardown status boundary: $mutation"
+  done
+)
+
 test_report_changes_during_qualification() (
   local boundary mutation identity saved before out rc
   export FM_STATE_OVERRIDE="$TMP_ROOT/qualification-state"
@@ -928,6 +991,8 @@ test_report_changes_during_qualification() (
       fi
       before=$(cat "$FM_STATE_OVERRIDE/source.meta")
       cp "$FM_STATE_OVERRIDE/source.status" "$TMP_ROOT/qualification-status"
+      export FM_TEST_CUSTODY_ROOT="$ROOT" FM_TEST_CUSTODY_RESULT="$TMP_ROOT/custody-result"
+      rm -f "$FM_TEST_CUSTODY_RESULT"
       export FM_TEST_REPORT_MUTATION="$mutation" FM_TEST_REPORT_PATH="$FM_DATA_OVERRIDE/source/report.md"
       export FM_TEST_REPORT_COUNTER="$TMP_ROOT/qualification-counter" FM_TEST_REPORT_TRIGGER=2
       case "$boundary" in stage|existing) export FM_TEST_REPORT_TRIGGER=1 ;; esac
@@ -946,6 +1011,22 @@ case "$*" in
         case "$FM_TEST_REPORT_MUTATION" in
           changed) printf 'changed during qualification\n' >> "$FM_TEST_REPORT_PATH" ;;
           deleted) rm "$FM_TEST_REPORT_PATH" ;;
+          spawn_gen|stage_run|stage_attempt|stage_head|replacement)
+            bash -c '
+              . "$FM_TEST_CUSTODY_ROOT/bin/fm-wake-lib.sh"
+              lock=$(fm_meta_lock_path "$STATE/source.meta")
+              if fm_lock_try_acquire "$lock"; then
+                field=$FM_TEST_REPORT_MUTATION
+                [ "$field" != replacement ] || field=spawn_gen
+                sed "s/^$field=.*/$field=replaced/" "$STATE/source.meta" > "$STATE/source.next"
+                mv "$STATE/source.next" "$STATE/source.meta"
+                printf published > "$FM_TEST_CUSTODY_RESULT"
+                fm_lock_release "$lock"
+              else
+                printf blocked > "$FM_TEST_CUSTODY_RESULT"
+              fi
+            ' || exit 1
+            ;;
         esac
       fi
     fi
@@ -965,6 +1046,27 @@ SH
       fi
       mv "$TMP_ROOT/qualification-original" "$FAKEBIN/no-mistakes"
       [ "$(cat "$FM_TEST_REPORT_COUNTER")" -ge "$FM_TEST_REPORT_TRIGGER" ] || fail "$boundary did not reach selected qualification boundary: $out"
+      case "$mutation" in
+        spawn_gen|stage_run|stage_attempt|stage_head|replacement)
+          expect_code 0 "$rc" 'qualification retains source custody'
+          [ "$(cat "$FM_TEST_CUSTODY_RESULT")" = blocked ] || fail 'metadata owner published a replacement during current-success qualification'
+          [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail 'custody changed matching receipt'
+          bash -c '
+            . "$FM_TEST_CUSTODY_ROOT/bin/fm-wake-lib.sh"
+            lock=$(fm_meta_lock_path "$STATE/source.meta")
+            fm_lock_try_acquire "$lock" || exit 1
+            field=$FM_TEST_REPORT_MUTATION
+            [ "$field" != replacement ] || field=spawn_gen
+            sed "s/^$field=.*/$field=replaced/" "$STATE/source.meta" > "$STATE/source.next"
+            mv "$STATE/source.next" "$STATE/source.meta"
+            fm_lock_release "$lock"
+          ' || fail 'metadata owner could not publish after confirmation released custody'
+          rc=0; out=$(stage resume-handoff 2>&1) || rc=$?
+          expect_code 1 "$rc" 'replacement after custody release must refuse stale handoff'
+          pass "metadata custody serializes $mutation and refuses subsequent stale confirmation"
+          continue
+          ;;
+      esac
       if [ "$mutation" != unchanged ]; then
         expect_code 1 "$rc" "$boundary $mutation during qualification"
         [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail "$boundary published metadata after report $mutation"
@@ -978,7 +1080,8 @@ SH
           assert_contains "$out" 'completion handoff remains unresolved' 'retirement must refuse at completion owner'
         fi
       elif [ "$boundary" = retirement ]; then
-        assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'unchanged report did not archive'
+        assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'unlanded preflight archived a receipt'
+        expect_code 1 "$rc" 'unlanded work must still refuse teardown'
       else
         expect_code 0 "$rc" "$boundary unchanged qualification"
         [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'unchanged receipt missing'
@@ -997,6 +1100,17 @@ SH
     done
   done
 )
+
+if [ "${1:-}" = retirement-status ]; then
+  test_report_changes_during_teardown_status "${2:-changed deleted unchanged}" || exit 1
+  exit 0
+fi
+if [ "${1:-}" = custody-order ]; then
+  test_self_target_delivery
+  test_opposite_direction_delivery_does_not_deadlock
+  test_ci_ready_child_revalidates_admitted_identity
+  exit 0
+fi
 
 if [ "${1:-}" = qualification-report ]; then
   test_report_changes_during_qualification "${2:-stage existing recovery retirement}" "${3:-changed deleted unchanged}" || exit 1
@@ -1020,6 +1134,7 @@ fi
 
 test_monitoring_qualification_and_revocation || exit 1
 test_report_changes_during_qualification || exit 1
+test_report_changes_during_teardown_status || exit 1
 
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake

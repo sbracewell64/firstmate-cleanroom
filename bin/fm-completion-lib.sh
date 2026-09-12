@@ -119,7 +119,7 @@ fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
 # under the existing durable task report directory before removing metadata.
 # The caller holds the task metadata lock. No archived receipt is input to
 # execution reconciliation or a replacement source of task authority.
-fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
+fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check]
   local saved=$1 data_dir=$2 task=$3 contract identity receipt dir tmp
   local ID=$3
   [ -n "$saved" ] || return 0
@@ -134,6 +134,7 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
   # shellcheck source=bin/fm-pr-lib.sh
   . "$SCRIPT_DIR/fm-pr-lib.sh"
   fm_completion_ci_ready_effect "$contract" "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" || return 1
+  [ "${4:-}" != --check ] || return 0
   dir="$data_dir/$task"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1
@@ -190,6 +191,21 @@ fm_completion_ci_ready_effect() {
       $contract.action.owner == .task and $contract.action.generation == .generation)
     ' >/dev/null 2>&1 && [ "$(sed -n 's/^stage_pr=//p' "$file")" = "$(printf '%s' "$contract" | jq -r .action.pr)" ] &&
     fm_completion_report_current "$contract"
+}
+
+fm_completion_source_acquire() {
+  local saved=$1 lock
+  lock=$(fm_meta_lock_path "$META") || return 1
+  if [ "$lock" != "${FM_COMPLETION_SOURCE_LOCK:-}" ]; then
+    if [ "$lock" != "${FM_COMPLETION_TARGET_LOCK:-}" ]; then
+      fm_lock_try_acquire "$lock" || { fm_completion_refuse SOURCE_BUSY; return 1; }
+    fi
+    FM_COMPLETION_SOURCE_LOCK=$lock
+  fi
+  if ! { [ -f "$META" ] && [ ! -L "$META" ] && [ "$(meta completion_handoff)" = "$saved" ] \
+    && fm_completion_saved_valid "$saved"; }; then
+    fm_completion_refuse SOURCE_CHANGED; return 1
+  fi
 }
 
 fm_completion_resume() {
@@ -263,15 +279,8 @@ fm_completion_resume() {
     fm_lease_guard "$owner" completion-delivery || return 1
     FM_COMPLETION_TARGET_LOCK=$(fm_meta_lock_path "$STATE/$owner.meta") || return 1
     fm_task_inbox_lock_acquire "$FM_COMPLETION_TARGET_LOCK" || { fm_completion_refuse TARGET_BUSY; return 1; }
-    FM_COMPLETION_SOURCE_LOCK=$(fm_meta_lock_path "$META") || return 1
-    if [ "$FM_COMPLETION_SOURCE_LOCK" != "$FM_COMPLETION_TARGET_LOCK" ]; then
-      fm_lock_try_acquire "$FM_COMPLETION_SOURCE_LOCK" || { fm_completion_refuse SOURCE_BUSY; return 1; }
-    fi
-    if ! { [ -f "$META" ] && [ ! -L "$META" ] && [ "$(meta completion_handoff)" = "$saved" ] \
-      && fm_completion_saved_valid "$saved"; }; then
-      fm_completion_refuse SOURCE_CHANGED; return 1
-    fi
   fi
+  fm_completion_source_acquire "$saved" || return 1
   fm_completion_report_current "$contract" || return 1
   fm_completion_target_current "$contract" || return 1
   if [ "$kind" = ci-ready ]; then
@@ -335,9 +344,12 @@ fm_completion_resume() {
       }
     fi
     if [ "$kind" = ci-ready ]; then
+      fm_lock_release "$FM_COMPLETION_SOURCE_LOCK"
+      FM_COMPLETION_SOURCE_LOCK=
       rc=0
       out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --identity "$identity" --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
       [ "$rc" -eq 0 ] || { printf '%s\n' "$out"; fm_completion_refuse STAGE_HELD; return 1; }
+      fm_completion_source_acquire "$saved" || return 1
       if ! { [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract"; }; then
         fm_completion_refuse EFFECT_UNCONFIRMED; return 1
       fi

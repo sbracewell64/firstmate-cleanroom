@@ -332,10 +332,151 @@ test_concurrent_resume_dispatches_once() {
   pass 'four concurrent actual resume callers serialize to one inbox effect and one recoverable receipt'
 }
 
+test_stage_advancement_preserves_effect() {
+  local transition out before saved
+  for transition in landing activated; do
+    out=$(stage "$transition") || fail "$transition with completed handoff: $out"
+    before=$(shasum -a 256 "$FM_STATE_OVERRIDE/source.status")
+    saved=$(meta completion_handoff | jq -c '.receipt=null | .status="pending"')
+    sed '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/advanced.meta"
+    printf 'completion_handoff=%s\n' "$saved" >> "$TMP_ROOT/advanced.meta"
+    mv "$TMP_ROOT/advanced.meta" "$FM_STATE_OVERRIDE/source.meta"
+    out=$(stage resume-handoff) || fail "$transition receipt recovery: $out"
+    [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'advanced receipt not repaired'
+    [ "$before" = "$(shasum -a 256 "$FM_STATE_OVERRIDE/source.status")" ] || fail 'advanced stage replayed effect'
+  done
+  pass 'landing and activated preserve and reconstruct the same CI-ready effect'
+}
+
+prepare_delivery() {
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  : > "$FM_STATE_OVERRIDE/source.status"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  canonical completed checks-passed
+  fm_write_meta "$FM_STATE_OVERRIDE/guarded.meta" 'kind=ship' 'spawn_gen=g1' 'harness=echo'
+  jq '.action={id:"guarded",kind:"task-inbox",owner:"guarded",generation:"g1",instruction:"Continue this exact report."}' \
+    "$TMP_ROOT/handoff.json" > "$TMP_ROOT/guarded.json"
+}
+
+assert_no_delivery() {
+  [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'refusal recorded successful delivery'
+  assert_absent "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'refusal enqueued an instruction'
+}
+
+test_remote_and_destination_lease() {
+  local out rc identity
+  prepare_delivery
+  printf 'remote_host=remote.example\n' >> "$FM_STATE_OVERRIDE/guarded.meta"
+  rc=0; out=$(stage handoff --handoff-json "$TMP_ROOT/guarded.json") || rc=$?
+  expect_code 1 "$rc" 'remote admission'
+  assert_contains "$out" UNSUPPORTED_REMOTE_TARGET 'precise remote admission disposition'
+  [ -z "$(meta completion_handoff)" ] || fail 'remote destination admitted'
+  prepare_delivery
+  stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'local admission'
+  identity=$(meta completion_handoff | jq -r .identity)
+  printf 'remote_host=remote.example\n' >> "$FM_STATE_OVERRIDE/guarded.meta"
+  rc=0; out=$(stage handoff-release --identity "$identity") || rc=$?
+  expect_code 1 "$rc" 'remote delivery'
+  assert_contains "$out" UNSUPPORTED_REMOTE_TARGET 'precise remote delivery disposition'
+  assert_no_delivery
+  fm_write_meta "$FM_STATE_OVERRIDE/guarded.meta" 'kind=ship' 'spawn_gen=g1' 'harness=echo'
+  printf '%s\n' "$$" > "$FM_STATE_OVERRIDE/.lock"
+  printf 'branch\t%s\t%s\n' "$$" "$(date +%s)" > "$FM_STATE_OVERRIDE/.lease-guarded"
+  rc=0; out=$(FM_SUPERVISION_ACTOR=main stage resume-handoff 2>&1) || rc=$?
+  expect_code 6 "$rc" 'other-actor destination lease'
+  assert_contains "$out" 'leased to the branch' 'destination lease refusal'
+  assert_no_delivery
+  out=$(FM_SUPERVISION_ACTOR=branch stage resume-handoff 2>&1) || fail "same-actor destination delivery: $out"
+  assert_present "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'same-actor delivery absent'
+  [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'same-actor receipt absent'
+  rm "$FM_STATE_OVERRIDE/.lease-guarded" "$FM_STATE_OVERRIDE/.lock"
+  rm -r "$FM_STATE_OVERRIDE/guarded.inbox"
+  pass 'remote admission and delivery refuse; destination lease rejects other actor and permits its owner'
+}
+
+test_destination_changes_while_delivery_waits() {
+  local mutation out rc identity worker holder i
+  for mutation in replacement retirement remote; do
+    prepare_delivery
+    stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'race admission'
+    identity=$(meta completion_handoff | jq -r .identity)
+    canonical running
+    stage handoff-release --identity "$identity" >/dev/null || fail 'race release'
+    canonical completed checks-passed
+    export FM_TEST_DEST_LOCK="$FM_STATE_OVERRIDE/.meta-guarded.lock"
+    export FM_TEST_DEST_WAIT="$TMP_ROOT/destination-wait"
+    export FM_TEST_DEST_UNLOCK="$TMP_ROOT/destination-unlock"
+    rm -f "$FM_TEST_DEST_WAIT" "$FM_TEST_DEST_UNLOCK" "$TMP_ROOT/holder-ready"
+    bash -c '
+      . "$1/bin/fm-wake-lib.sh"
+      fm_lock_acquire_wait "$FM_TEST_DEST_LOCK"
+      : > "$2/holder-ready"
+      while [ ! -f "$FM_TEST_DEST_UNLOCK" ]; do sleep 0.02; done
+      fm_lock_release "$FM_TEST_DEST_LOCK"
+    ' _ "$ROOT" "$TMP_ROOT" &
+    holder=$!
+    for ((i=0; i<500; i++)); do
+      [ ! -f "$TMP_ROOT/holder-ready" ] || break
+      sleep 0.02
+    done
+    [ -f "$TMP_ROOT/holder-ready" ] || fail 'metadata lock holder did not start'
+    cat > "$FAKEBIN/cat" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = "$FM_TEST_DEST_LOCK/pid" ]; then
+  : > "$FM_TEST_DEST_WAIT"
+fi
+exec /bin/cat "$@"
+SH
+    chmod +x "$FAKEBIN/cat"
+    stage resume-handoff > "$TMP_ROOT/race.out" 2>&1 &
+    worker=$!
+    for ((i=0; i<500; i++)); do
+      [ ! -f "$FM_TEST_DEST_WAIT" ] || break
+      kill -0 "$worker" 2>/dev/null || break
+      sleep 0.02
+    done
+    [ -f "$FM_TEST_DEST_WAIT" ] || fail 'delivery failed to consult the held destination lock (filesystem read boundary observer)'
+    case "$mutation" in
+      replacement) fm_write_meta "$FM_STATE_OVERRIDE/guarded.meta" 'kind=ship' 'spawn_gen=g2' 'harness=echo' ;;
+      retirement) rm "$FM_STATE_OVERRIDE/guarded.meta" ;;
+      remote) printf 'remote_host=remote.example\n' >> "$FM_STATE_OVERRIDE/guarded.meta" ;;
+    esac
+    : > "$FM_TEST_DEST_UNLOCK"
+    wait "$holder" || fail 'metadata holder failed'
+    rc=0; wait "$worker" || rc=$?
+    rm "$FAKEBIN/cat"
+    out=$(cat "$TMP_ROOT/race.out")
+    expect_code 1 "$rc" "$mutation during delivery"
+    case "$mutation" in
+      replacement) assert_contains "$out" TARGET_GENERATION 'replacement refusal' ;;
+      retirement) assert_contains "$out" TARGET_UNREADABLE 'retirement refusal' ;;
+      remote) assert_contains "$out" UNSUPPORTED_REMOTE_TARGET 'remote race refusal' ;;
+    esac
+    assert_no_delivery
+  done
+  pass 'destination replacement, retirement and remote routing changes under custody prevent stale delivery'
+}
+
+test_self_target_delivery() {
+  local identity out
+  prepare_delivery
+  jq '.action.owner="source" | .action.generation="s1.1.1"' "$TMP_ROOT/guarded.json" > "$TMP_ROOT/self.json"
+  stage handoff --handoff-json "$TMP_ROOT/self.json" >/dev/null || fail 'self admission'
+  identity=$(meta completion_handoff | jq -r .identity)
+  out=$(stage handoff-release --identity "$identity") || fail "self delivery: $out"
+  assert_present "$FM_STATE_OVERRIDE/source.inbox/001.msg" 'self inbox missing'
+  [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'self receipt missing'
+  stage resume-handoff >/dev/null || fail 'self replay'
+  assert_absent "$FM_STATE_OVERRIDE/source.inbox/002.msg" 'self delivery duplicated'
+  pass 'self-target delivery and receipt persist without recursive metadata locking'
+}
+
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake
 test_authoritative_effect_repairs_missing_receipt
 test_positive_receipt_retirement_archive
+test_stage_advancement_preserves_effect
 test_canonical_read_failure_keeps_receipt
 test_duplicate_and_changed_bytes
 test_handled_inbox_keeps_open_action_and_deduplicates
@@ -343,3 +484,6 @@ test_stop_checkpoint_delayed_report_caller_chain
 test_unknown_conflicting_and_stale_authority_refuses
 test_session_start_reconciles_durable_handoff
 test_concurrent_resume_dispatches_once
+test_remote_and_destination_lease
+test_destination_changes_while_delivery_waits
+test_self_target_delivery

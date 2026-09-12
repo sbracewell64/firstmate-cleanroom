@@ -14,7 +14,19 @@
 #   FM_HOME=<home> fm-stage.sh <task-id> landing [--pr <url>]
 #   FM_HOME=<home> fm-stage.sh <task-id> activated
 #   FM_HOME=<home> fm-stage.sh <task-id> show
+#   FM_HOME=<home> fm-stage.sh <task-id> handoff --handoff-json <file>
+#   FM_HOME=<home> fm-stage.sh <task-id> handoff-release --identity <sha256>
+#   FM_HOME=<home> fm-stage.sh <task-id> resume-handoff
 #   fm-stage.sh --help
+#
+# bin/fm-completion-lib.sh owns the durable report/action contract and the
+# completion_handoff metadata field. Handoff release is manager-owned capacity
+# admission for one exact identity. Resume refreshes the canonical run and
+# reconciles admitted effects; show and successful transitions do the same.
+# Programme projection remains read-only and never supplies an execution receipt.
+# A following COMPLETION_CNO may return 1 after a successful STAGE receipt;
+# that preserves the already applied lifecycle effect and reports the separate
+# unresolved handoff. It is not a STAGE_REFUSED rollback of that effect.
 #
 # Stages, in order:
 #   candidate-committed -> validation-pending | validation-admitted
@@ -89,7 +101,8 @@
 #              identity, or the candidate head reachable from the project
 #              clone's checked-out head. No read-back refuses as NO_READBACK;
 #              nothing here fetches, merges, or syncs.
-#   show       Prints the recorded stage and its `next:` line; changes nothing.
+#   show       Prints the recorded stage and its `next:` line, then reconciles
+#              canonical observations and admitted completion handoffs.
 #              A worker resuming after a restart runs this first and continues
 #              from the recorded stage.
 #
@@ -187,6 +200,8 @@ RUN_ARG=
 PR_ARG=
 EXPECT_NM_HOME=
 EXPECT_PATH0=
+HANDOFF_JSON=
+HANDOFF_IDENTITY=
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -196,6 +211,8 @@ for a in "$@"; do
       pr) PR_ARG=$a ;;
       expect-nm-home) EXPECT_NM_HOME=$a ;;
       expect-path0) EXPECT_PATH0=$a ;;
+      handoff-json) HANDOFF_JSON=$a ;;
+      identity) HANDOFF_IDENTITY=$a ;;
     esac
     want_value=
     continue
@@ -208,6 +225,8 @@ for a in "$@"; do
     --pr=*) PR_ARG=${a#--pr=} ;;
     --expect-nm-home) want_value=expect-nm-home ;;
     --expect-path0) want_value=expect-path0 ;;
+    --handoff-json) want_value=handoff-json ;;
+    --identity) want_value=identity ;;
     *) die_usage "unknown argument '$a'" ;;
   esac
 done
@@ -789,6 +808,13 @@ do_show() {
 }
 
 case "$TRANSITION" in
+  handoff|handoff-release|resume-handoff)
+    # shellcheck source=bin/fm-task-inbox-lib.sh
+    . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+    # shellcheck source=bin/fm-completion-lib.sh
+    . "$SCRIPT_DIR/fm-completion-lib.sh"
+    fm_completion_transition "$TRANSITION"
+    exit $? ;;
   committed) do_committed ;;
   running) do_running running ;;
   ci-ready) do_ci_ready ;;
@@ -797,3 +823,13 @@ case "$TRANSITION" in
   show) do_show ;;
   *) die_usage "unknown transition '$TRANSITION'" ;;
 esac
+
+if [ "${FM_COMPLETION_RECONCILING:-0}" != 1 ] && {
+  [ -n "$(meta completion_handoff)" ] || { [ "$TRANSITION" = show ] && [ -f "$OBLIGATION" ]; }
+}; then
+  # shellcheck source=bin/fm-task-inbox-lib.sh
+  . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+  # shellcheck source=bin/fm-completion-lib.sh
+  . "$SCRIPT_DIR/fm-completion-lib.sh"
+  fm_completion_transition resume-handoff
+fi

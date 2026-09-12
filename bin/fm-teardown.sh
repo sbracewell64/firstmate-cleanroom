@@ -19,6 +19,8 @@
 # home with a backlog but no compatible tasks-axi refuses before cleanup.
 # None of this loosens the landed-work gates below: the transition runs only on
 # the paths that already proceed to remove the record.
+# A completion handoff retains the task until its existing completion owner
+# permits retirement; handled inbox delivery alone never clears that obligation.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -279,6 +281,14 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
   echo "error: teardown refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
+if grep -q '^completion_handoff=' "$META"; then
+  # shellcheck source=bin/fm-completion-lib.sh
+  . "$SCRIPT_DIR/fm-completion-lib.sh"
+  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" || {
+    echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
+    exit 1
+  }
+fi
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
 [ -n "$TEARDOWN_META_KIND" ] || TEARDOWN_META_KIND=ship
 TEARDOWN_CLEANUP_RECOVERY=$(fm_meta_get "$META" cleanup_recovery)

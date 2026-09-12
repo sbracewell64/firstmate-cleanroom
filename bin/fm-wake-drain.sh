@@ -369,6 +369,8 @@ print_status_sections() {
 # on a turn that prints none. Exit 3 (no programme pinned) prints nothing, and
 # a presentation failure never changes the drain's exit status.
 print_programme_presentation() {  # <ack-mode>
+  "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile || \
+    printf 'CONTINUATION_CNO: report/action reconciliation remains unresolved\n'
   [ "$ACTOR" = main ] || return 0
   fm_programme_present "$STATE" "$1" || true
 }

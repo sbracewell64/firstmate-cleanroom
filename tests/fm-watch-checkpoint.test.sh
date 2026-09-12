@@ -81,6 +81,75 @@ test_existing_singleton_watcher_is_not_success() {
   pass "checkpoint rejects an existing watcher singleton as unowned"
 }
 
+# Exercise the configured shell caller, with its real dependencies and private
+# state. This does not stand in for the native model's Stop event loop.
+test_configured_stop_retry_does_not_admit_unfinished_work() {
+  local home command out status attempt cp deadline sequence generation
+  home=$(make_home stop-retry)
+  cp -R "$ROOT/bin" "$home/bin"
+  cp -R "$ROOT/.codex" "$home/.codex"
+  mkdir -p "$home/docs"
+  cp -R "$ROOT/docs/supervision-protocols" "$home/docs/"
+  : > "$home/AGENTS.md"
+  git init -q "$home"
+  printf 'kind=ship\nmode=no-mistakes\n' > "$home/state/demo.meta"
+  command=$(jq -r '.hooks.Stop[0].hooks[0].command' "$home/.codex/hooks.json")
+  status=0
+  out=$(cd "$home" && printf '%s' '{"stop_hook_active":true,"session_id":"private-retry"}' |
+    env -i PATH="$PATH" HOME="$home" FM_HOME="$home" FM_BACKEND=tmux FM_HARNESS=codex \
+      bash -c "$command" 2>&1) || status=$?
+  expect_code 2 "$status" "configured Stop retry with unfinished work and no continuation owner"
+  assert_contains "$out" 'CONTINUATION' 'Stop must name the missing continuation obligation'
+  pass 'configured Codex Stop retry refuses unfinished work without a continuation owner'
+
+  for attempt in 2 3 4; do
+    status=0
+    out=$(cd "$home" && printf '%s' '{"stop_hook_active":true,"session_id":"private-retry"}' |
+      env -i PATH="$PATH" HOME="$home" FM_HOME="$home" FM_BACKEND=tmux FM_HARNESS=codex \
+        bash -c "$command" 2>&1) || status=$?
+    if [ "$attempt" -eq 2 ]; then
+      expect_code 2 "$status" 'second bounded recovery'
+    else
+      expect_code 0 "$status" 'exhausted recovery must not loop indefinitely'
+      assert_contains "$out" 'CONTINUATION_CNO:' 'exhaustion must never silently certify completion'
+      assert_contains "$(cat "$home/state/.turnend-codex-blocks")" 'outcome=CNO' 'durable failure is required'
+    fi
+  done
+  [ "$(grep -c 'codex-continuation-cno' "$home/state/.wake-queue")" -eq 1 ] || fail 'bounded failure must leave one durable escalation'
+  assert_present "$home/state/demo.meta" 'Stop exhaustion must preserve unfinished task authority'
+  FM_HOME="$home" "$home/bin/fm-wake-drain.sh" > "$home/cno-drain.out" 2> "$home/cno-drain.err"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9]*\) --recovery-generation .*/\1/p' "$home/cno-drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--recovery-generation \([^ ]*\)$/\1/p' "$home/cno-drain.err")
+  FM_HOME="$home" "$home/bin/fm-wake-drain.sh" --ack-through "$sequence" --recovery-generation "$generation" >/dev/null || fail 'failure handling acknowledgement'
+  pass 'configured Codex Stop exhaustion is bounded and durably CNO'
+
+  env -i PATH="$PATH" HOME="$home" FM_HOME="$home" FM_BACKEND=tmux FM_HARNESS=codex \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
+    "$home/bin/fm-watch-checkpoint.sh" --seconds 5 > "$home/checkpoint.out" 2> "$home/checkpoint.err" &
+  cp=$!
+  deadline=$(( $(date +%s) + 3 ))
+  while [ ! -f "$home/state/.watch.lock/watcher-path" ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 0.05; done
+  [ -f "$home/state/.watch.lock/watcher-path" ] || fail 'private finite watcher never acquired its lock'
+  status=0
+  out=$(cd "$home" && printf '%s' '{"stop_hook_active":false,"session_id":"private-finite"}' |
+    env -i PATH="$PATH" HOME="$home" FM_HOME="$home" FM_BACKEND=tmux FM_HARNESS=codex \
+      bash -c "$command" 2>&1) || status=$?
+  expect_code 2 "$status" 'matching live finite watcher cannot establish post-final custody'
+  assert_contains "$out" 'CONTINUATION_REQUIRED:' 'finite checkpoint refusal'
+  status=0; wait "$cp" || status=$?
+  expect_code 124 "$status" 'private watcher must actually expire'
+  pass 'configured Codex Stop rejects a real finite checkpoint as post-final custody'
+
+  : > "$home/state/.afk"
+  status=0
+  out=$(cd "$home" && printf '%s' '{"stop_hook_active":true,"session_id":"private-away"}' |
+    env -i PATH="$PATH" HOME="$home" FM_HOME="$home" FM_BACKEND=tmux FM_HARNESS=codex \
+      bash -c "$command" 2>&1) || status=$?
+  expect_code 2 "$status" 'away flag cannot establish receiver acceptance'
+  pass 'configured Codex Stop refuses away mode without a verified owner'
+}
+
+test_configured_stop_retry_does_not_admit_unfinished_work
 test_quiet_checkpoint_exits_124_cleanly
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment

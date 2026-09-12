@@ -68,7 +68,10 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 
 Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.
-In the default Codex mode, a true value lets the second stop finish after one forced continuation.
+The configured Codex hook uses `--codex`; a retry flag never proves post-final custody.
+Its bounded recovery and exact away-owner binding live in [`bin/fm-codex-continuation-lib.sh`](../bin/fm-codex-continuation-lib.sh).
+A finite checkpoint can deliver a foreground result but cannot justify model final while work remains.
+Exhausted recovery is reported and recorded as CNO, with unfinished work retained; it is not completion or receiver acceptance.
 
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.

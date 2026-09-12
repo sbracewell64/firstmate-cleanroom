@@ -903,6 +903,8 @@ else
   # inventory comparison bin/fm-nm-observe.sh owns. It is silent for a home
   # that holds no obligation and for unchanged state, so a line here is a
   # new or changed coverage finding with its heal command.
+  "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile || \
+    printf 'CONTINUATION_CNO: resume reconciliation retains unresolved owner obligations\n'
   NM_OBSERVE_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
     "$SCRIPT_DIR/fm-nm-observe.sh" reconcile --startup 2>&1) || NM_OBSERVE_OUT=
   if [ -n "$NM_OBSERVE_OUT" ]; then

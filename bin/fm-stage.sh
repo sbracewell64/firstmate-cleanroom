@@ -783,6 +783,11 @@ readback_evidence() {  # prints the evidence, or 1
   if [ -f "$marker" ] && [ ! -L "$marker" ]; then
     if { IFS= read -r version && IFS= read -r provider && IFS= read -r host && IFS= read -r path && IFS= read -r number && ! IFS= read -r extra; } < "$marker" \
         && [ "$version" = fm-pr-poll-merge-notified-v1 ] && [ -n "$provider" ] && [ -n "$host" ] && [ -n "$path" ] && [ -n "$number" ]; then
+      if fm_nm_effect_required "$META"; then
+        fm_pr_url_parse "$(meta stage_pr)" >/dev/null 2>&1 || return 1
+        [ "$provider" = "$FM_PR_PROVIDER" ] && [ "$host" = "$FM_PR_HOST" ] \
+          && [ "$path" = "$FM_PR_PATH" ] && [ "$number" = "$FM_PR_NUMBER" ] || return 1
+      fi
       printf 'merged:%s:%s:%s:%s' "$provider" "$host" "$path" "$number"
       return 0
     fi

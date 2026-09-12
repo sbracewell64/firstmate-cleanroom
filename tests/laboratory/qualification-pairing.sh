@@ -44,6 +44,10 @@ for field in attempt generation evidence_sha256 repo branch head; do
 done
 stage landing > "$LAB/landing.out"
 cp "$FM_STATE_OVERRIDE/source.meta" "$LAB/landing.meta"
+printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\nforeign/repo\n42\n' > "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
+refuses stage activated
+[ "$(meta stage)" = landing ]
+printf 'PASS exact artifact: foreign merge readback cannot activate qualified B\n'
 printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\ntest/repo\n42\n' > "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
 stage activated > "$LAB/activated.out"
 cp "$FM_STATE_OVERRIDE/source.meta" "$LAB/activated.meta"

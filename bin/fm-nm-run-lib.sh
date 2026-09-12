@@ -145,9 +145,14 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
   local raw
   raw=$(printf '%s\n' "$1" | awk -v section="$2" -v key="$3" '
-    /^branch_sync:$/ { roots++; inside=1; group=""; next }
+    /^branch_sync:/ {
+      roots++; inside=1; group=""
+      if ($0 != "branch_sync:") invalid_root=1
+      next
+    }
     /^[^ ]/ { inside=0 }
-    inside && /^  [a-z_]+:/ {
+    inside && /^  [^[:space:]]/ { group="" }
+    inside && /^  [^[:space:]][^:]*:/ {
       line=substr($0,3); name=line; sub(/:.*/,"",name)
       value=line; sub(/^[^:]*:[ ]*/,"",value)
       group=name; groups[name]++
@@ -161,7 +166,7 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
       if (name == key) { count++; found=value }
     }
     END {
-      if (invalid_section || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
+      if (invalid_root || invalid_section || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
       print found
     }') || return 1
   if [ "${4:-}" = raw ]; then printf '%s' "$raw"; else fm_nm_strip_quotes "$raw"; fi

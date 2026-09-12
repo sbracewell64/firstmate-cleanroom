@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Positional arguments expand only inside these isolated child shells.
+# shellcheck disable=SC2016
 set -euo pipefail
 # shellcheck source=tests/laboratory/qualification-fixture.sh
 . "$(dirname "${BASH_SOURCE[0]}")/qualification-fixture.sh"

@@ -17,6 +17,9 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-nm-run-lib.sh"
+
 FM_PR_PROVIDER=
 FM_PR_URL=
 FM_PR_HOST=
@@ -286,7 +289,7 @@ fm_pr_regular_destination_on_device_or_absent() {
 }
 
 fm_pr_metadata_identity_parse() {
-  local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
+  local file=$1 task=${2:-$(basename "$1" .meta)} line value pr_count=0 seen_pr=0 post_pr_invalid=0 effect_count=0 qualification
   FM_PR_META_PROVIDER=
   FM_PR_META_URL=
   FM_PR_META_HOST=
@@ -315,6 +318,13 @@ fm_pr_metadata_identity_parse() {
           fm_pr_head_valid "$value" || post_pr_invalid=1
         fi
         ;;
+      stage_ci_ready_effect=*)
+        effect_count=$((effect_count + 1))
+        [ "$effect_count" -eq 1 ] || post_pr_invalid=1
+        ;;
+      completion_handoff=*)
+        printf '%s' "${line#*=}" | jq -e 'type == "object" and .contract.schema == "fm-completion-handoff/v1"' >/dev/null 2>&1 || post_pr_invalid=1
+        ;;
       # The lifecycle owner rewrites these exact fields after registration.
       # They are not PR identity; unknown stage_* fields remain refused.
       # Field schema: bin/fm-stage.sh.
@@ -331,7 +341,11 @@ fm_pr_metadata_identity_parse() {
   done < "$file"
   [ "$pr_count" -eq 1 ] || return 1
   [ "$post_pr_invalid" -eq 0 ] || return 1
-  [ -n "$FM_PR_META_URL" ]
+  [ -n "$FM_PR_META_URL" ] || return 1
+  if fm_nm_effect_required "$file"; then
+    qualification=$(fm_nm_effect_current "$file" "$FM_PR_META_URL" "$task") || return 1
+    [ "$(sed -n 's/^pr_head=//p' "$file")" = "$(printf '%s' "$qualification" | jq -r .head)" ] || return 1
+  fi
 }
 
 # Sidecar layout: provider, url, host, path, number, one per line. A sidecar

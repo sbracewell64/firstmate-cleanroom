@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export FM_PAIR_LEGACY=1 FM_PAIR_STAGE_ROOT=${FM_QUALIFICATION_BASELINE_ROOT:?}
+# shellcheck source=tests/laboratory/qualification-fixture.sh
 . "$(dirname "${BASH_SOURCE[0]}")/qualification-fixture.sh"
 stage committed > "$LAB/committed.out"
 stage running --run "$RUN" > "$LAB/running.out"

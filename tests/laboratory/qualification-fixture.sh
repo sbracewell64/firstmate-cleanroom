@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Sourced fixture exports these identities to the two actual-caller drivers.
+# shellcheck disable=SC2034
 set -euo pipefail
 ROOT=${FM_PAIR_STAGE_ROOT:-${FM_QUALIFICATION_CONSUMER_ROOT:?}}
 LAB=$1

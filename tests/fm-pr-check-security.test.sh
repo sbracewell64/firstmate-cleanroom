@@ -2271,6 +2271,15 @@ test_stage_activation_preserves_registered_poll() {
     'stage_tree=0123456789abcdef0123456789abcdef01234567' \
     'stage_gen=fixture' 'stage_attempt=attempt-1' 'stage_run=run-1' \
     'stage_pr=https://github.com/o/r/pull/38' >> "$dir/home/state/task-a.meta"
+  # A fabricated no-mistakes stage label is no qualification authority.
+  if run_check_entry "$dir" task-a https://github.com/o/r/pull/38 > "$dir/unqualified.out" 2>&1; then
+    fail "unqualified stage label registered a poll"
+  fi
+  assert_grep 'QUALIFICATION_REVOKED' "$dir/unqualified.out" "missing producer predicate must refuse"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "unqualified stage armed a poll"
+  # Preserve the generic lifecycle/parser guarantee on a direct-PR task.
+  # Exact no-mistakes stage effects are exercised by the producer pairing lab.
+  sed -i 's/^mode=no-mistakes$/mode=direct-PR/' "$dir/home/state/task-a.meta"
   run_check_entry "$dir" task-a https://github.com/o/r/pull/38 >/dev/null \
     || fail "stage fixture registration failed"
   fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
@@ -2280,7 +2289,7 @@ test_stage_activation_preserves_registered_poll() {
   FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
     FM_DATA_OVERRIDE="$dir/home/data" FM_CONFIG_OVERRIDE="$dir/home/config" \
     "$ROOT/bin/fm-stage.sh" task-a activated > "$dir/stage.out" 2> "$dir/stage.err" \
-    || fail "maintained activation failed: $(cat "$dir/stage.err")"
+    || fail "maintained activation failed: $(cat "$dir/stage.out" "$dir/stage.err")"
   assert_grep 'STAGE: activated:' "$dir/stage.out" "activation must actually publish"
   fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
     || fail "maintained activation invalidated authenticated PR snapshot"

@@ -145,6 +145,14 @@ META_LOCK_HELD=1
 META_DEVICE=$(fm_pr_file_device "$META") || exit 1
 STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
+if fm_nm_effect_required "$META"; then
+  QUALIFICATION=$(fm_nm_effect_current "$META" "$URL") || {
+    echo 'error: QUALIFICATION_REVOKED: PR registration remains unresolved' >&2; exit 1;
+  }
+  [ "$PR_HEAD" = "$(printf '%s' "$QUALIFICATION" | jq -r .head)" ] || {
+    echo 'error: QUALIFICATION_HEAD: forge head differs from qualified head' >&2; exit 1;
+  }
+fi
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
@@ -156,7 +164,7 @@ printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
-fm_pr_metadata_identity_parse "$META_TMP" || exit 1
+fm_pr_metadata_identity_parse "$META_TMP" "$ID" || exit 1
 [ "$FM_PR_META_PROVIDER" = "$PROVIDER" ] && [ "$FM_PR_META_URL" = "$URL" ] \
   && [ "$FM_PR_META_HOST" = "$HOST" ] && [ "$FM_PR_META_PATH" = "$PROJECT_PATH" ] \
   && [ "$FM_PR_META_NUMBER" = "$NUMBER" ] || exit 1

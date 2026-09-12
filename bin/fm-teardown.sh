@@ -281,6 +281,12 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
   echo "error: teardown refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
+if fm_nm_effect_required "$META"; then
+  fm_nm_effect_current "$META" >/dev/null || {
+    echo 'REFUSED: exact qualification is invalidated or unavailable; task remains unresolved' >&2
+    exit 1
+  }
+fi
 if grep -q '^completion_handoff=' "$META"; then
   # shellcheck source=bin/fm-completion-lib.sh
   . "$SCRIPT_DIR/fm-completion-lib.sh"

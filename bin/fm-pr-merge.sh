@@ -627,6 +627,13 @@ gitlab_confirm_merged() {
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
 record_pr_metadata || exit 1
+if fm_nm_effect_required "$STATE/$ID.meta"; then
+  fm_nm_effect_current "$STATE/$ID.meta" "$URL" >/dev/null || {
+    echo 'error: QUALIFICATION_REVOKED: merge remains unresolved' >&2; exit 1;
+  }
+  echo 'error: QUALIFIED_MERGE_HEAD_GUARD_UNAVAILABLE: maintained merge transport cannot bind the qualified head; merge remains unresolved' >&2
+  exit 1
+fi
 
 case "$PROVIDER" in
   github)

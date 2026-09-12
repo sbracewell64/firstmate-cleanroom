@@ -408,7 +408,7 @@ receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
 # receipt without its record, and the next run appends it again: a bounded
 # duplicate, never a lost transition.
 issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...]
-  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv
+  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv ci_effect=
   shift 6
   line=$(receipt_line "$stage" "$owner" "$reason" "$branch" "$head" "$tree")
   printf '%s\n' "$line" >> "$STATUS"
@@ -419,6 +419,19 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     fm_lock_release "$lock"
     echo "error: task record for $ID is unsafe ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 2
+  fi
+  if [ "$stage" = ci-ready ]; then
+    for kv in "$@"; do
+      case "$kv" in stage_ci_ready_effect=*) ci_effect=${kv#*=} ;; esac
+    done
+    if ! printf '%s' "$ci_effect" | jq -se --arg task "$ID" --arg generation "$(meta spawn_gen)" \
+      --arg attempt "$(meta stage_attempt)" --arg run "$(meta stage_run)" --arg candidate "$(meta stage_head)" '
+      length == 1 and (.[0] | .task == $task and .generation == $generation and .attempt == $attempt and
+      .run == $run and .candidate == $candidate)
+    ' >/dev/null 2>&1; then
+      fm_lock_release "$lock"
+      refuse ci-ready STALE_BINDING 'task identity changed during qualification'
+    fi
   fi
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
@@ -434,6 +447,9 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     else
       printf 'stage_evidence=%s\n' "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}"
     fi
+    case "$stage" in
+      landing|activated) printf 'stage_ci_ready_effect=%s\n' "$(meta stage_ci_ready_effect)" ;;
+    esac
     for kv in "$@"; do printf '%s\n' "$kv"; done
   } >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE"; then
@@ -683,7 +699,7 @@ do_running() {  # <transition-label>
 }
 
 do_ci_ready() {
-  local current verdict
+  local current verdict effect
   require_ship ci-ready
   engineering_context ci-ready
   [ "$MODE" = no-mistakes ] || refuse ci-ready NOT_ADMITTED "mode=$MODE reports its PR with done:, not a ci-ready stage"
@@ -707,12 +723,15 @@ do_ci_ready() {
   observe refresh "$ID"
   engineering_result
   STAGE_PR_VALUE=$PR_ARG
-  if [ "$current" = ci-ready ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
+  effect=$(jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
+    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$HEAD" --arg pr "$PR_ARG" \
+    '{task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
+  if [ "$current" = ci-ready ] && [ "$(meta stage_ci_ready_effect)" = "$effect" ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
     unchanged ci-ready
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
-      "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG"
+      "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
   fi
   next_for ci-ready
 }

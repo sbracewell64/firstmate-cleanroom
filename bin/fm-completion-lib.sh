@@ -40,23 +40,19 @@ fm_completion_hash() {
 fm_completion_store() { # <single JSON value>
   local value=$1 lock tmp
   lock=$(fm_meta_lock_path "$META") || return 1
-  if [ "$lock" != "${FM_COMPLETION_TARGET_LOCK:-}" ]; then
-    if [ -n "${FM_COMPLETION_TARGET_LOCK:-}" ]; then
-      fm_lock_try_acquire "$lock" || return 1
-    else
-      fm_lock_acquire_wait "$lock" || return 1
-    fi
+  if [ "$lock" != "${FM_COMPLETION_SOURCE_LOCK:-}" ]; then
+    fm_lock_acquire_wait "$lock" || return 1
   fi
-  tmp=$(mktemp "$STATE/.$ID.completion.XXXXXX") || { [ "$lock" = "${FM_COMPLETION_TARGET_LOCK:-}" ] || fm_lock_release "$lock"; return 1; }
-  if ! fm_backlog_record_present "$META" 'task record' "$STATE"; then
-    rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_TARGET_LOCK:-}" ] || fm_lock_release "$lock"; return 1
+  tmp=$(mktemp "$STATE/.$ID.completion.XXXXXX") || { [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1; }
+  if ! fm_backlog_record_present "$META" 'task record' "$STATE" || ! fm_completion_saved_valid "$value"; then
+    rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
   fi
   grep -v '^completion_handoff=' "$META" > "$tmp" || true
   printf 'completion_handoff=%s\n' "$value" >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" 'task record' "$STATE"; then
-    rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_TARGET_LOCK:-}" ] || fm_lock_release "$lock"; return 1
+    rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
   fi
-  [ "$lock" = "${FM_COMPLETION_TARGET_LOCK:-}" ] || fm_lock_release "$lock"
+  [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"
 }
 
 fm_completion_contract_valid() { # <contract JSON>
@@ -162,6 +158,15 @@ fm_completion_pending() { # <saved JSON> <identity> <owner> <reason>
   printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=%s\n' "$ID" "$identity" "$owner" "$reason"
 }
 
+fm_completion_ci_ready_effect() {
+  local contract=$1
+  printf '%s' "$(meta stage_ci_ready_effect)" | jq -se --argjson contract "$contract" '
+      length == 1 and (.[0] | .task == $contract.task and .generation == $contract.generation and
+      .attempt == $contract.attempt and .run == $contract.run and
+      .candidate == $contract.candidate and .source_head == $contract.source_head and .pr == $contract.action.pr)
+    ' >/dev/null 2>&1 && [ "$(meta stage_pr)" = "$(printf '%s' "$contract" | jq -r .action.pr)" ]
+}
+
 fm_completion_resume() {
   local saved contract identity report hash kind owner generation body record effect out rc existing receipt canonical status outcome
   saved=$(meta completion_handoff)
@@ -220,14 +225,23 @@ fm_completion_resume() {
     fm_lease_guard "$owner" completion-delivery || return 1
     FM_COMPLETION_TARGET_LOCK=$(fm_meta_lock_path "$STATE/$owner.meta") || return 1
     fm_task_inbox_lock_acquire "$FM_COMPLETION_TARGET_LOCK" || { fm_completion_refuse TARGET_BUSY; return 1; }
+    FM_COMPLETION_SOURCE_LOCK=$(fm_meta_lock_path "$META") || return 1
+    if [ "$FM_COMPLETION_SOURCE_LOCK" != "$FM_COMPLETION_TARGET_LOCK" ]; then
+      fm_lock_try_acquire "$FM_COMPLETION_SOURCE_LOCK" || { fm_completion_refuse SOURCE_BUSY; return 1; }
+    fi
+    [ -f "$META" ] && [ ! -L "$META" ] && [ "$(meta completion_handoff)" = "$saved" ] \
+      && fm_completion_saved_valid "$saved" || { fm_completion_refuse SOURCE_CHANGED; return 1; }
   fi
   fm_completion_target_current "$contract" || return 1
   if [ "$kind" = ci-ready ]; then
     [ "$owner" = "$ID" ] && [ "$generation" = "$(meta spawn_gen)" ] || { fm_completion_refuse FOREIGN_STAGE_ACTION; return 1; }
     effect="stage:ci-ready:$(printf '%s' "$contract" | jq -r .run):$(printf '%s' "$contract" | jq -r .action.pr)"
-    if [[ "$(meta stage)" =~ ^(ci-ready|landing|activated)$ ]] && [ "$(meta stage_pr)" = "$(printf '%s' "$contract" | jq -r .action.pr)" ]; then
+    if fm_completion_ci_ready_effect "$contract"; then
       record=$effect
     else
+      case "$(meta stage)" in
+        ci-ready|landing|activated) fm_completion_refuse CI_READY_EFFECT_UNPROVEN; return 1 ;;
+      esac
       record=
     fi
   else
@@ -283,7 +297,7 @@ fm_completion_resume() {
       rc=0
       out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
       [ "$rc" -eq 0 ] || { printf '%s\n' "$out"; fm_completion_refuse STAGE_HELD; return 1; }
-      [ "$(meta stage)" = ci-ready ] || { fm_completion_refuse EFFECT_UNCONFIRMED; return 1; }
+      [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract" || { fm_completion_refuse EFFECT_UNCONFIRMED; return 1; }
       record=$effect
     else
       effect=$(fm_task_inbox_write_idempotent "$STATE" "$owner" "$body") || { fm_completion_refuse DELIVERY_UNCONFIRMED; return 1; }
@@ -303,8 +317,8 @@ fm_completion_resume() {
 }
 
 fm_completion_transition() ( # <handoff|handoff-release|resume-handoff>
-  local transition=$1 lock saved rc=0 FM_COMPLETION_TARGET_LOCK=
-  trap '[ -z "$FM_COMPLETION_TARGET_LOCK" ] || fm_lock_release "$FM_COMPLETION_TARGET_LOCK"; fm_lock_release "$lock"; fm_lease_guard_release' EXIT
+  local transition=$1 lock saved rc=0 FM_COMPLETION_TARGET_LOCK= FM_COMPLETION_SOURCE_LOCK=
+  trap '[ -z "$FM_COMPLETION_SOURCE_LOCK" ] || [ "$FM_COMPLETION_SOURCE_LOCK" = "$FM_COMPLETION_TARGET_LOCK" ] || fm_lock_release "$FM_COMPLETION_SOURCE_LOCK"; [ -z "$FM_COMPLETION_TARGET_LOCK" ] || fm_lock_release "$FM_COMPLETION_TARGET_LOCK"; fm_lock_release "$lock"; fm_lease_guard_release' EXIT
   lock="$STATE/.$ID.completion.lock"
   [ "$transition" != handoff-release ] || fm_lease_forbid_branch handoff-capacity-release
   fm_lease_guard "$ID" completion-handoff || return 1

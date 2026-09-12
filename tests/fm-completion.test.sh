@@ -397,7 +397,7 @@ test_remote_and_destination_lease() {
 
 test_destination_changes_while_delivery_waits() {
   local mutation out rc identity worker holder i
-  for mutation in replacement retirement remote; do
+  for mutation in replacement retirement remote source-replacement unchanged; do
     prepare_delivery
     stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'race admission'
     identity=$(meta completion_handoff | jq -r .identity)
@@ -441,21 +441,39 @@ SH
       replacement) fm_write_meta "$FM_STATE_OVERRIDE/guarded.meta" 'kind=ship' 'spawn_gen=g2' 'harness=echo' ;;
       retirement) rm "$FM_STATE_OVERRIDE/guarded.meta" ;;
       remote) printf 'remote_host=remote.example\n' >> "$FM_STATE_OVERRIDE/guarded.meta" ;;
+      source-replacement)
+        bash -c '
+          . "$1/bin/fm-wake-lib.sh"
+          lock=$(fm_meta_lock_path "$STATE/source.meta")
+          fm_lock_acquire_wait "$lock"
+          sed "s/^spawn_gen=.*/spawn_gen=relaunched/" "$STATE/source.meta" > "$STATE/source.next"
+          mv "$STATE/source.next" "$STATE/source.meta"
+          fm_lock_release "$lock"
+        ' _ "$ROOT" || fail 'source relaunch mutation'
+        ;;
     esac
     : > "$FM_TEST_DEST_UNLOCK"
     wait "$holder" || fail 'metadata holder failed'
     rc=0; wait "$worker" || rc=$?
     rm "$FAKEBIN/cat"
     out=$(cat "$TMP_ROOT/race.out")
+    if [ "$mutation" = unchanged ]; then
+      expect_code 0 "$rc" 'unchanged source after contention'
+      assert_present "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'unchanged source did not dispatch'
+      [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'unchanged source receipt absent'
+      rm -r "$FM_STATE_OVERRIDE/guarded.inbox"
+      continue
+    fi
     expect_code 1 "$rc" "$mutation during delivery"
     case "$mutation" in
       replacement) assert_contains "$out" TARGET_GENERATION 'replacement refusal' ;;
       retirement) assert_contains "$out" TARGET_UNREADABLE 'retirement refusal' ;;
       remote) assert_contains "$out" UNSUPPORTED_REMOTE_TARGET 'remote race refusal' ;;
+      source-replacement) assert_contains "$out" SOURCE_CHANGED 'source relaunch refusal' ;;
     esac
     assert_no_delivery
   done
-  pass 'destination replacement, retirement and remote routing changes under custody prevent stale delivery'
+  pass 'source relaunch and destination changes refuse stale delivery; unchanged custody permits delivery'
 }
 
 test_self_target_delivery() {
@@ -470,6 +488,132 @@ test_self_target_delivery() {
   stage resume-handoff >/dev/null || fail 'self replay'
   assert_absent "$FM_STATE_OVERRIDE/source.inbox/002.msg" 'self delivery duplicated'
   pass 'self-target delivery and receipt persist without recursive metadata locking'
+}
+
+test_unqualified_and_foreign_stage_effects_refuse() {
+  local out rc saved field effect
+  prepare_delivery
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'unqualified stage admission'
+  rc=0; out=$(stage landing) || rc=$?
+  expect_code 1 "$rc" 'direct landing must leave CI-ready effect unresolved'
+  [ "$(meta stage)" = landing ] || fail 'negative fixture did not reach landing'
+  assert_contains "$out" CI_READY_EFFECT_UNPROVEN 'direct landing fabricated qualification'
+  [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'direct landing synthesized a receipt'
+  prepare_delivery
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'qualified stage admission'
+  stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'actual qualification'
+  stage landing >/dev/null || fail 'qualified landing'
+  saved=$(meta completion_handoff | jq -c '.receipt=null | .status="pending"')
+  effect=$(meta stage_ci_ready_effect)
+  cp "$FM_STATE_OVERRIDE/source.meta" "$TMP_ROOT/qualified.meta"
+  for field in task generation attempt run candidate source_head pr missing; do
+    sed -e '/^completion_handoff=/d' -e '/^stage_ci_ready_effect=/d' "$TMP_ROOT/qualified.meta" > "$FM_STATE_OVERRIDE/source.meta"
+    printf 'completion_handoff=%s\n' "$saved" >> "$FM_STATE_OVERRIDE/source.meta"
+    if [ "$field" != missing ]; then
+      printf 'stage_ci_ready_effect=%s\n' "$(printf '%s' "$effect" | jq -c --arg field "$field" '.[$field]="foreign"')" >> "$FM_STATE_OVERRIDE/source.meta"
+    fi
+    rc=0; out=$(stage resume-handoff) || rc=$?
+    expect_code 1 "$rc" "unproven historical effect: $field"
+    assert_contains "$out" CI_READY_EFFECT_UNPROVEN "effect identity mismatch: $field"
+    [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'foreign effect repaired receipt'
+  done
+  cp "$TMP_ROOT/qualified.meta" "$FM_STATE_OVERRIDE/source.meta"
+  pass 'direct landing and missing or foreign qualification evidence never reconstruct CI-ready success'
+}
+
+test_checkpoint_observation_lock_bounds() (
+  local boundary holder checkpoint rc i identity
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  for boundary in entry exit; do
+    export FM_STATE_OVERRIDE="$TMP_ROOT/checkpoint-$boundary-state"
+    mkdir -p "$FM_STATE_OVERRIDE"
+    prepare_delivery
+    canonical running
+    stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'checkpoint admission'
+    identity=$(meta completion_handoff | jq -r .identity)
+    stage handoff-release --identity "$identity" >/dev/null || fail 'checkpoint pending release'
+    rm -f "$TMP_ROOT/observation-held" "$TMP_ROOT/observation-release"
+    bash -c '
+      . "$1/bin/fm-wake-lib.sh"
+      if [ "$3" = exit ]; then
+        while [ ! -f "$STATE/.watch.lock/watcher-path" ]; do sleep 0.02; done
+      fi
+      lock="$STATE/.nm-observe-source.lock"
+      fm_lock_acquire_wait "$lock"
+      : > "$2/observation-held"
+      while [ ! -f "$2/observation-release" ]; do sleep 0.02; done
+      fm_lock_release "$lock"
+    ' _ "$ROOT" "$TMP_ROOT" "$boundary" &
+    holder=$!
+    if [ "$boundary" = entry ]; then
+      for ((i=0; i<500; i++)); do
+        [ ! -f "$TMP_ROOT/observation-held" ] || break
+        sleep 0.02
+      done
+      [ -f "$TMP_ROOT/observation-held" ] || fail 'observation holder absent'
+    fi
+    FM_POLL=1 FM_CHECK_INTERVAL=999999 fm_run_timed 30 "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 5 \
+      > "$TMP_ROOT/checkpoint-$boundary.out" 2> "$TMP_ROOT/checkpoint-$boundary.err" &
+    checkpoint=$!
+    rc=0; wait "$checkpoint" || rc=$?
+    : > "$TMP_ROOT/observation-release"
+    if [ ! -f "$TMP_ROOT/observation-held" ]; then kill "$holder" 2>/dev/null || true; fi
+    wait "$holder" || fail 'observation holder failed'
+    expect_code 124 "$rc" "$boundary checkpoint bound"
+    assert_contains "$(cat "$TMP_ROOT/checkpoint-$boundary.err")" "boundary=$boundary status=124" 'held observation must time out with explicit unresolved disposition'
+    assert_contains "$(cat "$TMP_ROOT/checkpoint-$boundary.out")" 'checkpoint: no actionable wake within 5s' 'outer watchdog, rather than finite checkpoint, expired'
+    [ "$(meta completion_handoff | jq -r .status)" = pending ] || fail 'timed-out reconciliation closed unresolved action'
+    assert_absent "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'timed-out reconciliation dispatched action'
+  done
+  pass 'finite checkpoint bounds entry and exit reconciliation against a live observation lock'
+)
+
+test_opposite_direction_delivery_does_not_deadlock() {
+  local other_wt out rc pid first second
+  prepare_delivery
+  rm -rf "$FM_STATE_OVERRIDE/source.inbox"
+  other_wt="$TMP_ROOT/other-worktree"
+  git clone -q "$WT" "$other_wt" || fail 'opposite fixture clone'
+  git -C "$other_wt" checkout -qb fm/other || fail 'opposite fixture branch'
+  mkdir -p "$FM_DATA_OVERRIDE/other"
+  cp "$FM_DATA_OVERRIDE/source/brief.md" "$FM_DATA_OVERRIDE/other/brief.md"
+  cp "$FM_DATA_OVERRIDE/source/report.md" "$FM_DATA_OVERRIDE/other/report.md"
+  fm_write_meta "$FM_STATE_OVERRIDE/other.meta" "worktree=$other_wt" "project=$other_wt" \
+    'harness=echo' 'kind=ship' 'mode=no-mistakes' 'yolo=off' 'spawn_gen=other1'
+  canonical running
+  sed -e 's/01SOURCE/01OTHER/g' -e 's,fm/source,fm/other,g' "$FM_COMPLETION_TEST_CANONICAL" > "$TMP_ROOT/other-canonical"
+  FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" "$ROOT/bin/fm-stage.sh" other committed >/dev/null || fail 'opposite admission'
+  FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" "$ROOT/bin/fm-stage.sh" other running --run 01OTHER >/dev/null || fail 'opposite run binding'
+  jq '.action.owner="other" | .action.generation="other1"' "$TMP_ROOT/guarded.json" > "$TMP_ROOT/to-other.json"
+  jq --arg attempt "$(sed -n 's/^stage_attempt=//p' "$FM_STATE_OVERRIDE/other.meta")" \
+    --arg report "$FM_DATA_OVERRIDE/other/report.md" \
+    '.task="other" | .generation="other1" | .attempt=$attempt | .run="01OTHER" | .report.path=$report |
+     .action.owner="source" | .action.generation="s1.1.1"' "$TMP_ROOT/guarded.json" > "$TMP_ROOT/to-source.json"
+  stage handoff --handoff-json "$TMP_ROOT/to-other.json" >/dev/null || fail 'source opposite handoff'
+  FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" "$ROOT/bin/fm-stage.sh" other handoff --handoff-json "$TMP_ROOT/to-source.json" >/dev/null || fail 'other opposite handoff'
+  stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'source opposite release'
+  FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" "$ROOT/bin/fm-stage.sh" other handoff-release \
+    --identity "$(sed -n 's/^completion_handoff=//p' "$FM_STATE_OVERRIDE/other.meta" | jq -r .identity)" >/dev/null || fail 'other opposite release'
+  canonical completed checks-passed
+  sed -e 's/01SOURCE/01OTHER/g' -e 's,fm/source,fm/other,g' "$FM_COMPLETION_TEST_CANONICAL" > "$TMP_ROOT/other-canonical"
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  fm_run_timed 20 "$ROOT/bin/fm-stage.sh" source resume-handoff > "$TMP_ROOT/opposite-source.out" 2>&1 &
+  first=$!
+  FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" fm_run_timed 20 "$ROOT/bin/fm-stage.sh" other resume-handoff > "$TMP_ROOT/opposite-other.out" 2>&1 &
+  second=$!
+  for pid in "$first" "$second"; do
+    rc=0; wait "$pid" || rc=$?
+    case "$rc" in 0|1) ;; *) fail "opposite delivery hung or failed unexpectedly: $rc" ;; esac
+  done
+  out=$(stage resume-handoff) || fail "opposite source retry: $out"
+  out=$(FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/other-canonical" "$ROOT/bin/fm-stage.sh" other resume-handoff) || fail "opposite other retry: $out"
+  assert_present "$FM_STATE_OVERRIDE/source.inbox/001.msg" 'opposite source delivery missing'
+  assert_present "$FM_STATE_OVERRIDE/other.inbox/001.msg" 'opposite other delivery missing'
+  assert_absent "$FM_STATE_OVERRIDE/source.inbox/002.msg" 'opposite source duplicate'
+  assert_absent "$FM_STATE_OVERRIDE/other.inbox/002.msg" 'opposite other duplicate'
+  pass 'opposite-direction deliveries terminate without deadlock and converge to one effect each'
 }
 
 test_show_refreshes_stale_completed_run
@@ -487,3 +631,6 @@ test_concurrent_resume_dispatches_once
 test_remote_and_destination_lease
 test_destination_changes_while_delivery_waits
 test_self_target_delivery
+test_unqualified_and_foreign_stage_effects_refuse
+test_checkpoint_observation_lock_bounds
+test_opposite_direction_delivery_does_not_deadlock

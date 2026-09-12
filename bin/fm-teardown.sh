@@ -290,7 +290,7 @@ fi
 if grep -q '^completion_handoff=' "$META"; then
   # shellcheck source=bin/fm-completion-lib.sh
   . "$SCRIPT_DIR/fm-completion-lib.sh"
-  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" || {
+  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" --check || {
     echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
     exit 1
   }
@@ -2736,12 +2736,25 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
+
+if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ] && [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
+  require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
+  ORCA_PATH_MATCH_VERIFIED=1
+fi
+if grep -q '^completion_handoff=' "$META"; then
+  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" || {
+    echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
+    exit 1
+  }
+fi
+if [ "$KIND" != secondmate ]; then
+  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
@@ -2897,6 +2910,9 @@ fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
+if grep -q '^completion_handoff=' "$META"; then
+  fm_completion_report_current "$(fm_meta_get "$META" completion_handoff | jq -c .contract)" || exit 1
+fi
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.nm-observe" \
   "$STATE/$ID.nm-assessment" "$STATE/.nm-assess-$ID.lock" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \

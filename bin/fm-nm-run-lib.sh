@@ -150,23 +150,25 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
       if ($0 != "branch_sync:") invalid_root=1
       next
     }
-    /^[^ ]/ { inside=0 }
-    inside && /^  [^[:space:]]/ { group="" }
+    /^[^[:space:]]/ { inside=0 }
     inside && /^  [^[:space:]][^:]*:/ {
       line=substr($0,3); name=line; sub(/:.*/,"",name)
       value=line; sub(/^[^:]*:[ ]*/,"",value)
-      group=name; groups[name]++
+      group=name; group_value=value; groups[name]++
       if (name == section && value != "") invalid_section=1
       if (section == "" && name == key) { count++; found=value }
       next
     }
-    inside && /^    [a-z_]+:/ && group == section {
+    inside && /^    [^[:space:]][^:]*:/ {
+      if (group == "" || group_value != "") invalid_structure=1
       line=substr($0,5); name=line; sub(/:.*/,"",name)
       value=line; sub(/^[^:]*:[ ]*/,"",value)
-      if (name == key) { count++; found=value }
+      if (group == section && name == key) { count++; found=value }
+      next
     }
+    inside && !/^ *$/ { invalid_structure=1 }
     END {
-      if (invalid_root || invalid_section || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
+      if (invalid_root || invalid_section || invalid_structure || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
       print found
     }') || return 1
   if [ "${4:-}" = raw ]; then printf '%s' "$raw"; else fm_nm_strip_quotes "$raw"; fi

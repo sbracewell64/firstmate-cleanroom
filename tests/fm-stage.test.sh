@@ -745,7 +745,7 @@ test_isolated_pipeline_successor
 # Terminal successors need the producer's explicit verified readback, not the
 # active-only exemption or ordinary synchronized equality.
 test_completed_successor_stage() {
-  local wt submitted head out rc proof saved_meta saved_obs mutation valid_status desc
+  local wt submitted head out rc proof saved_meta saved_obs mutation valid_status desc indent
   wt="$TMP_ROOT/wt-terminal"
   make_worktree "$wt" fm/terminal
   submitted=$(git -C "$wt" rev-parse HEAD)
@@ -814,7 +814,7 @@ EOF
   [ "$(meta_get terminal stage_head)" = "$submitted" ] || fail 'admission replaced original candidate'
   [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
   [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
-  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean duplicate duplicate-root scalar-duplicate-root foreign-sibling malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
+  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
     printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
     printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
     FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
@@ -834,6 +834,17 @@ branch_sync:
       scalar-duplicate-root) FM_FAKE_SYNC="$proof
 branch_sync: false" ;;
       foreign-sibling) FM_FAKE_SYNC=${proof/    preserved_head:/  diagnostic-note:$'\n'    preserved_head:} ;;
+      indent-*)
+        case "$mutation" in
+          indent-three) indent='   ' ;;
+          indent-one) indent=' ' ;;
+          indent-five) indent='     ' ;;
+          indent-six) indent='      ' ;;
+          indent-tab) indent=$'\t' ;;
+          indent-mixed) indent=$'  \t' ;;
+        esac
+        FM_FAKE_SYNC=${proof/    preserved_head:/${indent}diagnostic-note:$'\n'    preserved_head:}
+        ;;
       malformed-digest) FM_FAKE_SYNC=${proof/target_fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/target_fingerprint: bad} ;;
       foreign-branch) FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/foreign completed "$head" passed) ;;
       symbolic-anchor) git -C "$wt" symbolic-ref refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 refs/heads/new-base ;;
@@ -855,7 +866,7 @@ branch_sync: false" ;;
     out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
     expect_code 1 "$rc" "terminal successor refuses $mutation: $out"
     [ "$(meta_get terminal stage)" = validation-running ] || fail "$mutation admitted a stage"
-    if [ "$mutation" = scalar-duplicate-root ] || [ "$mutation" = foreign-sibling ]; then
+    if [ "$mutation" = scalar-duplicate-root ] || [ "$mutation" = foreign-sibling ] || [[ "$mutation" = indent-* ]]; then
       [ "$(cat "$STATE/terminal.meta")" = "$saved_meta" ] || fail "$mutation changed stage identity"
       [ "$(cat "$STATE/terminal.nm-observe")" = "$saved_obs" ] || fail "$mutation changed observer identity"
     fi

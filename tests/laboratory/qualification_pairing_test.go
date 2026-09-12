@@ -23,6 +23,16 @@ func TestFirstmateExactQualificationPairing(t *testing.T) {
 	firstmateQualificationPairing(t, "qualification-pairing.sh")
 }
 
+func TestFirstmateDeclaredNoCIQualificationPairing(t *testing.T) {
+	t.Setenv("FM_PAIR_NO_CI", "1")
+	firstmateQualificationPairing(t, "qualification-pairing.sh")
+}
+
+func TestFirstmateLateInvalidationRetainsHistoricalB(t *testing.T) {
+	t.Setenv("FM_PAIR_LATE", "1")
+	firstmateQualificationPairing(t, "qualification-pairing.sh")
+}
+
 func TestFirstmatePreviousQualificationRace(t *testing.T) {
 	firstmateQualificationPairing(t, "qualification-red.sh")
 }
@@ -35,6 +45,14 @@ func firstmateQualificationPairing(t *testing.T, script string) {
 		t.Fatalf("mandatory exact artifact unavailable or digest differs: %v", err)
 	}
 	s, home := qualificationContext(t)
+	if os.Getenv("FM_PAIR_NO_CI") == "1" {
+		s.Config.NoCI = true
+		for i, v := range s.Env {
+			if strings.HasPrefix(v, "FAKE_CLI_CHECKS=") {
+				s.Env[i] = "FAKE_CLI_CHECKS=[]"
+			}
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.Ctx = ctx

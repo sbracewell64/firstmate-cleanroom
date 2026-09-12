@@ -50,10 +50,19 @@ cp "$LAB/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
 rm "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
 : > "$FM_STATE_OVERRIDE/source.status"
 refuses env FM_PAIR_RACE=1 FM_COMPLETION_RECONCILING=1 "$ROOT/bin/fm-stage.sh" source ci-ready --pr "$PR"
-[ "$(meta stage)" = validation-running ]
-[ -z "$(meta stage_ci_ready_effect)" ]
-[ ! -s "$FM_STATE_OVERRIDE/source.status" ]
-printf 'PASS exact artifact: B observed then producer C; no CI-ready effect or receipt\n'
+if [ "${FM_PAIR_LATE:-}" = 1 ]; then
+ [ "$(meta stage)" = ci-ready ]
+ [ "$(meta stage_ci_ready_effect | jq -r .source_head)" = "$B" ]
+ [ "$(meta stage_ci_ready_effect | jq -r .qualification.head)" = "$B" ]
+ [ -z "$(meta completion_handoff)" ]
+ grep -q 'qualification=revocable' "$FM_STATE_OVERRIDE/source.status"
+ printf 'PASS exact artifact: invalidation after conditional read leaves only historical B; final current-use check refuses\n'
+else
+ [ "$(meta stage)" = validation-running ]
+ [ -z "$(meta stage_ci_ready_effect)" ]
+ [ ! -s "$FM_STATE_OVERRIDE/source.status" ]
+ printf 'PASS exact artifact: B observed then producer C; no CI-ready effect or receipt\n'
+fi
 for advanced in ci-ready landing activated; do
  cp "$LAB/$advanced.meta" "$FM_STATE_OVERRIDE/source.meta"
  cp "$FM_STATE_OVERRIDE/source.meta" "$LAB/before.meta"

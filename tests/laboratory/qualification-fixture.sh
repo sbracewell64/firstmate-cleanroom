@@ -40,7 +40,8 @@ case "$*" in
    --argjson argv "$(printf '%s\n' "$@" | jq -Rsc 'split("\n")[:-1]')" \
    '{executable:$executable,executable_sha256:$sha,home:$home,nm_home:$nm_home,argv:$argv,status:$status,stdout:$output,stderr:$error}' > "$call_dir/invocation.json"
   [ "$rc" -eq 0 ] || exit "$rc"
-  if [ "${FM_PAIR_LEGACY:-}" != 1 ] && [ "${FM_PAIR_RACE:-}" = 1 ] && [ ! -f "$LAB/race-ready" ]; then
+  if [ "${FM_PAIR_LEGACY:-}" != 1 ] && [ "${FM_PAIR_RACE:-}" = 1 ] && [ ! -f "$LAB/race-ready" ] \
+      && { [ "${FM_PAIR_LATE:-}" != 1 ] || [[ " $* " == *' --attempt '* ]]; }; then
    touch "$LAB/race-ready"
    for ((i=0; i<1200; i++)); do
     [ ! -f "$LAB/race-release" ] || break

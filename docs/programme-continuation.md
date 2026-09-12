@@ -20,7 +20,16 @@ An inbox effect records delivery only and retains its downstream obligation, inc
 Teardown preserves such an unresolved task; retirement of a confirmed stage effect archives its exact contract/receipt under the task's durable data directory, without making that archive an execution input.
 Qualification, caller synchronization, landing, deployment and actual consumption remain independently owned.
 
-CI-ready effect evidence retains the submitted candidate separately from the exact qualified canonical run head, using the attribution rules owned by `bin/fm-nm-run-lib.sh` and the existing qualification and engineering-evidence gates.
+CI-ready effect evidence retains the submitted candidate separately from the exact qualified canonical run head, using the attribution and conditional qualification reader owned by `bin/fm-nm-run-lib.sh` and the existing engineering-evidence gate.
+The effect retains one revocable producer tuple, with its attempt/generation separate from the original admission identity.
+Each current use in stage publication, repeat/show, completion recovery, landing, PR registration/polling and retirement revalidates that same tuple.
+An invalidated record remains historical evidence; it cannot qualify a newer head or close unresolved work.
+Checks-green monitoring can qualify CI-ready, while task-inbox eligibility remains terminal-only.
+An unavailable producer interface refuses; coarse status, logs and presentation cannot replace it.
+Conditional reads provide no atomic transaction with a later local write or forge operation.
+The maintained GitHub merge transport cannot bind the qualified head, so an obligated merge refuses with `QUALIFIED_MERGE_HEAD_GUARD_UNAVAILABLE`.
+Portable contract tests use an explicit external producer double; `tests/laboratory/qualification_pairing_test.go` separately requires a supplied producer fixture, exact digest-bound artifact and durable private evidence directory.
+The laboratory uses real producer SQLite/CI methods with fake forge transport and exact-artifact read-only qualification; it proves neither installed-service adoption nor native receiver continuity.
 The caller checkout need not advance to the qualified successor.
 `tests/fm-stage.test.sh` covers isolated pipeline successors, and `test_qualified_successor_identity` in `tests/fm-completion.test.sh` covers handoff dispatch and receipt reconstruction with distinct submitted and qualified heads.
 

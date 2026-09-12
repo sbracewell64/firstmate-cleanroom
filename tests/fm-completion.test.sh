@@ -907,8 +907,8 @@ test_report_changes_during_qualification() (
   printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/qualification-bin/tmux"
   chmod +x "$TMP_ROOT/qualification-bin/tmux"
   export PATH="$TMP_ROOT/qualification-bin:$PATH"
-  for boundary in ${1:-stage recovery retirement}; do
-    for mutation in changed deleted unchanged; do
+  for boundary in ${1:-stage existing recovery retirement}; do
+    for mutation in ${2:-changed deleted unchanged}; do
       prepare_delivery
       printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
       stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'qualification race admission'
@@ -930,7 +930,7 @@ test_report_changes_during_qualification() (
       cp "$FM_STATE_OVERRIDE/source.status" "$TMP_ROOT/qualification-status"
       export FM_TEST_REPORT_MUTATION="$mutation" FM_TEST_REPORT_PATH="$FM_DATA_OVERRIDE/source/report.md"
       export FM_TEST_REPORT_COUNTER="$TMP_ROOT/qualification-counter" FM_TEST_REPORT_TRIGGER=2
-      [ "$boundary" != stage ] || export FM_TEST_REPORT_TRIGGER=1
+      case "$boundary" in stage|existing) export FM_TEST_REPORT_TRIGGER=1 ;; esac
       printf '0' > "$FM_TEST_REPORT_COUNTER"
       cp "$FAKEBIN/no-mistakes" "$TMP_ROOT/qualification-original"
       cat > "$FAKEBIN/no-mistakes" <<'SH'
@@ -969,6 +969,10 @@ SH
         expect_code 1 "$rc" "$boundary $mutation during qualification"
         [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail "$boundary published metadata after report $mutation"
         cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail "$boundary emitted stage effect after report $mutation"
+        if [ "$boundary" = existing ]; then
+          assert_contains "$out" COMPLETION_CNO 'matching receipt must not suppress report refusal'
+          [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'refusal erased historical dispatched receipt'
+        fi
         if [ "$boundary" = retirement ]; then
           assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'qualification race archived receipt'
           assert_contains "$out" 'completion handoff remains unresolved' 'retirement must refuse at completion owner'
@@ -978,9 +982,16 @@ SH
       else
         expect_code 0 "$rc" "$boundary unchanged qualification"
         [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'unchanged receipt missing'
-        if [ "$boundary" = recovery ]; then
-          cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail 'recovery repeated stage effect'
-        fi
+        case "$boundary" in
+          existing|recovery)
+            cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail 'reconciliation repeated stage effect'
+            saved=$(meta completion_handoff)
+            stage resume-handoff >/dev/null || fail 'unchanged receipt first replay'
+            stage resume-handoff >/dev/null || fail 'unchanged receipt second replay'
+            [ "$saved" = "$(meta completion_handoff)" ] || fail 'replay rewrote matching receipt'
+            cmp -s "$TMP_ROOT/qualification-status" "$FM_STATE_OVERRIDE/source.status" || fail 'replay repeated stage effect'
+            ;;
+        esac
       fi
       pass "$boundary refuses $mutation report during qualification or preserves unchanged success"
     done
@@ -988,7 +999,7 @@ SH
 )
 
 if [ "${1:-}" = qualification-report ]; then
-  test_report_changes_during_qualification "${2:-stage recovery retirement}" || exit 1
+  test_report_changes_during_qualification "${2:-stage existing recovery retirement}" "${3:-changed deleted unchanged}" || exit 1
   exit 0
 fi
 

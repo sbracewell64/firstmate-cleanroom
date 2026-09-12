@@ -126,6 +126,53 @@ test_positive_receipt_retirement_archive() {
   pass 'positive stage-effect receipt retirement preserves the exact non-executable durable archive (portable owner-level call)'
 }
 
+test_retirement_revalidates_report_and_effect() (
+  local mutation out rc saved contract identity before
+  prepare_delivery
+  printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
+  mkdir -p "$TMP_ROOT/retirement-bin"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/retirement-bin/tmux"
+  chmod +x "$TMP_ROOT/retirement-bin/tmux"
+  export PATH="$TMP_ROOT/retirement-bin:$PATH"
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'retirement admission'
+  identity=$(meta completion_handoff | jq -r .identity)
+  stage handoff-release --identity "$identity" >/dev/null || fail 'retirement dispatch'
+  cp "$FM_STATE_OVERRIDE/source.meta" "$TMP_ROOT/retirement.meta"
+  for mutation in changed deleted symlink generation attempt run candidate source_head action.owner action.generation; do
+    cp "$TMP_ROOT/retirement.meta" "$FM_STATE_OVERRIDE/source.meta"
+    rm -f "$FM_DATA_OVERRIDE/source/report.md" "$FM_DATA_OVERRIDE/source/completion-receipt.json"
+    printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+    case "$mutation" in
+      changed) printf 'changed\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
+      deleted) rm "$FM_DATA_OVERRIDE/source/report.md" ;;
+      symlink)
+        mv "$FM_DATA_OVERRIDE/source/report.md" "$TMP_ROOT/report-target"
+        ln -s "$TMP_ROOT/report-target" "$FM_DATA_OVERRIDE/source/report.md"
+        ;;
+      *)
+        contract=$(meta completion_handoff | jq -cS --arg field "$mutation" '
+          .contract | setpath($field | split(".");
+            if $field == "candidate" or $field == "source_head" then "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" else "foreign" end)')
+        identity=$(printf '%s' "$contract" | shasum -a 256 | cut -d' ' -f1)
+        saved=$(meta completion_handoff | jq -c --argjson contract "$contract" --arg identity "$identity" '.contract=$contract | .identity=$identity')
+        sed '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/retirement.next"
+        printf 'completion_handoff=%s\n' "$saved" >> "$TMP_ROOT/retirement.next"
+        mv "$TMP_ROOT/retirement.next" "$FM_STATE_OVERRIDE/source.meta"
+        ;;
+    esac
+    before=$(cat "$FM_STATE_OVERRIDE/source.meta")
+    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+    expect_code 1 "$rc" "$mutation report/effect must prevent retirement"
+    assert_contains "$out" 'completion handoff remains unresolved' "$mutation must reach completion retirement refusal"
+    [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail 'retirement changed unresolved metadata'
+    assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'retirement archived unresolved receipt'
+  done
+  cp "$TMP_ROOT/retirement.meta" "$FM_STATE_OVERRIDE/source.meta"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  test_positive_receipt_retirement_archive
+  pass 'actual teardown retains changed/deleted/unreadable reports and mismatched exact effects'
+)
+
 test_canonical_read_failure_keeps_receipt() {
   local saved out rc=0
   saved=$(meta completion_handoff)
@@ -401,7 +448,7 @@ test_remote_and_destination_lease() {
 
 test_destination_changes_while_delivery_waits() {
   local mutation out rc identity worker holder i
-  for mutation in replacement retirement remote source-replacement unchanged; do
+  for mutation in report-changed report-deleted sequence-changed sequence-deleted replacement retirement remote source-replacement unchanged; do
     prepare_delivery
     stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'race admission'
     identity=$(meta completion_handoff | jq -r .identity)
@@ -409,6 +456,12 @@ test_destination_changes_while_delivery_waits() {
     stage handoff-release --identity "$identity" >/dev/null || fail 'race release'
     canonical completed checks-passed
     export FM_TEST_DEST_LOCK="$FM_STATE_OVERRIDE/.meta-guarded.lock"
+    case "$mutation" in
+      sequence-*)
+        mkdir -p "$FM_STATE_OVERRIDE/guarded.inbox/handled"
+        export FM_TEST_DEST_LOCK="$FM_STATE_OVERRIDE/guarded.inbox/.seq.lock"
+        ;;
+    esac
     export FM_TEST_DEST_WAIT="$TMP_ROOT/destination-wait"
     export FM_TEST_DEST_UNLOCK="$TMP_ROOT/destination-unlock"
     rm -f "$FM_TEST_DEST_WAIT" "$FM_TEST_DEST_UNLOCK" "$TMP_ROOT/holder-ready"
@@ -442,6 +495,8 @@ SH
     done
     [ -f "$FM_TEST_DEST_WAIT" ] || fail 'delivery failed to consult the held destination lock (filesystem read boundary observer)'
     case "$mutation" in
+      report-changed|sequence-changed) printf 'changed\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
+      report-deleted|sequence-deleted) rm "$FM_DATA_OVERRIDE/source/report.md" ;;
       replacement) fm_write_meta "$FM_STATE_OVERRIDE/guarded.meta" 'kind=ship' 'spawn_gen=g2' 'harness=echo' ;;
       retirement) rm "$FM_STATE_OVERRIDE/guarded.meta" ;;
       remote) printf 'remote_host=remote.example\n' >> "$FM_STATE_OVERRIDE/guarded.meta" ;;
@@ -470,6 +525,9 @@ SH
     fi
     expect_code 1 "$rc" "$mutation during delivery"
     case "$mutation" in
+      report-changed) assert_contains "$out" REPORT_CHANGED 'report changed during custody wait' ;;
+      sequence-changed|sequence-deleted) assert_contains "$out" DELIVERY_UNCONFIRMED 'report changed during inbox sequence wait' ;;
+      report-deleted) assert_contains "$out" REPORT_UNREADABLE 'report deleted during custody wait' ;;
       replacement) assert_contains "$out" TARGET_GENERATION 'replacement refusal' ;;
       retirement) assert_contains "$out" TARGET_UNREADABLE 'retirement refusal' ;;
       remote) assert_contains "$out" UNSUPPORTED_REMOTE_TARGET 'remote race refusal' ;;
@@ -625,7 +683,7 @@ test_ci_ready_child_revalidates_admitted_identity() {
   export FM_TEST_STAGE_ROOT="$ROOT"
   export FM_TEST_STAGE_SNAPSHOT="$TMP_ROOT/stage-effect-boundary"
   mkdir -p "$FM_TEST_STAGE_SNAPSHOT"
-  for mutation in spawn_gen stage_run stage_attempt stage_head unchanged; do
+  for mutation in report-changed report-deleted spawn_gen stage_run stage_attempt stage_head unchanged; do
     prepare_delivery
     canonical running
     stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'stage race admission'
@@ -640,7 +698,11 @@ if [ "${1##*/}" = fm-stage.sh ] && [ "${2:-}" = source ] && [ "${3:-}" = ci-read
     . "$1/bin/fm-wake-lib.sh"
     lock=$(fm_meta_lock_path "$STATE/source.meta")
     fm_lock_acquire_wait "$lock"
-    if [ "$FM_TEST_STAGE_MUTATION" != unchanged ]; then
+    if [ "$FM_TEST_STAGE_MUTATION" = report-changed ]; then
+      printf "changed\n" >> "$FM_DATA_OVERRIDE/source/report.md"
+    elif [ "$FM_TEST_STAGE_MUTATION" = report-deleted ]; then
+      rm "$FM_DATA_OVERRIDE/source/report.md"
+    elif [ "$FM_TEST_STAGE_MUTATION" != unchanged ]; then
       sed "s/^$FM_TEST_STAGE_MUTATION=.*/$FM_TEST_STAGE_MUTATION=changed/" "$STATE/source.meta" > "$STATE/source.next"
       mv "$STATE/source.next" "$STATE/source.meta"
     fi
@@ -661,7 +723,11 @@ SH
       [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'valid child receipt missing'
     else
       expect_code 1 "$rc" "stale CI-ready $mutation"
-      assert_contains "$out" STALE_BINDING 'child must refuse the admitted identity before qualification'
+      case "$mutation" in
+        report-changed) assert_contains "$out" REPORT_CHANGED 'child must refuse changed report' ;;
+        report-deleted) assert_contains "$out" REPORT_UNREADABLE 'child must refuse deleted report' ;;
+        *) assert_contains "$out" STALE_BINDING 'child must refuse the admitted identity before qualification' ;;
+      esac
       cmp -s "$FM_TEST_STAGE_SNAPSHOT/meta" "$FM_STATE_OVERRIDE/source.meta" || fail 'stale child mutated lifecycle or handoff receipt'
       cmp -s "$FM_TEST_STAGE_SNAPSHOT/observe" "$FM_STATE_OVERRIDE/source.nm-observe" || fail 'stale child mutated observer'
       cmp -s "$FM_TEST_STAGE_SNAPSHOT/status" "$FM_STATE_OVERRIDE/source.status" || fail 'stale child emitted stage receipt'
@@ -833,12 +899,28 @@ test_monitoring_qualification_and_revocation() (
   pass 'monitoring uses exact revocable qualification; recovery and repeat dedupe; invalidated current uses refuse'
 )
 
+if [ "${1:-}" = report-integrity ]; then
+  case "${2:-all}" in
+    retirement) test_retirement_revalidates_report_and_effect || exit 1 ;;
+    delivery) test_destination_changes_while_delivery_waits ;;
+    child) test_ci_ready_child_revalidates_admitted_identity ;;
+    all)
+      test_retirement_revalidates_report_and_effect || exit 1
+      test_destination_changes_while_delivery_waits
+      test_ci_ready_child_revalidates_admitted_identity
+      ;;
+    *) fail 'unknown report integrity case' ;;
+  esac
+  exit 0
+fi
+
 test_monitoring_qualification_and_revocation || exit 1
 
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake
 test_authoritative_effect_repairs_missing_receipt
 test_positive_receipt_retirement_archive
+test_retirement_revalidates_report_and_effect || exit 1
 test_stage_advancement_preserves_effect
 test_canonical_read_failure_keeps_receipt
 test_duplicate_and_changed_bytes

@@ -180,12 +180,16 @@ fm_task_inbox_write() {  # <state-dir> <task-id> <text> [delivery-mode]
 # secondmate request embeds a per-request correlation token in its body. The
 # local plane keeps plain fm_task_inbox_write: its outcome is synchronous, so
 # a repeated identical local steer is a deliberate new instruction.
-fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode]
+fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mode] [guard] [guard-argument]
   local state=$1 task=$2 text=$3 delivery_mode=${4:-} dir lock want have f rec='' status=0
   dir=$(fm_task_inbox_dir "$state" "$task")
   mkdir -p "$dir/handled" || return 1
   lock="$dir/.seq.lock"
   fm_task_inbox_lock_acquire "$lock" || return 1
+  if [ -n "${5:-}" ] && ! "$5" "${6:-}"; then
+    fm_lock_release "$lock"
+    return 1
+  fi
   if want=$(mktemp "$dir/.dedup.XXXXXX") && have=$(mktemp "$dir/.dedup.XXXXXX"); then
     if printf '%s' "$text" > "$want"; then
       for f in "$dir"/*.msg "$dir/handled"/*.msg; do
@@ -226,7 +230,11 @@ fm_task_inbox_write_idempotent() {  # <state-dir> <task-id> <text> [delivery-mod
     status=1
   fi
   if [ "$status" -eq 0 ] && [ -z "$rec" ]; then
-    rec=$(_fm_task_inbox_write_record_locked "$dir" "$text" "$delivery_mode") || status=1
+    if [ -n "${5:-}" ] && ! "$5" "${6:-}"; then
+      status=1
+    else
+      rec=$(_fm_task_inbox_write_record_locked "$dir" "$text" "$delivery_mode") || status=1
+    fi
   fi
   fm_lock_release "$lock"
   [ "$status" -eq 0 ] || return 1

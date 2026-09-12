@@ -731,6 +731,7 @@ do_ci_ready() (
       && [ "$(printf '%s' "$saved" | jq -r .identity)" = "$HANDOFF_IDENTITY" ] \
       || refuse ci-ready STALE_BINDING 'admitted completion identity changed before qualification'
     contract=$(printf '%s' "$saved" | jq -c .contract)
+    fm_completion_report_current "$contract" || exit 1
     printf '%s' "$saved" | jq -e --arg task "$ID" --arg pr "$PR_ARG" '
       .released == true and .contract.action.kind == "ci-ready" and
       .contract.action.owner == $task and .contract.action.generation == .contract.generation and
@@ -767,6 +768,9 @@ do_ci_ready() (
   effect=$(jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
     --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$qualified_head" --arg pr "$PR_ARG" --argjson qualification "$qualification" \
     '{qualification:$qualification,task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
+  if [ -n "$HANDOFF_IDENTITY" ]; then
+    fm_completion_report_current "$contract" || exit 1
+  fi
   if [ "$current" = ci-ready ] && [ "$(meta stage_ci_ready_effect)" = "$effect" ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
     unchanged ci-ready

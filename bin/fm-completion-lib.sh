@@ -56,13 +56,13 @@ fm_completion_store() { # <single JSON value>
   if ! fm_backlog_record_present "$META" 'task record' "$STATE" || ! fm_completion_saved_valid "$value"; then
     rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
   fi
-  if printf '%s' "$value" | jq -e '.status == "dispatched"' >/dev/null; then
-    if ! fm_completion_report_current "$(printf '%s' "$value" | jq -c .contract)"; then
+  if printf '%s' "$value" | jq -e '.status == "dispatched" and .contract.action.kind == "ci-ready"' >/dev/null; then
+    if ! fm_completion_ci_ready_effect "$(printf '%s' "$value" | jq -c .contract)"; then
       rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
     fi
   fi
-  if printf '%s' "$value" | jq -e '.status == "dispatched" and .contract.action.kind == "ci-ready"' >/dev/null; then
-    if ! fm_completion_ci_ready_effect "$(printf '%s' "$value" | jq -c .contract)"; then
+  if printf '%s' "$value" | jq -e '.status == "dispatched"' >/dev/null; then
+    if ! fm_completion_report_current "$(printf '%s' "$value" | jq -c .contract)"; then
       rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
     fi
   fi
@@ -134,8 +134,8 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
   ' >/dev/null 2>&1 || return 1
   # shellcheck source=bin/fm-pr-lib.sh
   . "$SCRIPT_DIR/fm-pr-lib.sh"
-  fm_completion_report_current "$contract" || return 1
   fm_completion_ci_ready_effect "$contract" "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" || return 1
+  fm_completion_report_current "$contract" || return 1
   dir="$data_dir/$task"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1

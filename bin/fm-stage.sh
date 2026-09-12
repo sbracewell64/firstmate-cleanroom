@@ -450,6 +450,9 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
         line="$line qualification=revocable qualified_head=$(printf '%s' "$ci_effect" | jq -r .source_head)"
       fi ;;
   esac
+  if [ "$stage" = ci-ready ] && [ -n "$HANDOFF_IDENTITY" ]; then
+    fm_completion_report_current "$contract" || exit 1
+  fi
   printf '%s\n' "$line" >> "$STATUS"
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {

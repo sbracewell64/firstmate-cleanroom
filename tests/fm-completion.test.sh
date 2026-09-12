@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Real stage/resume/drain callers in private state. The no-mistakes CLI is the
 # sole substituted authority boundary; it serves read-only canonical records.
+# Each subshell deliberately restores the parent fixture's environment on exit.
+# shellcheck disable=SC2030,SC2031
 set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -697,6 +699,7 @@ test_away_housekeeping_bounds_observation_wait() (
   # shellcheck source=bin/fm-timeout-lib.sh
   . "$ROOT/bin/fm-timeout-lib.sh"
   rc=0
+  # shellcheck disable=SC2016 # Expansion belongs to the isolated child shell.
   FM_HEARTBEAT_SCAN_SECS=0 FM_ESCALATE_BATCH_SECS=999999 FM_MAX_DEFER_SECS=0 fm_run_timed 20 bash -c '
     . "$1/bin/fm-supervise-daemon.sh"
     housekeeping "$FM_STATE_OVERRIDE"

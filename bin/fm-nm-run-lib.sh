@@ -196,12 +196,12 @@ fm_nm_effect_current() {
     ' >/dev/null 2>&1 || return 1
   head=$(printf '%s' "$effect" | jq -r .source_head) || return 1
   qualification=$(printf '%s' "$effect" | jq -c .qualification) || return 1
-  local obligation nm_home
-  obligation="$(dirname "$file")/$expected_task.nm-observe"
-  [ -f "$obligation" ] && [ ! -L "$obligation" ] && [ -r "$obligation" ] || return 1
-  [ "$(sed -n 's/^run_id=//p' "$obligation")" = "$run" ] || return 1
-  [ "$(sed -n 's/^attempt_id=//p' "$obligation")" = "$(printf '%s' "$effect" | jq -r .attempt)" ] || return 1
-  nm_home=$(sed -n 's/^nm_home=//p' "$obligation")
+  local binding_file nm_home
+  binding_file="$(dirname "$file")/$expected_task.nm-observe"
+  [ -f "$binding_file" ] && [ ! -L "$binding_file" ] && [ -r "$binding_file" ] || return 1
+  [ "$(sed -n 's/^run_id=//p' "$binding_file")" = "$run" ] || return 1
+  [ "$(sed -n 's/^attempt_id=//p' "$binding_file")" = "$(printf '%s' "$effect" | jq -r .attempt)" ] || return 1
+  nm_home=$(sed -n 's/^nm_home=//p' "$binding_file")
   [ -n "$nm_home" ] && [ -d "$nm_home" ] || return 1
   NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"
 }

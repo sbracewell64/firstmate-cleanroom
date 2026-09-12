@@ -171,7 +171,14 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
       if (invalid_root || invalid_section || invalid_structure || roots != 1 || count != 1 || found == "" || (section != "" && groups[section] != 1)) exit 1
       print found
     }') || return 1
-  if [ "${4:-}" = raw ]; then printf '%s' "$raw"; else fm_nm_strip_quotes "$raw"; fi
+  if [ "${4:-}" != raw ]; then
+    raw=$(fm_nm_trim "$raw")
+    case "$raw" in
+      \"*\") raw=${raw#\"}; raw=${raw%\"} ;;
+    esac
+    case "$raw" in *\"*|*\\*) return 1 ;; esac
+  fi
+  printf '%s' "$raw"
 }
 
 # Completed non-ancestor admission is separate from active run attribution.

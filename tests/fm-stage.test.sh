@@ -814,7 +814,7 @@ EOF
   [ "$(meta_get terminal stage_head)" = "$submitted" ] || fail 'admission replaced original candidate'
   [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
   [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
-  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
+  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean padded-run padded-head padded-ref duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
     printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
     printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
     FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
@@ -828,6 +828,9 @@ EOF
       inline-object) FM_FAKE_SYNC=${proof/  successor:/  successor: \{\}} ;;
       inline-array) FM_FAKE_SYNC=${proof/  successor:/  successor: []} ;;
       quoted-boolean) FM_FAKE_SYNC=${proof/verified: true/verified: \"true\"} ;;
+      padded-run) FM_FAKE_SYNC=${proof/run_id: 01TERMINAL00000000000000001/run_id: \" 01TERMINAL00000000000000001 \"} ;;
+      padded-head) FM_FAKE_SYNC=${proof/qualified_head: $head/qualified_head: \" $head \"} ;;
+      padded-ref) FM_FAKE_SYNC=${proof/target_ref: refs\/heads\/fm\/terminal/target_ref: \" refs\/heads\/fm\/terminal \"} ;;
       duplicate-root) FM_FAKE_SYNC="$proof
 branch_sync:
   state: synchronized" ;;
@@ -866,7 +869,7 @@ branch_sync: false" ;;
     out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
     expect_code 1 "$rc" "terminal successor refuses $mutation: $out"
     [ "$(meta_get terminal stage)" = validation-running ] || fail "$mutation admitted a stage"
-    if [ "$mutation" = scalar-duplicate-root ] || [ "$mutation" = foreign-sibling ] || [[ "$mutation" = indent-* ]]; then
+    if [ "$mutation" = scalar-duplicate-root ] || [ "$mutation" = foreign-sibling ] || [[ "$mutation" = indent-* || "$mutation" = padded-* ]]; then
       [ "$(cat "$STATE/terminal.meta")" = "$saved_meta" ] || fail "$mutation changed stage identity"
       [ "$(cat "$STATE/terminal.nm-observe")" = "$saved_obs" ] || fail "$mutation changed observer identity"
     fi
@@ -878,6 +881,13 @@ branch_sync: false" ;;
   FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
   out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "valid terminal successor remains admissible: $out"
+  printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
+  printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
+  FM_FAKE_SYNC=${proof/run_id: 01TERMINAL00000000000000001/run_id: \"01TERMINAL00000000000000001\"}
+  FM_FAKE_SYNC=${FM_FAKE_SYNC/qualified_head: $head/qualified_head: \"$head\"}
+  FM_FAKE_SYNC=${FM_FAKE_SYNC/target_ref: refs\/heads\/fm\/terminal/target_ref: \"refs\/heads\/fm\/terminal\"}
+  out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "exact quoted terminal identities remain admissible: $out"
   FM_FAKE_SYNC=''; FM_FAKE_SYNC_RC=0
   pass 'completed same-run successor requires verified exact bindings and preserves original candidate'
 }

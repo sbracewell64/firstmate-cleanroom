@@ -138,9 +138,14 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   fm_nm_run_is_active "$1"
 }
 
-# Read one scalar from the documented two-level sync object. Reject duplicate
-# roots, sections, or requested fields instead of combining ambiguous proof
-# fragments. A consumed section must be an empty-valued object header.
+# Read one scalar from the bounded two-level sync wire format: branch_sync at
+# column zero, direct children indented two spaces, section fields four.
+# Unsupported structure fails closed so fields cannot borrow a prior scope.
+# Reject duplicate roots, consumed sections, or requested fields instead of
+# combining ambiguous proof fragments; consumed sections require empty-valued
+# object headers. Non-raw values may have one pair of double quotes, preserving
+# their contents exactly; escapes and embedded quotes are unsupported.
+# Raw reads preserve boolean and generation types (tests/fm-stage.test.sh).
 # This is a wire reader, not a second qualification algorithm.
 fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
   local raw

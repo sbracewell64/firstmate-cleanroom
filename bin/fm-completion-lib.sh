@@ -295,7 +295,7 @@ fm_completion_resume() {
     fi
     if [ "$kind" = ci-ready ]; then
       rc=0
-      out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
+      out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --identity "$identity" --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
       [ "$rc" -eq 0 ] || { printf '%s\n' "$out"; fm_completion_refuse STAGE_HELD; return 1; }
       [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract" || { fm_completion_refuse EFFECT_UNCONFIRMED; return 1; }
       record=$effect

@@ -202,6 +202,7 @@ EXPECT_NM_HOME=
 EXPECT_PATH0=
 HANDOFF_JSON=
 HANDOFF_IDENTITY=
+CI_READY_META_LOCK=
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -411,12 +412,11 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
   local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv ci_effect=
   shift 6
   line=$(receipt_line "$stage" "$owner" "$reason" "$branch" "$head" "$tree")
-  printf '%s\n' "$line" >> "$STATUS"
   lock=$(fm_meta_lock_path "$META") || exit 2
-  fm_lock_acquire_wait "$lock"
+  [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_acquire_wait "$lock"
   tmp="$STATE/.$ID.meta.stage.${BASHPID:-$$}"
   if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
-    fm_lock_release "$lock"
+    [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_release "$lock"
     echo "error: task record for $ID is unsafe ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 2
   fi
@@ -429,10 +429,11 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
       length == 1 and (.[0] | .task == $task and .generation == $generation and .attempt == $attempt and
       .run == $run and .candidate == $candidate)
     ' >/dev/null 2>&1; then
-      fm_lock_release "$lock"
+      [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_release "$lock"
       refuse ci-ready STALE_BINDING 'task identity changed during qualification'
     fi
   fi
+  printf '%s\n' "$line" >> "$STATUS"
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
     printf 'stage=%s\n' "$stage"
@@ -454,11 +455,11 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
   } >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE"; then
     rm -f -- "$tmp"
-    fm_lock_release "$lock"
+    [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_release "$lock"
     echo "error: task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
     exit 2
   fi
-  fm_lock_release "$lock"
+  [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_release "$lock"
   printf 'STAGE: %s\n' "$line"
 }
 
@@ -698,8 +699,27 @@ do_running() {  # <transition-label>
   return 0
 }
 
-do_ci_ready() {
-  local current verdict effect
+do_ci_ready() (
+  local current verdict effect saved contract CI_READY_META_LOCK=
+  CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
+  fm_lock_acquire_wait "$CI_READY_META_LOCK"
+  trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
+  [ -f "$META" ] && [ ! -L "$META" ] && [ "$GEN" = "$(meta spawn_gen)" ] \
+    || refuse ci-ready STALE_BINDING 'task identity changed before qualification'
+  if [ -n "$HANDOFF_IDENTITY" ]; then
+    # shellcheck source=bin/fm-completion-lib.sh
+    . "$SCRIPT_DIR/fm-completion-lib.sh"
+    saved=$(meta completion_handoff)
+    fm_completion_saved_valid "$saved" \
+      && [ "$(printf '%s' "$saved" | jq -r .identity)" = "$HANDOFF_IDENTITY" ] \
+      || refuse ci-ready STALE_BINDING 'admitted completion identity changed before qualification'
+    contract=$(printf '%s' "$saved" | jq -c .contract)
+    printf '%s' "$saved" | jq -e --arg task "$ID" --arg pr "$PR_ARG" '
+      .released == true and .contract.action.kind == "ci-ready" and
+      .contract.action.owner == $task and .contract.action.generation == .contract.generation and
+      .contract.action.pr == $pr
+    ' >/dev/null || refuse ci-ready STALE_BINDING 'completion action does not authorize this transition'
+  fi
   require_ship ci-ready
   engineering_context ci-ready
   [ "$MODE" = no-mistakes ] || refuse ci-ready NOT_ADMITTED "mode=$MODE reports its PR with done:, not a ci-ready stage"
@@ -720,6 +740,10 @@ do_ci_ready() {
     "state: done"*"source: run-step"*) ;;
     *) refuse ci-ready NOT_CI_READY "canonical state is not checks green from the run step: ${verdict:-no verdict}" ;;
   esac
+  if [ -n "$HANDOFF_IDENTITY" ]; then
+    [ "$HEAD" = "$(printf '%s' "$contract" | jq -r .source_head)" ] \
+      || refuse ci-ready STALE_BINDING 'qualified head differs from admitted completion'
+  fi
   observe refresh "$ID"
   engineering_result
   STAGE_PR_VALUE=$PR_ARG
@@ -734,7 +758,7 @@ do_ci_ready() {
       "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
   fi
   next_for ci-ready
-}
+)
 
 do_landing() {
   local current

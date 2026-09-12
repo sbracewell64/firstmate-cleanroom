@@ -616,6 +616,100 @@ test_opposite_direction_delivery_does_not_deadlock() {
   pass 'opposite-direction deliveries terminate without deadlock and converge to one effect each'
 }
 
+test_ci_ready_child_revalidates_admitted_identity() {
+  local mutation identity out rc
+  export FM_TEST_STAGE_ROOT="$ROOT"
+  export FM_TEST_STAGE_SNAPSHOT="$TMP_ROOT/stage-effect-boundary"
+  mkdir -p "$FM_TEST_STAGE_SNAPSHOT"
+  for mutation in spawn_gen stage_run stage_attempt stage_head unchanged; do
+    prepare_delivery
+    canonical running
+    stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'stage race admission'
+    identity=$(meta completion_handoff | jq -r .identity)
+    stage handoff-release --identity "$identity" >/dev/null || fail 'stage race pending release'
+    canonical completed checks-passed
+    export FM_TEST_STAGE_MUTATION="$mutation"
+    cat > "$FAKEBIN/bash" <<'SH'
+#!/bin/bash
+if [ "${1##*/}" = fm-stage.sh ] && [ "${2:-}" = source ] && [ "${3:-}" = ci-ready ]; then
+  /bin/bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    lock=$(fm_meta_lock_path "$STATE/source.meta")
+    fm_lock_acquire_wait "$lock"
+    if [ "$FM_TEST_STAGE_MUTATION" != unchanged ]; then
+      sed "s/^$FM_TEST_STAGE_MUTATION=.*/$FM_TEST_STAGE_MUTATION=changed/" "$STATE/source.meta" > "$STATE/source.next"
+      mv "$STATE/source.next" "$STATE/source.meta"
+    fi
+    cp "$STATE/source.meta" "$FM_TEST_STAGE_SNAPSHOT/meta"
+    cp "$STATE/source.nm-observe" "$FM_TEST_STAGE_SNAPSHOT/observe"
+    cp "$STATE/source.status" "$FM_TEST_STAGE_SNAPSHOT/status"
+    fm_lock_release "$lock"
+  ' _ "$FM_TEST_STAGE_ROOT" || exit 1
+fi
+exec /bin/bash "$@"
+SH
+    chmod +x "$FAKEBIN/bash"
+    rc=0; out=$(stage resume-handoff 2>&1) || rc=$?
+    rm "$FAKEBIN/bash"
+    if [ "$mutation" = unchanged ]; then
+      expect_code 0 "$rc" 'unchanged CI-ready identity'
+      [ "$(meta stage)" = ci-ready ] || fail 'valid child did not qualify'
+      [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'valid child receipt missing'
+    else
+      expect_code 1 "$rc" "stale CI-ready $mutation"
+      assert_contains "$out" STALE_BINDING 'child must refuse the admitted identity before qualification'
+      cmp -s "$FM_TEST_STAGE_SNAPSHOT/meta" "$FM_STATE_OVERRIDE/source.meta" || fail 'stale child mutated lifecycle or handoff receipt'
+      cmp -s "$FM_TEST_STAGE_SNAPSHOT/observe" "$FM_STATE_OVERRIDE/source.nm-observe" || fail 'stale child mutated observer'
+      cmp -s "$FM_TEST_STAGE_SNAPSHOT/status" "$FM_STATE_OVERRIDE/source.status" || fail 'stale child emitted stage receipt'
+    fi
+  done
+  prepare_delivery
+  stage ci-ready --pr https://github.com/o/r/pull/7 >/dev/null || fail 'normal direct CI-ready caller'
+  [ "$(meta stage)" = ci-ready ] || fail 'direct qualification disappeared'
+  pass 'actual CI-ready child rejects changed generation/run/attempt/candidate before effects; unchanged and direct callers qualify'
+}
+
+test_away_housekeeping_bounds_observation_wait() (
+  local holder rc i
+  export FM_STATE_OVERRIDE="$TMP_ROOT/away-custody-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  prepare_delivery
+  canonical running
+  stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'away handoff admission'
+  : > "$FM_STATE_OVERRIDE/.afk"
+  printf 'needs-decision [key=after-timeout]: retain this decision\n' > "$FM_STATE_OVERRIDE/notice.status"
+  bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    lock="$STATE/.nm-observe-source.lock"
+    fm_lock_acquire_wait "$lock"
+    : > "$2/away-holder-ready"
+    while [ ! -f "$2/away-holder-release" ]; do sleep 0.02; done
+    fm_lock_release "$lock"
+  ' _ "$ROOT" "$TMP_ROOT" &
+  holder=$!
+  for ((i=0; i<500; i++)); do
+    [ ! -f "$TMP_ROOT/away-holder-ready" ] || break
+    sleep 0.02
+  done
+  [ -f "$TMP_ROOT/away-holder-ready" ] || fail 'away observation holder missing'
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  rc=0
+  FM_HEARTBEAT_SCAN_SECS=0 FM_ESCALATE_BATCH_SECS=999999 FM_MAX_DEFER_SECS=0 fm_run_timed 20 bash -c '
+    . "$1/bin/fm-supervise-daemon.sh"
+    housekeeping "$FM_STATE_OVERRIDE"
+    : > "$2/away-housekeeping-returned"
+  ' _ "$ROOT" "$TMP_ROOT" > "$TMP_ROOT/away-housekeeping.out" 2>&1 || rc=$?
+  : > "$TMP_ROOT/away-holder-release"
+  wait "$holder" || fail 'away observation holder failed'
+  expect_code 0 "$rc" 'away housekeeping must return before outer watchdog'
+  assert_present "$TMP_ROOT/away-housekeeping-returned" 'housekeeping did not regain control'
+  assert_contains "$(cat "$FM_STATE_OVERRIDE/.subsuper-escalations")" 'away reconciliation unresolved status=124' 'timeout did not retain unresolved evidence'
+  assert_contains "$(cat "$FM_STATE_OVERRIDE/.subsuper-escalations")" 'after-timeout' 'held observer prevented subsequent escalation housekeeping'
+  [ "$(meta completion_handoff | jq -r .status)" = pending ] || fail 'away timeout completed pending work'
+  pass 'away housekeeping times out a live observation lock and continues its durable escalation scan'
+)
+
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake
 test_authoritative_effect_repairs_missing_receipt
@@ -634,3 +728,5 @@ test_self_target_delivery
 test_unqualified_and_foreign_stage_effects_refuse
 test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock
+test_ci_ready_child_revalidates_admitted_identity
+test_away_housekeeping_bounds_observation_wait

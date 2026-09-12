@@ -1175,9 +1175,11 @@ housekeeping() {  # <state>
     if afk_active "$state"; then
       # Reuse the existing bounded scan and escalation transport. An empty
       # wake queue or already-presented programme cannot hide an open handoff.
-      local completion
-      completion=$("$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || \
-        completion="CONTINUATION_CNO: $completion"
+      local completion completion_rc=0
+      # shellcheck source=bin/fm-timeout-lib.sh
+      . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
+      completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
+      [ "$completion_rc" -eq 0 ] || completion="CONTINUATION_CNO: away reconciliation unresolved status=$completion_rc $completion"
       [ -z "$completion" ] || escalate_add "$state" "$(_collapse_newlines "$completion")"
     fi
     for f in "$state"/*.status; do

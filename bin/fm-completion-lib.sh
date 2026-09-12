@@ -37,6 +37,15 @@ fm_completion_hash() {
   printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
 }
 
+fm_completion_report_current() {
+  local contract=$1 report hash
+  report=$(printf '%s' "$contract" | jq -r .report.path) || return 1
+  [ -f "$report" ] && [ ! -L "$report" ] && [ -r "$report" ] || { fm_completion_refuse REPORT_UNREADABLE; return 1; }
+  hash=$(fm_pr_sha256 "$report") || { fm_completion_refuse REPORT_UNREADABLE; return 1; }
+  [ -n "$hash" ] || { fm_completion_refuse REPORT_UNREADABLE; return 1; }
+  [ "$hash" = "$(printf '%s' "$contract" | jq -r .report.sha256)" ] || { fm_completion_refuse REPORT_CHANGED; return 1; }
+}
+
 fm_completion_store() { # <single JSON value>
   local value=$1 lock tmp
   lock=$(fm_meta_lock_path "$META") || return 1
@@ -46,6 +55,11 @@ fm_completion_store() { # <single JSON value>
   tmp=$(mktemp "$STATE/.$ID.completion.XXXXXX") || { [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1; }
   if ! fm_backlog_record_present "$META" 'task record' "$STATE" || ! fm_completion_saved_valid "$value"; then
     rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
+  fi
+  if printf '%s' "$value" | jq -e '.status == "dispatched"' >/dev/null; then
+    if ! fm_completion_report_current "$(printf '%s' "$value" | jq -c .contract)"; then
+      rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
+    fi
   fi
   if printf '%s' "$value" | jq -e '.status == "dispatched" and .contract.action.kind == "ci-ready"' >/dev/null; then
     if ! fm_completion_ci_ready_effect "$(printf '%s' "$value" | jq -c .contract)"; then
@@ -108,6 +122,7 @@ fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
 # execution reconciliation or a replacement source of task authority.
 fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
   local saved=$1 data_dir=$2 task=$3 contract identity receipt dir tmp
+  local ID=$3
   [ -n "$saved" ] || return 0
   contract=$(printf '%s' "$saved" | jq -cS .contract 2>/dev/null) || return 1
   fm_completion_contract_valid "$contract" || return 1
@@ -117,9 +132,10 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
     .identity == $identity and .contract.task == $task and
     .contract.action.kind == "ci-ready" and .status == "dispatched" and .receipt == $receipt
   ' >/dev/null 2>&1 || return 1
-  # shellcheck source=bin/fm-nm-run-lib.sh
-  . "$SCRIPT_DIR/fm-nm-run-lib.sh"
-  fm_nm_effect_current "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" "$(printf '%s' "$contract" | jq -r .action.pr)" >/dev/null || return 1
+  # shellcheck source=bin/fm-pr-lib.sh
+  . "$SCRIPT_DIR/fm-pr-lib.sh"
+  fm_completion_report_current "$contract" || return 1
+  fm_completion_ci_ready_effect "$contract" "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" || return 1
   dir="$data_dir/$task"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1
@@ -167,13 +183,14 @@ fm_completion_pending() { # <saved JSON> <identity> <owner> <reason>
 }
 
 fm_completion_ci_ready_effect() {
-  local contract=$1
-  fm_nm_effect_current "$META" >/dev/null || return 1
-  printf '%s' "$(meta stage_ci_ready_effect)" | jq -se --argjson contract "$contract" '
+  local contract=$1 file=${2:-$META}
+  fm_nm_effect_current "$file" >/dev/null || return 1
+  printf '%s' "$(sed -n 's/^stage_ci_ready_effect=//p' "$file")" | jq -se --argjson contract "$contract" '
       length == 1 and (.[0] | .task == $contract.task and .generation == $contract.generation and
       .attempt == $contract.attempt and .run == $contract.run and
-      .candidate == $contract.candidate and .source_head == $contract.source_head and .pr == $contract.action.pr)
-    ' >/dev/null 2>&1 && [ "$(meta stage_pr)" = "$(printf '%s' "$contract" | jq -r .action.pr)" ]
+      .candidate == $contract.candidate and .source_head == $contract.source_head and .pr == $contract.action.pr and
+      $contract.action.owner == .task and $contract.action.generation == .generation)
+    ' >/dev/null 2>&1 && [ "$(sed -n 's/^stage_pr=//p' "$file")" = "$(printf '%s' "$contract" | jq -r .action.pr)" ]
 }
 
 fm_completion_resume() {
@@ -211,10 +228,9 @@ fm_completion_resume() {
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$canonical" head)")" = "$(printf '%s' "$contract" | jq -r .source_head)" ] || {
     fm_completion_refuse CANONICAL_SOURCE_HEAD; return 1;
   }
+  fm_completion_report_current "$contract" || return 1
   report=$(printf '%s' "$contract" | jq -r .report.path)
-  [ -f "$report" ] && [ ! -L "$report" ] && [ -r "$report" ] || { fm_completion_refuse REPORT_UNREADABLE; return 1; }
-  hash=$(fm_pr_sha256 "$report") || { fm_completion_refuse REPORT_UNREADABLE; return 1; }
-  [ "$hash" = "$(printf '%s' "$contract" | jq -r .report.sha256)" ] || { fm_completion_refuse REPORT_CHANGED; return 1; }
+  hash=$(printf '%s' "$contract" | jq -r .report.sha256)
   # The observation class is presentation, not action authority: in particular
   # completed with an unknown outcome must not inherit its broad success label.
   status=$(fm_nm_strip_quotes "$(fm_nm_field "$canonical" status)")
@@ -257,6 +273,7 @@ fm_completion_resume() {
       fm_completion_refuse SOURCE_CHANGED; return 1
     fi
   fi
+  fm_completion_report_current "$contract" || return 1
   fm_completion_target_current "$contract" || return 1
   if [ "$kind" = ci-ready ]; then
     [ "$owner" = "$ID" ] && [ "$generation" = "$(meta spawn_gen)" ] || { fm_completion_refuse FOREIGN_STAGE_ACTION; return 1; }
@@ -327,7 +344,8 @@ fm_completion_resume() {
       fi
       record=$effect
     else
-      effect=$(fm_task_inbox_write_idempotent "$STATE" "$owner" "$body") || { fm_completion_refuse DELIVERY_UNCONFIRMED; return 1; }
+      fm_completion_report_current "$contract" || return 1
+      effect=$(fm_task_inbox_write_idempotent "$STATE" "$owner" "$body" "" fm_completion_report_current "$contract") || { fm_completion_refuse DELIVERY_UNCONFIRMED; return 1; }
       [ "$(fm_task_inbox_body "$effect")" = "$body" ] || { fm_completion_refuse EFFECT_UNCONFIRMED; return 1; }
       record="inbox:${effect##*/}"
     fi

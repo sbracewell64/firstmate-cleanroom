@@ -503,27 +503,21 @@ engineering_context() { # <transition>
   fi
 }
 
+qualified_run_head() {
+  local output run_head
+  output=$(bound_run_status) || return 1
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+  [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  if ! fm_nm_run_is_pipeline_owned_active "$output"; then
+    fm_nm_head_matches_worktree "$WT" "$run_head" || return 1
+  fi
+  printf '%s\n' "$run_head"
+}
+
 engineering_result() {
-  local run output actual run_head
+  local run actual=$1
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   run=$(obs run_id)
-  [ -n "$run" ] || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: no bound run'
-  output=$(bound_run_status) \
-    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run read failed'
-  [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" id)")" = "$run" ] \
-    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current run mismatch'
-  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
-  if fm_nm_run_is_pipeline_owned_active "$output"; then
-    [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] \
-      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head must be an exact commit identity'
-    actual=$run_head
-  else
-    actual=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) \
-      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: current pipeline head unavailable'
-  fi
-  { git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$actual" 2>/dev/null \
-    || fm_nm_run_is_pipeline_owned_active "$output"; } \
-    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
     || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
   if [ -f "$DATA/$ID/engineering-evidence.json" ]; then
@@ -677,7 +671,7 @@ do_running() {  # <transition-label>
 }
 
 do_ci_ready() (
-  local current verdict effect saved contract CI_READY_META_LOCK=
+  local current verdict effect saved contract qualified_head CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -717,15 +711,17 @@ do_ci_ready() (
     "state: done"*"source: run-step"*) ;;
     *) refuse ci-ready NOT_CI_READY "canonical state is not checks green from the run step: ${verdict:-no verdict}" ;;
   esac
+  qualified_head=$(qualified_run_head) \
+    || refuse ci-ready STALE_BINDING 'qualified run head is missing, unreadable, or not attributable to this candidate'
   if [ -n "$HANDOFF_IDENTITY" ]; then
-    [ "$HEAD" = "$(printf '%s' "$contract" | jq -r .source_head)" ] \
+    [ "$qualified_head" = "$(printf '%s' "$contract" | jq -r .source_head)" ] \
       || refuse ci-ready STALE_BINDING 'qualified head differs from admitted completion'
   fi
   observe refresh "$ID"
-  engineering_result
+  engineering_result "$qualified_head"
   STAGE_PR_VALUE=$PR_ARG
   effect=$(jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
-    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$HEAD" --arg pr "$PR_ARG" \
+    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$qualified_head" --arg pr "$PR_ARG" \
     '{task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
   if [ "$current" = ci-ready ] && [ "$(meta stage_ci_ready_effect)" = "$effect" ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then

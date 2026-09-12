@@ -710,6 +710,95 @@ test_away_housekeeping_bounds_observation_wait() (
   pass 'away housekeeping times out a live observation lock and continues its durable escalation scan'
 )
 
+test_qualified_successor_identity() {
+  local successor unrelated identity saved out rc mutation
+  successor=$(git -C "$WT" commit-tree "${HEAD}^{tree}" -p "$HEAD" -m 'qualified pipeline fix') || fail 'successor fixture'
+  unrelated=$(git -C "$WT" commit-tree "${HEAD}^{tree}" -m 'unrelated history') || fail 'unrelated fixture'
+  prepare_delivery
+  jq --arg head "$successor" '.source_head=$head' "$TMP_ROOT/handoff.json" > "$TMP_ROOT/successor.json"
+  stage handoff --handoff-json "$TMP_ROOT/successor.json" >/dev/null || fail 'successor handoff admission'
+  identity=$(meta completion_handoff | jq -r .identity)
+  canonical completed checks-passed
+  sed "s/$HEAD/$successor/g" "$FM_COMPLETION_TEST_CANONICAL" > "$TMP_ROOT/final-canonical"
+  cp "$TMP_ROOT/final-canonical" "$FM_COMPLETION_TEST_CANONICAL"
+  out=$(stage handoff-release --identity "$identity") || fail "qualified successor handoff: $out"
+  [ "$(meta stage_head)" = "$HEAD" ] || fail 'submitted candidate changed'
+  [ "$(meta stage_ci_ready_effect | jq -r .source_head)" = "$successor" ] || fail 'qualification recorded caller head instead of run head'
+  saved=$(meta completion_handoff | jq -c '.receipt=null | .status="pending"')
+  sed '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/successor-meta"
+  printf 'completion_handoff=%s\n' "$saved" >> "$TMP_ROOT/successor-meta"
+  mv "$TMP_ROOT/successor-meta" "$FM_STATE_OVERRIDE/source.meta"
+  out=$(stage resume-handoff) || fail "successor receipt reconstruction: $out"
+  [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'successor receipt not reconstructed'
+  prepare_delivery
+  cp "$TMP_ROOT/final-canonical" "$FM_COMPLETION_TEST_CANONICAL"
+  stage ci-ready --pr https://github.com/o/r/pull/7 >/dev/null || fail 'direct successor qualification'
+  [ "$(meta stage_ci_ready_effect | jq -r .source_head)" = "$successor" ] || fail 'direct caller recorded submitted head'
+  for mutation in unrelated foreign-run missing-run unreadable unqualified stale-head; do
+    prepare_delivery
+    stage handoff --handoff-json "$TMP_ROOT/successor.json" >/dev/null || fail 'negative successor admission'
+    sed -e 's/status: completed/status: running/' -e '/^outcome:/d' "$TMP_ROOT/final-canonical" > "$FM_COMPLETION_TEST_CANONICAL"
+    stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'negative successor release'
+    cp "$TMP_ROOT/final-canonical" "$FM_COMPLETION_TEST_CANONICAL"
+    case "$mutation" in
+      unrelated) sed "s/$successor/$unrelated/g" "$TMP_ROOT/final-canonical" > "$FM_COMPLETION_TEST_CANONICAL" ;;
+      foreign-run) sed 's/01SOURCE/01FOREIGN/g' "$TMP_ROOT/final-canonical" > "$FM_COMPLETION_TEST_CANONICAL" ;;
+      missing-run) sed '/  id:/d' "$TMP_ROOT/final-canonical" > "$FM_COMPLETION_TEST_CANONICAL" ;;
+      unreadable) rm "$FM_COMPLETION_TEST_CANONICAL" ;;
+      unqualified) sed -e 's/status: completed/status: reviewing/' -e '/^outcome:/d' "$TMP_ROOT/final-canonical" > "$FM_COMPLETION_TEST_CANONICAL" ;;
+      stale-head) canonical completed checks-passed ;;
+    esac
+    cp "$FM_STATE_OVERRIDE/source.meta" "$TMP_ROOT/successor-before.meta"
+    cp "$FM_STATE_OVERRIDE/source.nm-observe" "$TMP_ROOT/successor-before.observe"
+    cp "$FM_STATE_OVERRIDE/source.status" "$TMP_ROOT/successor-before.status"
+    rc=0; out=$(stage ci-ready --identity "$(meta completion_handoff | jq -r .identity)" --pr https://github.com/o/r/pull/7 2>&1) || rc=$?
+    expect_code 1 "$rc" "invalid successor $mutation"
+    cmp -s "$TMP_ROOT/successor-before.meta" "$FM_STATE_OVERRIDE/source.meta" || fail 'invalid successor mutated stage/receipt'
+    cmp -s "$TMP_ROOT/successor-before.observe" "$FM_STATE_OVERRIDE/source.nm-observe" || fail 'invalid successor mutated observer'
+    cmp -s "$TMP_ROOT/successor-before.status" "$FM_STATE_OVERRIDE/source.status" || fail 'invalid successor emitted receipt'
+  done
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$HEAD" ] || fail 'qualification moved caller checkout'
+  canonical completed checks-passed
+  pass 'submitted A and qualified B stay distinct for handoff, direct qualification and receipt recovery; invalid successors refuse'
+}
+
+test_drain_observation_wait_releases_presentation() (
+  local holder rc i attempt
+  export FM_STATE_OVERRIDE="$TMP_ROOT/drain-custody-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  prepare_delivery
+  canonical running
+  stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'drain handoff admission'
+  bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    lock="$STATE/.nm-observe-source.lock"
+    fm_lock_acquire_wait "$lock"
+    : > "$2/drain-holder-ready"
+    while [ ! -f "$2/drain-holder-release" ]; do sleep 0.02; done
+    fm_lock_release "$lock"
+  ' _ "$ROOT" "$TMP_ROOT" &
+  holder=$!
+  for ((i=0; i<500; i++)); do
+    [ ! -f "$TMP_ROOT/drain-holder-ready" ] || break
+    sleep 0.02
+  done
+  [ -f "$TMP_ROOT/drain-holder-ready" ] || fail 'drain observation holder missing'
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  for attempt in 1 2; do
+    rc=0
+    fm_run_timed 20 "$ROOT/bin/fm-wake-drain.sh" > "$TMP_ROOT/bounded-drain-$attempt.out" 2>&1 || rc=$?
+    expect_code 0 "$rc" 'drain must return before outer watchdog'
+    assert_contains "$(cat "$TMP_ROOT/bounded-drain-$attempt.out")" 'reconciliation remains unresolved status=124' 'drain lost timeout disposition'
+    assert_absent "$FM_STATE_OVERRIDE/.status-presentation-lock/pid" 'drain retained presentation lock after timeout'
+  done
+  : > "$TMP_ROOT/drain-holder-release"
+  wait "$holder" || fail 'drain observation holder failed'
+  "$ROOT/bin/fm-wake-drain.sh" > "$TMP_ROOT/recovered-drain.out" 2>&1 || fail 'drain after observation release'
+  [ "$(meta completion_handoff | jq -r .status)" = pending ] || fail 'drain timeout completed work'
+  pass 'contended reconciliation releases presentation custody and later drains remain usable'
+)
+
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake
 test_authoritative_effect_repairs_missing_receipt
@@ -730,3 +819,5 @@ test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock
 test_ci_ready_child_revalidates_admitted_identity
 test_away_housekeeping_bounds_observation_wait
+test_qualified_successor_identity
+test_drain_observation_wait_releases_presentation

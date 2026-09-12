@@ -4,6 +4,24 @@
 `bin/fm-continuation-lib.sh` owns the vocabulary and every classification table it applies.
 This document records the invariant, the canonical inputs, the typed result, the consumer census, and the boundary the owner deliberately does not cross.
 The two script headers own exact flags, schema fields, and the law tables; nothing here restates them.
+The explicit `reconcile` operation delegates durable report/action processing to the stage owner and [`bin/fm-completion-lib.sh`](../bin/fm-completion-lib.sh); programme resolution and projection remain read-only.
+The completion owner's executable caller coverage is [`tests/fm-completion.test.sh`](../tests/fm-completion.test.sh).
+
+## Durable report handoffs
+
+The stage owner admits an explicit report/action contract with `fm-stage.sh <task> handoff --handoff-json <file>`; its library header owns the schema.
+The report producer binds the existing stage attempt and original candidate, the exact canonical source head, the report bytes, and one next action for an existing task generation.
+Registration grants no worker slot: the manager reserves capacity and releases the exact returned identity with `handoff-release --identity <sha256>`.
+Pending run, capacity and dependency dispositions persist at that same owner.
+`resume-handoff` and the resolver's `reconcile` entrypoint refresh canonical observations and read authoritative effects before dispatching or repairing receipts.
+An unbound completed report, an unknown canonical outcome, or changed identity/bytes is CNO; presentation and handled-inbox acknowledgements never supply missing authority.
+The closed action kinds are an existing CI-ready stage transition and an idempotent instruction to an existing task inbox.
+An inbox effect records delivery only and retains its downstream obligation, including after the recipient moves the message to `handled/`.
+Teardown preserves such an unresolved task; retirement of a confirmed stage effect archives its exact contract/receipt under the task's durable data directory, without making that archive an execution input.
+Qualification, caller synchronization, landing, deployment and actual consumption remain independently owned.
+
+The configured Codex Stop guard uses the separate process-custody contract in [`bin/fm-codex-continuation-lib.sh`](../bin/fm-codex-continuation-lib.sh).
+Its bounded CNO outcome retains unfinished task records and queues an escalation through the existing wake owner; it does not establish native callback or receiver acceptance.
 
 ## Invariant
 

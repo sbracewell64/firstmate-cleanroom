@@ -1171,6 +1171,14 @@ housekeeping() {  # <state>
   if [ "$(_file_age "$state/.subsuper-last-scan")" -ge "${FM_HEARTBEAT_SCAN_SECS:-$HEARTBEAT_SCAN_SECS_DEFAULT}" ]; then
     _now > "$state/.subsuper-last-scan"
     local event record rest endpoint ident rc
+    if afk_active "$state"; then
+      # Reuse the existing bounded scan and escalation transport. An empty
+      # wake queue or already-presented programme cannot hide an open handoff.
+      local completion
+      completion=$("$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || \
+        completion="CONTINUATION_CNO: $completion"
+      [ -z "$completion" ] || escalate_add "$state" "$(_collapse_newlines "$completion")"
+    fi
     for f in "$state"/*.status; do
       [ -e "$f" ] || [ -L "$f" ] || continue
       task=$(basename "$f"); task="${task%.status}"
@@ -1629,6 +1637,13 @@ fm_super_main() {
     exit 1
   fi
 
+  # Publish only in this daemon's owned lock. Older daemons, different roots,
+  # and changed primary sessions cannot confer post-final Codex custody.
+  # shellcheck source=bin/fm-codex-continuation-lib.sh
+  . "$FM_DAEMON_DIR/fm-codex-continuation-lib.sh"
+  fm_codex_continuation_publish "$STATE" "$FM_HOME" "$(cd "$FM_DAEMON_DIR/.." && pwd -P)" "$BACKEND" "$TARGET" || \
+    log "Codex continuation custody unconfirmed; Stop must retain its bounded refusal"
+
   local afk_status="off"
   afk_active "$STATE" && afk_status="on"
   log "daemon starting (pid $$); target=$TARGET; target_source=$target_source; backend=$BACKEND; backend_source=$backend_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"
@@ -1647,6 +1662,7 @@ fm_super_main() {
     if [ -n "${CUR_TMP:-}" ]; then
       rm -f "$CUR_TMP" 2>/dev/null || true
     fi
+    rm -f "$LOCK/continuation" "$LOCK/continuation.tmp" 2>/dev/null || true
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     log "daemon shutting down"

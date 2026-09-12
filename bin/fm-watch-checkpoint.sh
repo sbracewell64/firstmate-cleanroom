@@ -44,6 +44,17 @@ case "$SECONDS_ARG" in
   0) echo "error: --seconds must be greater than zero" >&2; exit 2 ;;
 esac
 
+# Reconcile the existing durable owner before waiting and after the finite
+# checkpoint. No wake/presentation cursor is used as an execution receipt.
+reconcile_completion() {
+  local out rc=0
+  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || rc=$?
+  [ -z "$out" ] || printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || printf 'CONTINUATION_CNO: checkpoint retains unresolved report/action obligations\n' >&2
+  return 0
+}
+reconcile_completion
+
 OUT=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.out.XXXXXX") || exit 1
 ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
   rm -f "$OUT"
@@ -85,6 +96,7 @@ else
   RC=$?
 fi
 set -e
+reconcile_completion
 
 if grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" >/dev/null 2>&1; then
   cat "$OUT"

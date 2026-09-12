@@ -9,12 +9,14 @@
 # about a programme step consumes THIS typed result (or an explicitly narrower
 # canonical owner); none re-derives programme authority from prose.
 # bin/fm-continuation-lib.sh owns the vocabulary and every classification table;
-# this script only reads canonical state and applies them.
+# resolve/render/summary only read canonical state and apply them. The explicit
+# reconcile entrypoint delegates run/report effects to the existing stage owner.
 # Owner map: resolver = bin/fm-continuation-lib.sh + this script; hold
 # durability and effect = bin/fm-captain-hold.sh; backend agent-status -> wake
 # transitions = bin/fm-transition-lib.sh; distinct owners with no coupling.
 #
 # Usage:
+#   FM_HOME=<home> fm-continuation-resolve.sh reconcile
 #   fm-continuation-resolve.sh resolve [--programme <file>] [--root <dir>] [--materialize]
 #   fm-continuation-resolve.sh summary [--programme <file>] [--root <dir>]
 #   fm-continuation-resolve.sh render  [--programme <file>] [--root <dir>]
@@ -231,6 +233,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+
+# Execution reconciliation is an explicit resume operation delegated to the
+# existing stage/completion owner. resolve/render/summary remain read-only.
+# No programme or fresh wake is required to rediscover durable handoffs.
+if [ "${1:-}" = reconcile ]; then
+  state_dir="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+  result=0
+  for task_meta in "$state_dir"/*.meta; do
+    [ -e "$task_meta" ] || [ -L "$task_meta" ] || continue
+    task_id=${task_meta##*/}; task_id=${task_id%.meta}
+    if [ ! -f "$task_meta" ] || [ -L "$task_meta" ] || [ ! -r "$task_meta" ]; then
+      printf 'COMPLETION_CNO: task=%s owner=fm-stage reason=TASK_AUTHORITY_UNREADABLE\n' "$task_id"
+      result=1
+      continue
+    fi
+    if [ -f "$state_dir/$task_id.nm-observe" ] || grep -q '^completion_handoff=' "$task_meta"; then
+      FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-stage.sh" "$task_id" resume-handoff || result=1
+    fi
+  done
+  exit "$result"
+fi
 
 # shellcheck source=bin/fm-continuation-lib.sh
 # shellcheck disable=SC1091

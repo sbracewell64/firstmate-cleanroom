@@ -14,3 +14,6 @@ When this session owns supervision and away mode is not active:
 
 Codex cannot reason while a foreground tool call is running.
 The bounded checkpoint returns control regularly so user messages and queued wakes can be handled without relying on background-task wake semantics.
+A yielded tool session still requires its result to be awaited; it is not permission to finalize with unfinished work.
+Resume, drain and checkpoint reconcile admitted report handoffs through the stage owner described in `bin/fm-completion-lib.sh`.
+Treat `COMPLETION_PENDING` as an open owner obligation and `CONTINUATION_CNO` as unverified continuation, even with an empty inbox or wake queue.

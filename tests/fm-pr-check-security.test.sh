@@ -2285,7 +2285,8 @@ test_stage_activation_preserves_registered_poll() {
   fm_pr_poll_snapshot_capture "$dir/home/state" task-a "$POLL" \
     || fail "maintained activation invalidated authenticated PR snapshot"
   cp "$dir/home/state/task-a.meta" "$dir/valid.meta"
-  for bad in 'stage_unrecognized=1' 'stage_pr_extra=1' 'pr=https://github.com/o/r/pull/39' \
+  for bad in 'stage_unrecognized=1' 'stage_pr_extra=1' 'stage_context_extra=1' 'stage_evidence_extra=1' \
+    'pr=https://github.com/o/r/pull/39' \
     'pr_head=invalid' 'echo unsafe' 'window=foreign'; do
     cp "$dir/valid.meta" "$dir/home/state/task-a.meta"
     printf '%s\n' "$bad" >> "$dir/home/state/task-a.meta"

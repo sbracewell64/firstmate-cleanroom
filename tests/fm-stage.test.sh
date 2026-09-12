@@ -43,11 +43,16 @@ cat > "$FAKEBIN/no-mistakes" <<'SH'
 set -u
 printf '%s\n' "$*" >> "${FM_FAKE_NM_LOG:?}"
 case "${1:-}" in
-  --version) printf 'no-mistakes version v%s (0af0be6) 2026-08-31T14:04:25Z\n' "${FM_FAKE_NM_VERSION:-1.61.0}"; exit 0 ;;
+  --version)
+    case "${FM_FAKE_PREFLIGHT_EFFECT:-}" in
+      hold) printf 'needs-decision [key=late-retry]: opened during preflight\n' >> "$FM_STATE_OVERRIDE/engineering.status" ;;
+      head) git -C "$FM_FAKE_PREFLIGHT_WT" commit -q --allow-empty -m 'head changed during preflight' ;;
+    esac
+    printf 'no-mistakes version v%s (0af0be6) 2026-08-31T14:04:25Z\n' "${FM_FAKE_NM_VERSION:-1.61.0}"; exit 0 ;;
   axi)
     shift
     case "${1:-}" in
-      status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit 0 ;;
+      status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_STATUS_EXIT:-0}" ;;
       logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit 0 ;;
     esac ;;
   runs) printf '%s\n' "${FM_FAKE_RUNS_LIST:-}"; exit 0 ;;
@@ -432,7 +437,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?
@@ -493,3 +498,245 @@ test_missing_capacity_produces_pending_and_no_launch
 test_hold_appearing_during_admission_refuses
 test_direct_pr_and_local_only_record_candidate_only
 test_only_read_only_verbs_were_sent
+
+# The result owner must distinguish checked pointers from observed consumption.
+test_engineering_stage_evidence_and_residuals() {
+  local wt head out rc desc pin mutation
+  wt="$TMP_ROOT/wt-engineering"
+  make_worktree "$wt" fm/engineering
+  head=$(git -C "$wt" rev-parse HEAD)
+  make_task engineering no-mistakes "$wt"
+  printf abc > "$DATA/engineering/skill.md"
+  desc="$DATA/engineering/work-context.json"
+  cat > "$desc" <<EOF
+{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"$DATA/engineering/skill.md","release":"r1","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","role":"worker","stage":"test","trigger":"test-change"}],"verification":[{"id":"caller","skill":"tdd","scope":"composition","public_seam":"fm-brief","inputs":"declared source","environment":"controlled and inherited","oracle":"literal expected bytes","allowed_effects":"scratch only","source_identity":"r1","caller_identity":"fixture","command":"receiver-test","negative":"stale source refuses","owner":"crewmate-boundary-repair","next_gate":"ci-ready"},{"id":"consumer","skill":"tdd","scope":"deployed-consumer","public_seam":"next-worker","inputs":"qualified release","environment":"native subscription","oracle":"actual worker artifact","allowed_effects":"authorized receiver work","source_identity":"r1","caller_identity":"next-worker","command":"qualified worker","negative":"old source refuses","owner":"runtime-pin-adoption-gap","next_gate":"next genuine dispatch"}]}}
+EOF
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" engineering committed 2>&1); rc=$?
+  expect_code 0 "$rc" "valid engineering candidate admits: $out"
+  pin=$(meta_get engineering stage_context)
+  [ -n "$pin" ] || fail "stage must bind the declared engineering context"
+  jq '.engineering.generation="g2"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$("$STAGE" engineering show 2>&1); rc=$?
+  expect_code 1 "$rc" "resume must refuse a changed admitted context"
+  assert_contains "$out" 'ENGINEERING_CONTEXT' "resume names stale context"
+  jq '.engineering.generation="g1"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  # Canonical JSON formatting is not a semantic generation change.
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering reviewing "$head")
+  out=$("$STAGE" engineering running --run 01ENG 2>&1); rc=$?
+  expect_code 0 "$rc" "run binding survives unchanged engineering contract: $out"
+  git -C "$wt" checkout -q -b newer-main HEAD^
+  printf 'new main\n' > "$wt/main.txt"
+  git -C "$wt" add main.txt
+  git -C "$wt" commit -q -m 'advance main'
+  git -C "$wt" checkout -q fm/engineering
+  git -C "$wt" rebase newer-main >/dev/null 2>&1 || fail "normal current-base rebase failed"
+  git -C "$wt" merge-base --is-ancestor "$head" HEAD && fail "fixture did not rewrite admitted history"
+  head=$(git -C "$wt" rev-parse HEAD)
+  FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering ci "$head")
+branch_sync:
+  state: pipeline_owned"
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$("$STAGE" engineering running --run 01ENG 2>&1); rc=$?
+  expect_code 0 "$rc" "same-run normal rebase remains current: $out"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "green run without required behavioral evidence refuses"
+  assert_contains "$out" 'engineering-evidence' "CI-ready names missing evidence"
+  printf 'native tool read observed\n' > "$DATA/engineering/read.log"
+  printf 'receiver-test: expected stale source refusal and matching bytes\n' > "$DATA/engineering/test.log"
+  jq -n --arg task engineering --arg head "$head" --arg load "$DATA/engineering/read.log" \
+    --arg lsha "$(sha256sum < "$DATA/engineering/read.log" | cut -d' ' -f1)" \
+    --arg behavior "$DATA/engineering/test.log" --arg bsha "$(sha256sum < "$DATA/engineering/test.log" | cut -d' ' -f1)" \
+    '{task:$task,generation:"g1",run:"01ENG",head:$head,results:[{id:"caller",load:{kind:"tool-read",path:$load,sha256:$lsha,source_sha256:"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",role:"worker",stage:"test"},behavior:{scope:"composition",path:$behavior,sha256:$bsha,command:"receiver-test",oracle:"literal expected bytes",exit_code:0}}]}' \
+    > "$DATA/engineering/engineering-evidence.json"
+  cp "$DATA/engineering/engineering-evidence.json" "$DATA/engineering/valid-evidence.json"
+  for mutation in '.results=[]' '.results[0].load.kind="self-report"' '.head="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' '.results[0].behavior.exit_code=9' '.results[0].behavior.scope="component"'; do
+    jq "$mutation" "$DATA/engineering/valid-evidence.json" > "$DATA/engineering/engineering-evidence.json"
+    out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+    expect_code 1 "$rc" "incomplete/stale/self-reported/failed/wrong-scope evidence must refuse: $mutation"
+  done
+  cp "$DATA/engineering/valid-evidence.json" "$DATA/engineering/engineering-evidence.json"
+  printf 'changed after indexing' >> "$DATA/engineering/test.log"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "artifact changes after indexing must refuse"
+  printf 'receiver-test: expected stale source refusal and matching bytes\n' > "$DATA/engineering/test.log"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 0 "$rc" "bound independent artifacts allow CI-ready: $out"
+  pin=$(meta_get engineering stage_evidence)
+  jq '.receipt="refreshed"' "$DATA/engineering/engineering-evidence.json" > "$desc.tmp" && mv "$desc.tmp" "$DATA/engineering/engineering-evidence.json"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 0 "$rc" "repeated CI-ready accepts a new valid evidence index: $out"
+  [ "$(meta_get engineering stage_evidence)" != "$pin" ] || fail "CI-ready retained obsolete evidence identity"
+  [ "$(meta_get engineering stage_evidence)" = "$(sha256sum < "$DATA/engineering/engineering-evidence.json" | cut -d' ' -f1)" ] || fail "CI-ready did not persist exact evidence bytes"
+  local saved_context saved_meta saved_observer saved_status retry_case
+  saved_context=$(cat "$desc")
+  saved_meta=$(cat "$STATE/engineering.meta")
+  saved_observer=$(cat "$STATE/engineering.nm-observe")
+  saved_status=$(cat "$STATE/engineering.status")
+  for retry_case in changed removed; do
+    if [ "$retry_case" = changed ]; then
+      printf '%s' "$saved_context" | jq '.engineering.generation="replacement"' > "$desc"
+    else
+      printf '{}\n' > "$desc"
+    fi
+    printf 'needs-decision [key=retry-hold]: wait\n' >> "$STATE/engineering.status"
+    out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "active run with $retry_case context and hold refuses retry: $out"
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "held retry replaced stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "held retry replaced run custody"
+    printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+    out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "active run with $retry_case context refuses retry without hold: $out"
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "refused retry replaced stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "refused retry replaced run custody"
+  done
+  local active_status
+  active_status=$FM_FAKE_AXI_STATUS
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed)
+  printf 'needs-decision [key=retry-hold]: wait\n' >> "$STATE/engineering.status"
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "released run with open hold preserves the previous attempt: $out"
+  [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "released held retry replaced bindings"
+  printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+  FM_FAKE_NM_VERSION=1.0.0
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  FM_FAKE_NM_VERSION=
+  expect_code 1 "$rc" "unqualified retry preserves the previous attempt: $out"
+  [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "preflight refusal replaced stage bindings"
+  [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "preflight refusal replaced observer bindings"
+  local late_case
+  for late_case in hold head; do
+    out=$(FM_FAKE_PREFLIGHT_EFFECT="$late_case" FM_FAKE_PREFLIGHT_WT="$wt" "$STAGE" engineering committed --retry 2>&1); rc=$?
+    expect_code 1 "$rc" "late $late_case refuses released retry: $out"
+    case "$late_case" in
+      hold)
+        assert_contains "$out" 'HOLD_APPEARED' "late hold was not checked at admission"
+        assert_grep 'late-retry' "$STATE/engineering.status" "preflight did not inject the late hold" ;;
+      head)
+        assert_contains "$out" 'STALE_CANDIDATE' "late head was not checked at admission"
+        [ "$(git -C "$wt" rev-parse HEAD)" != "$head" ] || fail "preflight did not move the candidate" ;;
+    esac
+    [ "$(cat "$STATE/engineering.meta")" = "$saved_meta" ] || fail "late refusal changed stage bindings"
+    [ "$(cat "$STATE/engineering.nm-observe")" = "$saved_observer" ] || fail "late refusal changed observer bindings"
+    printf '%s\n' "$saved_status" > "$STATE/engineering.status"
+    git -C "$wt" reset -q --hard "$head"
+  done
+  printf '%s\n' "$saved_context" > "$desc"
+  FM_FAKE_AXI_STATUS=$active_status
+  local valid_status saved_attempt
+  valid_status=$FM_FAKE_AXI_STATUS
+  for mutation in foreign-id foreign-branch terminal wrong-head; do
+    case "$mutation" in
+      foreign-id) FM_FAKE_AXI_STATUS="$(run_toon 01FOREIGN fm/engineering ci "$head")" ;;
+      foreign-branch) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/foreign ci "$head")" ;;
+      terminal) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering completed "$head" checks-passed)" ;;
+      wrong-head) FM_FAKE_AXI_STATUS="$(run_toon 01ENG fm/engineering ci "$(git -C "$wt" rev-parse HEAD^)")" ;;
+    esac
+    FM_FAKE_AXI_STATUS="$FM_FAKE_AXI_STATUS
+branch_sync:
+  state: pipeline_owned"
+    out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+    expect_code 1 "$rc" "rebased candidate refuses $mutation attribution: $out"
+  done
+  FM_FAKE_AXI_STATUS=$valid_status
+  saved_attempt=$(obs_get engineering attempt_id)
+  printf 'attempt_id=stale-attempt\n' >> "$STATE/engineering.nm-observe"
+  out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
+  expect_code 1 "$rc" "rebased candidate refuses stale attempt"
+  printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/engineering.nm-observe"
+  printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n8\n' > "$STATE/engineering.pr-poll-merge-notified"
+  out=$("$STAGE" engineering activated 2>&1); rc=$?
+  expect_code 0 "$rc" "landed source can record its existing readback: $out"
+  assert_grep 'runtime-pin-adoption-gap' "$STATE/engineering.parent-currentness" "completion lost the actual consumer owner"
+  assert_grep 'consumer' "$STATE/engineering.parent-currentness" "completion lost the open consumer obligation"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENG fm/engineering completed "$head" checks-passed)
+  printf '{}\n' > "$desc"
+  out=$("$STAGE" engineering committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "new attempt can remove engineering context: $out"
+  [ -z "$(meta_get engineering stage_context)" ] || fail "new attempt retained old context"
+  [ -z "$(meta_get engineering stage_evidence)" ] || fail "new attempt retained old evidence"
+  [ "$(meta_get engineering stage_attempt)" = "$(obs_get engineering attempt_id)" ] || fail "successful retry published different attempts"
+  [ "$(meta_get engineering stage_run)" = "$(obs_get engineering run_id)" ] || fail "successful retry published different run bindings"
+  [ "$(obs_get engineering run_id)" = '' ] || fail "successful retry retained the predecessor run"
+  out=$("$STAGE" engineering show 2>&1); rc=$?
+  expect_code 0 "$rc" "new empty context resumes: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ENGNEXT fm/engineering reviewing "$head")
+  out=$("$STAGE" engineering running --run 01ENGNEXT 2>&1); rc=$?
+  expect_code 0 "$rc" "new empty context binds the next run: $out"
+  pass "engineering stage: rebase custody, exact evidence refresh, context replacement, and residuals"
+}
+test_engineering_stage_evidence_and_residuals
+
+
+test_isolated_pipeline_successor() {
+  local wt lane admitted head out rc valid_status mutation saved_attempt before
+  wt="$TMP_ROOT/wt-isolated"
+  lane="$TMP_ROOT/pipeline-isolated"
+  make_worktree "$wt" fm/isolated
+  admitted=$(git -C "$wt" rev-parse HEAD)
+  make_task isolated no-mistakes "$wt"
+  cp "$DATA/engineering/valid-evidence.json" "$DATA/isolated/engineering-evidence.json"
+  jq -n --arg path "$DATA/engineering/skill.md" '{engineering:{generation:"g1",triggers:["test-change"],skills:[{id:"tdd",path:$path,release:"r1",sha256:"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",role:"worker",stage:"test",trigger:"test-change"}],verification:[{id:"caller",skill:"tdd",scope:"composition",public_seam:"fm-brief",inputs:"declared source",environment:"controlled and inherited",oracle:"literal expected bytes",allowed_effects:"scratch only",source_identity:"r1",caller_identity:"fixture",command:"receiver-test",negative:"stale source refuses",owner:"crewmate-boundary-repair",next_gate:"ci-ready"}]}}' > "$DATA/isolated/work-context.json"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" isolated committed 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated candidate admits: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated reviewing "$admitted")
+  out=$("$STAGE" isolated running --run 01ISOLATED 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated candidate binds: $out"
+  git clone -q --no-local "$wt" "$lane" || fail "isolated pipeline clone failed"
+  git -C "$lane" checkout -q -b current-main HEAD^
+  printf 'pipeline base advance\n' > "$lane/main.txt"
+  git -C "$lane" add main.txt
+  git -C "$lane" commit -q -m 'advance pipeline base'
+  git -C "$lane" checkout -q fm/isolated
+  git -C "$lane" rebase current-main >/dev/null 2>&1 || fail "isolated pipeline rebase failed"
+  head=$(git -C "$lane" rev-parse HEAD)
+  git -C "$lane" merge-base --is-ancestor "$admitted" "$head" && fail "pipeline history was not rewritten"
+  git -C "$wt" cat-file -e "$head" 2>/dev/null && fail "successor unexpectedly exists in worker object store"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$admitted" ] || fail "worker moved from admitted candidate"
+  jq --arg head "$head" '.task="isolated" | .run="01ISOLATED" | .head=$head' "$DATA/isolated/engineering-evidence.json" > "$DATA/isolated/index.tmp"
+  mv "$DATA/isolated/index.tmp" "$DATA/isolated/engineering-evidence.json"
+  valid_status="$(run_toon 01ISOLATED fm/isolated ci "$head")
+branch_sync:
+  state: pipeline_owned"
+  FM_FAKE_AXI_STATUS=$valid_status
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "isolated successor evidence admits without a worker-local object: $out"
+  before=$(meta_get isolated stage_evidence)
+  for mutation in foreign-id foreign-branch stale-run wrong-head short-head malformed-head missing-head terminal released failed-read; do
+    case "$mutation" in
+      foreign-id|stale-run) FM_FAKE_AXI_STATUS=$(run_toon 01OTHER fm/isolated ci "$head") ;;
+      foreign-branch) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/foreign ci "$head") ;;
+      wrong-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "$admitted") ;;
+      short-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "${head:0:8}") ;;
+      malformed-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci HEAD) ;;
+      missing-head) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci '') ;;
+      terminal) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated completed "$head" checks-passed) ;;
+      released|failed-read) FM_FAKE_AXI_STATUS=$(run_toon 01ISOLATED fm/isolated ci "$head") ;;
+    esac
+    if [ "$mutation" != released ]; then
+      FM_FAKE_AXI_STATUS="$FM_FAKE_AXI_STATUS
+branch_sync:
+  state: pipeline_owned"
+    fi
+    export FM_FAKE_STATUS_EXIT=0
+    [ "$mutation" != failed-read ] || FM_FAKE_STATUS_EXIT=1
+    out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+    expect_code 1 "$rc" "isolated successor refuses $mutation: $out"
+    [ "$(meta_get isolated stage_evidence)" = "$before" ] || fail "refusal changed evidence binding"
+  done
+  FM_FAKE_STATUS_EXIT=0
+  FM_FAKE_AXI_STATUS=$valid_status
+  saved_attempt=$(obs_get isolated attempt_id)
+  printf 'attempt_id=stale\n' >> "$STATE/isolated.nm-observe"
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 1 "$rc" "isolated successor refuses stale attempt: $out"
+  printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/isolated.nm-observe"
+  out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
+  expect_code 0 "$rc" "valid isolated successor remains admissible: $out"
+  git -C "$wt" cat-file -e "$head" 2>/dev/null && fail "admission imported the pipeline successor"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$admitted" ] || fail "admission moved the worker"
+  pass "isolated pipeline rebase admits exact current-run evidence without local objects and refuses invalid attribution"
+}
+test_isolated_pipeline_successor

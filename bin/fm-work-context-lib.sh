@@ -83,6 +83,9 @@
 # demonstrate, standing in for that binary. A merge is not activation, and the
 # roadmap flip is `landed`, never `active`.
 
+# shellcheck source=bin/fm-work-context-engineering-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-work-context-engineering-lib.sh"
+
 # Distinct typed exits (mirroring fm-gate-refuse-lib.sh's exit-3 refusal grade):
 FM_WORK_CONTEXT_PASS_EXIT=0
 FM_WORK_CONTEXT_USAGE_EXIT=2
@@ -294,13 +297,13 @@ _fm_wc_class_c_ruling() {  # <state-dir> <data-dir> <id> <descriptor> [config-di
 }
 
 # The dispatch-seam authority gate: the narrow predicate the fm-spawn dispatch
-# path consults before the launch effect. It refuses ONLY when the operation's
-# authoritative binding classifies it Class-C and no consumed affirmative bound
-# ruling is present; it is inert (no jq, proceed) for every ordinary op whose
-# meta declares no Class-C requirement, so existing dispatch behavior is
-# unchanged. Sets FM_WORK_CONTEXT_VERDICT/DETAIL. Returns 0 proceed, 3 refuse.
-fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir]
-  local state=$1 data=$2 id=$3 config=${4:-}
+# path consults before the launch effect. Authority classification and consumed
+# ruling checks precede the engineering checks owned by
+# fm-work-context-engineering-lib.sh; docs/configuration.md describes dispatch
+# applicability by kind. Sets FM_WORK_CONTEXT_VERDICT/DETAIL.
+# Returns 0 proceed, 3 refuse.
+fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [config-dir] [kind=ship]
+  local state=$1 data=$2 id=$3 config=${4:-} kind=${5:-ship}
   fm_work_context_reset
   if ! fm_work_context_authority_classify "$state" "$data" "$id" "$config"; then
     FM_WORK_CONTEXT_VERDICT=refuse
@@ -316,6 +319,12 @@ fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [conf
       fi ;;
   esac
   FM_WORK_CONTEXT_VERDICT=proceed
+  case "$kind" in
+    scout) fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+    secondmate) return "$FM_WORK_CONTEXT_PASS_EXIT" ;;
+    *) fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+  esac
+  fm_work_context_engineering_brief "$data" "$id" || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dispatch authority satisfied (classes=$FM_WORK_CONTEXT_CLASSES)"
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
@@ -586,6 +595,7 @@ fm_work_context_preflight() {  # <state> <data> <config> <id> <effect>
   esac
 
   FM_WORK_CONTEXT_VERDICT=proceed
+  fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dependent effect authorized: source, references, owners, and authority current"
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
@@ -646,8 +656,8 @@ _fm_wc_roadmap_refresh() {  # <roadmap-file> <key> <child> <epoch>
   case "$rc" in
     0) : ;;
     10) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=already-landed; return 0 ;;
-    11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-absent; return 1 ;;
-    12) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=obligation-not-landed; return 1 ;;
+    11) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS="obligation-absent"; return 1 ;;
+    12) rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS="obligation-not-landed"; return 1 ;;
     *)  rm -f "$tmp" 2>/dev/null || true; FM_WC_ROADMAP_STATUS=refresh-error; return 1 ;;
   esac
   if mv -f "$tmp" "$file" 2>/dev/null; then
@@ -816,6 +826,11 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     printf 'roadmap_obligation=%s\n' "${roadmap_key:-none}"
     printf 'roadmap_refresh=%s\n' "$roadmap_status"
     printf 'currentness=%s\n' "$currentness"
+    printf 'engineering_context=%s\n' "$(fm_meta_get "$state/$id.meta" stage_context)"
+    printf 'engineering_evidence=%s\n' "$(fm_meta_get "$state/$id.meta" stage_evidence)"
+    fm_work_context_engineering_residuals "$desc" | while IFS= read -r obligation; do
+      printf 'engineering_residual=%s\n' "$obligation"
+    done
     printf 'epoch=%s\n' "$(date +%s 2>/dev/null || echo 0)"
   } > "$tmp" 2>/dev/null || {
     rm -f "$tmp" 2>/dev/null

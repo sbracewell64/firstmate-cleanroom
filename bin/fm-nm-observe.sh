@@ -6,6 +6,7 @@
 # Usage:
 #   fm-nm-observe.sh enrol    <task-id> [--entrypoint <name>]
 #   fm-nm-observe.sh launch   <task-id> [--entrypoint <name>] [--retry]
+#       [--expect-head <sha> --expect-tree <sha> --expect-branch <branch>]
 #                             [--profile-json <file>] [--expect-nm-home <path>]
 #                             [--expect-path0 <dir>]
 #   fm-nm-observe.sh bind     <task-id> [--run <run-id>] [--accept-daemon-reset]
@@ -75,11 +76,20 @@
 #             nm_build record `unobserved`. An unready profile is recorded as
 #             stage=launch-refused with outcome_class=preflight-refused, keeps
 #             the attempt id, never fabricates a run id, prints one typed
-#             PREFLIGHT_REFUSED line, and exits 1. A second launch while the
+#             PREFLIGHT_REFUSED line, and exits 1. The --retry exception
+#             preserves an existing attempt unchanged on an
+#             unready profile instead of recording a refused replacement.
+#             A second launch while the
 #             current attempt has no run, or while its bound run is still
 #             active, keeps that attempt (a resumed run keeps its identity);
 #             --retry, or a bound run that is already terminal, opens a new
 #             attempt linked to its predecessor attempt and run.
+#             Stage retries may supply --expect-head, --expect-tree and
+#             --expect-branch together (only with --entrypoint stage --retry).
+#             After profile and policy reads, launch rechecks these identities,
+#             worktree cleanliness and open holds before replacing the attempt;
+#             STALE_CANDIDATE or HOLD_APPEARED exits 1 with the old binding intact.
+#             bin/fm-stage.sh owns subsequent stage publication.
 #   bind      After no-mistakes created the run, bind the ACTUAL run id from
 #             `axi status` (or `axi status --run <id>` with --run) under
 #             bin/fm-nm-run-lib.sh's attribution rules: same branch, and the
@@ -543,7 +553,7 @@ do_enrol() {  # <task-id> <entrypoint>
 
 do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-nm-home> <expect-path0>
   local id=$1 entry=$2 retry=$3 profile_file=$4 expect_home=$5 expect_path0=$6
-  local meta record dir wt stage run class attempt seq pred_a pred_r json rc=0 ready nm_home path0 ver build unready branch head epoch
+  local meta record dir wt stage run class attempt seq pred_a pred_r json rc=0 ready nm_home path0 ver build unready branch head epoch policy holds
   meta=$(meta_path "$id")
   [ -f "$meta" ] || { echo "error: no task record for $id ($meta)" >&2; exit 2; }
   task_managed "$meta" || { do_enrol "$id" "$entry" || return 1; }
@@ -597,7 +607,29 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
   [ "$ver" != null ] || ver=
   [ "$build" != null ] || build=
   [ "$(profile_tool_field "$json" no-mistakes state)" = QUALIFIED ] || ready=false
+  if [ "$ready" != true ] && [ "$retry" -eq 1 ] && [ -n "$attempt" ]; then
+    printf 'NM_OBSERVE: PREFLIGHT_REFUSED task=%s attempt=%s profile=unqualified (previous attempt preserved)\n' "$id" "$attempt"
+    return 1
+  fi
   epoch=$(daemon_epoch "$nm_home")
+  policy=$([ -n "$dir" ] && policy_digest "$dir" || printf 'unknown')
+  if [ -n "$EXPECT_HEAD" ]; then
+    if [ "$(candidate_head "$wt")" != "$EXPECT_HEAD" ] \
+        || [ "$(candidate_branch "$wt")" != "$EXPECT_BRANCH" ] \
+        || [ "$(git -C "$wt" rev-parse 'HEAD^{tree}' 2>/dev/null)" != "$EXPECT_TREE" ] \
+        || [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      printf 'NM_OBSERVE: STALE_CANDIDATE task=%s (candidate changed during admission; previous attempt preserved)\n' "$id"
+      return 1
+    fi
+    _fm_wake_require_classify || return 2
+    holds=$(status_open_decisions "$STATE/$id.status") || return 2
+    if [ -n "$holds" ]; then
+      printf 'NM_OBSERVE: HOLD_APPEARED task=%s (hold opened during admission; previous attempt preserved)\n' "$id"
+      return 1
+    fi
+    head=$EXPECT_HEAD
+    branch=$EXPECT_BRANCH
+  fi
   seq=$(( ${seq:-0} + 1 ))
   attempt=$(attempt_id)
   record_set "$record" \
@@ -614,7 +646,7 @@ do_launch() {  # <task-id> <entrypoint> <retry 0|1> <profile-json-file> <expect-
     "nm_version=${ver:-unobserved}" \
     "nm_build=${build:-unobserved}" \
     "profile_ready=${ready:-false}" \
-    "policy=$([ -n "$dir" ] && policy_digest "$dir" || printf 'unknown')" \
+    "policy=$policy" \
     "daemon_epoch=$epoch" \
     "run_id=" "run_head=" "run_branch=" "run_bound_epoch=" "run_status=" "run_outcome=" \
     "outcome_class=" "outcome_epoch=" "head_change=" "superseding_run=" "daemon_reset_observed="
@@ -1185,6 +1217,9 @@ ACCEPT=0
 PROFILE_FILE=
 EXPECT_HOME=
 EXPECT_PATH0=
+EXPECT_HEAD=
+EXPECT_TREE=
+EXPECT_BRANCH=
 want=
 for a in "$@"; do
   if [ -n "$want" ]; then
@@ -1194,6 +1229,9 @@ for a in "$@"; do
       profile-json) PROFILE_FILE=$a ;;
       expect-nm-home) EXPECT_HOME=$a ;;
       expect-path0) EXPECT_PATH0=$a ;;
+      expect-head) EXPECT_HEAD=$a ;;
+      expect-tree) EXPECT_TREE=$a ;;
+      expect-branch) EXPECT_BRANCH=$a ;;
     esac
     want=
     continue
@@ -1204,6 +1242,9 @@ for a in "$@"; do
     --profile-json) want=profile-json ;;
     --expect-nm-home) want=expect-nm-home ;;
     --expect-path0) want=expect-path0 ;;
+    --expect-head) want=expect-head ;;
+    --expect-tree) want=expect-tree ;;
+    --expect-branch) want=expect-branch ;;
     --retry) RETRY=1 ;;
     --accept-daemon-reset) ACCEPT=1 ;;
     *) die_usage "unknown flag $a for $VERB" ;;
@@ -1211,6 +1252,11 @@ for a in "$@"; do
 done
 [ -z "$want" ] || die_usage "--$want requires a value"
 case "$ENTRY" in *[!A-Za-z0-9._-]*|'') die_usage "invalid --entrypoint" ;; esac
+if [ -n "$EXPECT_HEAD$EXPECT_TREE$EXPECT_BRANCH" ]; then
+  [ "$VERB" = launch ] && [ "$ENTRY" = stage ] && [ "$RETRY" -eq 1 ] \
+    && [ -n "$EXPECT_HEAD" ] && [ -n "$EXPECT_TREE" ] && [ -n "$EXPECT_BRANCH" ] \
+    || die_usage 'candidate expectations require a stage retry and head, tree, branch together'
+fi
 mkdir -p "$STATE"
 
 case "$VERB" in

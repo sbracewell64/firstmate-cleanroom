@@ -414,11 +414,22 @@ Malformed JSON, an empty or malformed rule/default array, an unverified harness,
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Engineering work context
+
+The optional `engineering` object in `data/<id>/work-context.json` binds an accepted task's applicable skill sources and verification obligations; `bin/fm-work-context-engineering-lib.sh` owns its exact schema, trigger mapping, evidence-index fields and scope rules.
+Use `bin/fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>` to read the checked current context before applicable work and after resume.
+Ship briefs and promotion instructions deliver all applicable source pointers; scout generation and dispatch select only worker diagnosis sources, and secondmate charters omit engineering context.
+Dispatch rejects stale selected sources or a stale generated context.
+The stage owner pins the engineering context and requires current-run behavioral artifacts before CI-ready; the worker carries reviewer obligations into the existing no-mistakes intent.
+A native/tool read records source delivery; the existing review owner assesses the independent behavioral evidence.
+The existing parent-currentness receipt retains runtime and deployed-consumer obligations after source landing, including a consumer obligation for every applicable skill.
+Absent engineering declarations leave unrelated work unchanged; an installed skill, copied heading, successful source merge or self-report never establishes actual consumption.
+
 ## Work-context authority gate (config/work-context-ruling-verifier)
 
 `bin/fm-spawn.sh` consults the work-context authority gate (`bin/fm-work-context-lib.sh`) after its backlog-dispatchability probe and before any endpoint, worktree, or record exists.
-The gate is inert for an ordinary op: a task whose authoritative binding declares no Class-C material authority resolves to Class A and dispatches unchanged.
-It refuses only a Class-C op that lacks a consumed, affirmative, subject-bound routed ruling, because a material-Sol engineering decision needs a routed request and a lease-bound ruling before its dependent effect and prose, a request id, a label, a queued task, or recorded Captain consent never substitutes.
+The authority check permits ordinary Class-A work; the separate [engineering context checks](#engineering-work-context) still apply when declared.
+The authority check refuses a Class-C op that lacks a consumed, affirmative, subject-bound routed ruling, because a material-Sol engineering decision needs a routed request and a lease-bound ruling before its dependent effect and prose, a request id, a label, a queued task, or recorded Captain consent never substitutes.
 The op's class is read from its authoritative binding - `state/<id>.meta` `authority_classes=` (which survives descriptor deletion) supplemented by the optional `data/<id>/work-context.json` descriptor - never inferred from a name or from free-text.
 
 `config/work-context-ruling-verifier` is an optional local, gitignored file naming an executable that consumes and validates the canonical control-plane ruling receipt.

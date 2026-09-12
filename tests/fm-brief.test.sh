@@ -10,7 +10,6 @@
 # fails, not just the generated brief. The DOD and Herdr-section builders now
 # use `IFS= read -r -d '' VAR <<EOF || true` instead, which removes the `$(...)`
 # wrapper and eliminates the whole defect class regardless of future prose.
-# test_no_heredoc_in_command_substitution guards that structure directly.
 # Ambient `bash -n` here is Bash 5 and cannot see the bug, so the real
 # cross-version enforcement lives in the macos-stock-bash CI job.
 set -u
@@ -24,7 +23,7 @@ mkdir -p "$BRIEF_HOME/data"
 
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
-# is a weak guard on its own; test_no_heredoc_in_command_substitution and the
+# is a weak guard on its own; test_bash32_generates_brief and the
 # macos-stock-bash CI job carry the real cross-version enforcement.
 test_script_parses() {
   local out rc
@@ -34,140 +33,28 @@ test_script_parses() {
   pass "fm-brief.sh: bash -n succeeds"
 }
 
-# Structural class guard (issues #166, #958, #1069): never build a variable by
-# wrapping a heredoc in a command substitution (`VAR=$(cat <<EOF ... EOF)`).
-# That construct is what breaks Bash 3.2 parsing, and pinning one historical
-# apostrophe phrase (as the old test did) missed the #945 reintroduction. This
-# guards the *shape* directly against the whole file, so any future DOD or
-# section builder that reintroduces the class fails here regardless of prose.
-test_no_heredoc_in_command_substitution() {
-  local unsafe safe
-  unsafe="$TMP_ROOT/heredoc-in-substitution.sh"
-  safe="$TMP_ROOT/plain-heredoc.sh"
-  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
-  printf '%s\n' 'value=$(' '  cat <<EOF' 'body' 'EOF' ')' > "$unsafe"
-  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
-  printf '%s\n' 'cat <<EOF' '$(' '  cat <<INNER' 'INNER' ')' 'EOF' > "$safe"
-  if no_heredoc_in_command_substitution "$unsafe"; then
-    fail "structural guard accepted a multiline heredoc nested in a command substitution"
-  fi
-  no_heredoc_in_command_substitution "$safe" \
-    || fail "structural guard treated heredoc body prose as shell structure"
-  no_heredoc_in_command_substitution "$ROOT/bin/fm-brief.sh" \
-    || fail "fm-brief.sh wraps a heredoc in a command substitution (breaks Bash 3.2 parsing)"
-  pass "fm-brief.sh: no heredoc is nested inside a command substitution (Bash 3.2 parse-safe)"
-}
-
-no_heredoc_in_command_substitution() {
-  perl - "$1" <<'PERL'
-use strict;
-use warnings;
-
-my $path = shift;
-open my $source, '<', $path or die "$path: $!\n";
-my @frames;
-my @heredocs;
-my $quote = '';
-my $line_number = 0;
-
-while (my $line = <$source>) {
-  $line_number++;
-  if (@heredocs) {
-    my $candidate = $line;
-    $candidate =~ s/\r?\n\z//;
-    $candidate =~ s/^\t+// if $heredocs[0]{strip_tabs};
-    shift @heredocs if $candidate eq $heredocs[0]{delimiter};
-    next;
-  }
-
-  my $length = length $line;
-  for (my $i = 0; $i < $length; $i++) {
-    my $char = substr($line, $i, 1);
-    if ($quote eq "'") {
-      $quote = '' if $char eq "'";
-      next;
-    }
-    if ($char eq '\\') {
-      $i++;
-      next;
-    }
-    if ($quote eq '"' && $char eq '"') {
-      $quote = '';
-      next;
-    }
-    if ($char eq "'" && $quote eq '') {
-      $quote = "'";
-      next;
-    }
-    if ($char eq '"' && $quote eq '') {
-      $quote = '"';
-      next;
-    }
-    if ($char eq '#' && $quote eq '' && ($i == 0 || substr($line, $i - 1, 1) =~ /[\s;|&()]/)) {
-      last;
-    }
-    if ($char eq '$' && substr($line, $i + 1, 1) eq '(') {
-      push @frames, { depth => 1, quote => $quote };
-      $quote = '';
-      $i++;
-      next;
-    }
-    if (@frames && $quote eq '' && $char eq '(') {
-      $frames[-1]{depth}++;
-      next;
-    }
-    if (@frames && $quote eq '' && $char eq ')') {
-      $frames[-1]{depth}--;
-      if ($frames[-1]{depth} == 0) {
-        my $frame = pop @frames;
-        $quote = $frame->{quote};
-      }
-      next;
-    }
-    next unless $quote eq '' && $char eq '<' && substr($line, $i + 1, 1) eq '<';
-    if (@frames) {
-      print STDERR "$path:$line_number\n";
-      exit 1;
-    }
-
-    my $j = $i + 2;
-    my $strip_tabs = substr($line, $j, 1) eq '-';
-    $j++ if $strip_tabs;
-    $j++ while substr($line, $j, 1) =~ /[ \t]/;
-    my $delimiter = '';
-    my $delimiter_quote = '';
-    for (; $j < $length; $j++) {
-      my $token = substr($line, $j, 1);
-      if ($delimiter_quote) {
-        if ($token eq $delimiter_quote) {
-          $delimiter_quote = '';
-        } elsif ($token eq '\\' && $delimiter_quote eq '"') {
-          $j++;
-          $delimiter .= substr($line, $j, 1);
-        } else {
-          $delimiter .= $token;
-        }
-        next;
-      }
-      if ($token eq "'" || $token eq '"') {
-        $delimiter_quote = $token;
-        next;
-      }
-      if ($token eq '\\') {
-        $j++;
-        $delimiter .= substr($line, $j, 1);
-        next;
-      }
-      last if $token =~ /[\s;|&()<>]/;
-      $delimiter .= $token;
-    }
-    push @heredocs, { delimiter => $delimiter, strip_tabs => $strip_tabs };
-    $i = $j - 1;
-  }
-}
-
-exit 0;
-PERL
+test_bash32_generates_brief() {
+  local interpreter version home out rc brief
+  interpreter=${FM_TEST_BASH32:-/bin/bash}
+  # shellcheck disable=SC2016 # Expand BASH_VERSION inside the selected interpreter.
+  version=$("$interpreter" -c 'printf "%s" "$BASH_VERSION"') || fail "cannot read Bash version"
+  case "$version" in
+    3.2.*) ;;
+    *)
+      [ -z "${FM_TEST_BASH32:-}" ] || fail "FM_TEST_BASH32 must name real Bash 3.2, got $version"
+      printf 'ok - skipped Bash 3.2 generation (not installed; macos-stock-bash owns this check)\n'
+      return 0 ;;
+  esac
+  home="$TMP_ROOT/bash32-home"
+  mkdir -p "$home/data"
+  out=$(FM_HOME="$home" "$interpreter" "$ROOT/bin/fm-brief.sh" bash32-worker receiver --mode no-mistakes 2>&1); rc=$?
+  expect_code 0 "$rc" "Bash $version must generate the real brief: $out"
+  brief="$home/data/bash32-worker/brief.md"
+  assert_present "$brief" "Bash 3.2 did not create a brief"
+  grep -qx 'Delivery contract: mode=no-mistakes' "$brief" || fail "Bash 3.2 lost the delivery contract"
+  assert_grep '# Definition of done' "$brief" "Bash 3.2 lost the completion instructions"
+  assert_grep 'fm-stage.sh' "$brief" "Bash 3.2 lost the executable stage commands"
+  pass "Bash $version executes the brief generator and preserves its output contract"
 }
 
 test_help_includes_entire_header() {
@@ -347,7 +234,6 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
   # Apostrophe prose in the DOD is structurally safe (no `$(...)` wrapper around
   # the heredoc), so it renders verbatim instead of being reworded or escaped
-  # away. test_no_heredoc_in_command_substitution guards the structure that makes
   # it safe.
   assert_grep "carrying only each requirement's current accepted form" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
@@ -828,8 +714,103 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# Public output is the worker's instruction contract, not implementation text.
+test_worker_kernel_roles_and_promotion() {
+  local home ship scout charter promoted out rc
+  home="$TMP_ROOT/kernel/home"
+  mkdir -p "$home/data" "$home/state"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-ship alpha --mode no-mistakes >/dev/null \
+    || fail "ordinary ship did not render"
+  ship="$home/data/kernel-ship/brief.md"
+  assert_grep '# Worker discipline' "$ship" "ordinary ship is missing the reusable kernel"
+  assert_grep 'could-not-observe (CNO)' "$ship" "ship must retain uncertainty"
+  assert_grep 'authority constraints' "$ship" "minimality must preserve authority"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-scout alpha --scout >/dev/null \
+    || fail "scout did not render"
+  scout="$home/data/kernel-scout/brief.md"
+  assert_grep '# Evidence discipline' "$scout" "scout needs evidence-only discipline"
+  assert_grep 'recommends and never instructs a merge or landing' "$scout" "scout recommendation is not authority"
+  if grep -q '^# Worker discipline\|climb the ladder\|^# Shared boundary' "$scout"; then
+    fail "scout received the ship engineering loop"
+  fi
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='supervise' "$ROOT/bin/fm-brief.sh" kernel-mate --secondmate --no-projects >/dev/null \
+    || fail "charter did not render"
+  charter="$home/data/kernel-mate/brief.md"
+  if grep -q '^# Worker discipline\|^# Evidence discipline' "$charter"; then
+    fail "supervisor received a worker kernel"
+  fi
+  printf '%s\n' 'kind=scout' 'worktree=/tmp/unused-kernel-fixture' > "$home/state/kernel-scout.meta"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-promote.sh" kernel-scout --mode no-mistakes --yolo off 2>&1); rc=$?
+  expect_code 0 "$rc" "promotion did not render: $out"
+  promoted="$home/data/kernel-scout/ship-instructions.md"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" > "$home/ship-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" > "$home/promoted-kernel"
+  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different kernel"
+  [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "ship-only fragment accepted for scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --shared-boundary --proof-surface 'receiver CLI' >/dev/null \
+    || fail "shared-boundary ship did not render"
+  assert_grep '# Shared boundary' "$home/data/kernel-shared/brief.md" "explicit shared seam was lost"
+  assert_grep 'receiver CLI' "$home/data/kernel-shared/brief.md" "explicit proof surface was lost"
+  pass "worker kernel: ship/promotion parity, evidence-only scout, supervisor exclusion, conditional fragments"
+}
+
+test_engineering_context_sources_and_resume() {
+  local home desc brief out rc command
+  home="$TMP_ROOT/engineering/home"
+  mkdir -p "$home/data/engineering" "$home/state"
+  printf abc > "$home/skill.md"
+  desc="$home/data/engineering/work-context.json"
+  cat > "$desc" <<EOF
+{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"$home/skill.md","release":"fixture-r1","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","role":"worker","stage":"test","trigger":"test-change"}],"verification":[]}}
+EOF
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering alpha --mode no-mistakes >/dev/null \
+    || fail "declared engineering brief did not render"
+  brief="$home/data/engineering/brief.md"
+  assert_grep 'fixture-r1' "$brief" "fresh brief lost the selected skill release"
+  assert_grep 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' "$brief" "fresh brief lost exact skill bytes"
+  assert_grep 'engineering engineering worker test' "$brief" "brief needs the current context command at dependent use/resume"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 0 "$rc" "current context should be available on resume: $out"
+  # Stage role is authoritative; a source label cannot request reviewer work
+  # in a worker stage. The scout subset cannot acquire a test-writing loop.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer test 2>&1); rc=$?
+  expect_code 3 "$rc" "reviewer/test role conflict must refuse"
+  mkdir -p "$home/data/engineering-scout"
+  cp "$desc" "$home/data/engineering-scout/work-context.json"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering-scout alpha --scout >/dev/null || fail "scout source fixture failed"
+  if grep -q 'fixture-r1' "$home/data/engineering-scout/brief.md"; then
+    fail "scout received the test-writing skill instead of its evidence subset"
+  fi
+  # shellcheck disable=SC2016 # Extract a literal command from the generated public contract.
+  command=$(sed -n 's/^  Run `\(.*\)`\.$/\1/p' "$brief")
+  out=$(FM_HOME="$home/wrong" FM_DATA_OVERRIDE="$home/wrong" FM_ROOT_OVERRIDE="$home/wrong" bash -c "$command" 2>&1); rc=$?
+  expect_code 0 "$rc" "generated caller must bind its own home/data/source against conflicting ambient inputs: $out"
+  assert_contains "$out" "FM_ROOT_OVERRIDE=$ROOT" "resumed output drifted to the ambient wrong source root"
+  printf stale > "$home/skill.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "resumed context must reject stale skill bytes"
+  assert_contains "$out" 'stale-skill-source' "stale source refusal must name its cause"
+  rm "$home/skill.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "missing source must not become a passing read"
+  assert_contains "$out" 'missing-skill-source' "missing source refusal must name its cause"
+  # No trigger means this absent TDD source is irrelevant to this task.
+  jq '.engineering.triggers=[]' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 0 "$rc" "irrelevant trigger must not require a TDD loop: $out"
+  assert_not_contains "$out" 'fixture-r1' "irrelevant skill leaked into worker obligations"
+  : > "$desc"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering worker test 2>&1); rc=$?
+  expect_code 3 "$rc" "empty/unreadable declaration must not downgrade to ordinary work"
+  pass "engineering context: fresh/resumed exact bytes, missing/stale refusal, irrelevant trigger"
+}
+
+test_engineering_context_sources_and_resume
+test_worker_kernel_roles_and_promotion
 test_script_parses
-test_no_heredoc_in_command_substitution
+test_bash32_generates_brief
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set

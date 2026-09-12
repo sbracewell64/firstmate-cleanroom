@@ -433,6 +433,23 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
       refuse ci-ready STALE_BINDING 'task identity changed during qualification'
     fi
   fi
+  case "$stage" in
+    ci-ready)
+      NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
+        "$WT" "$(meta stage_run)" "$(printf '%s' "$ci_effect" | jq -r .source_head)" \
+        "$(meta stage_branch)" "$(printf '%s' "$ci_effect" | jq -r .pr)" \
+        "$(printf '%s' "$ci_effect" | jq -c .qualification)" >/dev/null \
+        || refuse ci-ready QUALIFICATION_REVOKED 'exact producer qualification changed before publication'
+      ;;
+    landing|activated) require_current_qualification "$stage" ;;
+  esac
+  case "$stage" in
+    ci-ready|landing|activated)
+      [ -n "$ci_effect" ] || ci_effect=$(meta stage_ci_ready_effect)
+      if [ -n "$ci_effect" ]; then
+        line="$line qualification=revocable qualified_head=$(printf '%s' "$ci_effect" | jq -r .source_head)"
+      fi ;;
+  esac
   printf '%s\n' "$line" >> "$STATUS"
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
@@ -464,6 +481,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
 }
 
 unchanged() {  # <stage>
+  case "$1" in ci-ready|landing|activated) require_current_qualification "$1" ;; esac
   printf 'STAGE_UNCHANGED: %s task=%s gen=%s head=%s attempt=%s run=%s\n' \
     "$1" "$ID" "$(dash "$(meta stage_gen)")" "$(dash "$(short "$(meta stage_head)")")" "$(dash "$(meta stage_attempt)")" "$(dash "$(meta stage_run)")"
 }
@@ -525,11 +543,11 @@ engineering_context() { # <transition>
   fi
 }
 
-# The exact qualified head of the bound run, revalidated at every consuming
-# boundary: only CI-ready calls this, so a completed (non-active) run may be
-# consumed as a candidate successor only through the tooling owner's fresh
-# proof in completed_successor_current.
-qualified_run_head() {
+# The canonical run head, revalidated at every consuming boundary: only
+# CI-ready calls this, so a completed (non-active) run may be consumed as a
+# candidate successor only through the tooling owner's fresh proof in
+# completed_successor_current.
+canonical_run_head() {
   local output run_head
   output=$(bound_run_status) || return 1
   run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
@@ -699,7 +717,7 @@ do_running() {  # <transition-label>
 }
 
 do_ci_ready() (
-  local current verdict effect saved contract qualified_head CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -734,13 +752,11 @@ do_ci_ready() (
   esac
   candidate_current "$(meta stage_head)" "$HEAD" ci-ready \
     || refuse ci-ready STALE_CANDIDATE "recorded candidate $(short "$(meta stage_head)") is not an ancestor of head $(short "$HEAD")"
-  verdict=$(crew_state)
-  case "$verdict" in
-    "state: done"*"source: run-step"*) ;;
-    *) refuse ci-ready NOT_CI_READY "canonical state is not checks green from the run step: ${verdict:-no verdict}" ;;
-  esac
-  qualified_head=$(qualified_run_head) \
-    || refuse ci-ready STALE_BINDING 'qualified run head is missing, unreadable, or not attributable to this candidate'
+  qualified_head=$(canonical_run_head) \
+    || refuse ci-ready STALE_BINDING 'run head is missing, unreadable, or not attributable to this candidate'
+  qualification=$(NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
+    "$WT" "$(meta stage_run)" "$qualified_head" "$(meta stage_branch)" "$PR_ARG") \
+    || refuse ci-ready NOT_CI_READY 'exact producer qualification unavailable or invalidated'
   if [ -n "$HANDOFF_IDENTITY" ]; then
     [ "$qualified_head" = "$(printf '%s' "$contract" | jq -r .source_head)" ] \
       || refuse ci-ready STALE_BINDING 'qualified head differs from admitted completion'
@@ -749,8 +765,8 @@ do_ci_ready() (
   engineering_result "$qualified_head"
   STAGE_PR_VALUE=$PR_ARG
   effect=$(jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
-    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$qualified_head" --arg pr "$PR_ARG" \
-    '{task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
+    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$qualified_head" --arg pr "$PR_ARG" --argjson qualification "$qualification" \
+    '{qualification:$qualification,task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
   if [ "$current" = ci-ready ] && [ "$(meta stage_ci_ready_effect)" = "$effect" ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
     unchanged ci-ready
@@ -758,13 +774,23 @@ do_ci_ready() (
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
   fi
+  require_current_qualification ci-ready
   next_for ci-ready
 )
+
+# Historical stage labels never substitute for current producer qualification.
+require_current_qualification() {
+  if fm_nm_effect_required "$META"; then
+    fm_nm_effect_current "$META" "${STAGE_PR_VALUE:-$(meta stage_pr)}" >/dev/null \
+      || refuse "$1" QUALIFICATION_REVOKED 'exact stage qualification is missing or no longer current; historical record retained'
+  fi
+}
 
 do_landing() {
   local current
   require_ship landing
   engineering_context landing
+  require_current_qualification landing
   current=$(meta stage)
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
@@ -789,6 +815,9 @@ readback_evidence() {  # prints the evidence, or 1
     fi
   fi
   head=$(meta stage_head)
+  if fm_nm_effect_required "$META"; then
+    head=$(fm_nm_effect_current "$META" | jq -er .head) || return 1
+  fi
   if [ -n "$head" ] && [ -n "$PROJECT" ] && [ -d "$PROJECT" ]; then
     main=$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)
     if [ -n "$main" ] && git -C "$PROJECT" merge-base --is-ancestor "$head" "$main" 2>/dev/null; then
@@ -825,6 +854,7 @@ do_activated() {
   local current evidence
   require_ship activated
   engineering_context activated
+  require_current_qualification activated
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
   evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the candidate head reachable from the project clone's checked-out head"
@@ -840,6 +870,7 @@ do_activated() {
 }
 
 do_show() {
+  case "$(meta stage)" in ci-ready|landing|activated) require_current_qualification show ;; esac
   engineering_context show
   fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   local current

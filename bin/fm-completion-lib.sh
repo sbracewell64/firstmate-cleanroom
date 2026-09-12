@@ -47,6 +47,11 @@ fm_completion_store() { # <single JSON value>
   if ! fm_backlog_record_present "$META" 'task record' "$STATE" || ! fm_completion_saved_valid "$value"; then
     rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
   fi
+  if printf '%s' "$value" | jq -e '.status == "dispatched" and .contract.action.kind == "ci-ready"' >/dev/null; then
+    if ! fm_completion_ci_ready_effect "$(printf '%s' "$value" | jq -c .contract)"; then
+      rm -f "$tmp"; [ "$lock" = "${FM_COMPLETION_SOURCE_LOCK:-}" ] || fm_lock_release "$lock"; return 1
+    fi
+  fi
   grep -v '^completion_handoff=' "$META" > "$tmp" || true
   printf 'completion_handoff=%s\n' "$value" >> "$tmp"
   if ! fm_backlog_atomic_transition publish "$tmp" "$META" 'task record' "$STATE"; then
@@ -112,6 +117,9 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id>
     .identity == $identity and .contract.task == $task and
     .contract.action.kind == "ci-ready" and .status == "dispatched" and .receipt == $receipt
   ' >/dev/null 2>&1 || return 1
+  # shellcheck source=bin/fm-nm-run-lib.sh
+  . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+  fm_nm_effect_current "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" "$(printf '%s' "$contract" | jq -r .action.pr)" >/dev/null || return 1
   dir="$data_dir/$task"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1
@@ -160,6 +168,7 @@ fm_completion_pending() { # <saved JSON> <identity> <owner> <reason>
 
 fm_completion_ci_ready_effect() {
   local contract=$1
+  fm_nm_effect_current "$META" >/dev/null || return 1
   printf '%s' "$(meta stage_ci_ready_effect)" | jq -se --argjson contract "$contract" '
       length == 1 and (.[0] | .task == $contract.task and .generation == $contract.generation and
       .attempt == $contract.attempt and .run == $contract.run and
@@ -210,13 +219,27 @@ fm_completion_resume() {
   # completed with an unknown outcome must not inherit its broad success label.
   status=$(fm_nm_strip_quotes "$(fm_nm_field "$canonical" status)")
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$canonical" outcome)")
-  case "$status:$outcome" in
-    completed:passed|completed:checks-passed) ;;
-    running:|pending:|waiting:|paused:)
-      fm_completion_pending "$saved" "$identity" "$ID" run-active; return $? ;;
-    *) fm_completion_refuse CANONICAL_OUTCOME_UNKNOWN; return 1 ;;
-  esac
   kind=$(printf '%s' "$contract" | jq -r .action.kind)
+  if [ "$kind" = task-inbox ]; then
+    case "$status:$outcome" in
+      completed:passed|completed:checks-passed) ;;
+      running:|pending:|waiting:|paused:)
+        fm_completion_pending "$saved" "$identity" "$ID" run-active; return $? ;;
+      *) fm_completion_refuse CANONICAL_OUTCOME_UNKNOWN; return 1 ;;
+    esac
+  elif ! NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
+      "$WT" "$(meta stage_run)" "$(printf '%s' "$contract" | jq -r .source_head)" \
+      "$(meta stage_branch)" "$(printf '%s' "$contract" | jq -r .action.pr)" >/dev/null; then
+    # An old dispatched effect cannot inherit pending as current success.
+    if [ -n "$(meta stage_ci_ready_effect)" ]; then
+      fm_completion_refuse CI_QUALIFICATION_REVOKED; return 1
+    fi
+    case "$status:$outcome" in
+      running:|pending:|waiting:|paused:)
+        fm_completion_pending "$saved" "$identity" "$ID" run-active; return $? ;;
+      *) fm_completion_refuse CI_QUALIFICATION_UNAVAILABLE; return 1 ;;
+    esac
+  fi
   owner=$(printf '%s' "$contract" | jq -r .action.owner)
   generation=$(printf '%s' "$contract" | jq -r .action.generation)
   [ -f "$STATE/$owner.meta" ] && [ ! -L "$STATE/$owner.meta" ] || { fm_completion_refuse TARGET_UNREADABLE; return 1; }

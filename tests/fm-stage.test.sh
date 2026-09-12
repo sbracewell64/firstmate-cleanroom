@@ -645,6 +645,7 @@ branch_sync:
   printf 'attempt_id=stale-attempt\n' >> "$STATE/engineering.nm-observe"
   out=$("$STAGE" engineering ci-ready --pr https://github.com/o/r/pull/8 2>&1); rc=$?
   expect_code 1 "$rc" "rebased candidate refuses stale attempt"
+  sed -i '/^attempt_id=/d' "$STATE/engineering.nm-observe"
   printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/engineering.nm-observe"
   printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n8\n' > "$STATE/engineering.pr-poll-merge-notified"
   out=$("$STAGE" engineering activated 2>&1); rc=$?
@@ -736,6 +737,7 @@ branch_sync:
   printf 'attempt_id=stale\n' >> "$STATE/isolated.nm-observe"
   out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 1 "$rc" "isolated successor refuses stale attempt: $out"
+  sed -i '/^attempt_id=/d' "$STATE/isolated.nm-observe"
   printf 'attempt_id=%s\n' "$saved_attempt" >> "$STATE/isolated.nm-observe"
   out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "valid isolated successor remains admissible: $out"

@@ -498,8 +498,8 @@ test_unqualified_and_foreign_stage_effects_refuse() {
   stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'unqualified stage admission'
   rc=0; out=$(stage landing) || rc=$?
   expect_code 1 "$rc" 'direct landing must leave CI-ready effect unresolved'
-  [ "$(meta stage)" = landing ] || fail 'negative fixture did not reach landing'
-  assert_contains "$out" CI_READY_EFFECT_UNPROVEN 'direct landing fabricated qualification'
+  [ "$(meta stage)" = validation-running ] || fail 'direct landing mutated unqualified stage'
+  assert_contains "$out" QUALIFICATION_REVOKED 'direct landing must refuse before any lifecycle effect'
   [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'direct landing synthesized a receipt'
   prepare_delivery
   stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'qualified stage admission'
@@ -830,7 +830,7 @@ test_monitoring_qualification_and_revocation() (
   pass 'monitoring uses exact revocable qualification; recovery and repeat dedupe; invalidated current uses refuse'
 )
 
-test_monitoring_qualification_and_revocation
+test_monitoring_qualification_and_revocation || exit 1
 
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake

@@ -20,6 +20,22 @@ An inbox effect records delivery only and retains its downstream obligation, inc
 Teardown preserves such an unresolved task; retirement of a confirmed stage effect archives its exact contract/receipt under the task's durable data directory, without making that archive an execution input.
 Qualification, caller synchronization, landing, deployment and actual consumption remain independently owned.
 
+CI-ready effect evidence retains the submitted candidate separately from the exact qualified canonical run head, using the attribution rules owned by `bin/fm-nm-run-lib.sh` and the existing qualification and engineering-evidence gates.
+The caller checkout need not advance to the qualified successor.
+`tests/fm-stage.test.sh` covers isolated pipeline successors, and `test_qualified_successor_identity` in `tests/fm-completion.test.sh` covers handoff dispatch and receipt reconstruction with distinct submitted and qualified heads.
+
+Synchronous reconciliation uses the following caller-owned wait policies.
+Timeouts leave durable handoffs unresolved; they never supply completion evidence.
+
+| Caller | Wait policy | Executable coverage |
+| --- | --- | --- |
+| Session start | Ten seconds for reconciliation, within the existing overall startup budget | `test_session_start_reconciles_durable_handoff` in `tests/fm-completion.test.sh`; runtime-bound tests in `tests/fm-session-start.test.sh` |
+| Wake drain | Ten seconds while holding presentation custody, then release custody and report CNO | `test_drain_observation_wait_releases_presentation` in `tests/fm-completion.test.sh` |
+| Codex Stop | Ten seconds, followed by its existing bounded recovery/CNO policy | `tests/fm-watch-checkpoint.test.sh` and `tests/fm-codex-continuation.test.sh` |
+| Foreground checkpoint | Each reconciliation call is bounded by the requested checkpoint duration | `test_checkpoint_observation_lock_bounds` in `tests/fm-completion.test.sh` |
+| Away housekeeping | Ten seconds, then retain an escalation and continue housekeeping | `test_away_housekeeping_bounds_observation_wait` in `tests/fm-completion.test.sh` |
+| Explicit stage transitions and resolver reconciliation | Synchronous authority operations; the embedding caller supplies its deadline and must retain unresolved work on interruption | Custody, concurrent delivery, and interrupted-effect reconstruction cases in `tests/fm-completion.test.sh` |
+
 The configured Codex Stop guard uses the separate process-custody contract in [`bin/fm-codex-continuation-lib.sh`](../bin/fm-codex-continuation-lib.sh).
 Its bounded CNO outcome retains unfinished task records and queues an escalation through the existing wake owner; it does not establish native callback or receiver acceptance.
 

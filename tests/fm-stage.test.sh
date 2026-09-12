@@ -704,6 +704,8 @@ branch_sync:
   FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
   out=$("$STAGE" isolated ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "isolated successor evidence admits without a worker-local object: $out"
+  [ "$(meta_get isolated stage_ci_ready_effect | jq -r .source_head)" = "$head" ] || fail 'isolated qualification recorded caller head'
+  [ "$(meta_get isolated stage_head)" = "$admitted" ] || fail 'isolated qualification replaced the submitted candidate'
   before=$(meta_get isolated stage_evidence)
   for mutation in foreign-id foreign-branch stale-run wrong-head short-head malformed-head missing-head terminal released failed-read; do
     case "$mutation" in

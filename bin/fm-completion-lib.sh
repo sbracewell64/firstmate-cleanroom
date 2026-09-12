@@ -252,8 +252,10 @@ fm_completion_resume() {
     if [ "$FM_COMPLETION_SOURCE_LOCK" != "$FM_COMPLETION_TARGET_LOCK" ]; then
       fm_lock_try_acquire "$FM_COMPLETION_SOURCE_LOCK" || { fm_completion_refuse SOURCE_BUSY; return 1; }
     fi
-    [ -f "$META" ] && [ ! -L "$META" ] && [ "$(meta completion_handoff)" = "$saved" ] \
-      && fm_completion_saved_valid "$saved" || { fm_completion_refuse SOURCE_CHANGED; return 1; }
+    if ! { [ -f "$META" ] && [ ! -L "$META" ] && [ "$(meta completion_handoff)" = "$saved" ] \
+      && fm_completion_saved_valid "$saved"; }; then
+      fm_completion_refuse SOURCE_CHANGED; return 1
+    fi
   fi
   fm_completion_target_current "$contract" || return 1
   if [ "$kind" = ci-ready ]; then
@@ -320,7 +322,9 @@ fm_completion_resume() {
       rc=0
       out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --identity "$identity" --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
       [ "$rc" -eq 0 ] || { printf '%s\n' "$out"; fm_completion_refuse STAGE_HELD; return 1; }
-      [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract" || { fm_completion_refuse EFFECT_UNCONFIRMED; return 1; }
+      if ! { [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract"; }; then
+        fm_completion_refuse EFFECT_UNCONFIRMED; return 1
+      fi
       record=$effect
     else
       effect=$(fm_task_inbox_write_idempotent "$STATE" "$owner" "$body") || { fm_completion_refuse DELIVERY_UNCONFIRMED; return 1; }
@@ -340,7 +344,7 @@ fm_completion_resume() {
 }
 
 fm_completion_transition() ( # <handoff|handoff-release|resume-handoff>
-  local transition=$1 lock saved rc=0 FM_COMPLETION_TARGET_LOCK= FM_COMPLETION_SOURCE_LOCK=
+  local transition=$1 lock saved rc=0 FM_COMPLETION_TARGET_LOCK='' FM_COMPLETION_SOURCE_LOCK=''
   trap '[ -z "$FM_COMPLETION_SOURCE_LOCK" ] || [ "$FM_COMPLETION_SOURCE_LOCK" = "$FM_COMPLETION_TARGET_LOCK" ] || fm_lock_release "$FM_COMPLETION_SOURCE_LOCK"; [ -z "$FM_COMPLETION_TARGET_LOCK" ] || fm_lock_release "$FM_COMPLETION_TARGET_LOCK"; fm_lock_release "$lock"; fm_lease_guard_release' EXIT
   lock="$STATE/.$ID.completion.lock"
   [ "$transition" != handoff-release ] || fm_lease_forbid_branch handoff-capacity-release

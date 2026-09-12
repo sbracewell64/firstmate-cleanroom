@@ -441,7 +441,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
         "$(printf '%s' "$ci_effect" | jq -c .qualification)" >/dev/null \
         || refuse ci-ready QUALIFICATION_REVOKED 'exact producer qualification changed before publication'
       ;;
-    landing|activated) require_current_qualification "$stage" ;;
+    landing|activated) require_current_qualification "$stage" "$STAGE_PR_VALUE" ;;
   esac
   case "$stage" in
     ci-ready|landing|activated)
@@ -780,8 +780,9 @@ do_ci_ready() (
 
 # Historical stage labels never substitute for current producer qualification.
 require_current_qualification() {
+  local expected_pr=${2:-$(meta stage_pr)}
   if fm_nm_effect_required "$META"; then
-    fm_nm_effect_current "$META" "${STAGE_PR_VALUE:-$(meta stage_pr)}" >/dev/null \
+    fm_nm_effect_current "$META" "$expected_pr" >/dev/null \
       || refuse "$1" QUALIFICATION_REVOKED 'exact stage qualification is missing or no longer current; historical record retained'
   fi
 }

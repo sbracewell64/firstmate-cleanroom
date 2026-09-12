@@ -28,6 +28,7 @@ STATE="$HOME_DIR/state"
 DATA="$HOME_DIR/data"
 mkdir -p "$STATE" "$DATA"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+export FM_TEST_QUALIFICATION_FIXTURE="$ROOT/tests/fixtures/nm-qualification.py"
 NM_LOG="$TMP_ROOT/no-mistakes.argv"
 : > "$NM_LOG"
 NM_HOME_FAKE="$TMP_ROOT/nm-home"
@@ -52,6 +53,7 @@ case "${1:-}" in
   axi)
     shift
     case "${1:-}" in
+      qualification) exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:2}" ;;
       status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_STATUS_EXIT:-0}" ;;
       logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit 0 ;;
     esac ;;

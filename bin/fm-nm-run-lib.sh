@@ -135,3 +135,79 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
   fm_nm_run_is_active "$1"
 }
+
+# One conditional consumer for the producer's revocable exact-head tuple.
+# A successful read is current only at the producer snapshot. Every later
+# authority use revalidates the retained tuple; no local write/forge atomicity.
+
+fm_nm_qualification_read() {
+  local dir=$1 run=$2 head=$3 branch=$4 pr=$5 prior=${6:-} result
+  local args=(axi qualification --run "$run" --head "$head" --json)
+  if [ -n "$prior" ]; then
+    fm_nm_qualification_valid "$prior" "$run" "$head" "$branch" "$pr" || return 1
+    args+=(--attempt "$(printf '%s' "$prior" | jq -r .attempt)" --generation "$(printf '%s' "$prior" | jq -r .generation)")
+  fi
+  result=$(fm_nm_run_checked "$dir" 10 "${args[@]}") || return 1
+  fm_nm_qualification_valid "$result" "$run" "$head" "$branch" "$pr" || return 1
+  result=$(printf '%s' "$result" | jq -cS .) || return 1
+  if [ -n "$prior" ]; then
+    [ "$result" = "$(printf '%s' "$prior" | jq -cS .)" ] || return 1
+  fi
+  printf '%s\n' "$result"
+}
+
+fm_nm_qualification_valid() {
+  printf '%s' "$1" | jq -se --arg run "$2" --arg head "$3" --arg branch "$4" --arg pr "$5" '
+    length == 1 and (.[0] |
+      .schema == "no-mistakes/ci-qualification/v1" and
+      .validity == "current-at-read; revocable; bind exact identity and revalidate before downstream use" and
+      .run == $run and .head == $head and (.head | test("^[0-9a-f]{40}$")) and
+      (.branch | ltrimstr("refs/heads/")) == ($branch | ltrimstr("refs/heads/")) and
+      (.repo | type == "string" and length > 0) and
+      (.attempt | type == "string" and length > 0) and
+      (.generation | type == "string" and length > 0) and
+      (.push_generation | type == "number" and . > 0 and floor == .) and
+      (.status == "running" or .status == "completed") and
+      (.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+      .evidence.provider == "github" and .evidence.pr == $pr and
+      ((.evidence.checks | type == "array") or (.evidence.checks == null and .evidence.declared_no_ci == true)) and
+      ((.evidence.checks | length > 0) or .evidence.declared_no_ci == true) and
+      all((.evidence.checks // [])[]; .bucket == "pass" or .bucket == "skipping"))
+  ' >/dev/null 2>&1
+}
+
+fm_nm_effect_current() {
+  local file=$1 expected_pr=${2:-} expected_task=${3:-$(basename "$1" .meta)} effect qualification run head branch pr dir
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  effect=$(sed -n 's/^stage_ci_ready_effect=//p' "$file")
+  run=$(sed -n 's/^stage_run=//p' "$file")
+  branch=$(sed -n 's/^stage_branch=//p' "$file")
+  pr=$(sed -n 's/^stage_pr=//p' "$file")
+  dir=$(sed -n 's/^worktree=//p' "$file")
+  [ -z "$expected_pr" ] || [ "$expected_pr" = "$pr" ] || return 1
+  printf '%s' "$effect" | jq -se --arg task "$expected_task" \
+    --arg generation "$(sed -n 's/^spawn_gen=//p' "$file")" \
+    --arg stage_gen "$(sed -n 's/^stage_gen=//p' "$file")" \
+    --arg attempt "$(sed -n 's/^stage_attempt=//p' "$file")" \
+    --arg candidate "$(sed -n 's/^stage_head=//p' "$file")" --arg run "$run" --arg pr "$pr" '
+      length == 1 and (.[0] | .task == $task and .generation == $generation and .generation == $stage_gen and
+      .attempt == $attempt and .candidate == $candidate and .run == $run and .pr == $pr and
+      (.attempt | length > 0) and (.run | length > 0) and (.candidate | test("^[0-9a-f]{40}$")))
+    ' >/dev/null 2>&1 || return 1
+  head=$(printf '%s' "$effect" | jq -r .source_head) || return 1
+  qualification=$(printf '%s' "$effect" | jq -c .qualification) || return 1
+  local obligation nm_home
+  obligation="$(dirname "$file")/$expected_task.nm-observe"
+  [ -f "$obligation" ] && [ ! -L "$obligation" ] && [ -r "$obligation" ] || return 1
+  [ "$(sed -n 's/^run_id=//p' "$obligation")" = "$run" ] || return 1
+  [ "$(sed -n 's/^attempt_id=//p' "$obligation")" = "$(printf '%s' "$effect" | jq -r .attempt)" ] || return 1
+  nm_home=$(sed -n 's/^nm_home=//p' "$obligation")
+  [ -n "$nm_home" ] && [ -d "$nm_home" ] || return 1
+  NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"
+}
+
+fm_nm_effect_required() {
+  local file=$1
+  grep -q '^stage_ci_ready_effect=.' "$file" && return 0
+  grep -qx 'mode=no-mistakes' "$file" && grep -q '^stage_run=.' "$file"
+}

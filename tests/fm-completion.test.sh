@@ -13,11 +13,13 @@ mkdir -p "$FM_STATE_OVERRIDE" "$FM_DATA_OVERRIDE/source" "$NM_HOME" "$FM_HOME/co
 printf 'manual\n' > "$FM_HOME/config/backlog-backend"
 printf '{"pid":4242,"started_at":"2026-09-06T00:00:00Z"}\n' > "$NM_HOME/daemon.pid"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
+export FM_TEST_QUALIFICATION_FIXTURE="$ROOT/tests/fixtures/nm-qualification.py"
 export FM_COMPLETION_TEST_CANONICAL="$TMP_ROOT/canonical"
 cat > "$FAKEBIN/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   --version) echo 'no-mistakes version v1.61.0 (0af0be6) 2026-08-31T14:04:25Z' ;;
+  'axi qualification'*) exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:3}" ;;
   'axi status'*) cat "$FM_COMPLETION_TEST_CANONICAL" ;;
   *) echo 'unexpected non-read authority call' >&2; exit 90 ;;
 esac
@@ -798,6 +800,37 @@ test_drain_observation_wait_releases_presentation() (
   [ "$(meta completion_handoff | jq -r .status)" = pending ] || fail 'drain timeout completed work'
   pass 'contended reconciliation releases presentation custody and later drains remain usable'
 )
+
+# R12/R13: the producer, not terminal status, owns exact qualification.
+test_monitoring_qualification_and_revocation() (
+  export FM_STATE_OVERRIDE="$TMP_ROOT/monitoring-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  canonical ci
+  export FM_FAKE_CI_LOGS='all CI checks passed - still monitoring'
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" > "$TMP_ROOT/monitoring-admit" || fail 'monitoring admit'
+  stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" > "$TMP_ROOT/monitoring-release" || fail "green monitoring must dispatch: $(cat "$TMP_ROOT/monitoring-release")"
+  [ "$(meta stage_ci_ready_effect | jq -r .qualification.head)" = "$HEAD" ] || fail 'qualified tuple absent'
+  cp "$FM_STATE_OVERRIDE/source.status" "$TMP_ROOT/monitoring-status"
+  saved=$(meta completion_handoff | jq -c '.status="pending" | .receipt=null')
+  sed -i '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta"
+  printf 'completion_handoff=%s\n' "$saved" >> "$FM_STATE_OVERRIDE/source.meta"
+  stage resume-handoff > "$TMP_ROOT/monitoring-recovery" || fail 'monitoring effect recovery'
+  stage resume-handoff > "$TMP_ROOT/monitoring-repeat" || fail 'monitoring repeat'
+  cmp "$TMP_ROOT/monitoring-status" "$FM_STATE_OVERRIDE/source.status" || fail 'monitoring receipt recovery repeated effect'
+  cp "$FM_STATE_OVERRIDE/source.meta" "$TMP_ROOT/monitoring-before"
+  export FM_FAKE_CI_LOGS='pending checks'
+  for verb in show ci-ready landing activated resume-handoff; do
+    if stage "$verb" --pr https://github.com/o/r/pull/7 > "$TMP_ROOT/monitoring-$verb" 2>&1; then
+      fail "invalidated qualification accepted $verb"
+    fi
+  done
+  cmp "$TMP_ROOT/monitoring-before" "$FM_STATE_OVERRIDE/source.meta" || fail 'invalidation erased historical evidence'
+  pass 'monitoring uses exact revocable qualification; recovery and repeat dedupe; invalidated current uses refuse'
+)
+
+test_monitoring_qualification_and_revocation
 
 test_show_refreshes_stale_completed_run
 test_resume_completed_report_without_wake

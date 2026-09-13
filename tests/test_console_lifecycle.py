@@ -430,6 +430,54 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.f.effects(), '')
         self.assertEqual(self.history(), [])
 
+    def test_relinquished_record_without_console_pid_refuses(self):
+        for shape in ('null', 'absent'):
+            with self.subTest(shape=shape):
+                self.relinquished(console_pid=None)
+                record = self.f.home/'state/captain-console.json'
+                if shape == 'absent':
+                    data = json.loads(record.read_text()); del data['console_pid']; record.write_text(json.dumps(data))
+                before = record.read_bytes()
+                self.f.inventory(self.WORKERS)
+                for env in ({}, self.inside()):
+                    result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('console pid <unrecorded> is still alive or unverifiable', result.stderr)
+                self.assertEqual(record.read_bytes(), before)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+
+    def test_unwritable_archive_directory_refuses_before_creating(self):
+        self.relinquished()
+        (self.f.home/'state/console-history').write_text('not a directory\n')
+        self.f.inventory(self.WORKERS)
+        for env in ({}, self.inside()):
+            with self.subTest(env=env):
+                result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.record_json()['pane_id'], 'wC:p1')
+
+    def test_failed_archive_closes_only_the_console_it_created(self):
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        history = self.f.home/'state/console-history'
+        history.mkdir(); history.chmod(0o555)
+        try:
+            for env, expected in (({}, 'create\nworkspace-close\n'), (self.inside(), 'tab-create\ntab-close\n')):
+                with self.subTest(env=env):
+                    (self.f.root/'effects').unlink(missing_ok=True)
+                    (self.f.root/'workspaces').unlink(missing_ok=True)
+                    self.f.inventory(self.WORKERS)
+                    result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('could not archive the superseded console record', result.stderr)
+                    self.assertEqual(self.f.effects(), expected)
+                    self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+                    self.assertEqual(self.history(), [])
+        finally:
+            history.chmod(0o755)
+
     def test_stale_record_beside_labelled_workspace_still_refuses(self):
         # An ordinary stale record (pane gone, no relinquishment) never adopts a
         # "firstmate"-labelled workspace, from outside or from inside the session.

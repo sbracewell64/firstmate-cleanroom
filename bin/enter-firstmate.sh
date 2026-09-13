@@ -1053,11 +1053,12 @@ console_absence_proven() {
   [ "$count" = 0 ] || return 2
   return 1
 }
-console_record_pid_alive() {  # -> 0 | 1 | unknown, for the record's console_pid (absent/null = no owner = 0)
+console_record_pid_alive() {  # -> 0 | 1 | unknown, for the record's console_pid (absent/null = never claimed = unknown)
   local cpid
   cpid=$(console_record_field console_pid)
   case "$cpid" in
-    ''|null|0) echo 0 ;;
+    ''|null) echo unknown ;;
+    0) echo 0 ;;
     *[!0-9]*) echo unknown ;;
     *) if kill -0 "$cpid" 2>/dev/null; then echo 1; else echo 0; fi ;;
   esac
@@ -1082,7 +1083,7 @@ console_record_pane() {
   case "$owner" in
     relinquished) return 3 ;;
     relinquished-conflicting)
-      printf 'enter-firstmate: console ownership record for pane %s is marked relinquished but its console pid %s is still alive or unverifiable; refusing a second console\n' "$pane" "$(console_record_field console_pid)" >&2
+      printf 'enter-firstmate: console ownership record for pane %s is marked relinquished but its console pid %s is still alive or unverifiable; refusing a second console\n' "$pane" "$(console_record_field console_pid | grep . || echo '<unrecorded>')" >&2
       return 2 ;;
     relinquished-malformed)
       printf 'enter-firstmate: console ownership record for pane %s claims a handover without a handoff_at timestamp; refusing (malformed relinquishment)\n' "$pane" >&2
@@ -1135,6 +1136,7 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
       *) printf 'enter-firstmate: console ownership unavailable or conflicting; refusing another primary\n' >&2; return "$record_rc" ;;
     esac
   fi
+  if [ -f "$CONSOLE_RECORD" ]; then mkdir -p "$FM_HOME/state/console-history" || return 2; fi
   tab=''
   local -a console_env=(--env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE")
   case "$CONSOLE_PLACEMENT" in
@@ -1160,9 +1162,12 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
   # Retain the stale or relinquished record as handover evidence, now that its
   # successor exists; the new record names the archived copy it superseded.
   if [ -f "$CONSOLE_RECORD" ]; then
-    mkdir -p "$FM_HOME/state/console-history" || return 2
     archive="$FM_HOME/state/console-history/$(date -u +%Y%m%dT%H%M%S)-$$.json"
-    cp -p "$CONSOLE_RECORD" "$archive" || return 2
+    if ! cp -p "$CONSOLE_RECORD" "$archive"; then
+      printf 'enter-firstmate: could not archive the superseded console record to %s; closing the console %s this launch just created\n' "$archive" "${tab:+tab $tab}${tab:-workspace $ws}" >&2
+      if [ -n "$tab" ]; then hs tab close "$tab" >/dev/null 2>&1; else hs workspace close "$ws" >/dev/null 2>&1; fi
+      return 2
+    fi
   fi
   mkdir -p "$FM_HOME/state"
   jq -n --arg s "$FM_HERDR_SESSION" --arg sock "$(session_socket)" --arg w "$ws" --arg p "$pane" --arg tab "$tab" --arg t "$(date -u +%FT%TZ)" --arg h "$FM_HARNESS" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" \

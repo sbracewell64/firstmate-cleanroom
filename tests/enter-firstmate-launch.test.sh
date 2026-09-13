@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for the pure console-launch and permission-policy decisions in
 # the versioned launcher source bin/enter-firstmate.sh (stale resume; harness
-# permission policy). Loads it with FM_ENTRY_LIB=1, which defines only the pure
+# permission policy; console ownership handover class and console placement).
+# Loads it with FM_ENTRY_LIB=1, which defines only the pure
 # functions and runs no identity check, so this file touches no home, no Herdr
 # session, no watcher, and starts no harness.
 #

@@ -209,13 +209,17 @@
 #   * explicitly relinquished (launch_stage
 #     "handoff-relinquished" with a handoff_at
 #     timestamp and a dead console pid)       -> an AUTHORIZED ownership
-#     transition: the record is archived under state/console-history/ and a
-#     new exact identity is established through the ordinary launcher-owned
-#     creation path (console_record_pane returns 3; ensure_console_workspace);
+#     transition: a new exact identity is established through the ordinary
+#     launcher-owned creation path (console_record_pane returns 3;
+#     ensure_console_workspace), and only once that successor console exists
+#     is the record archived under state/console-history/ (an archive failure
+#     closes the tab or workspace this launch just created, so no unrecorded
+#     console is left behind);
 #   * stale, malformed, ambiguous, conflicting -> refuse, unchanged: a record
 #     whose pane is gone while "firstmate"-labeled workspaces exist, a
-#     relinquished record whose console pid is still alive, or a relinquished
-#     record without handoff_at all refuse, and nothing is ever adopted by label.
+#     relinquished record whose console pid is still alive or was never
+#     recorded (absent = unproven, not dead), or a relinquished record without
+#     handoff_at all refuse, and nothing is ever adopted by label.
 # Placement follows where the launch runs (console_placement): started OUTSIDE
 # Herdr, the console gets its own new workspace and the TUI is attached
 # (unchanged); started INSIDE a pane of the clean-room session, the launch
@@ -224,10 +228,14 @@
 # (socket-bound session proof, live pane->tab->workspace read, never the
 # HERDR_WORKSPACE_ID snapshot) and creates ONE new console tab in that
 # workspace; existing panes and tabs there are never typed into, closed,
-# renamed, moved, or resized, and no nested TUI is attached. --console itself
-# never establishes identity: hand-run in a pane the record does not name, or
-# in the pane a relinquished record still names, it refuses and names the
-# in-session launch command. The pure classifier is
+# renamed, moved, or resized, and no nested TUI is attached. Both the
+# in-session launch and --console must carry Herdr's injected HERDR_SOCKET_PATH
+# matching this session's server (console_ancestry_socket_proof): pane ids
+# repeat across servers and HERDR_SESSION is inherited, so a socket-less
+# ancestry is refused as unverifiable. --console itself never establishes
+# identity: hand-run in a pane the record does not name, or in the pane a
+# relinquished record still names, it refuses and names the in-session launch
+# command. The pure classifier is
 # console_ownership_class (tests/enter-firstmate-launch.test.sh); the executable
 # regressions live in tests/test_console_lifecycle.py.
 #

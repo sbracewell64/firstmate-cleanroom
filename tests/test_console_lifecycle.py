@@ -366,4 +366,212 @@ class LifecycleTests(unittest.TestCase):
         record = json.loads((self.f.home/'state/captain-console.json').read_text())
         self.assertEqual(record['harness'], 'codex')
 
+
+    # --- console ownership handover and in-session launch (2026-09-13) -----------
+    WORKERS = [{'workspace_id':'w7','pane_id':'w7:p4'}, {'workspace_id':'w7','pane_id':'w7:p5'}, {'workspace_id':'w7','pane_id':'w7:p6'}]
+    LABELLED = '[{"workspace_id":"w7","label":"firstmate"}]'
+    def relinquished(self, **changes):
+        # The shape a departing console leaves behind: its pane is gone, its pid
+        # is dead, and the stage plus handoff_at say the handover was explicit.
+        data = dict(harness='codex', console_pid=0, launch_stage='handoff-relinquished', handoff_at='2026-09-13T12:52:04Z',
+                    workspace_id='wC', pane_id='wC:p1')
+        data.update(changes)
+        self.f.record(**data)
+    def inside(self, **env):
+        # Herdr's injected ancestry for a shell in worker pane w7:p6 of the session.
+        base = dict(HERDR_ENV='1', HERDR_PANE_ID='w7:p6', HERDR_WORKSPACE_ID='w7', HERDR_TAB_ID='w7:t6',
+                    HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        base.update(env)
+        return base
+    def history(self):
+        d = self.f.home/'state/console-history'
+        return sorted(d.iterdir()) if d.exists() else []
+    def record_json(self):
+        return json.loads((self.f.home/'state/captain-console.json').read_text())
+
+    def test_relinquished_record_is_superseded_by_outside_launch(self):
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_text()
+        self.f.inventory(self.WORKERS)
+        result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('w8 pane w8:p1 (created)', result.stderr)
+        self.assertEqual(self.f.effects(), 'create\nrun\n')
+        archived = self.history()
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].read_text(), before)
+        record = self.record_json()
+        self.assertEqual((record['workspace_id'], record['pane_id'], record['session']), ('w8', 'w8:p1', 'synthetic'))
+        self.assertEqual(record['established_from'], 'handoff-relinquished')
+        self.assertEqual(record['placement'], 'new-workspace')
+        self.assertEqual(Path(record['superseded_record']), archived[0])
+
+    def test_relinquished_record_with_live_console_refuses(self):
+        self.relinquished(console_pid=os.getpid())
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory(self.WORKERS)
+        for env in ({}, self.inside()):
+            with self.subTest(env=env):
+                result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('still alive', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_relinquished_record_without_timestamp_refuses(self):
+        self.relinquished(handoff_at=None)
+        self.f.inventory(self.WORKERS)
+        for env in ({}, self.inside()):
+            with self.subTest(env=env):
+                result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('malformed relinquishment', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+
+    def test_stale_record_beside_labelled_workspace_still_refuses(self):
+        # An ordinary stale record (pane gone, no relinquishment) never adopts a
+        # "firstmate"-labelled workspace, from outside or from inside the session.
+        self.f.record(harness='codex', console_pid=0, workspace_id='wC', pane_id='wC:p1')
+        self.f.inventory(self.WORKERS)
+        for env in ({}, self.inside()):
+            with self.subTest(env=env):
+                result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+
+    def test_multiple_labelled_workspaces_without_record_refuse(self):
+        (self.f.home/'state/captain-console.json').unlink()
+        self.f.inventory(self.WORKERS + [{'workspace_id':'w9','pane_id':'w9:p1'}])
+        two = '[{"workspace_id":"w7","label":"firstmate"},{"workspace_id":"w9","label":"firstmate"}]'
+        for env in ({}, self.inside()):
+            with self.subTest(env=env):
+                result = self.f.run(FIXTURE_WORKSPACES=two, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertFalse((self.f.home/'state/captain-console.json').exists())
+
+    def test_inside_launch_places_console_tab_in_exact_live_workspace(self):
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_text()
+        self.f.inventory(self.WORKERS)
+        result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, FM_ENTRY_NO_ATTACH='', **self.inside())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('w7 pane w7:p9 (created)', result.stderr)
+        self.assertIn('no TUI attached from inside the session', result.stderr)
+        self.assertFalse((self.f.root/'attached').exists())
+        self.assertEqual(self.f.effects(), 'tab-create\nrun\n')
+        args = json.loads((self.f.root/'tab-env').read_text())
+        self.assertEqual(args[args.index('--workspace')+1], 'w7')
+        forwarded = dict(value.split('=', 1) for index, value in enumerate(args) if index and args[index-1] == '--env')
+        self.assertEqual(forwarded['HERDR_SESSION'], 'synthetic')
+        self.assertEqual(forwarded['FM_CONSOLE_PROFILE'], 'codex-astra')
+        record = self.record_json()
+        self.assertEqual((record['session'], record['workspace_id'], record['pane_id'], record['tab_id']), ('synthetic', 'w7', 'w7:p9', 'w7:t9'))
+        self.assertEqual(record['placement'], 'inherited-workspace')
+        self.assertEqual(record['launched_from_pane'], 'w7:p6')
+        self.assertEqual(record['established_from'], 'handoff-relinquished')
+        self.assertEqual((self.f.root/'focus').read_text(), 'w7:t9')
+        archived = self.history()
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].read_text(), before)
+        # The worker panes are exactly as they were: only the console tab was added.
+        panes = json.loads((self.f.root/'inventory').read_text())['result']['panes']
+        self.assertEqual(panes[:3], self.WORKERS)
+        self.assertEqual(len(panes), 4)
+
+    def test_inside_launch_uses_live_workspace_not_environment_snapshot(self):
+        self.relinquished()
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p6'}])
+        result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **self.inside(HERDR_WORKSPACE_ID='w3', HERDR_TAB_ID='w3:t1'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.f.root/'tab-env').read_text())
+        self.assertEqual(args[args.index('--workspace')+1], 'w7')
+        self.assertEqual(self.record_json()['workspace_id'], 'w7')
+
+    def test_inside_launch_with_contradictory_identity_refuses(self):
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory(self.WORKERS)
+        cases = {
+            'foreign socket': dict(HERDR_SOCKET_PATH='/other/herdr.sock'),
+            'no socket': dict(HERDR_SOCKET_PATH=None),
+            'unknown pane': dict(HERDR_PANE_ID='w7:p77'),
+            'pane and tab disagree': dict(FIXTURE_TAB_WORKSPACE='w2'),
+        }
+        for name, extra in cases.items():
+            with self.subTest(case=name):
+                env = self.inside(**extra)
+                env = {k: v for k, v in env.items() if v is not None}
+                result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('(created)', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_inside_launch_reuses_live_console_without_attach(self):
+        self.f.record(harness='codex', console_pid=os.getpid(), launch_stage='launching')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}] + self.WORKERS)
+        result = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, FM_ENTRY_NO_ATTACH='', **self.inside())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('w7 pane w7:p1 (existing)', result.stderr)
+        self.assertFalse((self.f.root/'attached').exists())
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+        self.assertEqual(self.record_json()['pane_id'], 'w7:p1')
+
+    def test_repeated_inside_launch_is_idempotent_after_convergence(self):
+        self.relinquished()
+        self.f.inventory(self.WORKERS)
+        first = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **self.inside())
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn('(created)', first.stderr)
+        settled = (self.f.home/'state/captain-console.json').read_bytes()
+        for _ in range(2):
+            again = self.f.run(FIXTURE_WORKSPACES=self.LABELLED, **self.inside())
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn('w7 pane w7:p9 (existing)', again.stderr)
+        self.assertEqual(self.f.effects(), 'tab-create\nrun\n')
+        self.assertEqual(len(self.history()), 1)
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), settled)
+
+    def test_console_in_unrecorded_pane_never_establishes_identity(self):
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory(self.WORKERS)
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p6', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('console ownership claim rejected for pane w7:p6', result.stderr)
+        self.assertIn('relinquished ownership at 2026-09-13T12:52:04Z', result.stderr)
+        self.assertIn('(without --console)', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_console_from_foreign_socket_refuses_before_claiming(self):
+        self.f.record(harness='codex', socket='/synthetic.sock')
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/other/herdr.sock')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('cross-session ancestry', result.stderr)
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_fable_console_launches_with_canonical_arguments(self):
+        (self.f.home/'config/console-profile').write_text('fable-5.1\n')
+        (self.f.home/'config/console-qualified-profiles').write_text('fable-5.1\n')
+        self.f.script(self.f.tools/'bin/claude', 'printf "%s\\n" "$@" > "$FIXTURE_ROOT/claude-argv"\n')
+        self.f.record(harness='claude', profile='fable-5.1', model='fable')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock',
+                            FM_CONSOLE_PROFILE='fable-5.1', FM_ENTRY_ARM_TIMEOUT='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.f.root/'claude-argv').read_text().split('\n')[:-1], ['--dangerously-skip-permissions', '--model', 'fable'])
+        record = self.record_json()
+        self.assertEqual(record['argv'], '--dangerously-skip-permissions --model fable')
+        self.assertEqual((record['profile'], record['model'], record['launch_mode'], record['launch_stage'], record['exit_rc']), ('fable-5.1', 'fable', 'fresh', 'exited', 0))
+
 if __name__ == '__main__': unittest.main(verbosity=2)

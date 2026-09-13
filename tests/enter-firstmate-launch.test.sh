@@ -140,6 +140,28 @@ command -v cold_arm_claim_deliverable >/dev/null || fail "cold_arm_claim_deliver
 [ "$(cold_arm_claim_deliverable '')" = stale ] || fail "missing kind -> stale (fail safe: launcher takes over delivery)"
 pass "claim deliverability: only a live cold-start arm-owner is a valid cold-start defer target"
 
+# --- console ownership handover (the explicit relinquishment seam) -----------
+command -v console_ownership_class >/dev/null || fail "console_ownership_class not defined"
+[ "$(console_ownership_class launching '' 1)" = ordinary ] || fail "a live console record is ordinary"
+[ "$(console_ownership_class exited '' 0)" = ordinary ] || fail "an exited record is ordinary (stale handling decides)"
+[ "$(console_ownership_class '' '' 0)" = ordinary ] || fail "no stage at all is ordinary"
+[ "$(console_ownership_class handoff-relinquished 2026-09-13T12:52:04Z 0)" = relinquished ] || fail "explicit handover with a timestamp and a dead pid -> relinquished (authorized transition)"
+[ "$(console_ownership_class handoff-relinquished 2026-09-13T12:52:04Z 1)" = relinquished-conflicting ] || fail "the relinquishing console still alive -> conflicting"
+[ "$(console_ownership_class handoff-relinquished 2026-09-13T12:52:04Z unknown)" = relinquished-conflicting ] || fail "an unjudgeable pid -> conflicting, never authorized"
+[ "$(console_ownership_class handoff-relinquished 2026-09-13T12:52:04Z '')" = relinquished-conflicting ] || fail "missing liveness -> conflicting"
+[ "$(console_ownership_class handoff-relinquished '' 0)" = relinquished-malformed ] || fail "handover stage without handoff_at -> malformed"
+[ "$(console_ownership_class relinquished 2026-09-13T12:52:04Z 0)" = ordinary ] || fail "only the exact stage token is a handover claim"
+pass "ownership class: only an explicit, timestamped handover with a dead relinquisher authorizes a new identity"
+
+# --- placement: inherit the exact workspace only from inside the session ---------
+command -v console_placement >/dev/null || fail "console_placement not defined"
+[ "$(console_placement console-launch 1)" = inherited-workspace ] || fail "a launch from a pane of the session inherits its workspace"
+[ "$(console_placement console-launch 0)" = new-workspace ] || fail "an outside launch creates its own workspace"
+[ "$(console_placement console-run 1)" = new-workspace ] || fail "--console never places a console"
+[ "$(console_placement doctor 1)" = new-workspace ] || fail "the doctor places nothing"
+[ "$(console_placement '' '')" = new-workspace ] || fail "missing inputs -> new workspace (the attach path)"
+pass "placement: inherited workspace inside the session, new workspace outside"
+
 echo "all console launch and permission policy tests passed"
 
 # Native-console contract tests use controlled external processes and metadata;

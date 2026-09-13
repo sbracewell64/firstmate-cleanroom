@@ -1136,6 +1136,7 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
     esac
   fi
   tab=''
+  local -a console_env=(--env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE")
   case "$CONSOLE_PLACEMENT" in
     inherited-workspace)
       # Inside a pane of the clean-room session: the console becomes ONE new tab
@@ -1143,16 +1144,14 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
       # proof, live pane->tab->workspace read). Nothing already there is touched.
       parent=$(console_launcher_identity) || die "could not establish this pane's exact Herdr workspace in session $FM_HERDR_SESSION (see the error above); refusing to place the console by label"
       ws=${parent%% *}
-      out=$(hs tab create --workspace "$ws" --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus \
-            --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE" 2>&1) \
+      out=$(hs tab create --workspace "$ws" --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus "${console_env[@]}" 2>&1) \
         || die "herdr tab create in workspace $ws failed: $out"
       tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty')
       pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
       [ -n "$tab" ] && [ -n "$pane" ] || die "herdr tab create returned no tab/pane id: $out"
       console_log "placement: inherited workspace $ws from pane ${HERDR_PANE_ID:-?} (tab ${parent#* }); console tab $tab pane $pane" ;;
     *)
-      out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus \
-            --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE" 2>&1) \
+      out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus "${console_env[@]}" 2>&1) \
         || die "herdr workspace create failed: $out"
       ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
       pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
@@ -1907,7 +1906,11 @@ if [ "$MODE" = doctor ]; then
   echo "  console command:   $FM_HOME/enter-firstmate.sh --console  (typed into the workspace's root pane; no worker spawned)"
   echo "  console record:    $CONSOLE_RECORD"
   echo "  '$FM_CONSOLE_LABEL' workspaces: ${console_labeled:-none}  (label is not identity; the record is)"
-  echo "  launch placement:  $(console_placement console-launch "$CONSOLE_ANCESTRY_KEPT")  (what a console launch from this pane would use; inherited-workspace = a launch from inside a pane of this session creates the console as a new tab of that pane's live workspace, no TUI attach; new-workspace = an outside launch creates its own workspace and attaches)"
+  doc_placement=$(console_placement console-launch "$CONSOLE_ANCESTRY_KEPT")
+  if [ "$doc_placement" = inherited-workspace ] && ! doc_proof=$( (console_ancestry_socket_proof) 2>&1 ); then
+    doc_placement="refused (${doc_proof#enter-firstmate: })"
+  fi
+  echo "  launch placement:  $doc_placement  (what a console launch from this pane would use; inherited-workspace = a launch from inside a pane of this session creates the console as a new tab of that pane's live workspace, no TUI attach; new-workspace = an outside launch creates its own workspace and attaches)"
   if rec=$(console_record_pane 2>/dev/null); then
     doc_pane=${rec#* }
     doc_proc=$(console_pane_process "$doc_pane" 2>/dev/null || echo 'unreadable')

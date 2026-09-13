@@ -572,6 +572,10 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('launch placement:  inherited-workspace', inside.stdout, inside.stderr)
         outside = self.f.run('--doctor')
         self.assertIn('launch placement:  new-workspace', outside.stdout, outside.stderr)
+        foreign = self.f.run('--doctor', **self.inside(HERDR_SOCKET_PATH='/other/herdr.sock'))
+        self.assertIn('launch placement:  refused (pane w7:p6 belongs to the Herdr server at', foreign.stdout, foreign.stderr)
+        unproven = self.f.run('--doctor', **{k: v for k, v in self.inside().items() if k != 'HERDR_SOCKET_PATH'})
+        self.assertIn('launch placement:  refused (pane w7:p6 claims session', unproven.stdout, unproven.stderr)
         self.assertEqual(self.f.effects(), '')
 
     def test_console_from_foreign_socket_refuses_before_claiming(self):

@@ -333,10 +333,11 @@ console_record_update() {
   [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
   [ "$(console_record_field session)" = "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
   [ "$(console_ownership_class "$(console_record_field launch_stage)" "$(console_record_field handoff_at)" 0)" = ordinary ] || return 1
-  # Exact identity: when Herdr injected this pane's server socket and the record
-  # names its own, they must be the same server (pane ids repeat across sessions).
+  # Exact identity: a record that names its server socket is updated only by a
+  # pane Herdr injected that same socket into (pane ids repeat across sessions).
   rec_sock=$(console_record_field socket)
-  if [ -n "${HERDR_SOCKET_PATH:-}" ] && [ -n "$rec_sock" ]; then
+  if [ -n "$rec_sock" ]; then
+    [ -n "${HERDR_SOCKET_PATH:-}" ] || return 1
     [ "$(console_socket_canonical "$HERDR_SOCKET_PATH")" = "$(console_socket_canonical "$rec_sock")" ] || return 1
   fi
   tmp=$(mktemp "$FM_HOME/state/.captain-console.XXXXXX") || return 1
@@ -915,12 +916,12 @@ console_workspaces() {  # workspace ids carrying the console label, one per line
 # injected HERDR_SOCKET_PATH must belong to THIS session's server. Herdr pane
 # ids restart at the same low numbers in every session, and HERDR_SESSION is
 # an inherited environment value, so the injected socket is the one identity
-# a pane cannot borrow from another server. Silent when no socket is injected
-# (older injection shapes, evidence runs); refuses on a mismatch or when the
-# session's own socket cannot be read.
+# a pane cannot borrow from another server. Refuses when no socket is injected
+# (older injection shapes are unverifiable, as fm_backend_herdr_launcher_identity
+# treats them), on a mismatch, or when the session's own socket cannot be read.
 console_ancestry_socket_proof() {
   local have want
-  [ -n "${HERDR_SOCKET_PATH:-}" ] || return 0
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || die "pane ${HERDR_PANE_ID:-?} claims session '$FM_HERDR_SESSION' without an injected HERDR_SOCKET_PATH; refusing an unverifiable ancestry (its HERDR_SESSION value was inherited, not proven)"
   want=$(session_socket) || want=''
   [ -n "$want" ] || die "pane ${HERDR_PANE_ID:-?} claims session '$FM_HERDR_SESSION' through socket '$HERDR_SOCKET_PATH', but that session's own socket could not be read; refusing to treat this pane as part of the clean-room session"
   have=$(console_socket_canonical "$HERDR_SOCKET_PATH"); want=$(console_socket_canonical "$want")

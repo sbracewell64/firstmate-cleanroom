@@ -150,7 +150,7 @@ class LifecycleTests(unittest.TestCase):
         args = json.loads((self.f.root/'workspace-env').read_text())
         forwarded = dict(value.split('=', 1) for index, value in enumerate(args) if index and args[index-1] == '--env')
         self.assertEqual(forwarded['FM_CONSOLE_PROFILE'], 'codex-astra')
-        child = self.f.run('--console', **dict(forwarded, HERDR_PANE_ID='w8:p1'))
+        child = self.f.run('--console', **dict(forwarded, HERDR_PANE_ID='w8:p1', HERDR_SOCKET_PATH='/synthetic.sock'))
         self.assertIn('firstmate native console refused', child.stderr)
         record = json.loads((self.f.home/'state/captain-console.json').read_text())
         self.assertIn('--model gpt-6-astra', record['argv'])
@@ -192,7 +192,7 @@ class LifecycleTests(unittest.TestCase):
         self.f.record(harness='codex')
         self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
         child = subprocess.Popen([BASH, shellpath(ENTRY), '--console', *args],
-                                 env=dict(self.f.env, HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic'),
+                                 env=dict(self.f.env, HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock'),
                                  stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         output = b''
@@ -583,18 +583,35 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('cross-session ancestry', result.stderr)
         self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
 
+    def test_console_without_injected_socket_refuses_before_claiming(self):
+        self.f.record(harness='codex', socket='/synthetic.sock')
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('without an injected HERDR_SOCKET_PATH', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
     def test_fable_console_launches_with_canonical_arguments(self):
         (self.f.home/'config/console-profile').write_text('fable-5.1\n')
         (self.f.home/'config/console-qualified-profiles').write_text('fable-5.1\n')
+        settings = self.f.home/'config/claude-settings.json'
+        settings.write_text('{"outputStyle": "attention-kind"}\n')
+        style = self.f.home/'config/output-styles/attention-kind.md'
+        style.parent.mkdir()
+        style.write_text('---\nname: attention-kind\nkeep-coding-instructions: true\n---\n')
         self.f.script(self.f.tools/'bin/claude', 'printf "%s\\n" "$@" > "$FIXTURE_ROOT/claude-argv"\n')
         self.f.record(harness='claude', profile='fable-5.1', model='fable')
         self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
         result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock',
                             FM_CONSOLE_PROFILE='fable-5.1', FM_ENTRY_ARM_TIMEOUT='1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.f.root/'claude-argv').read_text().split('\n')[:-1], ['--dangerously-skip-permissions', '--model', 'fable'])
+        expected = ['--dangerously-skip-permissions', '--model', 'fable', '--settings', shellpath(settings)]
+        self.assertEqual((self.f.root/'claude-argv').read_text().split('\n')[:-1], expected)
+        self.assertEqual((self.f.user/'.claude/output-styles/attention-kind.md').read_bytes(), style.read_bytes())
         record = self.record_json()
-        self.assertEqual(record['argv'], '--dangerously-skip-permissions --model fable')
+        self.assertEqual(record['argv'], ' '.join(expected))
         self.assertEqual((record['profile'], record['model'], record['launch_mode'], record['launch_stage'], record['exit_rc']), ('fable-5.1', 'fable', 'fresh', 'exited', 0))
 
 if __name__ == '__main__': unittest.main(verbosity=2)

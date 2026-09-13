@@ -19,6 +19,7 @@ Ordinary Desktop reconnect accepts an owned harness alongside its waiting shell 
 The launcher's [process selector and classifier](../bin/enter-firstmate.sh) own identity validation and refusal of malformed, duplicate, ambiguous, or foreign process observations.
 Before a genuine startup wait, the launcher prints one short readiness progress line.
 Concurrent Desktop launches serialize console creation, and unknown or conflicting existing ownership blocks another primary, including a direct console invocation without an existing matching session/pane record.
+An explicitly relinquished console record is the one authorized ownership transition: it is archived and superseded by the next console launch, while a launch started inside a pane of the clean-room session places the console as a new tab of that pane's exact live workspace without attaching a nested TUI; the [launcher header](../bin/enter-firstmate.sh) owns that classification and placement, and `--doctor` reports both.
 `bin/fm-render-launcher.sh --require-complete-config` checks required isolation inputs when preparing activation staging; ordinary menu staging is not activation qualification.
 The renderer's [header](../bin/fm-render-launcher.sh) owns snapshot and override mechanics; deployment and actual consumer qualification remain separate activation obligations.
 Initial launch, ordinary reconnect, and full restart need separate qualification; the [caller regressions](../tests/test_console_lifecycle.py) do not establish native Desktop reconnect after activation.

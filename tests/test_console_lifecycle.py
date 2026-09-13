@@ -551,6 +551,29 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.history(), [])
         self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
 
+    def test_console_in_relinquished_pane_never_reclaims_the_record(self):
+        # The relinquished pane may still exist as an ordinary pane; a hand-run
+        # --console there must not reclaim the record outside the archive/supersede seam.
+        self.relinquished()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        self.f.inventory(self.WORKERS + [{'workspace_id':'wC','pane_id':'wC:p1'}])
+        result = self.f.run('--console', HERDR_PANE_ID='wC:p1', HERDR_WORKSPACE_ID='wC', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('console ownership claim rejected for pane wC:p1', result.stderr)
+        self.assertIn('relinquished ownership at 2026-09-13T12:52:04Z', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+        self.assertEqual(self.history(), [])
+        self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_doctor_reports_placement_of_a_launch_from_its_pane(self):
+        self.relinquished()
+        self.f.inventory(self.WORKERS)
+        inside = self.f.run('--doctor', **self.inside())
+        self.assertIn('launch placement:  inherited-workspace', inside.stdout, inside.stderr)
+        outside = self.f.run('--doctor')
+        self.assertIn('launch placement:  new-workspace', outside.stdout, outside.stderr)
+        self.assertEqual(self.f.effects(), '')
+
     def test_console_from_foreign_socket_refuses_before_claiming(self):
         self.f.record(harness='codex', socket='/synthetic.sock')
         before = (self.f.home/'state/captain-console.json').read_bytes()

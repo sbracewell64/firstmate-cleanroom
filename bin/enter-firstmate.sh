@@ -225,8 +225,9 @@
 # HERDR_WORKSPACE_ID snapshot) and creates ONE new console tab in that
 # workspace; existing panes and tabs there are never typed into, closed,
 # renamed, moved, or resized, and no nested TUI is attached. --console itself
-# never establishes identity: hand-run in a pane the record does not name it
-# still refuses and names the in-session launch command. The pure classifier is
+# never establishes identity: hand-run in a pane the record does not name, or
+# in the pane a relinquished record still names, it refuses and names the
+# in-session launch command. The pure classifier is
 # console_ownership_class (tests/enter-firstmate-launch.test.sh); the executable
 # regressions live in tests/test_console_lifecycle.py.
 #
@@ -315,7 +316,10 @@ CONSOLE_RECORD=$FM_HOME/state/captain-console.json
 console_record_field() { jq -r --arg k "$1" '.[$k] // empty' "$CONSOLE_RECORD" 2>/dev/null || true; }
 # console_record_update <json-object>: merge launch fields into the record, only
 # when it names the pane this --console runs in (a hand-run --console in some
-# other pane never becomes the captain's console by writing here).
+# other pane never becomes the captain's console by writing here) and the record
+# has not relinquished ownership (console_ownership_class): a relinquished record
+# is consumed only by the launcher's archive/supersede transition, never
+# reclaimed or overwritten by the pane it still names.
 console_socket_canonical() {  # <socket-path>: the directory resolved physically, as the upstream adapter compares sockets
   local d b
   d=$(dirname "$1"); b=$(basename "$1")
@@ -328,6 +332,7 @@ console_record_update() {
   [ "$(console_record_field pane_id)" = "${HERDR_PANE_ID:-}" ] || return 1
   [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
   [ "$(console_record_field session)" = "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
+  [ "$(console_ownership_class "$(console_record_field launch_stage)" "$(console_record_field handoff_at)" 0)" = ordinary ] || return 1
   # Exact identity: when Herdr injected this pane's server socket and the record
   # names its own, they must be the same server (pane ids repeat across sessions).
   rec_sock=$(console_record_field socket)
@@ -931,7 +936,8 @@ fi
 export HERDR_SESSION="$FM_HERDR_SESSION"
 # Where a creating launch places the console (see the header): inside a pane of
 # the clean-room session the launch inherits that pane's exact live workspace.
-CONSOLE_PLACEMENT=$(console_placement "$MODE" "$( [ "$FM_HERDR_ANCESTRY" = kept ] && [ -n "${HERDR_PANE_ID:-}" ] && echo 1 || echo 0 )")
+CONSOLE_ANCESTRY_KEPT=$( [ "$FM_HERDR_ANCESTRY" = kept ] && [ -n "${HERDR_PANE_ID:-}" ] && echo 1 || echo 0 )
+CONSOLE_PLACEMENT=$(console_placement "$MODE" "$CONSOLE_ANCESTRY_KEPT")
 # console_claim_refusal: why a --console in this pane cannot claim the record.
 console_claim_refusal() {
   local stage at
@@ -1900,7 +1906,7 @@ if [ "$MODE" = doctor ]; then
   echo "  console command:   $FM_HOME/enter-firstmate.sh --console  (typed into the workspace's root pane; no worker spawned)"
   echo "  console record:    $CONSOLE_RECORD"
   echo "  '$FM_CONSOLE_LABEL' workspaces: ${console_labeled:-none}  (label is not identity; the record is)"
-  echo "  launch placement:  $CONSOLE_PLACEMENT  (inherited-workspace = a launch from inside a pane of this session creates the console as a new tab of that pane's live workspace, no TUI attach; new-workspace = an outside launch creates its own workspace and attaches)"
+  echo "  launch placement:  $(console_placement console-launch "$CONSOLE_ANCESTRY_KEPT")  (what a console launch from this pane would use; inherited-workspace = a launch from inside a pane of this session creates the console as a new tab of that pane's live workspace, no TUI attach; new-workspace = an outside launch creates its own workspace and attaches)"
   if rec=$(console_record_pane 2>/dev/null); then
     doc_pane=${rec#* }
     doc_proc=$(console_pane_process "$doc_pane" 2>/dev/null || echo 'unreadable')

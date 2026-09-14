@@ -518,10 +518,28 @@ no-mistakes axi status --run 01M2AMDG34H92M7RZAC6W6QGFD
     test,running,8m46s,"0s ago: claude producing output","1977084",starting
 ```
 
-Three facts the parse relies on, each observed rather than assumed.
+Four facts the parse relies on, each observed rather than assumed.
 The three columns before `last_activity` are unquoted, so a row's first double-quoted field is the activity, and an activity text containing commas cannot shift the column.
 The age is the token before the first ` ago`, so an activity text that mentions a second age cannot be read as the row's own.
+A step the pipeline considers quiet renders the same age behind a literal `quiet ` prefix, which the parse reads as an age and carries as a marker rather than rejecting.
 A run with no executing step emits no `active_steps` block at all, which the parse reports as absence of evidence.
+
+The quiet prefix is documented by the CLI itself, read on the same date out of the installed binary at `~/.no-mistakes/bin/no-mistakes`, whose own `--version` reports v1.40.3:
+
+```sh
+strings ~/.no-mistakes/bin/no-mistakes | grep -F 'If `last_activity` is prefixed with'
+```
+
+```
+   `auto-fix 1/3`, or `fix 2`. If `last_activity` is prefixed with
+   `quiet`, no step log or native-agent lifecycle activity has arrived for
+   longer than `step_quiet_warning`. Treat that as a liveness clue, not as
+   permission to cancel, rerun, or edit the worktree yourself.
+```
+
+A quiet step is therefore one the pipeline is still tracking whose log has gone silent for longer than the pipeline's own warning, not one the pipeline has given up on, so the age it carries is real activity evidence and is measured against the same `FM_PIPELINE_ACTIVITY_MAX_SECS` bound as a fresh one.
+Adopting `step_quiet_warning` as the absorb expiry instead would be wrong twice over: it is a generic quiet warning rather than a failure verdict, and its shipped default is shorter than this repository's own measured CI wall time.
+The literal `unknown` is what this surface renders when the step has no activity timestamp at all, and it takes the same absence-of-evidence path as any other unrecognized form.
 
 `last_activity` is maintained per step result rather than per agent, so a non-agent step records it too.
 Read-only from the daemon's own store on the same date:

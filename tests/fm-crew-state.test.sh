@@ -1876,12 +1876,13 @@ test_active_run_without_active_steps_renders_no_activity() {
 test_unparseable_activity_render_is_absence_of_evidence() {
   reset_fakes
   local d; d=$(new_case activity-unparseable)
-  make_repo_on_branch "$d/wt" fm/feat-never
+  make_repo_on_branch "$d/wt" fm/feat-unknown
   make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/never.meta" "window=fm:fm-never" "worktree=$d/wt" "kind=ship"
-  # "never" is a real rendering and is NOT an age; it must not read as 0s.
-  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-never 'never')"
-  local out; out=$(run_crew_state "$d" never)
+  fm_write_meta "$d/state/unknown.meta" "window=fm:fm-unknown" "worktree=$d/wt" "kind=ship"
+  # "unknown" is what this surface renders with no timestamp, and is NOT an age;
+  # it must not read as 0s.
+  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-unknown 'unknown')"
+  local out; out=$(run_crew_state "$d" unknown)
   assert_contains "$out" "source: run-step" "an unparseable activity render still reports the run step"
   case "$out" in
     *"activity:"*) fail "an unparseable activity render was turned into an age: $out" ;;
@@ -1889,10 +1890,31 @@ test_unparseable_activity_render_is_absence_of_evidence() {
   pass "an unparseable activity render is absence of evidence, not a zero age"
 }
 
+# The pipeline marks a step QUIET when its step log and native-agent lifecycle
+# have both been silent longer than the pipeline's own quiet warning, and renders
+# the same age with a literal "quiet " prefix. That is still the run reporting how
+# long ago the step it is tracking last did something, so the age must be read -
+# rejecting the rendering would strand a long CI monitor - and the marker must
+# survive into the line, so no reader can mistake a quiet reading for fresh output.
+test_quiet_activity_render_keeps_its_age_and_its_marker() {
+  reset_fakes
+  local d; d=$(new_case activity-quiet)
+  make_repo_on_branch "$d/wt" fm/feat-quiet
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/quiet.meta" "window=fm:fm-quiet" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-quiet 'quiet 14m3s ago: CI checks running, waiting for results...')"
+  FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
+  local out; out=$(run_crew_state "$d" quiet)
+  assert_contains "$out" "state: working" "a quiet-rendered active run is still working"
+  assert_contains "$out" "activity: quiet 843s" "the quiet rendering keeps both its age and its marker"
+  pass "a quiet-rendered activity keeps its age and carries its marker"
+}
+
 test_active_run_is_authoritative
 test_active_run_renders_pipeline_activity_age
 test_active_run_without_active_steps_renders_no_activity
 test_unparseable_activity_render_is_absence_of_evidence
+test_quiet_activity_render_keeps_its_age_and_its_marker
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded

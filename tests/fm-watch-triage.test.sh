@@ -513,6 +513,11 @@ test_crew_pipeline_wait_classifier() {
   # The proof half: the age comes only from an authoritative working run-step.
   FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
   [ "$(crew_pipeline_activity_age running)" = 120 ] || fail "the activity age was not read from the run-step verdict"
+  # The pipeline's own quiet marker is carried, not discarded and not dropped
+  # with the age it prefixes.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: quiet 662s · ci running'
+  [ "$(crew_pipeline_activity_age running)" = 'quiet 662' ] \
+    || fail "a quiet-marked activity age was not read, or lost its marker"
   FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
   ! crew_pipeline_activity_age running >/dev/null || fail "a busy pane supplied a pipeline activity age"
   FM_FAKE_CREW_STATE='state: done · source: run-step · activity: 5s · checks green'
@@ -522,19 +527,31 @@ test_crew_pipeline_wait_classifier() {
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   ! crew_pipeline_activity_age running >/dev/null || fail "an unreadable verdict supplied an activity age"
 
-  # Both halves together, against the bound.
+  # Both halves together, against the bound. A hold yields the evidence it held
+  # on, so the deferral can name what was observed without a second read.
   FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
-  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds running "$state" \
-    || fail "a declared wait with a recently active pipeline did not hold"
-  FM_PIPELINE_ACTIVITY_MAX_SECS=60 crew_pipeline_wait_holds running "$state" \
+  [ "$(FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds running "$state")" = 120 ] \
+    || fail "a declared wait with a recently active pipeline did not hold, or did not report its evidence"
+  FM_PIPELINE_ACTIVITY_MAX_SECS=60 crew_pipeline_wait_holds running "$state" >/dev/null \
     && fail "a pipeline silent past its bound still held the declared wait"
-  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds nostage "$state" \
+  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds nostage "$state" >/dev/null \
     && fail "an active pipeline held a wait that was never declared"
+  # A quiet-marked age inside the bound is still the pipeline tracking its step:
+  # the 26-minute CI monitor this deferral exists for goes quiet between step log
+  # lines, and rejecting that rendering would wedge-escalate a healthy run.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: quiet 662s · ci running'
+  [ "$(FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds running "$state")" = 'quiet 662' ] \
+    || fail "a quiet-marked pipeline inside the bound did not hold the declared wait"
+  # Past the bound, quiet or not, the absorb ends and the unchanged schedule returns.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: quiet 2400s · ci running'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds running "$state" >/dev/null \
+    && fail "a quiet-marked pipeline past the bound still held the declared wait"
   # A malformed bound must not become an unbounded absorb.
-  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" \
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" >/dev/null \
     || fail "a malformed bound did not fall back to the default"
   FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 999999s · ci running'
-  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" \
+  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" >/dev/null \
     && fail "a malformed bound absorbed a pipeline silent far past the default"
 
   unset FM_FAKE_CREW_STATE FM_PIPELINE_ACTIVITY_MAX_SECS
@@ -3194,6 +3211,10 @@ test_undeclared_pipeline_activity_still_wedge_escalates() {
 # A deferral is not silence: a declared wait that holds for a long time still
 # re-surfaces once per bounded cadence, labeled as a recheck rather than a wedge,
 # so a validation that quietly stops making real progress cannot stay invisible.
+# This one holds on the pipeline's own QUIET rendering - the shape a long CI
+# monitor takes between two step log lines - so it pins both that such a reading
+# still defers inside the bound and that the surfaced reason says what was really
+# observed instead of claiming fresh output.
 test_validation_wait_resurfaces_on_the_bounded_cadence() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid back
   dir=$(make_case pipeline-wait-resurface); state="$dir/state"; fakebin="$dir/fakebin"
@@ -3215,7 +3236,7 @@ test_validation_wait_resurfaces_on_the_bounded_cadence() {
   : > "$state/.pipeline-since-$key"
   set_mtime "$back" "$state/.pipeline-since-$key"
 
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 30s · ci running'
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: quiet 662s · ci running'
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_PIPELINE_ACTIVITY_MAX_SECS=1800 FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
@@ -3224,6 +3245,8 @@ test_validation_wait_resurfaces_on_the_bounded_cadence() {
   wait_for_exit "$pid" 100 || fail "a long-held declared validation wait never re-surfaced on the bounded cadence"
   grep -F "stale: $window" "$out" >/dev/null || fail "the validation-wait recheck did not print a stale wake"
   grep -F "declared validation wait" "$out" >/dev/null || fail "the validation-wait recheck was not labeled as such"
+  grep -F "pipeline activity quiet 662s ago" "$out" >/dev/null \
+    || fail "the validation-wait recheck did not report the quiet activity it actually held on"
   grep -F "possible wedge" "$out" >/dev/null && fail "a validation-wait recheck was mislabeled a possible wedge"
   [ -e "$state/.pipeline-resurfaced-$key" ] || fail "the validation-wait re-surface throttle marker was not recorded"
   [ ! -e "$state/.wedge-escalations-$key" ] || fail "a validation-wait recheck advanced the wedge escalation counter"

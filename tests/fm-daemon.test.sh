@@ -883,15 +883,26 @@ test_handle_wake_terminal_signal_clears_pause_tracking() {
   : > "$state/.paused-$watcher_key"
   : > "$state/.stale-$watcher_key"
   : > "$state/.wedge-escalations-$watcher_key"
+  # Both of the watcher's bounded deferral chains reset on exactly these events.
+  # A chain the daemon leaves behind keeps its hours-old mtime, so the crew's next
+  # deferral would report that age and re-surface immediately with a bogus figure.
+  : > "$state/.writing-since-$watcher_key"
+  : > "$state/.writing-resurfaced-$watcher_key"
+  : > "$state/.pipeline-since-$watcher_key"
+  : > "$state/.pipeline-resurfaced-$watcher_key"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/held-w10-terminal.status" "$state"
   [ ! -e "$state/.subsuper-paused-$key" ] || fail "terminal signal retained the daemon pause marker"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "terminal signal retained daemon stale tracking"
   [ ! -e "$state/.paused-$watcher_key" ] || fail "terminal signal retained watcher pause tracking"
   [ ! -e "$state/.stale-$watcher_key" ] || fail "terminal signal retained watcher stale tracking"
   [ ! -e "$state/.wedge-escalations-$watcher_key" ] || fail "terminal signal retained watcher wedge tracking"
+  [ ! -e "$state/.writing-since-$watcher_key" ] || fail "terminal signal retained the watcher write-deferral chain"
+  [ ! -e "$state/.writing-resurfaced-$watcher_key" ] || fail "terminal signal retained the write-deferral re-surface throttle"
+  [ ! -e "$state/.pipeline-since-$watcher_key" ] || fail "terminal signal retained the watcher validation-wait deferral chain"
+  [ ! -e "$state/.pipeline-resurfaced-$watcher_key" ] || fail "terminal signal retained the validation-wait re-surface throttle"
   FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "terminal stale dedupe restored daemon stale tracking"
-  pass "a terminal signal clears pause and stale tracking across both supervisors"
+  pass "a terminal signal clears pause, stale, and both deferral chains across both supervisors"
 }
 
 test_housekeeping_migrates_watcher_pause_marker() {

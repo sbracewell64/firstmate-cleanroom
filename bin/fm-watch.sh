@@ -772,13 +772,13 @@ wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
 # Like the write deferral, a DEFERRAL and not a cancellation: the idle timer
 # restarts, so the very next window re-reads the pipeline, and the escalation
 # counter is left alone so a later genuine escalation keeps the history it earned.
-wedge_defer_pipeline() {  # <window> <since-file> <triage-label> <idle-age>
-  local win=$1 since_file=$2 label=$3 age=$4 key page
+wedge_defer_pipeline() {  # <window> <since-file> <triage-label> <idle-age> <activity>
+  local win=$1 since_file=$2 label=$3 age=$4 activity=$5 key page
   key=$(window_key "$win")
   page=$(wedge_defer_chain_age "$win" "$since_file" pipeline)
   resurface_absorbed "$win" "$STATE/.pipeline-resurfaced-$key" "$page" \
-    "stale: $win (idle ${age}s, declared validation wait with its pipeline still working, held ${page}s, rechecked on a long cadence not a wedge; confirm the run is still progressing)"
-  triage_log "absorbed $label (declared validation wait, pipeline active, idle ${age}s): $win"
+    "stale: $win (idle ${age}s, declared validation wait, pipeline activity ${activity}s ago, held ${page}s, rechecked on a long cadence not a wedge; confirm the run is still progressing)"
+  triage_log "absorbed $label (declared validation wait, pipeline activity ${activity}s ago, idle ${age}s): $win"
 }
 
 # Drop a window's deferral chains wherever its stale bookkeeping resets, so each
@@ -808,9 +808,11 @@ clear_deferral_tracking() {  # <window-key>
 # pipeline read - and because a crew whose pipeline owns the branch is better
 # described by that wait than by whatever its worktree happens to be doing.
 # Each probe answers only in the affirmative: every negative outcome falls
-# through to the unchanged escalation below.
+# through to the unchanged escalation below. The validation-wait probe yields the
+# pipeline activity it held on, so the deferral names what was actually observed -
+# including the pipeline's own `quiet` marker - rather than asserting fresh output.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason activity
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -823,8 +825,8 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
-        if crew_pipeline_wait_holds "$task" "$STATE"; then
-          wedge_defer_pipeline "$win" "$since_file" "$label" "$age"
+        if activity=$(crew_pipeline_wait_holds "$task" "$STATE"); then
+          wedge_defer_pipeline "$win" "$since_file" "$label" "$age" "$activity"
           return 0
         fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then

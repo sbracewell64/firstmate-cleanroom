@@ -1759,7 +1759,7 @@ crew_pipeline_wait_declared() {  # <id> <state>
   [ "$stage" = validation-running ]
 }
 
-# Seconds since <id>'s attributed run last showed pipeline activity, read from
+# How long ago <id>'s attributed run last showed pipeline activity, read from
 # the ONE current-state owner (bin/fm-crew-state.sh) rather than by attributing
 # the run a second time here - the attribution rules are subtle enough that a
 # second copy would drift. Requires that owner's authoritative working run-step
@@ -1767,8 +1767,13 @@ crew_pipeline_wait_declared() {  # <id> <state>
 # unreadable yields no age at all. Returns 1 printing nothing whenever there is
 # no age to report. NOT a pure read (see the header): one bounded fm-crew-state.sh
 # call, so callers run it only where they would otherwise escalate.
+# Prints the field verbatim as "<secs>", or "quiet <secs>" when the pipeline
+# marked that step quiet. A quiet reading is still the pipeline reporting the age
+# of the step it is tracking, so it is real activity evidence and is measured
+# against the same bound; the marker is carried so nothing downstream can print a
+# quiet reading as fresh output.
 crew_pipeline_activity_age() {  # <id>
-  local id=$1 line state src rest age
+  local id=$1 line state src rest quiet='' age
   [ -n "$id" ] || return 1
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) return 1 ;; esac
@@ -1778,9 +1783,10 @@ crew_pipeline_activity_age() {  # <id>
   [ "$src" = run-step ] || return 1
   case "$line" in *'activity: '*) ;; *) return 1 ;; esac
   rest=${line#*activity: }
+  case "$rest" in 'quiet '*) quiet='quiet '; rest=${rest#quiet } ;; esac
   age=${rest%%s*}
   case "$age" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$age"
+  printf '%s%s' "$quiet" "$age"
 }
 
 # 0 when <id> is in a declared validation wait that STILL HOLDS: the stage
@@ -1792,13 +1798,18 @@ crew_pipeline_activity_age() {  # <id>
 # caller's existing escalation schedule exactly as it was. Weakening wedge
 # detection therefore requires positive evidence on both halves, never the
 # absence of evidence on either.
+# Prints the evidence it held on, in crew_pipeline_activity_age's own form, so a
+# caller that defers can name what it actually observed without paying for a
+# second bounded read.
 crew_pipeline_wait_holds() {  # <id> <state>
-  local age bound
+  local obs age bound
   crew_pipeline_wait_declared "$1" "$2" || return 1
-  age=$(crew_pipeline_activity_age "$1") || return 1
+  obs=$(crew_pipeline_activity_age "$1") || return 1
+  age=${obs##* }
   bound=${FM_PIPELINE_ACTIVITY_MAX_SECS:-$FM_PIPELINE_ACTIVITY_MAX_SECS_DEFAULT}
   case "$bound" in ''|*[!0-9]*|0) bound=$FM_PIPELINE_ACTIVITY_MAX_SECS_DEFAULT ;; esac
-  [ "$age" -le "$bound" ]
+  [ "$age" -le "$bound" ] || return 1
+  printf '%s' "$obs"
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.

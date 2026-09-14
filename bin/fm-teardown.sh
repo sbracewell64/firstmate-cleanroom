@@ -2909,24 +2909,43 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # finalize are best effort by contract: cleanup never blocks on the daemon, and
 # the receipt records what was not observed. The refresh is the last blocking
 # canonical read, so it precedes the destructive authorization and finalize
-# then marks the already refreshed record without reading again.
-if [ -f "$STATE/$ID.nm-observe" ]; then
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    "$SCRIPT_DIR/fm-nm-observe.sh" refresh "$ID" >/dev/null 2>&1 \
-    || echo "warning: final observation refresh for $ID did not complete" >&2
-fi
-teardown_completion_current --archive || {
+# then marks the already refreshed record without reading again. Each wait on
+# the observation or status-presentation lock is bounded by the shared timeout
+# owner, and the same evidence is re-confirmed after those waits, immediately
+# before any per-task record is removed.
+teardown_stopped_after_cleanup() {
   echo "error: teardown of $ID stopped after its endpoint and local copy were cleaned up; the task record, observation obligation, PR-poll artifacts and evidence are retained unresolved and no clean state is reported" >&2
   exit 1
 }
-if [ -f "$STATE/$ID.nm-observe" ]; then
+teardown_observe_bounded() {  # <verb> [flags...]
+  local rc=0
+  [ -f "$STATE/$ID.nm-observe" ] || return 0
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    "$SCRIPT_DIR/fm-nm-observe.sh" finalize "$ID" --no-refresh >/dev/null 2>&1 \
-    || echo "warning: observation receipt for $ID could not be finalized" >&2
-fi
+    fm_run_timed "$NM_TEARDOWN_TIMEOUT" "$SCRIPT_DIR/fm-nm-observe.sh" "$1" "$ID" "${@:2}" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) ;;
+    124) echo "warning: observation $1 for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (observation lock held); continuing under current evidence" >&2 ;;
+    *) echo "warning: observation $1 for $ID did not complete" >&2 ;;
+  esac
+}
+teardown_observe_bounded refresh
+teardown_completion_current --archive || teardown_stopped_after_cleanup
+teardown_observe_bounded finalize --no-refresh
+presentation_rc=0
+# shellcheck disable=SC2016  # Expansion is deliberately deferred to the child shell.
+fm_run_timed "$NM_TEARDOWN_TIMEOUT" bash -c '
+  . "$1/fm-classify-lib.sh"
+  . "$1/fm-wake-lib.sh"
+  status_retire_presentation_task "$2" "$3"
+' _ "$SCRIPT_DIR" "$STATE" "$ID" || presentation_rc=$?
+case "$presentation_rc" in
+  0) ;;
+  124) echo "warning: status presentation retirement for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (presentation lock held); the presenter reconciles the removed task on its next pass" >&2 ;;
+  *) exit 1 ;;
+esac
+teardown_completion_current --check || teardown_stopped_after_cleanup
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.nm-observe" \
   "$STATE/$ID.nm-assessment" "$STATE/.nm-assess-$ID.lock" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \

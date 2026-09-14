@@ -2672,6 +2672,49 @@ test_bound_run_without_ci_ready_force_discards() {
   pass "the captain-authorized discard of a bound-but-unqualified no-mistakes task completes"
 }
 
+# An admitted-but-unreleased handoff has no path that ever closes it: a failed
+# run is never qualified, so release refuses forever. The authorized discard
+# must not be blockable by it, while an unforced teardown still retains the task.
+pending_handoff_meta() {  # <case-dir>
+  local case_dir=$1 contract
+  contract=$(jq -cn --arg head "$(git -C "$case_dir/wt" rev-parse HEAD)" \
+    '{schema:"fm-completion-handoff/v1",task:"task-x1",generation:"teardown-test-task-x1",
+      attempt:"1789192275-5444939e",run:"01BOUNDRUN",candidate:$head,source_head:$head,
+      report:{path:"report.md",sha256:"0000000000000000000000000000000000000000000000000000000000000000"},
+      action:{id:"ci",kind:"ci-ready",owner:"task-x1",generation:"teardown-test-task-x1",
+      pr:"https://github.com/o/r/pull/7"}}')
+  printf 'completion_handoff=%s\n' "$(jq -cn --argjson contract "$contract" \
+    '{identity:"pending-fixture",contract:$contract,released:false,status:"pending",
+      next_owner:"firstmate",reason:"manager-capacity",receipt:null}')" \
+    >> "$case_dir/state/task-x1.meta"
+}
+
+test_unreleased_handoff_refuses_then_force_discards() {
+  local case_dir rc
+  case_dir=$(make_case unreleased-handoff-discard)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  bind_validation_run_meta "$case_dir" validation-running
+  pending_handoff_meta "$case_dir"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "unreleased-handoff: an unforced teardown must retain the task"
+  grep -q 'completion handoff remains unresolved' "$case_dir/stderr" \
+    || fail "unreleased-handoff: refusal did not name the open handoff: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "unreleased-handoff: the refused teardown erased the unresolved record"
+
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" || rc=$?
+  expect_code 0 "$rc" "unreleased-handoff: --force discard should succeed: $(cat "$case_dir/stderr2")"
+  ! grep -q 'completion handoff remains unresolved' "$case_dir/stderr2" \
+    || fail "unreleased-handoff: an unresolvable handoff blocked the authorized discard"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "unreleased-handoff: the discarded task record survived"
+  pass "an unreleased completion handoff retains an unforced teardown and never blocks the authorized discard"
+}
+
 test_recorded_qualified_stage_still_requires_qualification() {
   local case_dir rc stage
   for stage in ci-ready landing activated; do
@@ -2718,6 +2761,7 @@ test_recorded_ci_ready_effect_still_requires_qualification() {
 
 test_bound_run_without_ci_ready_tears_down
 test_bound_run_without_ci_ready_force_discards
+test_unreleased_handoff_refuses_then_force_discards
 test_recorded_qualified_stage_still_requires_qualification
 test_recorded_ci_ready_effect_still_requires_qualification
 test_local_only_fork_remote_allows

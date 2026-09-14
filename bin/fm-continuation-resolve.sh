@@ -240,8 +240,44 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 if [ "${1:-}" = reconcile ]; then
   state_dir="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
   result=0
+  # Callers bound this whole loop with one budget, and the glob order is stable,
+  # so a slow leading task would starve the same tail on every invocation. The
+  # cursor rotates which task leads. Written before the loop runs, because the
+  # budget expiry that causes starvation is a kill: an advance recorded after
+  # the work would never survive it. Safe to delete - the loop simply leads from
+  # the first task again, and no task's reconciliation is lost either way.
+  # Shaped after state/.nm-observe-watermark, the closest existing cursor: a
+  # plain state-dir file with a sibling .lock, published through a private tmp,
+  # and deletable with no loss.
+  reconcile_cursor="$state_dir/.continuation-reconcile-cursor"
+  reconcile_cursor_lock="$reconcile_cursor.lock"
+  reconcile_order=()
   for task_meta in "$state_dir"/*.meta; do
     [ -e "$task_meta" ] || [ -L "$task_meta" ] || continue
+    reconcile_order+=("$task_meta")
+  done
+  if [ "${#reconcile_order[@]}" -gt 1 ]; then
+    # shellcheck source=bin/fm-wake-lib.sh
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    fm_lock_acquire_wait "$reconcile_cursor_lock"
+    reconcile_led=$(cat "$reconcile_cursor" 2>/dev/null || true)
+    reconcile_start=0
+    for reconcile_index in "${!reconcile_order[@]}"; do
+      reconcile_name=${reconcile_order[$reconcile_index]##*/}
+      if [ "${reconcile_name%.meta}" = "$reconcile_led" ]; then
+        reconcile_start=$(( (reconcile_index + 1) % ${#reconcile_order[@]} ))
+        break
+      fi
+    done
+    reconcile_order=("${reconcile_order[@]:$reconcile_start}" "${reconcile_order[@]:0:$reconcile_start}")
+    reconcile_name=${reconcile_order[0]##*/}
+    printf '%s' "${reconcile_name%.meta}" > "$reconcile_cursor.tmp.$$" \
+      && chmod 0600 "$reconcile_cursor.tmp.$$" \
+      && mv -f -- "$reconcile_cursor.tmp.$$" "$reconcile_cursor" \
+      || rm -f -- "$reconcile_cursor.tmp.$$"
+    fm_lock_release "$reconcile_cursor_lock"
+  fi
+  for task_meta in "${reconcile_order[@]+"${reconcile_order[@]}"}"; do
     task_id=${task_meta##*/}; task_id=${task_id%.meta}
     if [ ! -f "$task_meta" ] || [ -L "$task_meta" ] || [ ! -r "$task_meta" ]; then
       printf 'COMPLETION_CNO: task=%s owner=fm-stage reason=TASK_AUTHORITY_UNREADABLE\n' "$task_id"

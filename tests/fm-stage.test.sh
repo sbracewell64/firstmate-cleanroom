@@ -321,10 +321,17 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   # The revocable producer snapshot rides along in the effect but advances on
   # its own. One more passing check is not a new ci-ready transaction, so it
   # must not append a second receipt the classifier reads as a fresh event.
+  # push_generation is pinned against the RECORDED tuple, so a re-push of the
+  # same qualified head must refresh what is recorded. Repeating the identical
+  # transaction must do that without appending a second receipt: leaving the
+  # old tuple wedges every later authority use on QUALIFICATION_REVOKED, and
+  # re-issuing gives the classifier a duplicate event.
   before_lines=$(stage_lines a1)
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 1 ] \
+    || fail "ci-ready did not record the producer push generation"
   FM_TEST_QUALIFICATION_FILE="$TMP_ROOT/a1-advanced-qualification.json"
   meta_get a1 stage_ci_ready_effect \
-    | jq -c '.qualification | .evidence.checks += [{name:"later producer check",bucket:"pass"}]' \
+    | jq -c '.qualification | .push_generation=2 | .evidence.checks += [{name:"later producer check",bucket:"pass"}]' \
     > "$FM_TEST_QUALIFICATION_FILE"
   export FM_TEST_QUALIFICATION_FILE
   out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
@@ -332,7 +339,17 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "a producer advance is not a new ci-ready transaction"
   [ "$(stage_lines a1)" = "$before_lines" ] \
     || fail "an advanced producer appended a duplicate ci-ready receipt"
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 2 ] \
+    || fail "the unchanged repeat left the superseded producer tuple recorded"
+  out=$("$STAGE" a1 show 2>&1); rc=$?
+  expect_code 0 "$rc" "the refreshed tuple must keep later authority uses current (got: $out)"
   unset FM_TEST_QUALIFICATION_FILE
+  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 0 "$rc" "the repeat must track the producer back as well (got: $out)"
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 1 ] \
+    || fail "the unchanged repeat did not track the producer tuple back"
+  [ "$(stage_lines a1)" = "$before_lines" ] \
+    || fail "tracking the producer tuple appended a receipt"
   ! grep -qE '^axi (run|respond|abort|sync)' "$NM_LOG" || fail "the stage owner must never start or answer a run"
   pass "fm-stage ci-ready: only the canonical run-step verdict certifies, never a hand-written line"
 }

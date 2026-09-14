@@ -727,6 +727,26 @@ do_running() {  # <transition-label>
   return 0
 }
 
+# The revocable tuple is re-read on every ci-ready invocation, so an unchanged
+# transaction still republishes it under the same metadata custody. Without a
+# receipt: refreshing what the producer now answers is not a new transition,
+# and a stale retained tuple would make every later authority use refuse.
+refresh_ci_ready_effect() {  # <effect JSON>
+  local tmp="$STATE/.$ID.meta.effect.${BASHPID:-$$}"
+  [ "$(meta stage_ci_ready_effect)" != "$1" ] || return 0
+  fm_backlog_record_present "$META" "task record" "$STATE" || {
+    echo "error: task record for $ID is unsafe ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    return 1
+  }
+  grep -v '^stage_ci_ready_effect=' "$META" > "$tmp" || true
+  printf 'stage_ci_ready_effect=%s\n' "$1" >> "$tmp" || { rm -f -- "$tmp"; return 1; }
+  fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE" || {
+    rm -f -- "$tmp"
+    echo "error: task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    return 1
+  }
+}
+
 # The identity a repeated ci-ready transaction is the same as - the fields every
 # downstream consumer compares. The revocable producer snapshot rides along in
 # the effect but advances on its own, so it never decides sameness.
@@ -793,6 +813,7 @@ do_ci_ready() (
       && [ "$(ci_ready_effect_identity "$(meta stage_ci_ready_effect)")" = "$(ci_ready_effect_identity "$effect")" ] \
       && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
+    refresh_ci_ready_effect "$effect" || exit 2
     unchanged ci-ready
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \

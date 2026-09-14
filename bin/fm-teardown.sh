@@ -294,7 +294,7 @@ teardown_completion_current() {  # <--check|--archive>
       return 1
     }
   fi
-  if grep -q '^completion_handoff=' "$META"; then
+  if [ "$FORCE" != --force ] && grep -q '^completion_handoff=' "$META"; then
     fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" || {
       echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
       return 1

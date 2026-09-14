@@ -592,7 +592,16 @@ test_branch_actor_drain_dispatches_nothing() (
   fm_completion_store_released
   before=$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")
 
+  # Without a live eligible-row grant the drain refuses (or reclaims the
+  # snapshot) before any presentation, so the actor guard would never be
+  # reached and this case would prove nothing.
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$ROOT/bin/fm-wake-lib.sh"
+  printf '1\n' > "$FM_STATE_OVERRIDE/.branch-eligible-rows"
+  printf '%s\n' fm-branch-eligible-owner-v1 "$$" "$(fm_pid_identity "$$")" branchgen \
+    > "$FM_STATE_OVERRIDE/.branch-eligible-owner"
   FM_SUPERVISION_ACTOR=branch "$ROOT/bin/fm-wake-drain.sh" > "$TMP_ROOT/branch-drain.out" 2>&1 || rc=$?
+  expect_code 0 "$rc" "the branch drain must run to completion: $(cat "$TMP_ROOT/branch-drain.out")"
   assert_not_contains "$(cat "$TMP_ROOT/branch-drain.out")" COMPLETION_DISPATCHED \
     'a branch drain must not report a dispatch it is not entitled to make'
   [ "$before" = "$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")" ] \
@@ -604,6 +613,40 @@ test_branch_actor_drain_dispatches_nothing() (
   [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'the entitled actor did not dispatch'
   [ "$(meta stage)" = ci-ready ] || fail 'the entitled actor did not advance the stage'
   pass 'a branch-actor drain performs no resume-handoff dispatch; the main actor still does'
+)
+
+# One budget bounds the whole reconcile loop and the glob order is stable, so
+# without rotation the same tail starves on every invocation. The leader must
+# move, and deleting the cursor must simply lead from the first task again.
+test_reconcile_rotates_its_leading_task() (
+  local state out first second third
+  state="$TMP_ROOT/rotation-state"
+  mkdir -p "$state"
+  export FM_STATE_OVERRIDE="$state"
+  # Symlinked records are refused per task by the loop itself, so each
+  # invocation reports every task in loop order with no external call.
+  for task in r1 r2 r3; do
+    printf 'kind=ship\n' > "$state/$task.target"
+    ln -sf "$state/$task.target" "$state/$task.meta"
+  done
+
+  out=$("$ROOT/bin/fm-continuation-resolve.sh" reconcile 2>&1 || true)
+  first=$(printf '%s\n' "$out" | sed -n 's/^COMPLETION_CNO: task=\([^ ]*\).*/\1/p' | head -1)
+  [ "$first" = r1 ] || fail "the first reconcile must lead from the first task, led from '$first'"
+  [ "$(printf '%s\n' "$out" | grep -c '^COMPLETION_CNO: task=')" = 3 ] \
+    || fail 'every task must be reported within one invocation'
+
+  out=$("$ROOT/bin/fm-continuation-resolve.sh" reconcile 2>&1 || true)
+  second=$(printf '%s\n' "$out" | sed -n 's/^COMPLETION_CNO: task=\([^ ]*\).*/\1/p' | head -1)
+  [ "$second" = r2 ] || fail "a task starved behind the leader must lead next, led from '$second'"
+
+  rm -f "$state/.continuation-reconcile-cursor"
+  out=$("$ROOT/bin/fm-continuation-resolve.sh" reconcile 2>&1 || true)
+  third=$(printf '%s\n' "$out" | sed -n 's/^COMPLETION_CNO: task=\([^ ]*\).*/\1/p' | head -1)
+  [ "$third" = r1 ] || fail "deleting the cursor must restart from the first task, led from '$third'"
+  [ "$(printf '%s\n' "$out" | grep -c '^COMPLETION_CNO: task=')" = 3 ] \
+    || fail 'deleting the cursor lost a task'
+  pass 'reconcile rotates its leading task across invocations and restarts cleanly without its cursor'
 )
 
 test_unqualified_and_foreign_stage_effects_refuse() {
@@ -1528,6 +1571,7 @@ test_destination_changes_while_delivery_waits
 test_self_target_delivery
 test_readmitted_inbox_effect_retains_its_downstream_obligation
 test_branch_actor_drain_dispatches_nothing
+test_reconcile_rotates_its_leading_task
 test_unqualified_and_foreign_stage_effects_refuse
 test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock

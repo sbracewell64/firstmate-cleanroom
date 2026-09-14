@@ -55,6 +55,12 @@ ARG_ASSIGN_RE = re.compile(
 # An alias group is discovered on every alternative: `--enforce|--enforce-all)`.
 FLAG_RE = re.compile(r"^\s{0,8}(--[a-z][a-z0-9-]*(?:\|--[a-z][a-z0-9-]*)*)\)")
 FUNCTION_RE = re.compile(r"^(fm_[a-z0-9_]+)\(\)")
+# A sourced library's functions are its entry points, so they are discovered
+# whatever they are named. A script that is only executed keeps the `fm_` gate:
+# its unprefixed helpers are reached through the dispatcher discovery already
+# covers, and harvesting them would bury the entry points that matter.
+LIBRARY_FUNCTION_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)")
+SOURCE_RE = re.compile(r"^\s*(?:\.|source)\s+\S*?([A-Za-z0-9._-]+\.sh)\b")
 
 # Emitted operator text is not a call. A heredoc body and the argument text of
 # printf/echo/cat are dropped before matching, but a command substitution inside
@@ -142,9 +148,10 @@ def dispatch_subjects(lines: list[str]) -> set[str]:
     return subjects
 
 
-def discover_functions(rel: str, lines: list[str], found: dict[str, str]) -> None:
+def discover_functions(rel: str, lines: list[str], found: dict[str, str], sourced: bool) -> None:
+    pattern = LIBRARY_FUNCTION_RE if sourced else FUNCTION_RE
     for line in lines:
-        match = FUNCTION_RE.match(line)
+        match = pattern.match(line)
         if match and function_verb_match(match.group(1), FUNCTION_VERBS):
             found[f"{rel}:{match.group(1)}"] = "function"
 
@@ -173,15 +180,29 @@ def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str
                     found[f"{rel}:{alias}"] = "flag"
 
 
+def sourced_libraries(root: Path, tracked: list[str]) -> set[str]:
+    """Basenames that some tracked script brings in with `.` or `source`."""
+    names: set[str] = set()
+    for rel in tracked:
+        if not rel.endswith(".sh"):
+            continue
+        for line in executable_source(root, rel).splitlines():
+            match = SOURCE_RE.match(line)
+            if match:
+                names.add(match.group(1))
+    return names
+
+
 def discover(root: Path, tracked: list[str]) -> dict[str, str]:
     """Map candidate entry-point id -> discovery axis."""
     found: dict[str, str] = {}
+    sourced = sourced_libraries(root, tracked)
     for rel in tracked:
         if not (fnmatch.fnmatch(rel, "bin/*.sh") or fnmatch.fnmatch(rel, "bin/backends/*.sh")):
             continue
         stem = Path(rel).stem
         lines = read_text(root, rel).splitlines()
-        discover_functions(rel, lines, found)
+        discover_functions(rel, lines, found, Path(rel).name in sourced)
         if stem.endswith("-lib"):
             # A sourced library has no argument stream and no name of its own on
             # the command line; only its functions are entry points.
@@ -207,7 +228,7 @@ def axis_for(entry_id: str, discovered: dict[str, str]) -> str:
         return "script"
     if token.startswith("--"):
         return "flag"
-    if token.startswith("fm_"):
+    if "_" in token:
         return "function"
     return "subcommand"
 
@@ -299,6 +320,50 @@ def strip_emitted_arguments(line: str) -> str:
     )
 
 
+def heredoc_opener(line: str) -> re.Match[str] | None:
+    """The line's heredoc redirection, if it has one.
+
+    A `<<WORD` sequence inside a quoted string or an arithmetic shift such as
+    `$((mask<<n))` is not a redirection; reading it as one would start a phantom
+    heredoc that swallows the real calls below it.
+    """
+    quote: str | None = None
+    arithmetic = 0
+    index = 0
+    size = len(line)
+    while index < size:
+        char = line[index]
+        if quote is not None:
+            if char == "\\" and quote == '"' and index + 1 < size:
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char == "\\" and index + 1 < size:
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if line.startswith("$((", index):
+            arithmetic += 1
+            index += 3
+            continue
+        if arithmetic and line.startswith("))", index):
+            arithmetic -= 1
+            index += 2
+            continue
+        if arithmetic == 0 and line.startswith("<<", index):
+            opener = HEREDOC_RE.match(line, index)
+            if opener is not None:
+                return opener
+        index += 1
+    return None
+
+
 def shell_executable_text(text: str) -> str:
     """Shell source with comments, heredoc bodies and emitted argument text gone."""
     kept: list[str] = []
@@ -314,7 +379,7 @@ def shell_executable_text(text: str) -> str:
             continue
         if line.lstrip().startswith("#"):
             continue
-        opener = HEREDOC_RE.search(line)
+        opener = heredoc_opener(line)
         kept.append(strip_emitted_arguments(line))
         if opener:
             terminator = opener.group(2) or opener.group(3) or opener.group(4) or opener.group(5)
@@ -366,7 +431,7 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
             return False
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("#") or FUNCTION_RE.match(line):
+            if stripped.startswith("#") or LIBRARY_FUNCTION_RE.match(line):
                 continue
             if re.search(rf"\b{re.escape(token)}\b", stripped):
                 return True

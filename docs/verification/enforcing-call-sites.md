@@ -14,6 +14,8 @@ It discovers four shapes in `bin/`: a script whose name carries an enforce-style
 A dispatcher is a `case` on the script's own argument stream, which means `$1` itself or a variable the same file assigned directly from `$1`, wherever that `case` appears; an unrelated internal `case` is deliberately not harvested.
 A long option is discovered on every alternative of an alias group, so `--enforce|--enforce-all)` accounts for both.
 A function is discovered in any tracked `bin/` script or backend adapter, not only in a `*-lib.sh`.
+In a sourced library, which means a `bin/` script another tracked script brings in with `.` or `source`, every enforce-verb function is discovered whatever it is named, because a library's functions are its entry points.
+In a script that is only executed, discovery is limited to the `fm_`-prefixed functions; the bound below records why.
 Every discovered candidate must be declared, so a new rule cannot ship without being accounted for.
 
 A declared `enforced` entry must name at least one call site that exists, sits on the production surface, and actually calls the capability.
@@ -39,16 +41,32 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
+The check proves that a production call site exists, NOT that the caller consumes the callee's verdict.
+A caller that invokes the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.
+`bin/fm-guard.sh` is the worked example: it always exits 0 and every caller invokes it as `|| true`, which the sweep below records.
+Extending the check to detect a discarded verdict is a candidate follow-up, recorded here as an observation rather than attempted in this slice.
+
 The check proves a production call site, not full reachability from an executable entry point.
 A function called only from another unreached function in the same file still counts, so the `note` field records which executable traverses it.
+A function defined inside a script that is only executed, never sourced, is discovered only when its name carries the `fm_` prefix.
+That is deliberate, and the measurement is the reason: 78 tracked functions in `bin/` carry an enforce verb without that prefix, 4 of them live in sourced libraries and are now discovered, and the other 74 are defined inside scripts that are only executed.
+Those 74 are script-internal helpers: nothing outside the defining script can call them, so the script's own surface, which discovery already accounts for by name, subcommand and flag, is the entry point a caller can reach.
+Reporting all 74 separately would bury the entry points that matter and train a reader to mute the check, which conceals as effectively as no check at all.
+Discovery also reads only `bin/*.sh` and `bin/backends/*.sh`, so a `bin/*.mjs` decider such as `bin/fm-cd-command-policy.mjs`, `bin/fm-arm-command-policy.mjs` or `bin/fm-extension-launch-barrier.mjs` can be counted as a caller but can never be discovered as an entry point of its own.
 Discovery is name-shaped, so a capability whose name carries none of the enforce words is found only when it is declared by hand; `bin/fm-outbound-write-lib.sh:fm_outbound_send` is declared that way.
 The same name shape is what makes a namespace prefix look like a verb: `bin/fm-guard.sh`'s `fm_guard_*` banner helpers are discovered and then declared as not enforcement points, which keeps the account explicit rather than special-casing the prefix in discovery.
 `data/` is captain-private and untracked, so a rule that lives only in `data/learnings.md` cannot be gated by a repository check at all.
 
 ## Sweep of 2026-09-14
 
-The check accounts for 46 entry points: 37 enforced, 4 operator-invoked, and 5 that are not enforcement points.
-It verifies 68 declared call sites and re-rejects 5 recorded near misses.
+The check accounts for 50 entry points: 39 enforced, 4 operator-invoked, and 7 that are not enforcement points.
+It verifies 75 declared call sites and re-rejects 5 recorded near misses.
+
+The most significant finding is `bin/fm-guard.sh`.
+It had been declared `enforced` over the invariant that a fleet mutation runs only from a session holding the verified per-home lock and an untangled checkout, and it cannot hold that.
+Its only exits are two `exit 0` statements, its own header states that it warns and never blocks, and every `bin/` invocation of it discards the status with `|| true`, so a mutation from a tangled checkout prints the banner and then proceeds.
+It is now declared as not an enforcement point, with the invariant restated as what it does guarantee, which is that the condition is announced.
+This sweep did NOT establish whether a narrower owner enforces the per-home session lock at some other boundary; that question is recorded as not observed rather than answered in either direction.
 
 The executable-reference rule changed the reading of thirteen references that a plain text match had accepted.
 Eight are shell header comments: `bin/fm-watch-arm.sh`, `bin/fm-subagent-pretool-check.sh`, `bin/fm-procevent-when.sh`, `bin/fm-check-register.sh`, `bin/fm-watch.sh`, `bin/fm-teardown.sh`, `bin/fm-claude-stop-autoarm.sh`, and `bin/fm-turnend-guard.sh` each name a capability without calling it.
@@ -72,7 +90,7 @@ That assertion is proven rather than trusted: the same predicate is run against 
 ### Entries that are not automatically called
 
 Four discovered capabilities have no automatic caller, and each is declared `operator-invoked` with the reason and the prose owner that invokes it.
-Widening discovery added no new instance of this shape: every newly discovered capability has a production caller, except the four `fm_guard_*` banner helpers, which are declared as not enforcement points.
+Widening discovery added no new instance of this shape: every newly discovered capability has a production caller, and the ones that are not enforcement points are declared as such.
 None of them is the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
 
 | Entry point | Reading | Why |
@@ -84,6 +102,8 @@ None of them is the family's failure shape, because in each case the invariant i
 
 `bin/fm-tool-update-check.sh` is declared as not an enforcement point: it reports a wake line and refuses nothing, and was discovered only because its name carries the word check.
 The four `fm_guard_*` helpers in `bin/fm-guard.sh` are declared the same way: they decide how loudly the watcher-down banner prints and never change whether a fleet mutation is allowed.
+`bin/fm-guard.sh` itself is declared the same way for the same reason, as recorded above.
+`bin/fm-wake-lib.sh:_fm_wake_require_classify` is declared the same way as well: `require` there means module import, and the function sources `bin/fm-classify-lib.sh` on demand rather than rejecting anything.
 
 ### Observation, not repaired in this slice
 

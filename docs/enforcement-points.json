@@ -181,27 +181,9 @@
     },
     {
       "id": "bin/fm-guard.sh",
-      "kind": "enforced",
-      "invariant": "A fleet mutation runs only from a session that holds the verified per-home lock and an untangled checkout.",
-      "guards": "runtime",
-      "callSites": [
-        {
-          "path": "bin/fm-fleet-sync.sh",
-          "via": "production"
-        },
-        {
-          "path": "bin/fm-merge-local.sh",
-          "via": "production"
-        },
-        {
-          "path": "bin/fm-pr-check.sh",
-          "via": "production"
-        },
-        {
-          "path": "bin/fm-promote.sh",
-          "via": "production"
-        }
-      ]
+      "kind": "not-enforcement",
+      "invariant": "A fleet mutation that runs without the verified per-home lock or from a tangled checkout is announced to the operator.",
+      "reason": "An advisory reporter, not a refusal: bin/fm-guard.sh always exits 0 (its only exits are the two `exit 0` statements) and every bin/ invocation discards its status with `|| true`, so a fleet mutation from a tangled checkout prints the banner and then proceeds. The lock-and-tangle invariant in its previous declaration has no blocking owner at this call site; see docs/verification/enforcing-call-sites.md."
     },
     {
       "id": "bin/fm-lease-lib.sh:fm_lease_guard",
@@ -677,6 +659,81 @@
           "via": "production"
         }
       ]
+    },
+    {
+      "id": "bin/fm-ff-lib.sh:validate_operational_dirs",
+      "kind": "enforced",
+      "invariant": "A secondmate home's data, state, config and projects directories resolve inside that home and nowhere else.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-ff-lib.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by validate_secondmate_home in its own library, which bin/fm-bootstrap.sh, bin/fm-fleet-snapshot.sh, bin/fm-stow-cascade.sh and bin/fm-config-push.sh traverse."
+    },
+    {
+      "id": "bin/fm-ff-lib.sh:validate_secondmate_home",
+      "kind": "enforced",
+      "invariant": "A secondmate home is accepted only when it resolves to a real directory that is not the active firstmate home and whose marker names the expected id.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-bootstrap.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-fleet-snapshot.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-stow-cascade.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-config-push.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-secondmate-registry-lib.sh:secondmate_registry_validate_bindings",
+      "kind": "enforced",
+      "invariant": "The secondmate registry parses with unique, non-overlapping host, root and home bindings, and any expected id and home still agree with it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-promote.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-home-seed.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-stow-cascade.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-remote-home-seed.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-wake-lib.sh:_fm_wake_require_classify",
+      "kind": "not-enforcement",
+      "invariant": "A status presentation helper runs only after bin/fm-classify-lib.sh has been sourced.",
+      "reason": "A lazy module loader, not a refusal: `require` here means import, and the function sources bin/fm-classify-lib.sh on demand rather than rejecting any input. One caller (bin/fm-wake-lib.sh's count helper) degrades to a zero count when the load fails instead of refusing, which is the opposite of a gate."
     }
   ]
 }

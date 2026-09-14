@@ -14,7 +14,7 @@ set -u
 CHECK="$ROOT/bin/fm-enforcement-caller-check.sh"
 INVENTORY="$ROOT/docs/enforcement-points.json"
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-enforcement-callers.XXXXXX")
-trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'rm -rf "$TMP_ROOT"; fm_test_cleanup' EXIT
 
 run_expect_failure() {
   local expected=$1
@@ -69,6 +69,23 @@ FIX
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$DIR/fm-gadget.sh" verify-gadget "$1"
+FIX
+
+  # A sourced library whose enforce-verb function carries no fm_ prefix: its
+  # functions are the entry points, whatever the repository names them.
+  cat > "$repo/bin/fm-widget-shared.sh" <<'FIX'
+#!/usr/bin/env bash
+validate_widget_binding() {
+  [ -n "${1:-}" ]
+}
+FIX
+
+  cat > "$repo/bin/fm-widget-binding-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-widget-shared.sh"
+validate_widget_binding "$1"
 FIX
 
   cat > "$repo/bin/fm-audit-check.sh" <<'FIX'
@@ -133,6 +150,13 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-gadget-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-widget-shared.sh:validate_widget_binding",
+      "kind": "enforced",
+      "invariant": "A widget binding is accepted only when it names something.",
+      "guards": "runtime",
+      "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
+    },
+    {
       "id": "bin/fm-audit-check.sh",
       "kind": "enforced",
       "invariant": "The tracked widget inventory stays well formed.",
@@ -171,6 +195,10 @@ elif mode == "drop-widget":
     data["entryPoints"] = [e for e in data["entryPoints"] if e["id"] != "bin/fm-widget.sh:enforce"]
 elif mode == "drop-gadget":
     data["entryPoints"] = [e for e in data["entryPoints"] if e["id"] != "bin/fm-gadget.sh:verify-gadget"]
+elif mode == "drop-shared-function":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
+    ]
 elif mode == "rejected-site-is-a-real-call":
     entries["bin/fm-widget.sh:enforce"]["rejectedCallSites"] = [
         {"path": "bin/fm-widget-consumer.sh", "reason": "claimed to be prose"}
@@ -366,6 +394,33 @@ test_undeclared_variable_dispatch_subcommand_fails() {
   pass "a subcommand dispatched through a variable assigned from \$1 is discovered too"
 }
 
+test_undeclared_sourced_library_function_fails() {
+  local repo="$TMP_ROOT/undeclared-library"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-shared-function
+  run_expect_failure "bin/fm-widget-shared.sh:validate_widget_binding" "$CHECK" --root "$repo"
+  pass "an enforce-verb function in a sourced library is discovered without an fm_ prefix"
+}
+
+test_quoted_shift_does_not_start_a_heredoc() {
+  local repo="$TMP_ROOT/phantom-heredoc"
+  write_fixture "$repo"
+  # Neither `<<EOF` inside a quoted usage string nor the `<<` of an arithmetic
+  # shift is a redirection; reading either as one would swallow the real call.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+usage() { printf '%s\n' "usage: fm-widget-consumer.sh <widget>, or feed a batch with <<EOF"; }
+lane_mask() { local n=$1; printf '%s\n' "$((1<<n))"; }
+"$DIR/fm-widget.sh" enforce "$1"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a quoted heredoc word or an arithmetic shift swallowed the enforcing call below it"
+  pass "a <<WORD inside quotes or an arithmetic shift does not start a phantom heredoc"
+}
+
 test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
@@ -376,3 +431,5 @@ test_test_only_caller_is_not_evidence
 test_unscheduled_repository_gate_fails
 test_undeclared_entry_point_fails
 test_undeclared_variable_dispatch_subcommand_fails
+test_undeclared_sourced_library_function_fails
+test_quoted_shift_does_not_start_a_heredoc

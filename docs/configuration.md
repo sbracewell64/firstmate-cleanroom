@@ -674,6 +674,7 @@ Unreconciled terminal results ride the existing 30-second relay poll rather than
 The session-start digest separately prints a "Public commitments" subsection from disk when, and only when, this home is relay-active and still holds an open public loop (a reply still owed, or a delivered loop with nothing owed), so compaction and restart are non-events.
 `bin/fm-teardown.sh` refuses to clean up a task while this home still owes a public reply for exactly that work, unless `--force` carries explicit discard approval.
 `FM_PF_RETRY_BACKOFF_SECS` (default 900) sets the next-attempt time recorded with a retryable delivery error.
+A relay rejection of the post itself (`bin/fm-x-reply.sh` exit 10) is instead recorded `expired-action-required` with error code `relay_rejected_undelivered` and is never retried automatically; the exact posted bytes stay in `state/outbound-writes/` and the obligation needs a captain decision.
 See [verification/public-followup.md](verification/public-followup.md) for the current maintainer evidence behind restart recovery, retained-loop disposition, and the relay-disabled zero-overhead guarantee.
 
 ## Trusted external process-event adapters (config/extensions.d)

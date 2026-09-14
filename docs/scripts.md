@@ -142,6 +142,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |
+| `fm-outbound-write-lib.sh` | Single owner of the outbound-write discipline: retain exact payload bytes and digest, convey the body by file, stdin, or one declared argv element, read back, classify from returned evidence, and keep one undelivered record per rejected write |
 | `fm-x-poll.sh`           | One bounded Relay poll: stash newly offered mentions and emit their once-only wake   |
 | `fm-x-reply.sh`          | Post or dry-run preview a composed Relay reply or follow-up                          |
 | `fm-x-dismiss.sh`        | Dismiss a skipped Relay mention at the relay without replying                        |

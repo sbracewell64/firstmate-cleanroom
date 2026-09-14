@@ -289,6 +289,7 @@ So treat second-mate-routed Relay work as a promised final by construction: the 
      Establish whether that post landed, then either record its receipt with `record-posted <id> --attempt <n> --chunks <exact-count>` or escalate.
      Posting again would put a second reply in a public thread.
    - "the relay no longer accepts a follow-up" is a captain decision, not a retry.
+   - "the relay rejected the public reply" means the exact payload is retained undelivered under `state/outbound-writes/`, nothing was posted, and it is never retried automatically; this is a captain decision, not a retry.
 4. After a successful deliver (or when the digest lists an `open-loop` line), decide the disposition in that same turn:
    - Follow-on work authorized from the same public thread: `bin/fm-public-followup.sh rechain <new-id> --from <delivered-id> --work-home <main|secondmate:<id>> --work-id <task-id> --expected <pr-merged|report-ready|local-main>`, then put the printed `brief` into that follow-on's instructions (and into the routed item's own note when the work is routed).
      If rechain reports an interrupted bind or source-retirement failure, resume the same destination with the same command; the retained source claim forbids choosing another destination.

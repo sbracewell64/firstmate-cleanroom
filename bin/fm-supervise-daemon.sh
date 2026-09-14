@@ -1175,12 +1175,24 @@ housekeeping() {  # <state>
     if afk_active "$state"; then
       # Reuse the existing bounded scan and escalation transport. An empty
       # wake queue or already-presented programme cannot hide an open handoff.
-      local completion completion_rc=0
+      local completion completion_rc=0 completion_item completion_marker completion_ident
       # shellcheck source=bin/fm-timeout-lib.sh
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
       [ "$completion_rc" -eq 0 ] || completion="CONTINUATION_CNO: away reconciliation unresolved status=$completion_rc $completion"
-      [ -z "$completion" ] || escalate_add "$state" "$(_collapse_newlines "$completion")"
+      if [ -n "$completion" ]; then
+        # A pending handoff is a long-lived manager dependency, so the same
+        # digest must not be re-typed every scan. Keyed on the reconcile
+        # output through the same seen-marker owner every sibling uses.
+        completion_item=$(_collapse_newlines "$completion")
+        completion_marker=$(status_daemon_seen_marker_path "$state" away-reconcile)
+        completion_ident=$(status_observed_signature "$state" "${#completion_item}" "$completion_item")
+        if ! status_presentation_marker_reported_matches "$completion_marker" "$completion_ident"; then
+          if escalate_add "$state" "$completion_item"; then
+            status_presentation_marker_report "$completion_marker" "$completion_ident" || true
+          fi
+        fi
+      fi
     fi
     for f in "$state"/*.status; do
       [ -e "$f" ] || [ -L "$f" ] || continue

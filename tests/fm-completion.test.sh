@@ -161,9 +161,7 @@ test_retirement_revalidates_report_and_effect() (
         ;;
     esac
     before=$(cat "$FM_STATE_OVERRIDE/source.meta")
-    force=()
-    [ "$mutation" != advanced-force ] || force=(--force)
-    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source ${force[@]+"${force[@]}"} 2>&1) || rc=$?
+    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
     expect_code 1 "$rc" "$mutation report/effect must prevent retirement"
     assert_contains "$out" 'completion handoff remains unresolved' "$mutation must reach completion retirement refusal"
     [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail 'retirement changed unresolved metadata'
@@ -412,6 +410,15 @@ prepare_delivery() {
     "$TMP_ROOT/handoff.json" > "$TMP_ROOT/guarded.json"
 }
 
+# Release the admitted handoff without dispatching it, so a drain is the only
+# thing that can turn it into an effect.
+fm_completion_store_released() {
+  local saved
+  saved=$(meta completion_handoff | jq -c '.released=true') || fail 'release fixture'
+  sed -i '/^completion_handoff=/d' "$FM_STATE_OVERRIDE/source.meta"
+  printf 'completion_handoff=%s\n' "$saved" >> "$FM_STATE_OVERRIDE/source.meta"
+}
+
 assert_no_delivery() {
   [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'refusal recorded successful delivery'
   assert_absent "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'refusal enqueued an instruction'
@@ -574,6 +581,30 @@ test_readmitted_inbox_effect_retains_its_downstream_obligation() {
   [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 're-admission rewrote the inbox receipt'
   pass 'a re-admitted delivered inbox effect reports delivery and its retained downstream obligation'
 }
+
+# A branch actor holds no grant over main-owned tasks, so its drain must not
+# dispatch their durable effects. The lock that prevents double dispatch does
+# not make the dispatching actor correct.
+test_branch_actor_drain_dispatches_nothing() (
+  local out before rc=0
+  prepare_delivery
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'branch-actor fixture admission'
+  fm_completion_store_released
+  before=$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")
+
+  FM_SUPERVISION_ACTOR=branch "$ROOT/bin/fm-wake-drain.sh" > "$TMP_ROOT/branch-drain.out" 2>&1 || rc=$?
+  assert_not_contains "$(cat "$TMP_ROOT/branch-drain.out")" COMPLETION_DISPATCHED \
+    'a branch drain must not report a dispatch it is not entitled to make'
+  [ "$before" = "$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")" ] \
+    || fail 'a branch-actor drain performed a durable effect on a main-owned task'
+  [ "$(meta stage)" = validation-running ] || fail 'a branch-actor drain advanced the stage'
+  [ "$(meta completion_handoff | jq -r .status)" = pending ] || fail 'a branch-actor drain dispatched the handoff'
+
+  out=$("$ROOT/bin/fm-wake-drain.sh" 2>&1) || fail "main drain: $out"
+  [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'the entitled actor did not dispatch'
+  [ "$(meta stage)" = ci-ready ] || fail 'the entitled actor did not advance the stage'
+  pass 'a branch-actor drain performs no resume-handoff dispatch; the main actor still does'
+)
 
 test_unqualified_and_foreign_stage_effects_refuse() {
   local out rc saved field effect
@@ -746,6 +777,16 @@ test_readmission_reports_the_saved_disposition() (
   assert_not_contains "$out" COMPLETION_DISPATCHED 'revoked re-admission reported the obligation closed'
   [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 'refusal erased the historical receipt'
   canonical completed checks-passed
+
+  # One failure, one refusal, naming the owner the evidence implicates: an
+  # edited report is the report owner's, not the qualification owner's.
+  printf 'edited after dispatch\n' >> "$FM_DATA_OVERRIDE/source/report.md"
+  rc=0; out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" 'an edited report must refuse re-admission'
+  assert_contains "$out" REPORT_CHANGED 'the edited report must name the report owner'
+  assert_not_contains "$out" CI_QUALIFICATION_REVOKED 'a valid qualification must not be blamed for an edited report'
+  [ "$(grep -c '^COMPLETION_CNO:' <<< "$out")" = 1 ] || fail "one failure produced more than one refusal: $out"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
   pass 'idempotent re-admission reports the saved record disposition, not the admission wording'
 )
 
@@ -1157,6 +1198,9 @@ SH
           || fail 'monitoring qualification did not record the running producer status'
         canonical completed checks-passed
         [ -z "$(meta completion_handoff)" ] || fail 'advanced case must carry no handoff'
+        # advanced-force runs the same state through the captain-authorized
+        # discard. The completion check runs ahead of FORCE, so this case
+        # refuses unless the advanced producer still satisfies it.
         ;;
       *)
         stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'teardown handoff'
@@ -1218,7 +1262,9 @@ SH
       holder_pid=$!
       sleep 0.5
     fi
-    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+    force=()
+    [ "$mutation" != advanced-force ] || force=(--force)
+    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source ${force[@]+"${force[@]}"} 2>&1) || rc=$?
     if [ -n "$holder_pid" ]; then wait "$holder_pid" || fail "observation lock holder failed ($?): $out"; fi
     mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
     assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
@@ -1235,6 +1281,8 @@ SH
           *) assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing' ;;
         esac
         [ "$mutation" != removed ] || assert_absent "$WT" 'backend double must have removed the worktree'
+        assert_not_contains "$out" 'exact qualification is invalidated' \
+          "$mutation retirement must not report the advanced producer as revoked"
         ;;
       *)
         expect_code 1 "$rc" "$mutation during teardown"
@@ -1479,6 +1527,7 @@ test_remote_and_destination_lease
 test_destination_changes_while_delivery_waits
 test_self_target_delivery
 test_readmitted_inbox_effect_retains_its_downstream_obligation
+test_branch_actor_drain_dispatches_nothing
 test_unqualified_and_foreign_stage_effects_refuse
 test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock

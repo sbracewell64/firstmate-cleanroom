@@ -727,6 +727,13 @@ do_running() {  # <transition-label>
   return 0
 }
 
+# The identity a repeated ci-ready transaction is the same as - the fields every
+# downstream consumer compares. The revocable producer snapshot rides along in
+# the effect but advances on its own, so it never decides sameness.
+ci_ready_effect_identity() {  # <effect JSON>
+  printf '%s' "$1" | jq -Sc '{task,generation,attempt,run,candidate,source_head,pr}' 2>/dev/null
+}
+
 do_ci_ready() (
   local current effect saved contract qualified_head qualification CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
@@ -782,7 +789,9 @@ do_ci_ready() (
   if [ -n "$HANDOFF_IDENTITY" ]; then
     fm_completion_report_current "$contract" || exit 1
   fi
-  if [ "$current" = ci-ready ] && [ "$(meta stage_ci_ready_effect)" = "$effect" ] && [ "$(meta stage_pr)" = "$PR_ARG" ] \
+  if [ "$current" = ci-ready ] \
+      && [ "$(ci_ready_effect_identity "$(meta stage_ci_ready_effect)")" = "$(ci_ready_effect_identity "$effect")" ] \
+      && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
     unchanged ci-ready
   else

@@ -204,9 +204,14 @@ fm_completion_report_saved() {  # <saved JSON> <identity>
   receipt=$(printf '%s' "$saved" | jq -r '.receipt // empty')
   kind=$(printf '%s' "$saved" | jq -r '.contract.action.kind // empty')
   if [ "$status" = dispatched ] && [ -n "$receipt" ]; then
-    if [ "$kind" != task-inbox ] \
-        && ! fm_completion_ci_ready_effect "$(printf '%s' "$saved" | jq -c .contract)"; then
-      fm_completion_refuse CI_QUALIFICATION_REVOKED; return 1
+    if [ "$kind" != task-inbox ]; then
+      local contract
+      contract=$(printf '%s' "$saved" | jq -c .contract) || return 1
+      fm_nm_effect_current "$META" >/dev/null \
+        || { fm_completion_refuse CI_QUALIFICATION_REVOKED; return 1; }
+      fm_completion_effect_matches_contract "$contract" \
+        || { fm_completion_refuse CI_READY_EFFECT_UNPROVEN; return 1; }
+      fm_completion_report_current "$contract" || return 1
     fi
     fm_completion_dispatched_line "$identity" "$receipt" "$owner"
     [ "$kind" != task-inbox ] || fm_completion_downstream_open_line "$identity" "$receipt" "$owner"
@@ -223,16 +228,23 @@ fm_completion_pending() { # <saved JSON> <identity> <owner> <reason>
   printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=%s\n' "$ID" "$identity" "$owner" "$reason"
 }
 
-fm_completion_ci_ready_effect() {
+# The recorded effect proves the contract's exact identity. Separate from
+# whether the producer still qualifies it, so each caller can name the cause
+# that actually failed instead of one label covering three.
+fm_completion_effect_matches_contract() {  # <contract> [meta file]
   local contract=$1 file=${2:-$META}
-  fm_nm_effect_current "$file" >/dev/null || return 1
   printf '%s' "$(sed -n 's/^stage_ci_ready_effect=//p' "$file")" | jq -se --argjson contract "$contract" '
       length == 1 and (.[0] | .task == $contract.task and .generation == $contract.generation and
       .attempt == $contract.attempt and .run == $contract.run and
       .candidate == $contract.candidate and .source_head == $contract.source_head and .pr == $contract.action.pr and
       $contract.action.owner == .task and $contract.action.generation == .generation)
-    ' >/dev/null 2>&1 && [ "$(sed -n 's/^stage_pr=//p' "$file")" = "$(printf '%s' "$contract" | jq -r .action.pr)" ] &&
-    fm_completion_report_current "$contract"
+    ' >/dev/null 2>&1 && [ "$(sed -n 's/^stage_pr=//p' "$file")" = "$(printf '%s' "$contract" | jq -r .action.pr)" ]
+}
+
+fm_completion_ci_ready_effect() {
+  local contract=$1 file=${2:-$META}
+  fm_nm_effect_current "$file" >/dev/null || return 1
+  fm_completion_effect_matches_contract "$contract" "$file" && fm_completion_report_current "$contract"
 }
 
 fm_completion_source_acquire() {

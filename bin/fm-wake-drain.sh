@@ -370,14 +370,23 @@ print_status_sections() {
 # a presentation failure never changes the drain's exit status.
 print_programme_presentation() {  # <ack-mode>
   local completion_rc=0
+  [ "$ACTOR" = main ] || return 0
+  # Lock order note: this runs while print_status_presentation holds
+  # $STATE/.status-presentation-lock, and fm_completion_resume waits on the
+  # per-task observation lock inside it - the inverse of teardown, which holds
+  # the observation lock while waiting on the presentation lock. That order is
+  # safe ONLY because both waits are bounded (10s here, NM_TEARDOWN_TIMEOUT
+  # there); unbounding either side turns this inversion into a deadlock.
   fm_run_timed 10 "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile || completion_rc=$?
   [ "$completion_rc" -eq 0 ] || printf 'CONTINUATION_CNO: report/action reconciliation remains unresolved status=%s\n' "$completion_rc"
-  [ "$ACTOR" = main ] || return 0
   fm_programme_present "$STATE" "$1" || true
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
   local rows=${1:-} ack_mode=${2:-commit} lock="$STATE/.status-presentation-lock" snapshot annotation_manifest fully_presented='' rc=0
+  # Held across print_programme_presentation's reconcile, which waits on the
+  # per-task observation lock - the inverse of teardown's order. Bounded waits
+  # on both sides are what keep that inversion safe; see the note there.
   fm_lock_acquire_wait "$lock" || return 1
   snapshot=$(status_presentation_snapshot "$STATE") || {
     printf 'STATUS PRESENTATION INCOMPLETE: status snapshot could not be read.\n'

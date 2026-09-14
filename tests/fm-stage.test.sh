@@ -295,7 +295,7 @@ test_running_binds_the_observer_run_and_descendant_fix_commits_stay_current() {
 }
 
 test_ci_ready_needs_the_canonical_verdict_never_narration() {
-  local out rc line head
+  local out rc line head before_lines
   head=$(git -C "$WT1" rev-parse HEAD)
   FM_FAKE_AXI_STATUS=$(run_toon 01RUNA fm/a1 running "$head")
   # A hand-written done: line must not certify CI readiness.
@@ -318,6 +318,21 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   [ "$(meta_get a1 stage)" = ci-ready ] || fail "record stage ci-ready"
   out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
   assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "duplicate ci-ready is a no-op"
+  # The revocable producer snapshot rides along in the effect but advances on
+  # its own. One more passing check is not a new ci-ready transaction, so it
+  # must not append a second receipt the classifier reads as a fresh event.
+  before_lines=$(stage_lines a1)
+  FM_TEST_QUALIFICATION_FILE="$TMP_ROOT/a1-advanced-qualification.json"
+  meta_get a1 stage_ci_ready_effect \
+    | jq -c '.qualification | .evidence.checks += [{name:"later producer check",bucket:"pass"}]' \
+    > "$FM_TEST_QUALIFICATION_FILE"
+  export FM_TEST_QUALIFICATION_FILE
+  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 0 "$rc" "an advanced producer must not refuse an unchanged repeat (got: $out)"
+  assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "a producer advance is not a new ci-ready transaction"
+  [ "$(stage_lines a1)" = "$before_lines" ] \
+    || fail "an advanced producer appended a duplicate ci-ready receipt"
+  unset FM_TEST_QUALIFICATION_FILE
   ! grep -qE '^axi (run|respond|abort|sync)' "$NM_LOG" || fail "the stage owner must never start or answer a run"
   pass "fm-stage ci-ready: only the canonical run-step verdict certifies, never a hand-written line"
 }

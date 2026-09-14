@@ -446,6 +446,44 @@ EOF
   pass "transient unreadable signals recover without advancing their position"
 }
 
+# Away housekeeping reconciles durable handoffs, but a pending handoff is a
+# long-lived manager dependency: the same digest must not be re-typed into the
+# away pane every scan. Unchanged is silent; changed reports once.
+test_away_reconcile_escalation_reports_once_per_identity() {
+  local dir state fakebin
+  dir=$(make_supercase away-reconcile-dedupe); state="$dir/state"; fakebin="$dir/daemon-bin"
+  mkdir -p "$fakebin"
+  ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$fakebin/fm-timeout-lib.sh"
+  cat > "$fakebin/fm-continuation-resolve.sh" <<EOF
+#!/usr/bin/env bash
+cat "$dir/reconcile-output"
+EOF
+  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  printf 'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity\n' \
+    > "$dir/reconcile-output"
+  afk_enter "$state"
+
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "the first away reconcile did not escalate exactly once"
+
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "an unchanged away reconcile was re-typed into the away pane"
+
+  printf 'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=dependency-held\n' \
+    > "$dir/reconcile-output"
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c 'reason=dependency-held' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "a changed away reconcile identity did not report again exactly once"
+  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "the changed report duplicated the earlier identity"
+  pass "away reconcile escalations report once per identity, not once per scan"
+}
+
 test_permission_recovery_reclassifies_catchall_status() {
   local dir state status before_ident after_ident out
   dir=$(make_supercase catchall-permission-recovery); state="$dir/state"
@@ -2698,6 +2736,7 @@ test_catchall_buffer_failure_preserves_position
 test_durable_wake_failure_retains_entire_batch
 test_missing_status_stale_is_acknowledged_without_diagnostic
 test_transient_unreadable_signal_recovers_without_advancing
+test_away_reconcile_escalation_reports_once_per_identity
 test_permission_recovery_reclassifies_catchall_status
 test_permanent_classification_failure_is_reported_and_acknowledged
 test_catchall_scan_surfaces_a_masked_event

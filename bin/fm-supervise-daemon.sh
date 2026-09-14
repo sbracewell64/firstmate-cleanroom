@@ -1175,7 +1175,7 @@ housekeeping() {  # <state>
     if afk_active "$state"; then
       # Reuse the existing bounded scan and escalation transport. An empty
       # wake queue or already-presented programme cannot hide an open handoff.
-      local completion completion_rc=0 completion_item completion_marker completion_ident
+      local completion completion_rc=0 completion_item completion_marker completion_ident completion_key
       # shellcheck source=bin/fm-timeout-lib.sh
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
@@ -1184,9 +1184,13 @@ housekeeping() {  # <state>
         # A pending handoff is a long-lived manager dependency, so the same
         # digest must not be re-typed every scan. Keyed on the reconcile
         # output through the same seen-marker owner every sibling uses.
+        # The key is the SET of per-task lines, not their rendered order: the
+        # resolver rotates which task leads, so the same unchanged state arrives
+        # permuted and an order-sensitive key would re-type it on most scans.
         completion_item=$(_collapse_newlines "$completion")
+        completion_key=$(_collapse_newlines "$(printf '%s' "$completion" | LC_ALL=C sort)")
         completion_marker=$(status_daemon_seen_marker_path "$state" away-reconcile)
-        completion_ident=$(status_observed_signature "$state" "${#completion_item}" "$completion_item")
+        completion_ident=$(status_observed_signature "$state" "${#completion_key}" "$completion_key")
         if ! status_presentation_marker_reported_matches "$completion_marker" "$completion_ident"; then
           if escalate_add "$state" "$completion_item"; then
             status_presentation_marker_report "$completion_marker" "$completion_ident" || true

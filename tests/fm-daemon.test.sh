@@ -459,28 +459,38 @@ test_away_reconcile_escalation_reports_once_per_identity() {
 cat "$dir/reconcile-output"
 EOF
   chmod +x "$fakebin/fm-continuation-resolve.sh"
-  printf 'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity\n' \
+  # The resolver rotates which task leads, so the same unchanged set arrives
+  # permuted between scans. Two tasks, order flipped, is that exact shape.
+  printf '%s\n' \
+    'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity' \
+    'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
     > "$dir/reconcile-output"
   afk_enter "$state"
 
   rm -f "$state/.subsuper-last-scan"
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
+  [ "$(grep -c . "$state/.subsuper-escalations")" = 1 ] \
     || fail "the first away reconcile did not escalate exactly once"
 
-  rm -f "$state/.subsuper-last-scan"
-  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
-    || fail "an unchanged away reconcile was re-typed into the away pane"
-
-  printf 'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=dependency-held\n' \
+  printf '%s\n' \
+    'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
+    'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity' \
     > "$dir/reconcile-output"
   rm -f "$state/.subsuper-last-scan"
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c 'reason=dependency-held' "$state/.subsuper-escalations")" = 1 ] \
+  [ "$(grep -c . "$state/.subsuper-escalations")" = 1 ] \
+    || fail "a rotated but unchanged away reconcile was re-typed into the away pane"
+
+  printf '%s\n' \
+    'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
+    'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=dependency-held' \
+    > "$dir/reconcile-output"
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c . "$state/.subsuper-escalations")" = 2 ] \
     || fail "a changed away reconcile identity did not report again exactly once"
-  [ "$(grep -c 'reason=manager-capacity' "$state/.subsuper-escalations")" = 1 ] \
-    || fail "the changed report duplicated the earlier identity"
+  [ "$(grep -c 'reason=dependency-held' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "the changed set did not carry its new disposition"
   pass "away reconcile escalations report once per identity, not once per scan"
 }
 

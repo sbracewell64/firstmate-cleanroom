@@ -649,6 +649,54 @@ test_reconcile_rotates_its_leading_task() (
   pass 'reconcile rotates its leading task across invocations and restarts cleanly without its cursor'
 )
 
+# A re-push of the same qualified head advances the producer's push generation.
+# Once the stage has left ci-ready, nothing but this boundary can write the
+# retained tuple back, so a task that cannot record the advance is unrecoverable.
+test_advanced_push_generation_does_not_wedge_a_landed_task() (
+  local out rc=0
+  export FM_STATE_OVERRIDE="$TMP_ROOT/pushgen-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  canonical completed checks-passed
+  # A dispatched handoff, so the trailing resume-handoff leaves each command's
+  # own status alone and this case observes the qualification boundary only.
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'pushgen admission'
+  stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'pushgen release'
+  [ "$(meta stage)" = ci-ready ] || fail 'pushgen fixture did not reach ci-ready'
+  stage landing --pr https://github.com/o/r/pull/7 >/dev/null || fail 'pushgen landing'
+  [ "$(meta stage)" = landing ] || fail 'pushgen fixture did not reach landing'
+  [ "$(meta stage_ci_ready_effect | jq -r .qualification.push_generation)" = 1 ] \
+    || fail 'pushgen fixture did not record the producer push generation'
+
+  # The same qualified head is re-pushed: identity is unchanged, push generation moved.
+  FM_TEST_QUALIFICATION_FILE=$(mktemp "$TMP_ROOT/pushgen-tuple.XXXXXX")
+  meta stage_ci_ready_effect | jq -c '.qualification | .push_generation=2' > "$FM_TEST_QUALIFICATION_FILE"
+  export FM_TEST_QUALIFICATION_FILE
+  out=$(stage show 2>&1) || fail "an advanced push generation must not revoke a landed task: $out"
+  [ "$(meta stage_ci_ready_effect | jq -r .qualification.push_generation)" = 2 ] \
+    || fail 'the qualification boundary did not track the advanced tuple back'
+  printf '%s\n' fm-pr-poll-merge-notified-v1 github github.com o/r 7 > "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
+  out=$(stage activated 2>&1) || fail "an advanced push generation must not block activation: $out"
+  [ "$(meta stage)" = activated ] || fail 'advanced push generation blocked activation'
+
+  # The advance is one-way: a push generation BELOW the retained one is a
+  # different producer state, not a re-push, and still refuses.
+  meta stage_ci_ready_effect | jq -c '.qualification | .push_generation=1' > "$FM_TEST_QUALIFICATION_FILE"
+  rc=0; out=$(stage show 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a push generation below the retained one must still refuse'
+  assert_contains "$out" QUALIFICATION_REVOKED 'a regressed push generation must be reported as a revocation'
+
+  # A moved identity is still a revocation.
+  meta stage_ci_ready_effect | jq -c '.qualification | .attempt="producer:9"' > "$FM_TEST_QUALIFICATION_FILE"
+  rc=0; out=$(stage show 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a moved producer attempt must still refuse'
+  assert_contains "$out" QUALIFICATION_REVOKED 'a moved identity must still be reported as a revocation'
+  unset FM_TEST_QUALIFICATION_FILE
+  pass 'an advanced push generation is tracked at the qualification boundary; a moved identity still refuses'
+)
+
 test_unqualified_and_foreign_stage_effects_refuse() {
   local out rc saved field effect
   prepare_delivery
@@ -1165,11 +1213,13 @@ test_monitoring_qualification_and_revocation() (
     || fail "advanced producer must not revoke activation: $(cat "$TMP_ROOT/advance-activated")"
   [ "$(meta stage)" = activated ] || fail 'advanced producer blocked activation'
   # A moved identity is still a revocation, even though the read itself answers.
+  # The push generation is not identity - it advances on a re-push of the same
+  # qualified head - but it may never go backwards.
   FM_TEST_QUALIFICATION_FILE=$(mktemp "$TMP_ROOT/foreign-tuple.XXXXXX")
-  meta stage_ci_ready_effect | jq -c '.qualification | .push_generation=2' > "$FM_TEST_QUALIFICATION_FILE"
+  meta stage_ci_ready_effect | jq -c '.qualification | .repo="foreign-producer"' > "$FM_TEST_QUALIFICATION_FILE"
   export FM_TEST_QUALIFICATION_FILE
   rc=0; out=$(stage show 2>&1) || rc=$?
-  expect_code 1 "$rc" 'a changed producer push generation must still revoke'
+  expect_code 1 "$rc" 'a changed producer repo must still revoke'
   assert_contains "$out" QUALIFICATION_REVOKED 'moved identity must be reported as a revocation'
   unset FM_TEST_QUALIFICATION_FILE
   # Restore the monitoring producer so the CI-log lever below still invalidates.
@@ -1214,7 +1264,7 @@ SH
   # with restored bytes). held: the observation lock is held across the
   # archive and the report changes while finalize waits. unchanged/direct:
   # positive controls.
-  for mutation in ${1:-changed deleted unchanged revoked direct advanced advanced-force late removed removed-late removed-revoked held}; do
+  for mutation in ${1:-changed deleted unchanged revoked direct advanced advanced-force dispatched-force late removed removed-late removed-revoked held}; do
     WT="$TMP_ROOT/teardown-wt-$mutation"
     proj="$TMP_ROOT/teardown-proj-$mutation"
     git clone -q --no-hardlinks "$original_wt" "$WT" || fail 'private teardown clone'
@@ -1306,12 +1356,20 @@ SH
       sleep 0.5
     fi
     force=()
-    [ "$mutation" != advanced-force ] || force=(--force)
+    case "$mutation" in advanced-force|dispatched-force) force=(--force) ;; esac
     rc=0; out=$("$ROOT/bin/fm-teardown.sh" source ${force[@]+"${force[@]}"} 2>&1) || rc=$?
     if [ -n "$holder_pid" ]; then wait "$holder_pid" || fail "observation lock holder failed ($?): $out"; fi
     mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
     assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
     case "$mutation" in
+      dispatched-force)
+        expect_code 0 "$rc" "$mutation actual teardown: $out"
+        assert_absent "$FM_STATE_OVERRIDE/source.meta" "$mutation teardown retained metadata"
+        assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" \
+          'the authorized discard destroyed the completion archive it exists to preserve'
+        [ "$(jq -r .status "$FM_DATA_OVERRIDE/source/completion-receipt.json")" = dispatched ] \
+          || fail 'the forced archive did not record the dispatched handoff'
+        ;;
       unchanged|direct|removed|advanced|advanced-force)
         expect_code 0 "$rc" "$mutation actual teardown: $out"
         assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'final observation refresh must read canonical state'
@@ -1572,6 +1630,7 @@ test_self_target_delivery
 test_readmitted_inbox_effect_retains_its_downstream_obligation
 test_branch_actor_drain_dispatches_nothing
 test_reconcile_rotates_its_leading_task
+test_advanced_push_generation_does_not_wedge_a_landed_task
 test_unqualified_and_foreign_stage_effects_refuse
 test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock

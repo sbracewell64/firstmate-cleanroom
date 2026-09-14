@@ -204,15 +204,17 @@ fm_completion_report_saved() {  # <saved JSON> <identity>
   receipt=$(printf '%s' "$saved" | jq -r '.receipt // empty')
   kind=$(printf '%s' "$saved" | jq -r '.contract.action.kind // empty')
   if [ "$status" = dispatched ] && [ -n "$receipt" ]; then
+    local contract
+    contract=$(printf '%s' "$saved" | jq -c .contract) || return 1
+    # Both kinds revalidate the report bytes their receipt was taken against;
+    # only the ci-ready kind additionally carries a producer qualification.
     if [ "$kind" != task-inbox ]; then
-      local contract
-      contract=$(printf '%s' "$saved" | jq -c .contract) || return 1
       fm_nm_effect_current "$META" >/dev/null \
         || { fm_completion_refuse CI_QUALIFICATION_REVOKED; return 1; }
       fm_completion_effect_matches_contract "$contract" \
         || { fm_completion_refuse CI_READY_EFFECT_UNPROVEN; return 1; }
-      fm_completion_report_current "$contract" || return 1
     fi
+    fm_completion_report_current "$contract" || return 1
     fm_completion_dispatched_line "$identity" "$receipt" "$owner"
     [ "$kind" != task-inbox ] || fm_completion_downstream_open_line "$identity" "$receipt" "$owner"
   else

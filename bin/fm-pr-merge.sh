@@ -632,7 +632,7 @@ if fm_nm_merge_qualification_obligated "$STATE/$ID.meta"; then
     echo 'error: NOT_CI_READY: a no-mistakes merge carries no recorded CI-ready qualification; merge remains unresolved' >&2; exit 1;
   }
   fm_nm_effect_current "$STATE/$ID.meta" "$URL" >/dev/null || {
-    echo 'error: QUALIFICATION_REVOKED: merge remains unresolved' >&2; exit 1;
+    echo "error: QUALIFICATION_REVOKED ($FM_NM_EFFECT_REASON): merge remains unresolved" >&2; exit 1;
   }
   echo 'error: QUALIFIED_MERGE_HEAD_GUARD_UNAVAILABLE: maintained merge transport cannot bind the qualified head; merge remains unresolved' >&2
   exit 1

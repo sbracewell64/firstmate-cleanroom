@@ -320,6 +320,10 @@ fm_nm_verified_terminal_successor() { # <worktree> <run> <submitted> <head> <bra
   [ -z "$dirty" ]
 }
 
+# The cause the last fm_nm_effect_current refusal actually had; empty when it
+# last answered yes. Callers report it instead of inventing one label for nine.
+FM_NM_EFFECT_REASON=${FM_NM_EFFECT_REASON:-}
+
 # One conditional consumer for the producer's revocable exact-head tuple.
 # A successful read is current only at the producer snapshot. Every later
 # authority use revalidates the retained tuple; no local write/forge atomicity.
@@ -338,8 +342,16 @@ fm_nm_qualification_read() {
 }
 
 # The one owner of what counts as a valid tuple. Given a retained tuple it also
-# pins the identity that may never move; the producer's own advance through
-# status and accumulating green evidence is not a revocation.
+# pins the identity that may never move - repo, attempt and generation, plus the
+# run/head/branch/pr the caller passes. The producer's own advance is not a
+# revocation: status, accumulating green evidence and push_generation all move
+# forward under the same identity, so push_generation is bounded below by the
+# retained value rather than frozen at it. A push generation that went BACKWARDS
+# is a different producer state and still refuses.
+# Branch coverage: the retained-identity pin, the push-generation advance and
+# the status/evidence conjuncts are asserted through fm_nm_effect_current's
+# callers. The schema/validity-string and provider conjuncts are uncovered -
+# only the producer double emits tuples, and it cannot emit a malformed one.
 fm_nm_qualification_valid() {  # <tuple> <run> <head> <branch> <pr> [retained tuple]
   local prior=${6:-}
   [ -n "$prior" ] || prior=null
@@ -347,7 +359,8 @@ fm_nm_qualification_valid() {  # <tuple> <run> <head> <branch> <pr> [retained tu
     --argjson prior "$prior" '
     length == 1 and (.[0] |
       ($prior == null or (.repo == $prior.repo and .attempt == $prior.attempt and
-        .generation == $prior.generation and .push_generation == $prior.push_generation)) and
+        .generation == $prior.generation)) and
+      ($prior == null or .push_generation >= $prior.push_generation) and
       .schema == "no-mistakes/ci-qualification/v1" and
       .validity == "current-at-read; revocable; bind exact identity and revalidate before downstream use" and
       .run == $run and .head == $head and (.head | test("^[0-9a-f]{40}$")) and
@@ -365,8 +378,18 @@ fm_nm_qualification_valid() {  # <tuple> <run> <head> <branch> <pr> [retained tu
   ' >/dev/null 2>&1
 }
 
+# Is the recorded effect still true against the live producer? Nine independent
+# ways to answer no, each naming itself in FM_NM_EFFECT_REASON so a caller can
+# report WHICH one said no instead of collapsing all nine into one label.
+# Branch coverage: RECORD_UNREADABLE, DESTINATION_MISMATCH, EFFECT_IDENTITY,
+# BINDING_UNREADABLE, BINDING_IDENTITY and PRODUCER are asserted through the
+# stage, teardown and PR consumers. WORKTREE_MISSING is exercised by the
+# teardown removed-worktree fixtures; EFFECT_SOURCE_HEAD and EFFECT_QUALIFICATION
+# are uncovered - the effect is written by issue() alone and no supported caller
+# can record one whose .source_head or .qualification is unreadable.
 fm_nm_effect_current() {
   local file=$1 expected_pr=${2:-} expected_task=${3:-$(basename "$1" .meta)} effect qualification run head branch pr dir
+  FM_NM_EFFECT_REASON=RECORD_UNREADABLE
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   effect=$(sed -n 's/^stage_ci_ready_effect=//p' "$file")
   run=$(sed -n 's/^stage_run=//p' "$file")
@@ -374,8 +397,11 @@ fm_nm_effect_current() {
   pr=$(sed -n 's/^stage_pr=//p' "$file")
   dir=$(sed -n 's/^worktree=//p' "$file")
   [ -n "$dir" ] && [ -d "$dir" ] || dir=$(sed -n 's/^project=//p' "$file")
+  FM_NM_EFFECT_REASON=WORKTREE_MISSING
   [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  FM_NM_EFFECT_REASON=DESTINATION_MISMATCH
   [ -z "$expected_pr" ] || [ "$expected_pr" = "$pr" ] || return 1
+  FM_NM_EFFECT_REASON=EFFECT_IDENTITY
   printf '%s' "$effect" | jq -se --arg task "$expected_task" \
     --arg generation "$(sed -n 's/^spawn_gen=//p' "$file")" \
     --arg stage_gen "$(sed -n 's/^stage_gen=//p' "$file")" \
@@ -385,16 +411,24 @@ fm_nm_effect_current() {
       .attempt == $attempt and .candidate == $candidate and .run == $run and .pr == $pr and
       (.attempt | length > 0) and (.run | length > 0) and (.candidate | test("^[0-9a-f]{40}$")))
     ' >/dev/null 2>&1 || return 1
+  FM_NM_EFFECT_REASON=EFFECT_SOURCE_HEAD
   head=$(printf '%s' "$effect" | jq -r .source_head) || return 1
+  FM_NM_EFFECT_REASON=EFFECT_QUALIFICATION
   qualification=$(printf '%s' "$effect" | jq -c .qualification) || return 1
   local binding_file nm_home
   binding_file="$(dirname "$file")/$expected_task.nm-observe"
+  FM_NM_EFFECT_REASON=BINDING_UNREADABLE
   [ -f "$binding_file" ] && [ ! -L "$binding_file" ] && [ -r "$binding_file" ] || return 1
+  FM_NM_EFFECT_REASON=BINDING_IDENTITY
   [ "$(sed -n 's/^run_id=//p' "$binding_file")" = "$run" ] || return 1
   [ "$(sed -n 's/^attempt_id=//p' "$binding_file")" = "$(printf '%s' "$effect" | jq -r .attempt)" ] || return 1
   nm_home=$(sed -n 's/^nm_home=//p' "$binding_file")
+  FM_NM_EFFECT_REASON=BINDING_HOME_MISSING
   [ -n "$nm_home" ] && [ -d "$nm_home" ] || return 1
-  NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"
+  FM_NM_EFFECT_REASON=PRODUCER
+  NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification" \
+    || return 1
+  FM_NM_EFFECT_REASON=
 }
 
 # Does this record carry a CI-ready qualification obligation? A qualified stage

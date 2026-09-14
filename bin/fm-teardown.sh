@@ -285,19 +285,31 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
 # retirement: the exact stage qualification and any durable completion handoff
 # must be current at each blocking boundary. --check confirms without writing;
 # --archive is the destructive authorization from the same evidence.
+# Branch coverage: B1 (qualification) refusal and its forced warning, and B2
+# (handoff) refusal and its forced warning, are each asserted in
+# tests/fm-teardown.test.sh and tests/fm-completion.test.sh. An authorized
+# discard never skips the work, only the refusal: a record that can never close
+# - a task-inbox handoff, or a pending one from a run that failed and will
+# never qualify - must still leave its archive behind.
 teardown_completion_current() {  # <--check|--archive>
   local -a retire=()
   [ "$1" = --archive ] || retire=(--check)
   if fm_nm_recorded_qualification_obligated "$META"; then
     fm_nm_effect_current "$META" >/dev/null || {
-      echo "REFUSED: exact qualification is invalidated or unavailable; task $ID remains unresolved" >&2
-      return 1
+      [ "$FORCE" = --force ] || {
+        echo "REFUSED: exact qualification is invalidated or unavailable ($FM_NM_EFFECT_REASON); task $ID remains unresolved" >&2
+        return 1
+      }
+      echo "warning: exact qualification is invalidated or unavailable ($FM_NM_EFFECT_REASON); discarding task $ID under the authorized --force" >&2
     }
   fi
-  if [ "$FORCE" != --force ] && grep -q '^completion_handoff=' "$META"; then
+  if grep -q '^completion_handoff=' "$META"; then
     fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" || {
-      echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
-      return 1
+      [ "$FORCE" = --force ] || {
+        echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
+        return 1
+      }
+      echo "warning: completion handoff remains unresolved or unreadable; discarding task $ID under the authorized --force" >&2
     }
   fi
 }

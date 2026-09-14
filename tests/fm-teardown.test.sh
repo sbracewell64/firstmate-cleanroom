@@ -2708,8 +2708,10 @@ test_unreleased_handoff_refuses_then_force_discards() {
   rc=0
   run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" || rc=$?
   expect_code 0 "$rc" "unreleased-handoff: --force discard should succeed: $(cat "$case_dir/stderr2")"
-  ! grep -q 'completion handoff remains unresolved' "$case_dir/stderr2" \
+  ! grep -q REFUSED "$case_dir/stderr2" \
     || fail "unreleased-handoff: an unresolvable handoff blocked the authorized discard"
+  grep -q 'warning: completion handoff remains unresolved' "$case_dir/stderr2" \
+    || fail "unreleased-handoff: the authorized discard did not report what it could not resolve"
   assert_absent "$case_dir/state/task-x1.meta" \
     "unreleased-handoff: the discarded task record survived"
   pass "an unreleased completion handoff retains an unforced teardown and never blocks the authorized discard"

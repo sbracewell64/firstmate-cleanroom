@@ -15,7 +15,14 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> [· activity: <n>s] · <detail>
+#
+# The optional `activity:` field is present only on a working run-step verdict
+# whose run reports how long ago its pipeline last did something
+# (fm_nm_run_active_activity_age in bin/fm-nm-run-lib.sh). It is the pipeline's
+# own account of still working, so a supervisor can tell a legitimately quiet
+# worker whose run is progressing from one whose run has stopped progressing.
+# Its absence is absence of evidence, never proof of inactivity.
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -649,6 +656,21 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
       ;;
   esac
+
+  # Render the pipeline's own activity age for a run that is still executing a
+  # step. Parsed from the SAME $RUN_OUT already captured above, so this costs no
+  # extra query, and only for a full `axi status` read: the coarse runs-list
+  # attribution carries no step detail at all. A run that reports no active step
+  # or no parseable age simply gets no field.
+  if [ "$RUN_STATE" = working ] && [ "$RUN_SOURCE" = full ]; then
+    if RUN_ACTIVITY=$(fm_nm_run_active_activity_age "$RUN_OUT"); then
+      if [ -n "$RUN_DETAIL" ]; then
+        RUN_DETAIL="activity: ${RUN_ACTIVITY}s${SEP}$RUN_DETAIL"
+      else
+        RUN_DETAIL="activity: ${RUN_ACTIVITY}s"
+      fi
+    fi
+  fi
 
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi

@@ -500,6 +500,43 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## Pipeline activity rendering
+
+The declared-validation-wait deferral reads the pipeline's own activity age out of `no-mistakes axi status`, so the rendering it parses is a vendor surface and is pinned here.
+Observed on 2026-09-14 against no-mistakes 1.61.0-o2part1.57.2.
+
+Command and the block the parse depends on:
+
+```sh
+no-mistakes axi status --run 01M2AMDG34H92M7RZAC6W6QGFD
+```
+
+```
+  steps[9]{step,status,findings,duration_ms}:
+    test,running,0,0
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    test,running,8m46s,"0s ago: claude producing output","1977084",starting
+```
+
+Three facts the parse relies on, each observed rather than assumed.
+The three columns before `last_activity` are unquoted, so a row's first double-quoted field is the activity, and an activity text containing commas cannot shift the column.
+The age is the token before the first ` ago`, so an activity text that mentions a second age cannot be read as the row's own.
+A run with no executing step emits no `active_steps` block at all, which the parse reports as absence of evidence.
+
+`last_activity` is maintained per step result rather than per agent, so a non-agent step records it too.
+Read-only from the daemon's own store on the same date:
+
+```sh
+python3 -c "import sqlite3;c=sqlite3.connect('file:$NM_HOME/state.sqlite?mode=ro',uri=True);print(c.execute(\"select step_name,last_activity from step_results where step_name='ci' order by id desc limit 1\").fetchall())"
+```
+
+```
+[('ci', 'status: completed')]
+```
+
+The bound that consumes this age is `FM_PIPELINE_ACTIVITY_MAX_SECS`, and every unrecognized or absent rendering leaves the escalation schedule untouched.
+`tests/fm-crew-state.test.sh` pins the rendering end to end, and `tests/fm-watch-triage.test.sh` pins both escalation directions.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

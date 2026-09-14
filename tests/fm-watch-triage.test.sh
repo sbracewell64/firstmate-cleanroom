@@ -486,6 +486,61 @@ test_crew_absorb_class_classifier() {
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
 }
 
+# --- declared validation wait (fm-classify-lib.sh) ---------------------------
+# A crew that handed its branch to a validation is idle BY CONTRACT: the pipeline
+# drives the run and the worker waits for the next gate, so its pane is quiet for
+# the whole run. Quieting such a pane needs BOTH halves - the lifecycle stage
+# receipt that declares a bound run, and the pipeline's own activity proving the
+# run is still progressing - so neither an old declaration nor a stray activity
+# field can quiet a pane on its own.
+test_crew_pipeline_wait_classifier() {
+  local dir state fakebin
+  dir=$(make_case pipeline-wait-class); state="$dir/state"; fakebin="$dir/fakebin"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+
+  # The declaration half: only bin/fm-stage.sh's bound-run stage declares it.
+  printf 'window=x\nkind=ship\n' > "$state/nostage.meta"
+  ! crew_pipeline_wait_declared nostage "$state" || fail "a task with no stage receipt declared a validation wait"
+  printf 'window=x\nkind=ship\nstage=validation-admitted\n' > "$state/admitted.meta"
+  ! crew_pipeline_wait_declared admitted "$state" || fail "an admitted-but-unbound validation declared a wait"
+  printf 'window=x\nkind=ship\nstage=ci-ready\n' > "$state/ciready.meta"
+  ! crew_pipeline_wait_declared ciready "$state" || fail "a terminal ci-ready stage declared a wait instead of surfacing"
+  printf 'window=x\nkind=ship\nstage=validation-running\n' > "$state/running.meta"
+  crew_pipeline_wait_declared running "$state" || fail "a bound, running validation did not declare a wait"
+  ! crew_pipeline_wait_declared "" "$state" || fail "an empty id declared a wait"
+
+  # The proof half: the age comes only from an authoritative working run-step.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
+  [ "$(crew_pipeline_activity_age running)" = 120 ] || fail "the activity age was not read from the run-step verdict"
+  FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  ! crew_pipeline_activity_age running >/dev/null || fail "a busy pane supplied a pipeline activity age"
+  FM_FAKE_CREW_STATE='state: done · source: run-step · activity: 5s · checks green'
+  ! crew_pipeline_activity_age running >/dev/null || fail "a finished run supplied a pipeline activity age"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  ! crew_pipeline_activity_age running >/dev/null || fail "a run reporting no activity fabricated an age"
+  FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
+  ! crew_pipeline_activity_age running >/dev/null || fail "an unreadable verdict supplied an activity age"
+
+  # Both halves together, against the bound.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds running "$state" \
+    || fail "a declared wait with a recently active pipeline did not hold"
+  FM_PIPELINE_ACTIVITY_MAX_SECS=60 crew_pipeline_wait_holds running "$state" \
+    && fail "a pipeline silent past its bound still held the declared wait"
+  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds nostage "$state" \
+    && fail "an active pipeline held a wait that was never declared"
+  # A malformed bound must not become an unbounded absorb.
+  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" \
+    || fail "a malformed bound did not fall back to the default"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 999999s · ci running'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=abc crew_pipeline_wait_holds running "$state" \
+    && fail "a malformed bound absorbed a pipeline silent far past the default"
+
+  unset FM_FAKE_CREW_STATE FM_PIPELINE_ACTIVITY_MAX_SECS
+  pass "crew_pipeline_wait_holds needs both the stage declaration and live pipeline activity"
+}
+
 # The wedge detector's third liveness input: writes inside the crew's own recorded
 # worktree. Every negative outcome must report "no evidence" so the caller keeps
 # its existing escalation schedule, and a supervisor-side git read (which touches
@@ -3028,6 +3083,156 @@ test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
 # tests assert on is the ONE poll that spawns the bounded worktree walk: on a
 # loaded runner it outlives a fixed liveness budget, and a round reaped before it
 # finished reports a lost deferral instead of the deferral under test.
+# The incident this task closes: a crew whose branch is owned by a running
+# validation renders a static pane for the whole run (26+ minutes of CI
+# monitoring, or a round of review fixes). Its status log gets no new entry
+# either, so before this deferral the wedge timer fired every
+# FM_STALE_ESCALATE_SECS, climbed to demand-deep-inspection, and cost a
+# supervisor turn each time - and only worker prose (`paused:`) could quiet it.
+# Phase B is the other direction and is the whole safety property: the same
+# declared wait whose pipeline has stopped progressing must still escalate.
+test_declared_validation_wait_deferred_instead_of_wedge_escalating() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back
+  dir=$(make_case pipeline-wait-defer); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-validating"
+  printf 'waiting on the pipeline' > "$capture_file"
+  # The stage receipt bin/fm-stage.sh writes when the real run is bound.
+  printf 'window=%s\nkind=ship\nstage=validation-running\n' "$window" > "$state/validating.meta"
+  # No worker prose at all: the stage line IS the declaration.
+  printf 'validation-running: stage_run=01RUN\n' > "$state/validating.status"
+  sig=$(seen_sig "$state/validating.status"); printf '%s' "$sig" > "$state/.seen-validating_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "waiting on the pipeline")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Already-classified hash whose idle window opened 500s ago, so the first poll
+  # lands straight on the at-threshold branch where both probes run.
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+
+  # Phase A: the pipeline reported activity 2 minutes ago. Deferred, not wedged.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PIPELINE_ACTIVITY_MAX_SECS=1800 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the watcher wedge-escalated a declared validation wait whose pipeline was still working: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a declared validation wait printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a declared validation wait enqueued a wake"; }
+  [ -e "$state/.pipeline-since-$key" ] || { reap "$pid"; fail "the validation-wait deferral chain marker was not recorded"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "a validation-wait deferral advanced the wedge escalation counter"; }
+  [ "$(cat "$state/.stale-since-$key" 2>/dev/null || echo 0)" -gt "$back" ] \
+    || { reap "$pid"; fail "the deferral did not restart the idle timer, so the next window cannot re-probe the pipeline"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  # Phase B: same declared wait, same quiet pane, but the pipeline has now been
+  # silent well past its own bound. The unchanged escalation must still fire.
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 5400s · ci running'
+  rm -f "$state/.pipeline-since-$key" "$state/.pipeline-resurfaced-$key"
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PIPELINE_ACTIVITY_MAX_SECS=1800 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a declared wait whose pipeline stopped progressing did not wedge-escalate"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the stalled-pipeline escalation did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the stalled-pipeline escalation did not flag a possible wedge"
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] || fail "the stalled-pipeline escalation was not counted"
+  [ ! -e "$state/.pipeline-since-$key" ] || fail "the validation-wait deferral chain outlived a real escalation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the stalled-pipeline escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the stalled-pipeline escalation was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a declared validation wait with a working pipeline is deferred, while one whose pipeline stopped still wedge-escalates"
+}
+
+# The declaration is load-bearing on its own. An active pipeline attributed to a
+# crew that never recorded a bound run must keep the unchanged schedule, or the
+# quieting would silently widen from "declared validation wait" to "any crew a
+# run can be attributed to".
+test_undeclared_pipeline_activity_still_wedge_escalates() {
+  local dir state fakebin out capture_file window key pane_hash sig pid back
+  dir=$(make_case pipeline-wait-undeclared); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-undeclared"
+  printf 'quiet pane' > "$capture_file"
+  # Deliberately NO stage= line: nothing declared a validation wait.
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/undeclared.meta"
+  printf 'working: implementing\n' > "$state/undeclared.status"
+  sig=$(seen_sig "$state/undeclared.status"); printf '%s' "$sig" > "$state/.seen-undeclared_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "quiet pane")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 1s · ci running'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PIPELINE_ACTIVITY_MAX_SECS=1800 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "an undeclared quiet pane was quieted by pipeline activity alone"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the undeclared pane did not take the unchanged wedge escalation"
+  [ ! -e "$state/.pipeline-since-$key" ] || fail "an undeclared pane opened a validation-wait deferral chain"
+  unset FM_FAKE_CREW_STATE
+  pass "pipeline activity without a recorded validation declaration keeps the unchanged wedge schedule"
+}
+
+# A deferral is not silence: a declared wait that holds for a long time still
+# re-surfaces once per bounded cadence, labeled as a recheck rather than a wedge,
+# so a validation that quietly stops making real progress cannot stay invisible.
+test_validation_wait_resurfaces_on_the_bounded_cadence() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back
+  dir=$(make_case pipeline-wait-resurface); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-longwait"
+  printf 'waiting on the pipeline' > "$capture_file"
+  printf 'window=%s\nkind=ship\nstage=validation-running\n' "$window" > "$state/longwait.meta"
+  printf 'validation-running: stage_run=01RUN\n' > "$state/longwait.status"
+  sig=$(seen_sig "$state/longwait.status"); printf '%s' "$sig" > "$state/.seen-longwait_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "waiting on the pipeline")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  # This pane has already been deferring on pipeline evidence for 500s.
+  : > "$state/.pipeline-since-$key"
+  set_mtime "$back" "$state/.pipeline-since-$key"
+
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 30s · ci running'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PIPELINE_ACTIVITY_MAX_SECS=1800 FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a long-held declared validation wait never re-surfaced on the bounded cadence"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the validation-wait recheck did not print a stale wake"
+  grep -F "declared validation wait" "$out" >/dev/null || fail "the validation-wait recheck was not labeled as such"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a validation-wait recheck was mislabeled a possible wedge"
+  [ -e "$state/.pipeline-resurfaced-$key" ] || fail "the validation-wait re-surface throttle marker was not recorded"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a validation-wait recheck advanced the wedge escalation counter"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the validation-wait recheck failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the validation-wait recheck was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a declared validation wait re-surfaces once on the bounded cadence, so a stalled run cannot stay invisible"
+}
+
 test_wedge_escalation_deferred_while_worktree_is_written() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid wt back
   dir=$(make_case wedge-worktree-writes); state="$dir/state"; fakebin="$dir/fakebin"
@@ -3862,6 +4067,7 @@ test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
+test_crew_pipeline_wait_classifier
 test_crew_worktree_written_since_classifier
 test_empty_write_prune_widens_the_probe
 test_empty_write_prune_from_the_environment_widens_the_probe
@@ -3924,6 +4130,9 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_rechecks_authoritative_state
 test_paused_authoritative_working_preserves_wedge_timer
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
+test_declared_validation_wait_deferred_instead_of_wedge_escalating
+test_undeclared_pipeline_activity_still_wedge_escalates
+test_validation_wait_resurfaces_on_the_bounded_cadence
 test_wedge_escalation_deferred_while_worktree_is_written
 test_write_deferral_resurfaces_on_the_bounded_cadence
 test_secondmate_home_supervision_churn_is_not_write_evidence

@@ -264,6 +264,43 @@ fm_write_meta() {
   done
 }
 
+# fm_write_bodied_backlog <file> <rows> <body-lines> [<line-chars>]: write a
+# tasks-axi backlog whose rows split evenly between Queued and Done and each
+# carry <body-lines> indented body lines of <line-chars> characters (default
+# 1000). Body lines are deterministic, so two backlogs that differ only in
+# <body-lines> share every first body line; the fleet snapshot's summary mode
+# truncates or omits everything else, which lets a test compare a small and an
+# argv-cap-exceeding backlog byte for byte.
+fm_write_bodied_backlog() {
+  local file=$1 rows=$2 body_lines=$3 chars=${4:-1000} half filler i j
+  half=$((rows / 2))
+  filler=$(printf '%*s' "$chars" '' | tr ' ' x)
+  {
+    printf '## In flight\n\n## Queued\n'
+    i=1
+    while [ "$i" -le "$half" ]; do
+      printf -- '- [ ] queued-%03d - Queued item %03d (repo: alpha) (kind: ship) (since 2026-09-01)\n' "$i" "$i"
+      j=1
+      while [ "$j" -le "$body_lines" ]; do
+        printf '  note %03d %s\n' "$j" "$filler"
+        j=$((j + 1))
+      done
+      i=$((i + 1))
+    done
+    printf '\n## Done\n'
+    i=1
+    while [ "$i" -le $((rows - half)) ]; do
+      printf -- '- [x] done-%03d - Done item %03d https://github.com/kunchenguid/firstmate/pull/%d (repo: alpha) (kind: ship) (merged 2026-09-0%d)\n' "$i" "$i" "$i" $(( (i % 9) + 1 ))
+      j=1
+      while [ "$j" -le "$body_lines" ]; do
+        printf '  note %03d %s\n' "$j" "$filler"
+        j=$((j + 1))
+      done
+      i=$((i + 1))
+    done
+  } > "$file"
+}
+
 # fm_write_secondmate_meta <file> <home> [window] [projects] [harness]: write the
 # standard kind=secondmate meta block used across the secondmate suites. Window
 # defaults to firstmate:fm-<id>, projects defaults to alpha, and harness defaults

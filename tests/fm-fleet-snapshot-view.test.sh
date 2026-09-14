@@ -899,8 +899,126 @@ EOF
   pass "producer eligible_queued reflects structural per-task predicates independent of the aggregate state label"
 }
 
+# Regression: a backlog whose parsed JSON exceeds the kernel's argv cap must
+# still snapshot and summarize. Linux caps one argv string at 128 KiB
+# (MAX_ARG_STRLEN) whatever ARG_MAX says, and macOS caps the whole argv at
+# 1 MiB, so the large backlog is sized past both and the old `--argjson`
+# call shape is proven to fail on every CI platform rather than assumed to.
+test_large_backlog_streams_past_argv_limit() {
+  local home out_small out_large big_json bytes rc
+  # One home, two backlogs: the small one is summarized first, then the large
+  # one replaces it, so the two summaries can only differ through the backlog.
+  home=$(make_home bodied-backlog)
+  fm_write_bodied_backlog "$home/data/backlog.md" 40 1
+  out_small=$(run_home_summary "$home") \
+    || fail "home summary failed on the small backlog"
+  fm_write_bodied_backlog "$home/data/backlog.md" 40 32
+
+  out_large=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot --json failed on a backlog larger than the argv cap"
+  big_json=$(printf '%s' "$out_large" | jq -c '.backlog')
+  bytes=${#big_json}
+  [ "$bytes" -gt 1048576 ] \
+    || fail "large fixture must exceed the 1 MiB argv cap to prove anything, got $bytes bytes"
+  rc=0
+  jq -n --argjson backlog "$big_json" 'true' >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "the old --argjson call shape unexpectedly accepted a $bytes-byte argument; the regression is vacuous here"
+  printf '%s' "$out_large" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.backlog.records | length) == 40
+      and (.backlog.records[0].body_lines | length) == 32
+      and .main_inventory.valid == true
+      and (.tasks | length) == 0
+  ' >/dev/null || fail "large-backlog snapshot lost records or inventory validity: $out_large"
+
+  out_large=$(run_home_summary "$home") \
+    || fail "home summary failed on a backlog larger than the argv cap"
+  [ "$out_small" = "$out_large" ] \
+    || fail "home summary must be byte-identical for the small and large backlogs"$'\n'"--- small ---"$'\n'"$out_small"$'\n'"--- large ---"$'\n'"$out_large"
+  printf '%s' "$out_large" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .counts.queued == 20 and .counts.landed == 20
+      and (.eligible_queued | length) == 20
+  ' >/dev/null || fail "large-backlog home summary counts wrong: $out_large"
+
+  pass "producer-sized backlog JSON streams past the kernel argv cap with unchanged output"
+}
+
+# Regression: a sampled home summary that fails the schema check must not
+# leak its raw bytes into the record build. The summary is the only
+# stdin-bound document that comes from outside this script, and a remote
+# whose stdout carries a second JSON document (an rc file or entrypoint
+# echoing JSON) used to shift every later positional binding by one, so the
+# record's open_decisions held the stray document and no error was raised.
+test_sampled_summary_multi_document_stdout_is_rejected_whole() {
+  local home fakebin out record
+  home=$(make_home multi-doc-remote)
+  fakebin=$(make_fakebin "$home")
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] rsm - Read remote current state (repo: alpha) (kind: ship) (since 2026-08-28)
+
+## Queued
+
+## Done
+EOF
+  cat > "$home/data/secondmates.md" <<'EOF'
+- rsm - remote test domain (host: remote-mac; root: /remote/root; home: /remote/home; scope: remote testing; projects: alpha; added 2026-08-02)
+EOF
+  fm_write_meta "$home/state/rsm.meta" \
+    "window=remote:rsm" \
+    "endpoint_task_id=rsm" \
+    "worktree=/remote/home/never-locally-present" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "home=/remote/home" \
+    "remote_host=remote-mac" \
+    "remote_root=/remote/root" \
+    "remote_backend=herdr" \
+    "remote_herdr_session=fm-remote" \
+    "remote_target=fm-remote:w1:p1"
+  printf 'needs-decision: choose a remote port\n' > "$home/state/rsm.status"
+  cat > "$fakebin/fake-ssh" <<SH
+#!/usr/bin/env bash
+cat > /dev/null
+: > "$home/ssh-sampled"
+printf '%s\n' '{"schema":"fm-secondmate-home-summary.v1","home":"/remote/home","valid":true,"state":"idle"}'
+printf '%s\n' '{"stray_second_document":["shifts","positional","bindings"]}'
+exit 0
+SH
+  chmod +x "$fakebin/fake-ssh"
+
+  out=$(PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_SSH_BIN="$fakebin/fake-ssh" FM_SNAPSHOT_SECONDMATE_TIMEOUT=10 \
+    "$SNAPSHOT" --json) \
+    || fail "snapshot failed on a remote whose summary stdout carried two documents"
+  [ -e "$home/ssh-sampled" ] || fail "the remote summary was never sampled through the ssh seam"
+  record=$(printf '%s' "$out" | jq -c '.secondmate_current.records[] | select(.id == "rsm")')
+  [ -n "$record" ] || fail "the remote secondmate record is missing: $out"
+  printf '%s' "$record" | jq -e '
+    .current == {state:"unknown",reason:"structured home snapshot was malformed or stale"}
+      and .invalidity == null
+      and .reconcile_inventory == null
+      and .provenance.selected == "parent-event-fallback"
+      and (.parent_event.open_decisions | type) == "array"
+      and any(.parent_event.open_decisions[]; .verb == "needs-decision")
+      and (.parent_event.open_activities | type) == "array"
+      and (.parent_event.activity_scan | type) == "object"
+      and (.parent_event.activity_scan | has("records"))
+      and .terminal_evidence.provenance == "remote-direct-report-terminal"
+      and (.terminal_evidence | has("contradiction"))
+      and (tostring | contains("stray_second_document") | not)
+  ' >/dev/null || fail "a schema-rejected multi-document summary shifted the record's positional bindings: $record"
+
+  pass "a schema-rejected sampled summary is replaced by {} and never shifts the record bindings"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_large_backlog_streams_past_argv_limit
+test_sampled_summary_multi_document_stdout_is_rejected_whole
 test_eligible_queued_reflects_per_task_predicates
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness

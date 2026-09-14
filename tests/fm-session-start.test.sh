@@ -889,7 +889,65 @@ EOF
   assert_contains "$(context_subsection "$out" 'data/learnings.md')" "WITHHELD" \
     "the refused learnings.md subsection was not marked WITHHELD"
   [ "$(<"$outside")" = outside ] || fail "the gate changed a symlink target"
+  assert_contains "$out" "fix the named cause and re-emit" \
+    "a symlinked memory file did not end the refusal at the local cause"
+  assert_not_contains "$out" "materializes" \
+    "a symlinked memory file was routed to the budget owner"
   pass "startup-memory budget gate withholds the whole set when the accounting cannot complete"
+}
+
+test_context_memory_budget_gate_refuses_directory_memory_file_locally() {
+  local rec root home fakebin out
+  rec=$(memory_gate_world memory-gate-directory)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  # A directory where data/learnings.md should be is a local file problem, so
+  # the refusal names it and stops there: no budget owner is blamed.
+  mkdir "$home/data/learnings.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "STARTUP_MEMORY_BUDGET: memory not injected - memory file is not an ordinary regular file: data/learnings.md" \
+    "a directory at a memory file path did not print the refusal diagnostic"
+  assert_contains "$out" "fix the named cause and re-emit" \
+    "a non-regular memory file did not end the refusal at the local cause"
+  assert_not_contains "$out" "materializes" \
+    "a non-regular memory file was routed to the budget owner"
+  assert_not_contains "$(context_subsection "$out" 'data/captain.md')" "abc" \
+    "a partial memory set was injected around a non-regular memory file"
+  assert_contains "$(context_subsection "$out" 'data/captain.md')" "WITHHELD" \
+    "the refused captain.md subsection was not marked WITHHELD"
+  pass "startup-memory budget gate keeps a non-regular memory file a local cause"
+}
+
+test_context_memory_budget_gate_refuses_unreadable_memory_file_locally() {
+  local rec root home fakebin out
+  if [ "$(id -u)" = 0 ]; then
+    pass "startup-memory budget gate keeps an unreadable memory file a local cause (skipped: root reads through mode bits)"
+    return 0
+  fi
+  rec=$(memory_gate_world memory-gate-unreadable)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  printf 'xyz\n' > "$home/data/learnings.md"
+  chmod 000 "$home/data/learnings.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  chmod 600 "$home/data/learnings.md"
+
+  assert_contains "$out" "STARTUP_MEMORY_BUDGET: memory not injected - could not read memory file: data/learnings.md" \
+    "an unreadable memory file did not print the refusal diagnostic"
+  assert_contains "$out" "fix the named cause and re-emit" \
+    "an unreadable memory file did not end the refusal at the local cause"
+  assert_not_contains "$out" "materializes" \
+    "an unreadable memory file was routed to the budget owner"
+  assert_not_contains "$(context_subsection "$out" 'data/captain.md')" "abc" \
+    "a partial memory set was injected around an unreadable memory file"
+  assert_contains "$(context_subsection "$out" 'data/learnings.md')" "WITHHELD" \
+    "the refused learnings.md subsection was not marked WITHHELD"
+  pass "startup-memory budget gate keeps an unreadable memory file a local cause"
 }
 
 test_context_memory_budget_gate_names_primary_owned_shared_excess() {
@@ -941,7 +999,36 @@ EOF
     "a read-only session injected memory without a verifiable budget"
   [ ! -e "$home/config/startup-memory-budget" ] \
     || fail "the read-only gate materialized configuration (bootstrap owns that)"
+  assert_contains "$out" "fix the named cause (a locked session start materializes an absent budget in this primary home) and re-emit" \
+    "an absent budget in a primary home did not name the locked session start as the owner"
   pass "startup-memory budget gate stays read-only and never creates configuration"
+}
+
+test_context_memory_budget_gate_absent_budget_names_primary_owner_in_secondmate() {
+  local rec root home fakebin out
+  rec=$(memory_gate_world memory-gate-secondmate-absent)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  # A secondmate's bootstrap is passive about the budget, so an absent file
+  # stays absent across a locked start and the refusal must point at the
+  # primary convergence owner rather than at this home's own locked start.
+  printf '%s\n' sm > "$home/.fm-secondmate-home"
+  rm -f "$home/config/startup-memory-budget"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "STARTUP_MEMORY_BUDGET: memory not injected - invalid config/startup-memory-budget - file is absent" \
+    "a secondmate with no budget file did not print the refusal diagnostic"
+  assert_contains "$out" "the primary owner fixes it with its next locked session start or bin/fm-config-push.sh" \
+    "an absent budget in a secondmate home was not routed to the primary convergence owner"
+  assert_not_contains "$out" "in this primary home" \
+    "a secondmate home was told its own locked start materializes the budget"
+  assert_not_contains "$(context_subsection "$out" 'data/captain.md')" "abc" \
+    "a secondmate injected memory without a verifiable budget"
+  [ ! -e "$home/config/startup-memory-budget" ] \
+    || fail "the secondmate gate materialized configuration (the primary owns that)"
+  pass "startup-memory budget gate routes an absent secondmate budget to the primary owner"
 }
 
 # --- digest: no-mistakes observation reconciliation seam --------------------
@@ -2779,8 +2866,11 @@ test_context_digest_absent_empty_present
 test_context_memory_budget_gate_withholds_over_budget_memory
 test_context_memory_budget_gate_within_budget_is_silent
 test_context_memory_budget_gate_refuses_partial_set_on_accounting_failure
+test_context_memory_budget_gate_refuses_directory_memory_file_locally
+test_context_memory_budget_gate_refuses_unreadable_memory_file_locally
 test_context_memory_budget_gate_names_primary_owned_shared_excess
 test_context_memory_budget_gate_read_only_never_materializes_config
+test_context_memory_budget_gate_absent_budget_names_primary_owner_in_secondmate
 test_digest_presents_nm_observation_findings_once
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path

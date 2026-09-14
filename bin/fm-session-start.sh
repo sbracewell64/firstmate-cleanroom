@@ -429,13 +429,17 @@ print_memory_withheld() {  # <file> <reason>
 }
 
 print_memory_refused() {  # <reason>: the whole set is withheld
-  local file owner
-  if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
-    owner='this secondmate never materializes its own budget: an absent one converges from the primary through inherited-config propagation, so the primary owner fixes it with its next locked session start or bin/fm-config-push.sh'
-  else
-    owner='a locked session start materializes an absent budget in this primary home'
-  fi
-  printf '\nSTARTUP_MEMORY_BUDGET: memory not injected - %s; data/captain.md, data/captain-shared.md, and data/learnings.md are withheld rather than injected as a partial or stale set; fix the named cause (%s) and re-emit\n' "$1" "$owner"
+  local file owner=''
+  case "$1" in
+    'invalid config/startup-memory-budget'*)
+      if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
+        owner=' (this secondmate never materializes its own budget: an absent one converges from the primary through inherited-config propagation, so the primary owner fixes it with its next locked session start or bin/fm-config-push.sh)'
+      else
+        owner=' (a locked session start materializes an absent budget in this primary home)'
+      fi
+      ;;
+  esac
+  printf '\nSTARTUP_MEMORY_BUDGET: memory not injected - %s; data/captain.md, data/captain-shared.md, and data/learnings.md are withheld rather than injected as a partial or stale set; fix the named cause%s and re-emit\n' "$1" "$owner"
   for file in $MEMORY_FILES; do
     print_memory_withheld "$file" 'the startup-memory budget could not be verified'
   done

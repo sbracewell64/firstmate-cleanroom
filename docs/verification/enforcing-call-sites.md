@@ -28,8 +28,11 @@ JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
 Command substitutions inside that text survive, so a genuine call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - still counts as enforcement.
 
-A subcommand or long option must be handed to the script by one command, not merely appear in the same file.
-The site's text is read as logical lines, with backslash continuations joined, and each line is split into command segments at its unquoted control operators.
+One binding rule covers all four axes, so no axis is quietly weaker than the others: the capability's name must stand in COMMAND POSITION of an actual command, and for a subcommand or long option the token must follow it in that same command.
+The site's text is read as logical lines, with a backslash continuation joined only on an odd number of trailing backslashes because an even count is escaped backslashes that end the command, and each line is split into command segments at its unquoted control operators.
+A bare mention, an existence test such as `[ -x "$dir/fm-x.sh" ]`, and a path assigned but never run are therefore not call sites.
+Every production surface is read the same way: a shell caller executes its own lines, and every other surface carries its commands inside literals, so a hook `command` field, a YAML `run:` step and a template literal handed to a process spawner are each read as a command string.
+The indirections the repository really uses are followed rather than refused: a command substitution, a leading environment assignment, a variable holding the script's path, a command string assigned to a variable, and a command string handed to a nested shell or to `trap`.
 The token has to follow the script in one of those segments, so a caller that runs the script with a different subcommand and separately uses the capability's word in a neighbouring command is not evidence.
 Two indirections the repository really uses are resolved rather than refused: a variable holding the script's path, as `bin/enter-firstmate.sh` does with `TOOL_PROFILE_OWNER`, and an argument list built with `set --` that the invocation forwards as `"$@"`, as `bin/fm-nm-observe.sh` does for `bin/fm-tool-profile.sh --require`.
 
@@ -49,14 +52,15 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
-Binding a token to an invocation is textual, not a parse, so three residues remain after that tightening.
-A token that follows the script anywhere in the same segment counts even when it is not an argument, so `fm-startup-memory-budget.sh report > "$dir/enforce.log"` would still read as the `enforce` call; the shape the tightening does reject is the same script invoked as `report` with a bare `enforce` word in a neighbouring command, which used to pass on proximity alone.
+Command position is decided textually, not by a shell parse, so four residues remain.
+A token that follows the script anywhere in the same command counts even when it is not an argument, so `fm-startup-memory-budget.sh report > "$dir/enforce.log"` would still read as the `enforce` call; the shape now rejected is the same script invoked as `report` with a bare `enforce` word in a neighbouring command, which used to pass on proximity alone.
 The `set --` accommodation is file-wide: any `set --` line carrying the token, plus any invocation of that script forwarding `"$@"`, are bound without proving they are the same argument list.
-The variable-path accommodation is file-wide in the same way: a variable assigned the script's path anywhere in the file makes every later segment naming that variable an invocation candidate.
+The variable-path accommodation is file-wide in the same way: a variable assigned the script's path anywhere in the file makes every later command naming that variable an invocation candidate.
+Reading every literal on a non-shell surface as a command string is deliberately generous: a literal that merely begins with the script's path counts even where the surrounding code never executes it.
 
 The check proves that a production call site exists, NOT that the caller consumes the callee's verdict.
 A caller that invokes the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.
-`bin/fm-guard.sh` is the worked example: it always exits 0 and every caller invokes it as `|| true`, which the sweep below records.
+`bin/fm-guard.sh` is the worked example: it always exits 0, so no caller can refuse on it, which the sweep below records.
 Extending the check to detect a discarded verdict is a candidate follow-up, recorded here as an observation rather than attempted in this slice.
 
 The check proves a production call site, not full reachability from an executable entry point.
@@ -77,7 +81,8 @@ It verifies 75 declared call sites and re-rejects 5 recorded near misses.
 
 The most significant finding is `bin/fm-guard.sh`.
 It had been declared `enforced` over the invariant that a fleet mutation runs only from a session holding the verified per-home lock and an untangled checkout, and it cannot hold that.
-Its only exits are two `exit 0` statements, its own header states that it warns and never blocks, and every `bin/` invocation of it discards the status with `|| true`, so a mutation from a tangled checkout prints the banner and then proceeds.
+Its only top-level exits are the `exit 0` statements at lines 167 and 242, and its own header states that it warns and never blocks, so no invocation can act on a failing status and a mutation from a tangled checkout prints the banner and then proceeds.
+Most `bin/` callers underline that by invoking it as `|| true`, and the one that does not, `bin/fm-session-start.sh`, captures its output in a command substitution rather than acting on its status.
 It is now declared as not an enforcement point, with the invariant restated as what it does guarantee, which is that the condition is announced.
 This sweep did NOT establish whether a narrower owner enforces the per-home session lock at some other boundary; that question is recorded as not observed rather than answered in either direction.
 

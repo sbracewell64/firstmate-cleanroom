@@ -99,6 +99,28 @@ validate_widget_binding() {
 validate_widget_binding "$1"
 FIX
 
+  # A long-option capability, the fourth discovery axis.
+  cat > "$repo/bin/fm-lever.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --require-lever) STRICT=1 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ "$STRICT" -eq 1 ]
+FIX
+
+  cat > "$repo/bin/fm-lever-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-lever.sh" --require-lever "$@"
+FIX
+
   cat > "$repo/bin/fm-audit-check.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -166,6 +188,13 @@ write_fixture_inventory() {
       "invariant": "A widget binding is accepted only when it names something.",
       "guards": "runtime",
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
+    },
+    {
+      "id": "bin/fm-lever.sh:--require-lever",
+      "kind": "enforced",
+      "invariant": "A lever is engaged only in strict mode.",
+      "guards": "runtime",
+      "callSites": [{"path": "bin/fm-lever-consumer.sh", "via": "production"}]
     },
     {
       "id": "bin/fm-audit-check.sh",
@@ -496,19 +525,81 @@ FIX
   git -C "$repo" add -A
   run_expect_failure "does not call it" "$CHECK" --root "$repo"
 
-  # The binding is per command, not per physical line: a continuation is one
-  # invocation and still counts.
+  # An escaped trailing backslash ends the command, so the next line is a
+  # separate command and must not be folded into the invocation.
   cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$DIR/fm-widget.sh" \\
+"$DIR/fm-widget.sh" report trailing\\
+enforce
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # A real continuation, one trailing backslash, is one invocation and counts.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-widget.sh" \
   enforce "$1"
 FIX
   git -C "$repo" add -A
   "$CHECK" --root "$repo" >/dev/null \
     || fail "an invocation split across a line continuation was not read as a call"
   pass "naming the script and the token in separate commands is not an enforcing call"
+}
+
+# expect_axis_refused <repo> <entry-id>: the fixture caller was just rewritten
+# to name its capability without invoking it, so the check must refuse that
+# entry; the fixture is restored afterwards for the next axis.
+expect_axis_refused() {
+  local repo=$1 entry=$2
+  git -C "$repo" add -A
+  run_expect_failure "$entry" "$CHECK" --root "$repo"
+  write_fixture "$repo"
+}
+
+test_every_axis_shares_the_invocation_rule() {
+  local repo="$TMP_ROOT/axis-parity"
+  write_fixture "$repo"
+
+  # Naming the capability without putting it in command position is not a call,
+  # and that is one rule, not four: each axis is refused by the same binding.
+  cat > "$repo/tests/fm-audit.test.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+[ -x "$(dirname "$0")/../bin/fm-audit-check.sh" ] || exit 1
+FIX
+  expect_axis_refused "$repo" "bin/fm-audit-check.sh"
+
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -x "$DIR/fm-widget.sh" ] || exit 1
+FIX
+  expect_axis_refused "$repo" "bin/fm-widget.sh:enforce"
+
+  cat > "$repo/bin/fm-lever-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -x "$DIR/fm-lever.sh" ] || exit 1
+FIX
+  expect_axis_refused "$repo" "bin/fm-lever.sh:--require-lever"
+
+  cat > "$repo/bin/fm-widget-binding-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-widget-shared.sh"
+declare -F validate_widget_binding >/dev/null || exit 1
+FIX
+  expect_axis_refused "$repo" "bin/fm-widget-shared.sh:validate_widget_binding"
+
+  pass "script, subcommand, flag and function all require the name in command position"
 }
 
 test_repository_inventory_passes
@@ -527,3 +618,4 @@ test_homonym_without_the_library_is_not_a_caller
 test_one_line_definition_keeps_its_body
 test_heredoc_in_a_quoted_command_substitution_is_stripped
 test_token_in_an_unrelated_command_is_not_a_call
+test_every_axis_shares_the_invocation_rule

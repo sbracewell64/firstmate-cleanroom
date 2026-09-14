@@ -218,6 +218,22 @@ test_prune_is_bounded_and_rm_guard_refuses_unsafe_paths() {
   pass "the ledger is pruned on the seven-day horizon and its rm guard refuses empty or unexpected paths"
 }
 
+test_prune_leaves_an_in_progress_record_untouched() {
+  local state dir
+  state="$TMP_ROOT/lib-prune-inflight/state"
+  dir=$(fm_outbound_dir_prepare "$state") || fail "the ledger directory must be creatable"
+  printf 'schema=1\nid=1000-abc\noutcome=prepared\n' > "$dir/1000-abc.record"
+  printf 'body' > "$dir/1000-abc.payload"
+  printf 'schema=1\nid=1000-def\nprepared_epoch=soon\noutcome=prepared\n' > "$dir/1000-def.record"
+  printf 'body' > "$dir/1000-def.payload"
+  FM_OUTBOUND_WRITE_NOW=$((1000 + 604800 * 10)) fm_outbound_prune "$state" || fail "prune must succeed with in-progress records present"
+  assert_present "$dir/1000-abc.record" "a record with no prepared_epoch is in progress and never pruned"
+  assert_present "$dir/1000-abc.payload" "the in-progress record's payload stays with it"
+  assert_present "$dir/1000-def.record" "a record with an unparseable prepared_epoch is never pruned"
+  assert_present "$dir/1000-def.payload" "the unparseable record's payload stays with it"
+  pass "prune treats a record without a parseable prepared_epoch as in progress and leaves it alone"
+}
+
 # --- fm-x-dismiss: body by file, never by argument ------------------------------
 
 test_dismiss_conveys_body_by_file_and_retains_it() {
@@ -334,15 +350,16 @@ set -u
 cat > /dev/null
 printf '%s\n' "$*" >> "$FM_SSH_LOG"
 while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; *) shift ;; esac; done
+digest() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; else sha256sum | awk '{print $1}'; fi; }
 argv_b64=${6:-}
 message=$(perl -MMIME::Base64=decode_base64 -e '$d=decode_base64($ARGV[0]); @a=split(/\0/, $d, -1); print $a[3] if $a[0] eq "fm-remote-secondmate-control.sh" && $a[1] eq "send"' "$argv_b64")
 case "${FM_FAKE_EVIDENCE:-none}" in
   none) ;;
   right)
-    printf 'record=fixture\nsha256=%s\nbytes=%s\n' "$(printf '%s' "$message" | sha256sum | awk '{print $1}')" \
+    printf 'record=fixture\nsha256=%s\nbytes=%s\n' "$(printf '%s' "$message" | digest)" \
       "$(printf '%s' "$message" | LC_ALL=C wc -c | tr -d ' ')" ;;
   wrong)
-    printf 'record=fixture\nsha256=%s\nbytes=%s\n' "$(printf '%s' "$message tampered" | sha256sum | awk '{print $1}')" \
+    printf 'record=fixture\nsha256=%s\nbytes=%s\n' "$(printf '%s' "$message tampered" | digest)" \
       "$(printf '%s' "$message" | LC_ALL=C wc -c | tr -d ' ')" ;;
 esac
 exit 0
@@ -435,6 +452,7 @@ test_send_refuses_message_bytes_in_argv
 test_readback_and_classify_verdicts
 test_rejection_blocks_automatic_retry_until_acknowledged
 test_prune_is_bounded_and_rm_guard_refuses_unsafe_paths
+test_prune_leaves_an_in_progress_record_untouched
 test_dismiss_conveys_body_by_file_and_retains_it
 test_reply_rejection_is_undelivered_and_not_reposted
 test_reply_receipt_carries_ledger_identity

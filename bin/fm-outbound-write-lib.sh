@@ -91,7 +91,7 @@ fm_outbound_remove_artifacts() {  # <ledger-dir> <id>
   case "$dir" in */outbound-writes) ;; *) return 1 ;; esac
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   fm_outbound_id_valid "$id" || return 1
-  rm -f -- "$dir/$id.record" "$dir/$id.payload" "$dir/$id.response" "$dir/$id.readback"
+  rm -f -- "$dir/$id" "$dir/$id.record" "$dir/$id.payload" "$dir/$id.response" "$dir/$id.readback"
 }
 
 fm_outbound_dir_prepare() {  # <state-dir>
@@ -146,7 +146,7 @@ fm_outbound_prune() {  # <state-dir>
     id=${base%.record}
     prepared=$(grep -E '^prepared_epoch=' "$rec" 2>/dev/null | tail -n1)
     prepared=${prepared#*=}
-    case "$prepared" in ''|*[!0-9]*) prepared=0 ;; esac
+    case "$prepared" in ''|*[!0-9]*) continue ;; esac
     if [ "$((now - prepared))" -gt "$max_age" ]; then
       fm_outbound_remove_artifacts "$dir" "$id" || return 1
     fi
@@ -221,8 +221,9 @@ fm_outbound_prepare() {  # <state-dir> <payload-file> key=value...
   fm_outbound_id_valid "$id" || return 1
   rec="$dir/$id.record"
   tmp="$dir/$id.payload"
-  [ ! -e "$rec" ] && [ ! -e "$tmp" ] || return 1
-  mv -- "$slot" "$rec" || return 1
+  if [ -e "$rec" ] || [ -e "$tmp" ]; then
+    fm_outbound_remove_artifacts "$dir" "$id"; return 1
+  fi
   if ! (umask 077; cat -- "$payload_src" > "$tmp") || ! chmod 600 "$tmp" 2>/dev/null; then
     fm_outbound_remove_artifacts "$dir" "$id"; return 1
   fi
@@ -230,7 +231,7 @@ fm_outbound_prepare() {  # <state-dir> <payload-file> key=value...
   sha=$(fm_outbound_sha256_file "$tmp")
   case "$sha" in *[!0-9a-f]*|'') fm_outbound_remove_artifacts "$dir" "$id"; echo "fm-outbound-write: sha256 (shasum or sha256sum) is required" >&2; return 1 ;; esac
   [ "${#sha}" -eq 64 ] || { fm_outbound_remove_artifacts "$dir" "$id"; return 1; }
-  if ! cat > "$rec" <<EOF
+  if ! cat > "$slot" <<EOF
 schema=$FM_OUTBOUND_WRITE_SCHEMA
 id=$id
 writer=$writer
@@ -256,7 +257,8 @@ EOF
   then
     fm_outbound_remove_artifacts "$dir" "$id"; return 1
   fi
-  chmod 600 "$rec" 2>/dev/null || { fm_outbound_remove_artifacts "$dir" "$id"; return 1; }
+  chmod 600 "$slot" 2>/dev/null || { fm_outbound_remove_artifacts "$dir" "$id"; return 1; }
+  mv -- "$slot" "$rec" || { fm_outbound_remove_artifacts "$dir" "$id"; return 1; }
   printf '%s\n' "$id"
 }
 

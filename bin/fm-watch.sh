@@ -325,11 +325,11 @@ window_label() {
 # The ONE derivation of a window's per-window marker key: `:`, `/` and `.` become
 # `_` so a window name is usable as a filename suffix. Every per-window file the
 # watcher keeps is named by it (.hash-, .count-, .stale-, .stale-since-,
-# .wedge-escalations-, .paused-*, .writing-*), and live homes hold those markers on
-# disk under the current format, so the format lives here alone: a second copy is
-# how a future change to it silently orphans a window's markers instead of clearing
-# them. The helpers below take the derived key rather than re-deriving it, so one
-# poll of one window derives it once.
+# .wedge-escalations-, .paused-*, .writing-*, .pipeline-*), and live homes hold
+# those markers on disk under the current format, so the format lives here alone:
+# a second copy is how a future change to it silently orphans a window's markers
+# instead of clearing them. The helpers below take the derived key rather than
+# re-deriving it, so one poll of one window derives it once.
 window_key() {  # <window>
   local key=${1//:/_}
   key=${key//\//_}
@@ -933,7 +933,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       # woken in a loop for the whole declared wait. The suppressor therefore
       # advances to the declaration rather than the hash, and the daemon is woken
       # once per distinct declaration. The wedge timer, escalation count and
-      # write-deferral chain are cleared exactly as handle_paused_stale clears
+      # both deferral chains are cleared exactly as handle_paused_stale clears
       # them, so an undeclared busy phase that had already started the timer does
       # not resume its count the moment the declaration is lifted. Normal-mode
       # pause tracking stays unwritten here, exactly as the idle away-mode handoff

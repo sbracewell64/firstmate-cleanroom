@@ -14,7 +14,8 @@ status = field('status')
 if not (status == 'completed' and field('outcome') in ('checks-passed', 'passed') or
         status == 'ci' and 'all CI checks passed' in os.environ.get('FM_FAKE_CI_LOGS', '')):
     sys.exit(1)
-pr = field('pr') or {'01ENG': 'https://github.com/o/r/pull/8', '01ISOLATED': 'https://github.com/o/r/pull/9'}.get(field('id'), '')
+pr = field('pr') or {'01ENG': 'https://github.com/o/r/pull/8', '01ISOLATED': 'https://github.com/o/r/pull/9',
+       '01TERMINAL00000000000000001': 'https://github.com/o/r/pull/9'}.get(field('id'), '')
 evidence = dict(provider='github', host='github.com', repository='o/r', pr=pr, declared_no_ci=False,
                 checks=[dict(name='portable contract fixture', bucket='pass')])
 q = dict(schema='no-mistakes/ci-qualification/v1', run=field('id'), repo='portable-fixture', branch=field('branch'),

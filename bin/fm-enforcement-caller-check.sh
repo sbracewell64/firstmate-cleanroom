@@ -99,8 +99,13 @@ PRODUCTION_SURFACES = (
 ALLOWED_KINDS = ("enforced", "operator-invoked", "not-enforcement")
 ALLOWED_GUARDS = ("runtime", "repository")
 ALLOWED_VIA = ("production", "ci-suite")
-# How far after a script reference a subcommand token still reads as that call.
-CALL_WINDOW = 200
+# Indirections a real invocation uses: a variable holding the script's path, and
+# an argument list built with `set --` that the invocation forwards as "$@".
+PATH_ASSIGN_RE = re.compile(
+    r"^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$"
+)
+SET_ARGS_RE = re.compile(r"^\s*set\s+--(?:\s|$)")
+POSITIONAL_RE = re.compile(r'"\$@"|\$@')
 
 
 class CheckError(Exception):
@@ -470,6 +475,61 @@ def names_it(text: str, owner_base: str, token: str | None, axis: str) -> bool:
     return needle in text
 
 
+def logical_lines(text: str) -> list[str]:
+    """Physical lines with backslash continuations joined into one command."""
+    joined: list[str] = []
+    pending = ""
+    for line in text.splitlines():
+        if line.endswith("\\"):
+            pending += line[:-1] + " "
+            continue
+        joined.append(pending + line)
+        pending = ""
+    if pending:
+        joined.append(pending)
+    return joined
+
+
+def invokes(text: str, owner_base: str, token: str, axis: str) -> bool:
+    """Is the token handed to the owning script by one command?
+
+    Naming the script in one place and the token in another is not evidence that
+    the token ever reaches it, so both must sit in the same command segment with
+    the token after the script. Two indirections the repository really uses are
+    resolved: a variable holding the script's path, and a `set --` argument list
+    that the invocation then forwards as "$@".
+    """
+    bound = (
+        re.compile(rf"(?<![\w-]){re.escape(token)}(?![\w-])")
+        if axis == "flag"
+        else re.compile(rf"\b{re.escape(token)}\b")
+    )
+    lines = logical_lines(text)
+    needles = [owner_base]
+    forwarded = False
+    for line in lines:
+        assignment = PATH_ASSIGN_RE.match(line)
+        if assignment and owner_base in assignment.group(2):
+            needles.append(f"${assignment.group(1)}")
+            needles.append(f"${{{assignment.group(1)}}}")
+        if SET_ARGS_RE.match(line) and bound.search(line):
+            forwarded = True
+    for line in lines:
+        if not any(needle in line for needle in needles):
+            continue
+        for segment in shell_segments(line):
+            found = [segment.find(needle) for needle in needles]
+            at = min((where for where in found if where >= 0), default=-1)
+            if at < 0:
+                continue
+            rest = segment[at:]
+            if bound.search(rest):
+                return True
+            if forwarded and POSITIONAL_RE.search(rest):
+                return True
+    return False
+
+
 def references(text: str, owner_base: str, token: str | None, axis: str) -> bool:
     """Does this file text read as a call of the entry point?"""
     if axis == "function":
@@ -490,17 +550,7 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
         return False
     if token is None:
         return True
-    if axis == "flag":
-        return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text) is not None
-    pattern = re.compile(rf"\b{re.escape(token)}\b")
-    start = 0
-    while True:
-        at = text.find(owner_base, start)
-        if at < 0:
-            return False
-        if pattern.search(text, at, at + len(owner_base) + CALL_WINDOW):
-            return True
-        start = at + 1
+    return invokes(text, owner_base, token, axis)
 
 
 def ci_scheduled_tests(root: Path) -> set[str]:

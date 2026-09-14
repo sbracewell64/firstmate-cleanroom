@@ -480,6 +480,37 @@ FIX
   pass "operator prose in a heredoc opened inside a command substitution is not read as a call"
 }
 
+test_token_in_an_unrelated_command_is_not_a_call() {
+  local repo="$TMP_ROOT/unbound-token"
+  write_fixture "$repo"
+  # The caller runs the script with a different subcommand and happens to use
+  # the capability's word in a neighbouring, unrelated command.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-widget.sh" report "$1"
+[ "${MODE:-}" = enforce ] && exit 3
+exit 0
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # The binding is per command, not per physical line: a continuation is one
+  # invocation and still counts.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-widget.sh" \\
+  enforce "$1"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "an invocation split across a line continuation was not read as a call"
+  pass "naming the script and the token in separate commands is not an enforcing call"
+}
+
 test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
@@ -495,3 +526,4 @@ test_quoted_shift_does_not_start_a_heredoc
 test_homonym_without_the_library_is_not_a_caller
 test_one_line_definition_keeps_its_body
 test_heredoc_in_a_quoted_command_substitution_is_stripped
+test_token_in_an_unrelated_command_is_not_a_call

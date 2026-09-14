@@ -28,6 +28,11 @@ JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
 Command substitutions inside that text survive, so a genuine call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - still counts as enforcement.
 
+A subcommand or long option must be handed to the script by one command, not merely appear in the same file.
+The site's text is read as logical lines, with backslash continuations joined, and each line is split into command segments at its unquoted control operators.
+The token has to follow the script in one of those segments, so a caller that runs the script with a different subcommand and separately uses the capability's word in a neighbouring command is not evidence.
+Two indirections the repository really uses are resolved rather than refused: a variable holding the script's path, as `bin/enter-firstmate.sh` does with `TOOL_PROFILE_OWNER`, and an argument list built with `set --` that the invocation forwards as `"$@"`, as `bin/fm-nm-observe.sh` does for `bin/fm-tool-profile.sh --require`.
+
 A function call site must also have the library in scope: the site is the defining library itself, or a file that sources it directly or through a chain of sourced libraries.
 Without that link a bare name proves nothing, because two files can define independent functions of the same name, and the repository already contains such homonyms.
 
@@ -43,6 +48,11 @@ A test that exists but no lane runs is refused with the same force as no caller 
 This is not a relaxation of the rule for runtime invariants: a `ci-suite` call site declared on a `guards: runtime` entry is refused outright.
 
 ## Honest bounds
+
+Binding a token to an invocation is textual, not a parse, so three residues remain after that tightening.
+A token that follows the script anywhere in the same segment counts even when it is not an argument, so `fm-startup-memory-budget.sh report > "$dir/enforce.log"` would still read as the `enforce` call; the shape the tightening does reject is the same script invoked as `report` with a bare `enforce` word in a neighbouring command, which used to pass on proximity alone.
+The `set --` accommodation is file-wide: any `set --` line carrying the token, plus any invocation of that script forwarding `"$@"`, are bound without proving they are the same argument list.
+The variable-path accommodation is file-wide in the same way: a variable assigned the script's path anywhere in the file makes every later segment naming that variable an invocation candidate.
 
 The check proves that a production call site exists, NOT that the caller consumes the callee's verdict.
 A caller that invokes the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.

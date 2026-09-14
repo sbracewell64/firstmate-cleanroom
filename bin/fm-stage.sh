@@ -107,6 +107,12 @@
 #              qualification refuses before anything is printed; otherwise
 #              prints the recorded stage and its `next:` line, then reconciles
 #              canonical observations and admitted completion handoffs.
+#              NOT read-only: that revalidation is the shared qualification
+#              boundary, so when the producer answers yes under the same pinned
+#              identity but has advanced its push generation or evidence, show
+#              republishes stage_ci_ready_effect= under the task-metadata lock.
+#              It appends no receipt and changes no stage; without that write a
+#              task past ci-ready would strand on a superseded tuple.
 #              A worker resuming after a restart runs this first and continues
 #              from the recorded stage.
 #
@@ -731,11 +737,11 @@ do_running() {  # <transition-label>
 # transaction still republishes it under the same metadata custody. Without a
 # receipt: refreshing what the producer now answers is not a new transition,
 # and a stale retained tuple would make every later authority use refuse.
-refresh_ci_ready_effect() {  # <effect JSON>
-  local tmp="$STATE/.$ID.meta.effect.${BASHPID:-$$}" lock own_lock= rc=0
+refresh_ci_ready_effect() {  # <effect JSON> [lock the caller already holds]
+  local tmp="$STATE/.$ID.meta.effect.${BASHPID:-$$}" caller_lock=${2:-} lock own_lock= rc=0
   [ "$(meta stage_ci_ready_effect)" != "$1" ] || return 0
   lock=$(fm_meta_lock_path "$META") || return 1
-  if [ "$lock" != "${CI_READY_META_LOCK:-}" ]; then
+  if [ "$lock" != "${CI_READY_META_LOCK:-}" ] && [ "$lock" != "$caller_lock" ]; then
     fm_lock_acquire_wait "$lock"
     own_lock=$lock
   fi
@@ -845,17 +851,18 @@ qualification_applies() {  # <transition>
 require_current_qualification() {  # <transition> [expected PR] [lock to release before refusing]
   local expected_pr=${2:-$(meta stage_pr)} held_lock=${3:-} fresh recorded
   if qualification_applies "$1"; then
-    if ! fresh=$(fm_nm_effect_current "$META" "$expected_pr"); then
+    if ! fm_nm_effect_current "$META" "$expected_pr" >/dev/null; then
       [ -z "$held_lock" ] || fm_lock_release "$held_lock"
       refuse "$1" QUALIFICATION_REVOKED "exact stage qualification is missing or no longer current ($FM_NM_EFFECT_REASON); historical record retained"
     fi
+    fresh=$FM_NM_EFFECT_TUPLE
     # The producer answered yes under the same pinned identity, so whatever it
     # advanced becomes the retained tuple here. Every transition funnels through
     # this boundary, so the record cannot strand behind an advance that only
     # ci-ready could once write back. No receipt: nothing transitioned.
     recorded=$(meta stage_ci_ready_effect)
     if [ -n "$recorded" ] && [ -n "$fresh" ]; then
-      refresh_ci_ready_effect "$(printf '%s' "$recorded" | jq -c --argjson q "$fresh" '.qualification=$q')" || true
+      refresh_ci_ready_effect "$(printf '%s' "$recorded" | jq -c --argjson q "$fresh" '.qualification=$q')" "$held_lock" || true
     fi
   fi
 }

@@ -1179,7 +1179,12 @@ housekeeping() {  # <state>
       # shellcheck source=bin/fm-timeout-lib.sh
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
-      [ "$completion_rc" -eq 0 ] || completion="CONTINUATION_CNO: away reconciliation unresolved status=$completion_rc $completion"
+      # Its own line, never fused onto whichever per-task line the resolver's
+      # rotation put first: fusing would make the sorted key below differ
+      # between scans for identical state. A truncated output under the 10s
+      # expiry is genuinely different content and is meant to report again.
+      [ "$completion_rc" -eq 0 ] \
+        || completion=$(printf '%s\n%s' "CONTINUATION_CNO: away reconciliation unresolved status=$completion_rc" "$completion")
       if [ -n "$completion" ]; then
         # A pending handoff is a long-lived manager dependency, so the same
         # digest must not be re-typed every scan. Keyed on the reconcile

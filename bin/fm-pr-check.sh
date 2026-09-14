@@ -146,9 +146,10 @@ META_DEVICE=$(fm_pr_file_device "$META") || exit 1
 STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
 if fm_nm_recorded_qualification_obligated "$META"; then
-  QUALIFICATION=$(fm_nm_effect_current "$META" "$URL") || {
+  fm_nm_effect_current "$META" "$URL" >/dev/null || {
     echo "error: QUALIFICATION_REVOKED ($FM_NM_EFFECT_REASON): PR registration remains unresolved" >&2; exit 1;
   }
+  QUALIFICATION=$FM_NM_EFFECT_TUPLE
   [ "$PR_HEAD" = "$(printf '%s' "$QUALIFICATION" | jq -r .head)" ] || {
     echo 'error: QUALIFICATION_HEAD: forge head differs from qualified head' >&2; exit 1;
   }

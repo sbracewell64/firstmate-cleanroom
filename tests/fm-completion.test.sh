@@ -693,7 +693,18 @@ test_advanced_push_generation_does_not_wedge_a_landed_task() (
   rc=0; out=$(stage show 2>&1) || rc=$?
   expect_code 1 "$rc" 'a moved producer attempt must still refuse'
   assert_contains "$out" QUALIFICATION_REVOKED 'a moved identity must still be reported as a revocation'
+  assert_contains "$out" '(PRODUCER)' 'the refusal must name which of the nine causes said no'
   unset FM_TEST_QUALIFICATION_FILE
+
+  # A different cause must name itself, not collapse into the same label. The
+  # recorded worktree and project are both gone, so the effect is unreadable
+  # before the producer is ever consulted.
+  sed -i -e 's|^worktree=.*|worktree='"$TMP_ROOT"'/pushgen-gone-wt|' \
+    -e 's|^project=.*|project='"$TMP_ROOT"'/pushgen-gone-proj|' "$FM_STATE_OVERRIDE/source.meta"
+  rc=0; out=$(stage show 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a task whose recorded directories are gone must refuse'
+  assert_contains "$out" '(WORKTREE_MISSING)' 'a missing worktree must name itself, not an empty cause'
+  assert_not_contains "$out" '()' 'the named cause must never be reported empty'
   pass 'an advanced push generation is tracked at the qualification boundary; a moved identity still refuses'
 )
 

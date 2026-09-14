@@ -454,9 +454,13 @@ test_away_reconcile_escalation_reports_once_per_identity() {
   dir=$(make_supercase away-reconcile-dedupe); state="$dir/state"; fakebin="$dir/daemon-bin"
   mkdir -p "$fakebin"
   ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$fakebin/fm-timeout-lib.sh"
+  # Exits non-zero, so the away scan prefixes its own CONTINUATION_CNO line.
+  # A prefix fused onto whichever task the rotation put first would make the
+  # dedupe key differ between scans for identical state.
   cat > "$fakebin/fm-continuation-resolve.sh" <<EOF
 #!/usr/bin/env bash
 cat "$dir/reconcile-output"
+exit 1
 EOF
   chmod +x "$fakebin/fm-continuation-resolve.sh"
   # The resolver rotates which task leads, so the same unchanged set arrives
@@ -471,6 +475,8 @@ EOF
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
   [ "$(grep -c . "$state/.subsuper-escalations")" = 1 ] \
     || fail "the first away reconcile did not escalate exactly once"
+  grep -q 'CONTINUATION_CNO: away reconciliation unresolved status=1' "$state/.subsuper-escalations" \
+    || fail "the unresolved away reconcile did not carry its own CNO disposition"
 
   printf '%s\n' \
     'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \

@@ -322,7 +322,10 @@ fm_nm_verified_terminal_successor() { # <worktree> <run> <submitted> <head> <bra
 
 # The cause the last fm_nm_effect_current refusal actually had; empty when it
 # last answered yes. Callers report it instead of inventing one label for nine.
+# The tuple it answered with comes back the same way, because a caller that
+# captured stdout would run the function in a subshell and lose the cause.
 FM_NM_EFFECT_REASON=${FM_NM_EFFECT_REASON:-}
+FM_NM_EFFECT_TUPLE=${FM_NM_EFFECT_TUPLE:-}
 
 # One conditional consumer for the producer's revocable exact-head tuple.
 # A successful read is current only at the producer snapshot. Every later
@@ -390,6 +393,7 @@ fm_nm_qualification_valid() {  # <tuple> <run> <head> <branch> <pr> [retained tu
 fm_nm_effect_current() {
   local file=$1 expected_pr=${2:-} expected_task=${3:-$(basename "$1" .meta)} effect qualification run head branch pr dir
   FM_NM_EFFECT_REASON=RECORD_UNREADABLE
+  FM_NM_EFFECT_TUPLE=
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
   effect=$(sed -n 's/^stage_ci_ready_effect=//p' "$file")
   run=$(sed -n 's/^stage_run=//p' "$file")
@@ -426,9 +430,10 @@ fm_nm_effect_current() {
   FM_NM_EFFECT_REASON=BINDING_HOME_MISSING
   [ -n "$nm_home" ] && [ -d "$nm_home" ] || return 1
   FM_NM_EFFECT_REASON=PRODUCER
-  NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification" \
-    || return 1
+  FM_NM_EFFECT_TUPLE=$(NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" \
+    fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification") || return 1
   FM_NM_EFFECT_REASON=
+  printf '%s\n' "$FM_NM_EFFECT_TUPLE"
 }
 
 # Does this record carry a CI-ready qualification obligation? A qualified stage

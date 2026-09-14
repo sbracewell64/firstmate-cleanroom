@@ -900,28 +900,42 @@ test_monitoring_qualification_and_revocation() (
 )
 
 test_report_changes_during_teardown_status() (
-  local mutation out rc original_wt=$WT
+  local mutation out rc original_wt=$WT proj holder_pid
   export FM_STATE_OVERRIDE="$TMP_ROOT/teardown-state"
   mkdir -p "$FM_STATE_OVERRIDE" "$TMP_ROOT/teardown-bin"
-  for tool in tmux treehouse lsof; do
+  for tool in tmux lsof; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/teardown-bin/$tool"
   done
   for tool in gh gh-axi; do
     printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/teardown-bin/$tool"
   done
+  # Declared backend double: `treehouse return --force <worktree>` deletes the
+  # worktree when asked, as the orca backend removal does before the archive.
+  cat > "$TMP_ROOT/teardown-bin/treehouse" <<'SH'
+#!/bin/sh
+[ "${FM_TEST_TEARDOWN_REMOVE_WT:-0}" = 1 ] && [ "$1" = return ] && [ -d "$3" ] && rm -rf "$3"
+exit 0
+SH
   chmod +x "$TMP_ROOT/teardown-bin/"*
   export PATH="$TMP_ROOT/teardown-bin:$PATH"
   # changed/deleted: handoff report mutated during the conclude status read.
   # revoked: directly qualified task (no handoff) whose exact qualification is
   # revoked during that same read. late: handoff report mutated during the
-  # final observation refresh. unchanged/direct: positive controls.
-  for mutation in ${1:-changed deleted unchanged revoked direct late}; do
+  # final observation refresh. removed*: the backend deleted the worktree
+  # before the archive boundary (removed positive; removed-late and
+  # removed-revoked mutate during the final refresh, then removed-late reruns
+  # with restored bytes). held: the observation lock is held across the
+  # archive and the report changes while finalize waits. unchanged/direct:
+  # positive controls.
+  for mutation in ${1:-changed deleted unchanged revoked direct late removed removed-late removed-revoked held}; do
     WT="$TMP_ROOT/teardown-wt-$mutation"
+    proj="$TMP_ROOT/teardown-proj-$mutation"
     git clone -q --no-hardlinks "$original_wt" "$WT" || fail 'private teardown clone'
+    git clone -q --no-hardlinks "$original_wt" "$proj" || fail 'private project clone'
     git -C "$WT" remote remove origin
     git -C "$WT" branch main "$HEAD"
     prepare_delivery
-    sed -e "s|^worktree=.*|worktree=$WT|" -e "s|^project=.*|project=$WT|" "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/teardown.meta"
+    sed -e "s|^worktree=.*|worktree=$WT|" -e "s|^project=.*|project=$proj|" "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/teardown.meta"
     mv "$TMP_ROOT/teardown.meta" "$FM_STATE_OVERRIDE/source.meta"
     printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
     case "$mutation" in
@@ -937,7 +951,9 @@ test_report_changes_during_teardown_status() (
     [ -n "$(meta stage_ci_ready_effect)" ] || fail 'exact stage effect absent before teardown'
     printf 'private poll artifact\n' > "$FM_STATE_OVERRIDE/source.pr-poll"
     export FM_TEST_TEARDOWN_MUTATION=$mutation FM_TEST_TEARDOWN_REACHED="$TMP_ROOT/teardown-status-reached" \
-      FM_TEST_TEARDOWN_REFRESHED="$TMP_ROOT/teardown-refresh-reached" FM_TEST_TEARDOWN_REVOKED="$TMP_ROOT/teardown-revoked"
+      FM_TEST_TEARDOWN_REFRESHED="$TMP_ROOT/teardown-refresh-reached" FM_TEST_TEARDOWN_REVOKED="$TMP_ROOT/teardown-revoked" \
+      FM_TEST_TEARDOWN_REMOVE_WT=0 FM_TEARDOWN_NM_TIMEOUT=10
+    case "$mutation" in removed*) export FM_TEST_TEARDOWN_REMOVE_WT=1 ;; esac
     rm -f "$FM_TEST_TEARDOWN_REACHED" "$FM_TEST_TEARDOWN_REFRESHED" "$FM_TEST_TEARDOWN_REVOKED" \
       "$FM_DATA_OVERRIDE/source/completion-receipt.json" "$FM_DATA_OVERRIDE/source/nm-observation-receipt.md"
     cp "$FAKEBIN/no-mistakes" "$TMP_ROOT/teardown-no-mistakes"
@@ -959,7 +975,8 @@ case "$*" in
   'axi status --run '*)
     : > "$FM_TEST_TEARDOWN_REFRESHED"
     case "$FM_TEST_TEARDOWN_MUTATION" in
-      late) printf 'changed during final refresh\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
+      late|removed-late) printf 'changed during final refresh\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
+      removed-revoked) : > "$FM_TEST_TEARDOWN_REVOKED" ;;
     esac
     cat "$FM_COMPLETION_TEST_CANONICAL"
     ;;
@@ -968,43 +985,83 @@ case "$*" in
   *) exit 90 ;;
 esac
 SH
+    holder_pid=
+    if [ "$mutation" = held ]; then
+      export FM_TEARDOWN_NM_TIMEOUT=2
+      # Declared contention double: another observation writer holds the
+      # per-task observation lock through the archive, changes the report
+      # while finalize waits on that lock, then releases it.
+      bash -c '
+        . "$1/bin/fm-wake-lib.sh"
+        fm_lock_try_acquire "$2/.nm-observe-source.lock" || exit 91
+        i=0
+        while [ ! -f "$3/source/completion-receipt.json" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i+1)); done
+        [ -f "$3/source/completion-receipt.json" ] || { fm_lock_release "$2/.nm-observe-source.lock"; exit 92; }
+        printf "changed while finalize waited\n" >> "$3/source/report.md"
+        fm_lock_release "$2/.nm-observe-source.lock"
+      ' _ "$ROOT" "$FM_STATE_OVERRIDE" "$FM_DATA_OVERRIDE" &
+      holder_pid=$!
+      sleep 0.5
+    fi
     rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+    if [ -n "$holder_pid" ]; then wait "$holder_pid" || fail "observation lock holder failed ($?): $out"; fi
     mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
     assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
     case "$mutation" in
-      unchanged|direct)
+      unchanged|direct|removed)
         expect_code 0 "$rc" "$mutation actual teardown: $out"
         assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'final observation refresh must read canonical state'
         assert_absent "$FM_STATE_OVERRIDE/source.meta" "$mutation teardown retained metadata"
         assert_absent "$FM_STATE_OVERRIDE/source.nm-observe" "$mutation teardown retained observation obligation"
         assert_absent "$FM_STATE_OVERRIDE/source.pr-poll" "$mutation teardown retained poll artifact"
         assert_grep 'finalized at' "$FM_DATA_OVERRIDE/source/nm-observation-receipt.md" 'observation receipt not finalized'
-        if [ "$mutation" = unchanged ]; then
+        if [ "$mutation" != direct ]; then
           assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing'
         fi
+        [ "$mutation" != removed ] || assert_absent "$WT" 'backend double must have removed the worktree'
         ;;
       *)
         expect_code 1 "$rc" "$mutation during teardown"
         case "$mutation" in
-          revoked) assert_contains "$out" 'exact qualification is invalidated' 'direct qualification refusal' ;;
+          revoked|removed-revoked) assert_contains "$out" 'exact qualification is invalidated' 'direct qualification refusal' ;;
           *) assert_contains "$out" 'completion handoff remains unresolved' 'final retirement must refuse' ;;
         esac
         assert_not_contains "$out" 'teardown source complete' 'stopped retirement must not report success'
         assert_present "$FM_STATE_OVERRIDE/source.meta" 'teardown erased unresolved metadata'
         assert_present "$FM_STATE_OVERRIDE/source.nm-observe" 'teardown erased observation obligation'
         assert_present "$FM_STATE_OVERRIDE/source.pr-poll" 'teardown erased poll artifact on refusal'
-        if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
         [ -n "$(meta stage_ci_ready_effect)" ] || fail 'refusal erased historical stage effect'
-        assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'refusal archived invalidated handoff'
         case "$mutation" in
-          late)
-            assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'late case must reach the final refresh'
-            assert_contains "$out" 'retained unresolved' 'late refusal must expose partial cleanup'
+          held)
+            assert_contains "$out" 'retained unresolved' 'held refusal must expose partial cleanup'
+            assert_contains "$out" 'observation lock held' 'bounded observation wait must warn, never stay silent'
+            assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'authorization archive taken before the late change must remain as evidence'
             [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
             ;;
-          revoked) assert_absent "$FM_TEST_TEARDOWN_REFRESHED" 'revoked qualification must refuse before the final refresh' ;;
+          late|removed-late|removed-revoked)
+            if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
+            assert_present "$FM_TEST_TEARDOWN_REFRESHED" "$mutation must reach the final refresh"
+            assert_contains "$out" 'retained unresolved' "$mutation refusal must expose partial cleanup"
+            assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'refusal archived invalidated handoff'
+            [ "$mutation" = removed-revoked ] || [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
+            case "$mutation" in removed*) assert_absent "$WT" 'backend double must have removed the worktree' ;; esac
+            if [ "$mutation" = removed-late ]; then
+              printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+              rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+              expect_code 0 "$rc" "rerun without worktree after restored bytes: $out"
+              assert_absent "$FM_STATE_OVERRIDE/source.meta" 'rerun retained metadata'
+              assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'rerun retirement archive missing'
+            fi
+            ;;
+          revoked)
+            if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
+            assert_absent "$FM_TEST_TEARDOWN_REFRESHED" 'revoked qualification must refuse before the final refresh'
+            assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'refusal archived invalidated handoff'
+            ;;
           *)
+            if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
             assert_absent "$FM_TEST_TEARDOWN_REFRESHED" 'status-read refusal must stop before the final refresh'
+            assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'refusal archived invalidated handoff'
             [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
             ;;
         esac
@@ -1155,7 +1212,7 @@ SH
 )
 
 if [ "${1:-}" = retirement-status ]; then
-  test_report_changes_during_teardown_status "${2:-changed deleted unchanged revoked direct late}" || exit 1
+  test_report_changes_during_teardown_status "${2:-changed deleted unchanged revoked direct late removed removed-late removed-revoked held}" || exit 1
   exit 0
 fi
 if [ "${1:-}" = custody-order ]; then

@@ -368,6 +368,8 @@ fm_nm_effect_current() {
   branch=$(sed -n 's/^stage_branch=//p' "$file")
   pr=$(sed -n 's/^stage_pr=//p' "$file")
   dir=$(sed -n 's/^worktree=//p' "$file")
+  [ -n "$dir" ] && [ -d "$dir" ] || dir=$(sed -n 's/^project=//p' "$file")
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
   [ -z "$expected_pr" ] || [ "$expected_pr" = "$pr" ] || return 1
   printf '%s' "$effect" | jq -se --arg task "$expected_task" \
     --arg generation "$(sed -n 's/^spawn_gen=//p' "$file")" \

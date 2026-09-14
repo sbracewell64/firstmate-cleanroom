@@ -124,9 +124,9 @@
 #             by bin/fm-teardown.sh before it removes the runtime record. Exit
 #             0 even when the daemon is unreachable, so cleanup never blocks on
 #             observation; the receipt then states what was not observed.
-#             --no-refresh marks and renders the record as already refreshed
-#             so a caller that revalidated after its own refresh performs no
-#             further canonical read before finalizing.
+#             --no-refresh skips the canonical refresh because the caller has
+#             already refreshed and revalidated; it marks nothing beyond the
+#             usual stage=finalized.
 #   reconcile Read-only comparison of the canonical inventory (`axi status`
 #             from each obligation's worktree, or its project checkout when the
 #             worktree is gone) against every obligation and every managed task

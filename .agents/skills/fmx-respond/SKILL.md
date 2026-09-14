@@ -210,6 +210,7 @@ Treat `state/x-inbox/` as the source of truth and process **every** file you fin
       This is the local idempotency guard - a cleared file is never answered twice.
       For an acknowledged actionable request that spawned a task, this cleanup comes **after** the step 2c link, never before, so the link can copy the reply platform and budget directly from the inbox payload.
    g. **On failure** (a non-zero exit from `bin/fm-x-reply.sh` or `bin/fm-x-dismiss.sh`), leave that inbox file in place, move on to the next, and do not retry blindly.
+      Exit 10 from `bin/fm-x-reply.sh` or `bin/fm-x-dismiss.sh` means the write is recorded UNDELIVERED under `state/outbound-writes/` with its payload and digest retained, is never retried automatically, and needs an explicit `FM_OUTBOUND_WRITE_ACK=<record-id>` decision before any resend.
       If you had already acted on this mention in step 2c before the post failed, do **not** redo that work on a later drain - check whether it is already done (e.g. the backlog item exists, the crewmate is already running) and only retry the reply.
       If a reply or dismiss fails twice, surface it to the captain as a blocker with the stderr detail; for live post failures include the relay's HTTP status when available.
       The relay posts its own offline reply if no live answer lands in time, so a single miss is not a crisis.

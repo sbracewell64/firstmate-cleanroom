@@ -106,7 +106,7 @@ test_send_refuses_message_bytes_in_argv() {
   fm_outbound_send "$state" "$id" file true --data '{"request_id":"r"}' 2>/dev/null || rc=$?
   [ "$rc" -eq 2 ] || fail "file conveyance must refuse argv that carries the message bytes (got $rc)"
   [ -z "$(fm_outbound_get "$state" "$id" sent_epoch)" ] || fail "a refused send must not be recorded as sent"
-  out=$(fm_outbound_send "$state" "$id" file sh -c 'cat "$FM_OUTBOUND_PAYLOAD_FILE"') || fail "file conveyance must run the transport"
+  out=$(fm_outbound_send "$state" "$id" file sh -c "cat \"\$FM_OUTBOUND_PAYLOAD_FILE\"") || fail "file conveyance must run the transport"
   [ "$out" = '{"request_id":"r"}' ] || fail "the transport must read the body from the ledger file, got: $out"
   out=$(fm_outbound_send "$state" "$id" stdin cat) || fail "stdin conveyance must pipe the payload"
   [ "$out" = '{"request_id":"r"}' ] || fail "stdin conveyance must deliver the exact bytes, got: $out"

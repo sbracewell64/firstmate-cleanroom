@@ -182,7 +182,7 @@ fm_outbound_undelivered_for() {  # <state-dir> <destination> <correlation>
 # Required keys: writer destination account authority disclosure correlation.
 # disclosure is public, fleet, or private. Prints the new record id.
 fm_outbound_prepare() {  # <state-dir> <payload-file> key=value...
-  local state=$1 payload_src=$2 dir rec tmp id key val bytes sha now blocker
+  local state=$1 payload_src=$2 dir rec tmp slot id key val bytes sha now blocker
   local writer='' destination='' account='' authority='' disclosure='' correlation=''
   shift 2 || return 2
   [ -n "$state" ] || return 2
@@ -207,19 +207,22 @@ fm_outbound_prepare() {  # <state-dir> <payload-file> key=value...
     public|fleet|private) ;;
     *) echo "fm-outbound-write: refusing to prepare: disclosure must be public, fleet, or private (got '$disclosure')" >&2; return 2 ;;
   esac
+  dir=$(fm_outbound_dir_prepare "$state") || { echo "fm-outbound-write: cannot prepare the ledger directory under $state" >&2; return 1; }
+  fm_outbound_prune "$state"
   blocker=$(fm_outbound_undelivered_for "$state" "$destination" "$correlation")
   if [ -n "$blocker" ] && [ "${FM_OUTBOUND_WRITE_ACK:-}" != "$blocker" ]; then
     echo "fm-outbound-write: refusing to prepare: an earlier write to $destination for $correlation was rejected and is recorded undelivered ($blocker); it is not retried automatically" >&2
     printf 'undelivered=%s\n' "$blocker" >&2
     return 3
   fi
-  dir=$(fm_outbound_dir_prepare "$state") || { echo "fm-outbound-write: cannot prepare the ledger directory under $state" >&2; return 1; }
-  fm_outbound_prune "$state"
   now=$(fm_outbound_now)
-  rec=$(umask 077; mktemp "$dir/$now-XXXXXX.record") || return 1
-  id=${rec##*/}; id=${id%.record}
+  slot=$(umask 077; mktemp "$dir/$now-XXXXXX") || return 1
+  id=${slot##*/}
   fm_outbound_id_valid "$id" || return 1
+  rec="$dir/$id.record"
   tmp="$dir/$id.payload"
+  [ ! -e "$rec" ] && [ ! -e "$tmp" ] || return 1
+  mv -- "$slot" "$rec" || return 1
   if ! (umask 077; cat -- "$payload_src" > "$tmp") || ! chmod 600 "$tmp" 2>/dev/null; then
     fm_outbound_remove_artifacts "$dir" "$id"; return 1
   fi

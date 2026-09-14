@@ -12,9 +12,13 @@
 # exit 0 only when within budget, exit 3 when over budget - so a caller at a
 # real startup/consumption or a durable-memory-write boundary can gate on it. A
 # `report` exit 0 alone is NOT compliance (it means the accounting merely ran);
-# `enforce` is the deterministic gate. HONEST BOUND: direct-write and raw-shell
-# paths cannot be universally intercepted - this gates only at the qualified
-# owner boundaries that call it, never a text-pattern shell blacklist.
+# `enforce` is the deterministic gate. bin/fm-session-start.sh is the startup
+# consumption caller (its CONTEXT section injects the three files only through
+# enforce); the dispatch path reads none of them, and /stow keeps `report`
+# because it is the curation owner that fixes an over-budget home. HONEST
+# BOUND: direct-write and raw-shell paths cannot be universally intercepted -
+# this gates only at the qualified owner boundaries that call it, never a
+# text-pattern shell blacklist.
 # Bootstrap owns default materialization; this command never creates or repairs
 # configuration, so an absent, malformed, symlinked, hardlinked, or otherwise
 # unsafe value is a concrete error rather than an inferred default.
@@ -30,7 +34,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 
 usage() {
-  sed -n '2,17{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,24{s/^# \{0,1\}//;p;}' "$0"
 }
 
 print_error() {

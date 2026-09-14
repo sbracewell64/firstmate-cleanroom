@@ -51,8 +51,12 @@
 #                       read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
-#   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
+#   8. context digest - data/projects.md, data/secondmates.md, then the three
+#                       budgeted memory files data/captain.md,
+#                       data/captain-shared.md, data/learnings.md, injected only
+#                       through the startup-memory budget gate
+#                       (print_memory_files_gated, which calls
+#                       bin/fm-startup-memory-budget.sh enforce): read-only,
 #                       always safe, always runs.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
@@ -86,7 +90,8 @@
 # 1-435 of 578, cutting off eight lines before the live-task inventory. What a
 # truncated tail drops must therefore be the CHEAPEST thing to lose. Curated
 # memory is stable session to session, is already governed by a captain-set
-# budget (config/startup-memory-budget), and is recoverable with one targeted
+# budget (config/startup-memory-budget, enforced at injection by
+# print_memory_files_gated), and is recoverable with one targeted
 # read; live fleet identity - which tasks exist, their windows, worktrees,
 # backends, and endpoint liveness - changes every session and is exactly what
 # recovery depends on. So fleet state goes first and the memory files absorb the
@@ -342,6 +347,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
+# shellcheck source=bin/fm-startup-memory-budget-lib.sh
+. "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -382,6 +389,117 @@ print_file_or_absent() {
   else
     printf 'ABSENT\n'
   fi
+}
+
+# The startup consumption caller of bin/fm-startup-memory-budget.sh enforce.
+# The three budgeted memory files (data/captain.md, data/captain-shared.md,
+# data/learnings.md, in that priority order) are copied into one private
+# snapshot, the snapshot is accounted against the live config/ by the existing
+# enforce command, and whatever is injected is printed FROM THAT SNAPSHOT, so
+# the bytes measured are the bytes injected and a file rewritten mid-digest
+# can never slip a stale or partial set past the gate.
+#   exit 0  within budget: printed exactly as print_file_or_absent always has.
+#   exit 3  over budget: one STARTUP_MEMORY_BUDGET line names the estimate,
+#           the budget, and /stow as the curation owner; in priority order,
+#           every whole file that still fits is injected up to the first one
+#           that does not, and that file and every later costed file is marked
+#           WITHHELD rather than truncated mid-file. An absent or empty file
+#           costs nothing, so it always keeps its ABSENT or (present, empty)
+#           marker.
+#   other   accounting failure (absent or unsafe budget, unsafe memory file):
+#           one STARTUP_MEMORY_BUDGET line names the reason and all three are
+#           WITHHELD, never a partial set. This caller never creates or repairs
+#           configuration - the locked bootstrap owns materialization - and it
+#           only reads, so read-only and --reemit sessions gate identically.
+# Raw-shell writes to these files are not intercepted anywhere; this gate
+# covers only this consumption boundary (the budget script's header owns that
+# honest bound).
+MEMORY_FILES='captain.md captain-shared.md learnings.md'
+
+memory_label() {  # <file>: the subsection label print_file_or_absent has always used
+  case "$1" in
+    captain-shared.md) printf 'data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)\n' ;;
+    *) printf 'data/%s\n' "$1" ;;
+  esac
+}
+
+print_memory_withheld() {  # <file> <reason>
+  subsection "$(memory_label "$1")"
+  printf 'WITHHELD - %s (see the STARTUP_MEMORY_BUDGET line above)\n' "$2"
+}
+
+print_memory_refused() {  # <reason>: the whole set is withheld
+  local file
+  printf '\nSTARTUP_MEMORY_BUDGET: memory not injected - %s; data/captain.md, data/captain-shared.md, and data/learnings.md are withheld rather than injected as a partial or stale set; fix the named cause (a locked session start materializes an absent budget) and re-emit\n' "$1"
+  for file in $MEMORY_FILES; do
+    print_memory_withheld "$file" 'the startup-memory budget could not be verified'
+  done
+}
+
+print_memory_files_gated() {
+  local snap file out rc reason budget total tokens sum=0 injecting=1 withheld='' exception=''
+  snap=$(mktemp -d "${TMPDIR:-/tmp}/fm-session-start-memory.XXXXXX" 2>/dev/null) || snap=
+  if [ -z "$snap" ]; then
+    print_memory_refused 'could not create the private snapshot that validates the three files as one set'
+    return 0
+  fi
+  for file in $MEMORY_FILES; do
+    if [ -L "$DATA/$file" ] || { [ -e "$DATA/$file" ] && [ ! -f "$DATA/$file" ]; }; then
+      rm -rf "$snap"
+      print_memory_refused "memory file is not an ordinary regular file: data/$file"
+      return 0
+    fi
+    if [ -f "$DATA/$file" ] && ! cp -- "$DATA/$file" "$snap/$file" 2>/dev/null; then
+      rm -rf "$snap"
+      print_memory_refused "could not read memory file: data/$file"
+      return 0
+    fi
+  done
+  out=$(FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_DATA_OVERRIDE="$snap" "$SCRIPT_DIR/fm-startup-memory-budget.sh" enforce 2>&1)
+  rc=$?
+  case "$rc" in
+    0)
+      for file in $MEMORY_FILES; do
+        print_file_or_absent "$snap/$file" "$(memory_label "$file")"
+      done
+      ;;
+    3)
+      budget=$(printf '%s\n' "$out" | sed -n 's/^effective_budget_tokens=//p' | head -1)
+      total=$(printf '%s\n' "$out" | sed -n 's/^total_estimated_tokens=//p' | head -1)
+      exception=$(printf '%s\n' "$out" | sed -n 's/^exception=//p' | head -1)
+      for file in $MEMORY_FILES; do
+        tokens=$(printf '%s\n' "$out" \
+          | sed -n "s/^file=data\/$file bytes=[0-9]* estimated_tokens=\([0-9]*\) .*/\1/p" | head -1)
+        case "$tokens" in ''|*[!0-9]*) injecting=0 ;; esac
+        if [ "$tokens" = 0 ]; then
+          continue
+        elif [ "$injecting" -eq 1 ] && fm_startup_memory_decimal_le "$((sum + tokens))" "$budget"; then
+          sum=$((sum + tokens))
+        else
+          injecting=0
+          withheld="$withheld${withheld:+, }data/$file"
+        fi
+      done
+      printf '\nSTARTUP_MEMORY_BUDGET: over budget - estimated %s tokens exceed config/startup-memory-budget=%s; withheld from this digest: %s; curate with /stow (data/captain.md and data/learnings.md are the editable owners)' \
+        "$total" "$budget" "${withheld:-none}"
+      [ -z "$exception" ] \
+        || printf '; primary-owned data/captain-shared.md alone exceeds this budget, so route it to the primary owner'
+      printf '\n'
+      for file in $MEMORY_FILES; do
+        case ", $withheld," in
+          *", data/$file,"*) print_memory_withheld "$file" 'over the startup-memory budget' ;;
+          *) print_file_or_absent "$snap/$file" "$(memory_label "$file")" ;;
+        esac
+      done
+      ;;
+    *)
+      reason=$(printf '%s\n' "$out" | sed -n 's/^startup-memory-budget: //p' | head -1)
+      [ -n "$reason" ] || reason="budget accounting exited $rc without a reason"
+      print_memory_refused "$reason"
+      ;;
+  esac
+  rm -rf "$snap"
 }
 
 print_backlog_pointer() {
@@ -946,16 +1064,15 @@ fi
 
 # --- 8. context digest -----------------------------------------------------
 # Last of the bulk sections deliberately: curated memory is stable session to
-# session, already governed by config/startup-memory-budget, and recoverable
-# with one targeted read, so it is the cheapest thing for a truncated tail to
-# take (see this file's ORDERING note).
+# session, gated here against config/startup-memory-budget by
+# print_memory_files_gated, and recoverable with one targeted read, so it is
+# the cheapest thing for a truncated tail to take (see this file's ORDERING
+# note).
 stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+print_memory_files_gated
 
 # --- 9. closing reminder -----------------------------------------------
 stage next-step

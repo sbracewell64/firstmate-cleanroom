@@ -163,6 +163,9 @@ test_readback_and_classify_verdicts() {
   [ "$(fm_outbound_get "$state" "$id" outcome)" = retryable ] || fail "a transient failure is retryable"
   id=$(fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c6)
   [ "$(fm_outbound_classify "$state" "$id" http 401)" = rejected-auth ] || fail "HTTP 401 classifies rejected-auth"
+  [ "$(fm_outbound_get "$state" "$id" outcome)" = retryable ] || fail "an authentication failure is retryable, never undelivered"
+  fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c6 >/dev/null \
+    || fail "a 401 must never block a later write to the same destination and correlation"
   id=$(fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c7)
   [ "$(fm_outbound_classify "$state" "$id" http 409)" = conflict ] || fail "HTTP 409 classifies conflict"
   id=$(fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c8)
@@ -288,6 +291,16 @@ test_reply_rejection_is_undelivered_and_not_reposted() {
   assert_grep 'not retried automatically' "$home/err2" "the refusal must say the post is not retried"
   [ "$(posts_to "$log" answer)" = 1 ] || fail "the refused re-post must not reach the relay"
   [ "$(find "$home/state/outbound-writes" -name '*.record' | wc -l | tr -d ' ')" = 1 ] || fail "exactly one undelivered record remains"
+  # A real authentication failure is retryable after the credential is repaired.
+  : > "$log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" FAKE_CURL_LOG="$log" \
+    FAKE_ANSWER_CODE=401 "$ROOT/bin/fm-x-reply.sh" req-a "auth" 2>"$home/err4"); rc=$?
+  expect_code 1 "$rc" "a relay 401 stays the generic retryable exit 1"
+  assert_grep 'HTTP 401' "$home/err4" "a 401 still reports the failing status"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-x-reply.sh" req-a "auth again" 2>"$home/err5"); rc=$?
+  expect_code 0 "$rc" "after a 401 the same request may be re-sent once the credential works"
+  [ "$(posts_to "$log" answer)" = 2 ] || fail "the re-send after a 401 must reach the relay"
   # A transient failure keeps the existing retryable behavior.
   : > "$log"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" FAKE_CURL_LOG="$log" \

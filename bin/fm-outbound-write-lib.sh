@@ -155,8 +155,10 @@ fm_outbound_prune() {  # <state-dir>
 }
 
 # Print the id of an undelivered rejection record for <destination> and
-# <correlation>, or nothing. Only a provider rejection blocks a later write;
-# a transient, transport, or read-back failure never does.
+# <correlation>, or nothing. Only a provider safety or policy rejection (class
+# rejected) blocks a later write; a real 401/403 (rejected-auth) is an
+# authentication failure that is retryable once the credential or authority is
+# repaired, and a transient, transport, or read-back failure never blocks.
 fm_outbound_undelivered_for() {  # <state-dir> <destination> <correlation>
   local dir rec dest corr outcome class base
   dir=$(fm_outbound_dir "$1")
@@ -170,7 +172,7 @@ fm_outbound_undelivered_for() {  # <state-dir> <destination> <correlation>
     outcome=$(grep -E '^outcome=' "$rec" | tail -n1); outcome=${outcome#*=}
     [ "$outcome" = undelivered ] || continue
     class=$(grep -E '^class=' "$rec" | tail -n1); class=${class#*=}
-    case "$class" in rejected|rejected-auth) ;; *) continue ;; esac
+    case "$class" in rejected) ;; *) continue ;; esac
     base=${rec##*/}
     printf '%s' "${base%.record}"
     return 0
@@ -388,6 +390,10 @@ fm_outbound_readback() {  # <state-dir> <id> <mode> [cmd...]
 # transport-lost, or failed. Records class, evidence, outcome, and the response
 # body when given. Never retries and never infers anything the evidence did not
 # return: a generic 4xx is rejected on its status alone.
+# A real 401/403 is rejected-auth: classified from the returned status alone,
+# recorded retryable rather than undelivered, and never given the
+# safety-rejection block, because it is an authentication failure to repair
+# and re-send, not a refusal of the content.
 fm_outbound_classify() {  # <state-dir> <id> <kind> <value> [body-file]
   local state=$1 id=$2 kind=$3 value=$4 body=${5:-} class outcome evidence readback resp
   fm_outbound_id_valid "$id" || return 1
@@ -431,7 +437,8 @@ fm_outbound_classify() {  # <state-dir> <id> <kind> <value> [body-file]
         *) outcome=accepted ;;
       esac
       ;;
-    rejected|rejected-auth) outcome=undelivered ;;
+    rejected) outcome=undelivered ;;
+    rejected-auth) outcome=retryable ;;
     conflict) outcome=conflict ;;
     transient|failed) outcome=retryable ;;
     transport-lost) outcome=unknown ;;

@@ -133,7 +133,14 @@ case "$CLASS" in
     fmx_context_registry_clear "$STATE" "$REQ"
     printf '%s\n' "$REQ"
     ;;
-  rejected|rejected-auth)
+  rejected-auth)
+    # A real 401/403 is an authentication failure to repair and re-send, never a
+    # content rejection: the retained record is retryable and this stays the
+    # generic exit 1 path.
+    echo "fm-x-dismiss: relay returned HTTP $code (authentication rejected; repair the pairing token or consent and re-send)" >&2
+    exit 1
+    ;;
+  rejected)
     echo "fm-x-dismiss: relay rejected the dismiss for $REQ (HTTP $code): undelivered, recorded as state/outbound-writes/$LEDGER.record, and not retried" >&2
     exit 10
     ;;

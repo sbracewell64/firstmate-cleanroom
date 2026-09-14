@@ -183,7 +183,7 @@
       "id": "bin/fm-guard.sh",
       "kind": "not-enforcement",
       "invariant": "A fleet mutation that runs without the verified per-home lock or from a tangled checkout is announced to the operator.",
-      "reason": "An advisory reporter, not a refusal: bin/fm-guard.sh always exits 0 (its only exits are the two `exit 0` statements) and every bin/ invocation discards its status with `|| true`, so a fleet mutation from a tangled checkout prints the banner and then proceeds. The lock-and-tangle invariant in its previous declaration has no blocking owner at this call site; see docs/verification/enforcing-call-sites.md."
+      "reason": "An advisory reporter, not a refusal: bin/fm-guard.sh always exits 0 (its only top-level exits are the two `exit 0` statements), so no invocation can act on a failing status and a fleet mutation from a tangled checkout prints the banner and then proceeds. The lock-and-tangle invariant in its previous declaration has no blocking owner at this call site; see docs/verification/enforcing-call-sites.md."
     },
     {
       "id": "bin/fm-lease-lib.sh:fm_lease_guard",

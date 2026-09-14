@@ -7,14 +7,21 @@
 #   bin/fm-enforcement-caller-check.sh --root <repo> [--inventory <path>]
 #
 # An invariant is not active merely because it is documented. An enforce,
-# validate or refuse capability that no production caller reaches is UNPROVEN,
-# not active, and this check is what says so mechanically.
+# validate or refuse capability that no production caller is even declared for
+# is UNPROVEN, not active, and this check is what says so mechanically.
+#
+# WHAT THIS PROVES, exactly: that a declared, human-reviewed call site exists,
+# sits on the production surface, and still names the capability in executable
+# text. It does NOT prove the shell executes it - deciding that from static text
+# needs a shell parse this check does not do, and the residues are recorded in
+# docs/verification/enforcing-call-sites.md. What it does catch is the family it
+# was built for: an enforce-style entry point with no non-test caller at all.
 #
 # The check discovers candidate entry points from the tracked tree with fixed
 # rules this script owns, then requires docs/enforcement-points.json to declare
 # every discovered candidate. A declared `enforced` entry must name at least one
-# call site that exists, sits on the production surface, and actually references
-# the entry point; a test that calls the capability is NOT evidence that the
+# call site that exists, sits on the production surface, and still names the
+# entry point; a test that names the capability is NOT evidence that the
 # guarded path reaches it. The one exception is an entry whose guarded path is
 # the repository itself: there the CI suite walk is the production path, so a
 # `ci-suite` call site is accepted only after this check proves the harness
@@ -99,32 +106,8 @@ PRODUCTION_SURFACES = (
 ALLOWED_KINDS = ("enforced", "operator-invoked", "not-enforcement")
 ALLOWED_GUARDS = ("runtime", "repository")
 ALLOWED_VIA = ("production", "ci-suite")
-# Indirections a real invocation uses: a variable holding the script's path, and
-# an argument list built with `set --` that the invocation forwards as "$@".
-PATH_ASSIGN_RE = re.compile(
-    r"^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$"
-)
-SET_ARGS_RE = re.compile(r"^\s*set\s+--(?:\s|$)")
-POSITIONAL_RE = re.compile(r'"\$@"|\$@')
-# Words that sit before the real command word without being it.
-COMMAND_PREFIXES = frozenset({
-    "!", "builtin", "command", "do", "elif", "else", "env", "eval", "exec",
-    "if", "nohup", "sudo", "then", "time", "until", "while",
-})
-# Commands whose own argument is a command string the shell later runs.
-COMMAND_STRING_HOSTS = frozenset({"bash", "dash", "ksh", "sh", "trap", "xargs", "zsh"})
-DEFINITION_HEAD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\)$")
-ENV_WORD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-ASSIGNMENT_RE = re.compile(
-    r"^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?[A-Za-z_][A-Za-z0-9_]*=(.*)$"
-)
-QUOTED_LITERAL_RE = re.compile(
-    r'"((?:[^"\\]|\\.)*)"' r"|'((?:[^'\\]|\\.)*)'" r"|`((?:[^`\\]|\\.)*)`"
-)
-YAML_KEY_RE = re.compile(r"^\s*(?:-\s+)?[A-Za-z_][A-Za-z0-9_.-]*:\s*")
-ESCAPE_RE = re.compile(r"\\(.)")
-# How many layers of substitution, assignment and nested shell to follow.
-INDIRECTION_DEPTH = 6
+# How far after a script reference a subcommand token still reads as that call.
+CALL_WINDOW = 200
 
 
 class CheckError(Exception):
@@ -295,17 +278,12 @@ def is_production(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in PRODUCTION_SURFACES)
 
 
-def command_substitution_bodies(text: str) -> list[str]:
-    """Each `$(...)` or backtick body, separately."""
-    return [
-        match.group("paren") or match.group("tick") or ""
-        for match in COMMAND_SUB_RE.finditer(text)
-    ]
-
-
 def command_substitutions(text: str) -> str:
     """The executable part of an emitted string: what `$(...)` and backticks run."""
-    return " ".join(command_substitution_bodies(text))
+    return " ".join(
+        match.group("paren") or match.group("tick") or ""
+        for match in COMMAND_SUB_RE.finditer(text)
+    )
 
 
 def shell_segments(line: str) -> list[str]:
@@ -499,184 +477,43 @@ def names_it(text: str, owner_base: str, token: str | None, axis: str) -> bool:
     return needle in text
 
 
-def logical_lines(text: str) -> list[str]:
-    """Physical lines with backslash continuations joined into one command.
+def references(text: str, owner_base: str, token: str | None, axis: str) -> bool:
+    """Does this file text name the entry point in executable text?
 
-    A shell continues a line only on an ODD number of trailing backslashes; an
-    even count is escaped backslashes and the command ends there.
+    This is a NAMED-REFERENCE test, not a proof that the shell runs the command:
+    comments and emitted operator text are gone by now, but deciding invocation
+    from static text needs a shell parse this check does not do. The bound is
+    recorded in docs/verification/enforcing-call-sites.md.
     """
-    joined: list[str] = []
-    pending = ""
-    for line in text.splitlines():
-        trailing = len(line) - len(line.rstrip("\\"))
-        if trailing % 2 == 1:
-            pending += line[:-1] + " "
-            continue
-        joined.append(pending + line)
-        pending = ""
-    if pending:
-        joined.append(pending)
-    return joined
-
-
-def unescape(text: str) -> str:
-    """A JSON or shell string literal's body, as the consumer receives it."""
-    return ESCAPE_RE.sub(lambda match: " " if match.group(1) in "nrt" else match.group(1), text)
-
-
-def quoted_literals(text: str) -> list[str]:
-    """Every quoted or backticked literal, unescaped."""
-    return [
-        unescape(next(group for group in match.groups() if group is not None))
-        for match in QUOTED_LITERAL_RE.finditer(text)
-    ]
-
-
-def command_strings(rel: str, text: str) -> list[str]:
-    """Candidate shell command strings this caller can execute.
-
-    A shell caller executes its own lines. Every other production surface
-    carries its commands inside literals - a hook `command` field, a YAML `run:`
-    step, a template literal handed to a process spawner - so each literal, and
-    each key-stripped YAML line, is read as a command string.
-    """
-    if rel.endswith(".sh"):
-        return logical_lines(text)
-    strings: list[str] = []
-    if rel.endswith((".yaml", ".yml")):
-        strings.extend(YAML_KEY_RE.sub("", line) for line in logical_lines(text))
-    strings.extend(quoted_literals(text))
-    return strings
-
-
-def split_first_word(text: str) -> tuple[str, str]:
-    """The first shell word and the rest, with quoting and `$(...)` respected."""
-    quote: str | None = None
-    depth = 0
-    index = 0
-    size = len(text)
-    while index < size:
-        char = text[index]
-        if quote is not None:
-            if char == "\\" and quote == '"' and index + 1 < size:
-                index += 2
+    if axis == "function":
+        assert token is not None
+        if token not in text:
+            return False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
                 continue
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char == "\\" and index + 1 < size:
-            index += 2
-            continue
-        if char in "'\"":
-            quote = char
-            index += 1
-            continue
-        if text.startswith("$(", index):
-            depth += 1
-            index += 2
-            continue
-        if char == ")" and depth:
-            depth -= 1
-            index += 1
-            continue
-        if depth == 0 and char in " \t":
-            return text[:index], text[index:].lstrip()
-        index += 1
-    return text, ""
-
-
-def command_head_and_tail(segment: str) -> tuple[str, str] | None:
-    """The command word of this segment and the arguments after it.
-
-    Leading environment assignments, grouping punctuation, shell keywords and
-    wrappers such as `exec` and `env` are consumed, and a function definition
-    header is consumed so a one-line body is still read as its own command.
-    """
-    rest = segment.strip()
-    while True:
-        rest = rest.lstrip("({ \t")
-        if not rest:
-            return None
-        head, tail = split_first_word(rest)
-        if not head:
-            return None
-        if (
-            ENV_WORD_RE.match(head)
-            or head in COMMAND_PREFIXES
-            or DEFINITION_HEAD_RE.match(head)
-        ):
-            rest = tail
-            continue
-        return head, tail
-
-
-def invocation_tails(rel: str, text: str, needles: list[str]) -> list[str]:
-    """Argument tails of every command whose command word names one of the needles.
-
-    This is the one binding rule every axis uses. A bare mention, an existence
-    test such as `[ -x "$dir/fm-x.sh" ]`, and a path assigned but never run are
-    not invocations, because none of them puts the name in command position. The
-    indirections the repository really uses are followed instead of refused: a
-    command substitution, a leading environment assignment, a variable holding
-    the path, a command string assigned to a variable, and a command string
-    handed to a nested shell or to `trap`.
-    """
-    tails: list[str] = []
-    pending = command_strings(rel, text)
-    for _ in range(INDIRECTION_DEPTH):
-        if not pending:
-            break
-        following: list[str] = []
-        for chunk in pending:
-            for segment in shell_segments(chunk):
-                following.extend(command_substitution_bodies(segment))
-                assignment = ASSIGNMENT_RE.match(segment)
-                if assignment is not None:
-                    following.extend(quoted_literals(assignment.group(1)))
-                parsed = command_head_and_tail(segment)
-                if parsed is None:
-                    continue
-                head, tail = parsed
-                if any(needle in head for needle in needles):
-                    tails.append(tail)
-                elif Path(head.strip("\"'")).name in COMMAND_STRING_HOSTS:
-                    following.extend(quoted_literals(tail))
-        pending = following
-    return tails
-
-
-def references(rel: str, text: str, owner_base: str, token: str | None, axis: str) -> bool:
-    """Does this file text read as a call of the entry point?"""
-    needle = token if axis == "function" and token is not None else owner_base
-    if needle not in text:
+            definition = LIBRARY_FUNCTION_RE.match(line)
+            if definition is not None:
+                stripped = line[definition.end():].strip()
+            if re.search(rf"\b{re.escape(token)}\b", stripped):
+                return True
         return False
-    needles = [needle]
-    if axis != "function":
-        for line in logical_lines(text):
-            assignment = PATH_ASSIGN_RE.match(line)
-            if assignment is not None and owner_base in assignment.group(2):
-                needles.append(f"${assignment.group(1)}")
-                needles.append(f"${{{assignment.group(1)}}}")
-    tails = invocation_tails(rel, text, needles)
-    if not tails:
+    if owner_base not in text:
         return False
-    if token is None or axis == "function":
+    if token is None:
         return True
-    bound = (
-        re.compile(rf"(?<![\w-]){re.escape(token)}(?![\w-])")
-        if axis == "flag"
-        else re.compile(rf"\b{re.escape(token)}\b")
-    )
-    forwarded = any(
-        SET_ARGS_RE.match(line) and bound.search(line) for line in logical_lines(text)
-    )
-    for tail in tails:
-        if bound.search(tail):
+    if axis == "flag":
+        return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text) is not None
+    pattern = re.compile(rf"\b{re.escape(token)}\b")
+    start = 0
+    while True:
+        at = text.find(owner_base, start)
+        if at < 0:
+            return False
+        if pattern.search(text, at, at + len(owner_base) + CALL_WINDOW):
             return True
-        if forwarded and POSITIONAL_RE.search(tail):
-            return True
-    return False
+        start = at + 1
 
 
 def ci_scheduled_tests(root: Path) -> set[str]:
@@ -762,7 +599,7 @@ def where_referenced(root: Path, tracked: list[str], entry_id: str, axis: str) -
             continue
         if axis == "function" and not reaches_library(rel, path):
             continue
-        if not references(rel, executable_source(root, rel), owner_base, token, axis):
+        if not references(executable_source(root, rel), owner_base, token, axis):
             continue
         if is_production(rel):
             seen["production"].append(rel)
@@ -803,7 +640,7 @@ def check_call_sites(
             fail(f"{entry_id}: {site_path} is the entry point itself, not a caller")
         if not (root / site_path).is_file():
             fail(f"{entry_id}: declared call site is missing: {site_path}")
-        if not references(site_path, executable_source(root, site_path), owner_base, token, axis):
+        if not references(executable_source(root, site_path), owner_base, token, axis):
             fail(f"{entry_id}: declared call site {site_path} does not call it")
         if axis == "function" and not reaches_library(site_path, path):
             fail(
@@ -858,7 +695,7 @@ def check_rejected_call_sites(root: Path, entry: dict, entry_id: str, axis: str)
                 f"{entry_id}: rejected call site {site_path} does not name the capability at all, "
                 f"so it records no near miss"
             )
-        if references(site_path, executable_source(root, site_path), owner_base, token, axis):
+        if references(executable_source(root, site_path), owner_base, token, axis):
             fail(
                 f"{entry_id}: rejected call site {site_path} now reads as a real call; either the "
                 f"executable-reference rule was weakened or the site became a genuine caller"

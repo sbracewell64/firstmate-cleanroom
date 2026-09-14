@@ -116,6 +116,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 When a change adds or edits an enforce, validate or refuse capability in `bin/`, wire its enforcing call before declaring it done.
 A capability whose only callers are tests is UNPROVEN, not active, however clearly the rule is documented.
 Declare it in `docs/enforcement-points.json` and run `bin/fm-enforcement-caller-check.sh`; [`docs/verification/enforcing-call-sites.md`](../../../docs/verification/enforcing-call-sites.md) owns the reading behind that inventory.
+The check confirms a declared call site still names the capability in executable text; it does not prove the shell runs it, so read the wiring yourself rather than treating a green check as proof of enforcement.
 Prefer wiring the call at the narrowest shared owner every relevant caller traverses over adding prose, a startup reminder, or an agent instruction that restates the rule.
 
 ## Repo style rules

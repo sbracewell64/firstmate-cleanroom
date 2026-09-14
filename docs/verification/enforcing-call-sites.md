@@ -18,23 +18,21 @@ In a sourced library, which means a `bin/` script another tracked script brings 
 In a script that is only executed, discovery is limited to the `fm_`-prefixed functions; the bound below records why.
 Every discovered candidate must be declared, so a new rule cannot ship without being accounted for.
 
-A declared `enforced` entry must name at least one call site that exists, sits on the production surface, and actually calls the capability.
+A declared `enforced` entry must name at least one call site that exists, sits on the production surface, and still names the capability in executable text.
+That is a NAMED-REFERENCE test, and the distinction matters: the check proves a declared, human-reviewed call site is still there and still mentions the capability, and it does NOT prove the shell executes it.
+Deciding invocation from static text needs a shell parse this check does not do; the residues are listed under Honest bounds and the follow-up slice that would close them is recorded below.
+What the check does catch is the family it was built for, an enforce-style entry point with no non-test caller at all, and that is unaffected by the distinction.
 The production surface is what a running Firstmate or its automated gates execute: `bin/`, the CI workflows, `.no-mistakes.yaml`, and the registered harness hook files.
 `tests/`, `docs/`, and agent skills are not on it.
 A test that calls the capability is not evidence that the guarded path reaches it, and the check says so mechanically.
-The reference must also be executable, because a matcher that reads a capability name in text as a caller reports enforcement where none exists - the exact defect this check is for.
+The reference must be executable, because a capability named only in a comment or in emitted operator text is prose that no reviewer should read as a caller.
 Comments are stripped per language before the match: `#` line comments in `.sh`, `.yaml` and `.yml` callers, and `//` line comments and `/* */` blocks in `.mjs`, `.js` and `.ts` callers.
 JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
-Command substitutions inside that text survive, so a genuine call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - still counts as enforcement.
+Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
 
-One binding rule covers all four axes, so no axis is quietly weaker than the others: the capability's name must stand in COMMAND POSITION of an actual command, and for a subcommand or long option the token must follow it in that same command.
-The site's text is read as logical lines, with a backslash continuation joined only on an odd number of trailing backslashes because an even count is escaped backslashes that end the command, and each line is split into command segments at its unquoted control operators.
-A bare mention, an existence test such as `[ -x "$dir/fm-x.sh" ]`, and a path assigned but never run are therefore not call sites.
-Every production surface is read the same way: a shell caller executes its own lines, and every other surface carries its commands inside literals, so a hook `command` field, a YAML `run:` step and a template literal handed to a process spawner are each read as a command string.
-The indirections the repository really uses are followed rather than refused: a command substitution, a leading environment assignment, a variable holding the script's path, a command string assigned to a variable, and a command string handed to a nested shell or to `trap`.
-The token has to follow the script in one of those segments, so a caller that runs the script with a different subcommand and separately uses the capability's word in a neighbouring command is not evidence.
-Two indirections the repository really uses are resolved rather than refused: a variable holding the script's path, as `bin/enter-firstmate.sh` does with `TOOL_PROFILE_OWNER`, and an argument list built with `set --` that the invocation forwards as `"$@"`, as `bin/fm-nm-observe.sh` does for `bin/fm-tool-profile.sh --require`.
+A subcommand or long option must appear near the script's name rather than merely somewhere in the same file: the token has to fall within 200 characters after the basename.
+A function token is matched on word boundaries, so `fm_lease_guard` is not satisfied by `fm_lease_guard_release`.
 
 A function call site must also have the library in scope: the site is the defining library itself, or a file that sources it directly or through a chain of sourced libraries.
 Without that link a bare name proves nothing, because two files can define independent functions of the same name, and the repository already contains such homonyms.
@@ -52,18 +50,18 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
-Command position is decided textually, not by a shell parse, so four residues remain.
-A token that follows the script anywhere in the same command counts even when it is not an argument, so `fm-startup-memory-budget.sh report > "$dir/enforce.log"` would still read as the `enforce` call; the shape now rejected is the same script invoked as `report` with a bare `enforce` word in a neighbouring command, which used to pass on proximity alone.
-The `set --` accommodation is file-wide: any `set --` line carrying the token, plus any invocation of that script forwarding `"$@"`, are bound without proving they are the same argument list.
-The variable-path accommodation is file-wide in the same way: a variable assigned the script's path anywhere in the file makes every later command naming that variable an invocation candidate.
-Reading every literal on a non-shell surface as a command string is deliberately generous: a literal that merely begins with the script's path counts even where the surrounding code never executes it.
+A named reference is not an invocation, and these three residues are reproducible against the tree as it stands.
+A path assigned but never executed still counts: in `bin/fm-tool-update-check.sh`, delete the exec at line 873 and the assignment `REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"` at line 79 alone keeps `bin/fm-check-register.sh` reported as enforced.
+An existence test still counts: in `bin/fm-pr-check.sh`, delete the invocation at line 118 and the surviving `[ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]` at line 105 alone keeps `bin/fm-commit-identity-verify.sh` reported as enforced.
+A subcommand token within 200 characters after the basename counts even across a line break, so a caller that runs `fm-startup-memory-budget.sh report` with a bare `enforce` word in a neighbouring command reads as the `enforce` call.
+Word boundaries do separate a longer sibling on the function axis, so `fm_lease_guard_release` does not satisfy `fm_lease_guard`; the script axis has no such separator, because the basename is matched as a plain substring of the executable text.
 
-The check proves that a production call site exists, NOT that the caller consumes the callee's verdict.
-A caller that invokes the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.
+Even where a declared call site really is an invocation, the check does not show that the caller consumes the callee's verdict.
+A caller that runs the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.
 `bin/fm-guard.sh` is the worked example: it always exits 0, so no caller can refuse on it, which the sweep below records.
 Extending the check to detect a discarded verdict is a candidate follow-up, recorded here as an observation rather than attempted in this slice.
 
-The check proves a production call site, not full reachability from an executable entry point.
+The check does not show full reachability from an executable entry point either.
 A function called only from another unreached function in the same file still counts, so the `note` field records which executable traverses it.
 A function defined inside a script that is only executed, never sourced, is discovered only when its name carries the `fm_` prefix.
 That is deliberate, and the measurement is the reason: 78 tracked functions in `bin/` carry an enforce verb without that prefix, 4 of them live in sourced libraries and are now discovered, and the other 74 are defined inside scripts that are only executed.
@@ -128,6 +126,10 @@ The four `fm_guard_*` helpers in `bin/fm-guard.sh` are declared the same way: th
 `bin/fm-home-seed.sh:validate` is the one entry whose reach could be widened: nothing re-validates `data/secondmates.md` after a hand edit, so a registry corrupted outside the seed path is found at its next consumer rather than at session start.
 That would wire a new call into `bin/fm-session-start.sh`, which a concurrent lane owns, so it is recorded here rather than done.
 
+Binding a declared call site to a real invocation is the second deferral, and it is a slice of its own rather than a tightening of this one.
+Doing it honestly needs a real shell-grammar parse rather than regex heuristics over text, because command position has to be decided for a command substitution, a pipeline, a leading environment assignment, a path held in a variable and a command string handed to a nested shell, and an existence test has to be told apart from an invocation.
+It is filed separately because every regex approximation attempted while building this check traded one wrong answer for another: each tightening closed one shape and opened a different one, which is worse than a narrower claim that is true.
+
 ### Documented invariants with no named owner
 
 The prose side was swept over `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, and every file under `docs/`, looking for sections that assert mechanical enforcement (`refuses`, `fails closed`, `enforces`) while naming no owning script or workflow anywhere in the section.
@@ -137,7 +139,7 @@ By that criterion, no section asserting mechanical enforcement failed to name an
 
 That criterion is narrower than the governing principle, and one tracked prose invariant does not survive the principle.
 `AGENTS.md` states that a session which cannot acquire and verify the session lock must remain read-only and must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
-`bin/fm-guard.sh` was the shared call site every one of those commands traverses, and this sweep reclassified it away from that invariant because it always exits 0 and every caller discards its status.
+`bin/fm-guard.sh` was the shared call site every one of those commands traverses, and this sweep reclassified it away from that invariant because it always exits 0, so no caller can act on a failing status.
 This sweep did NOT establish whether a narrower owner enforces the lock at another boundary, so the per-home session lock is recorded as UNPROVEN here rather than claimed to be unenforced.
 Reading it as ACTIVE because the rule is well known is exactly the softening the governing principle forbids.
 

@@ -62,9 +62,15 @@ jobs:
       # publication window and its derivation from the observed publication
       # latency, the poll cadence, the bounded live-read retry, the deadline
       # hand-off, and which outcome the closed window is attributed to. Read its
-      # header for the contract; do not re-spell any of it here, and do not pin
-      # NMF_PUBLICATION_WINDOW_SECONDS in this env, which would silently
-      # override the derived bound.
+      # header for the contract and do not re-spell any of it here. Pin none of
+      # the bounds it derives - the publication window, the poll cadence, the
+      # live-read attempts, the live-read backoff - in this env, in the job's, or
+      # at the workflow level: Actions env precedence is step > job > workflow,
+      # so a pin at any of the three silently overrides the derived bound. Keep
+      # the GITHUB_OUTPUT redirect as well; without it the resolve outputs go
+      # empty and the pinned action falls back to the frozen event payload this
+      # step exists to replace. tests/fm-no-mistakes-required.test.sh guards all
+      # of that against the workflow's parsed model.
       - name: Resolve live PR subject
         id: resolve
         if: steps.classify.outputs.mode == 'current'

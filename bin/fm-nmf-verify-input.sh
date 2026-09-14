@@ -419,7 +419,7 @@ await() {
   require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
   require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started elapsed polls=0 unread_polls=0 rc read_rc out sound_read= observed_head tail_gap
+  local started elapsed polls=0 unread_polls=0 rc read_rc out sound_read='' observed_head tail_gap
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=

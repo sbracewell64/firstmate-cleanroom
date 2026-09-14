@@ -404,6 +404,7 @@ AWAIT_ROOT="$TMP_ROOT/await"
 await_case() {
   local name=$1
   AWAIT_CASE="$AWAIT_ROOT/$name"
+  AWAIT_ENV=()
   AWAIT_BIN="$AWAIT_CASE/bin"
   rm -rf "$AWAIT_CASE"
   mkdir -p "$AWAIT_BIN"
@@ -439,10 +440,16 @@ await_read() {
     "$number" "$head" "$body" > "$AWAIT_CASE/read-$which.json"
 }
 
+# A case sets AWAIT_ENV to the bound overrides it needs before calling this;
+# they reach await in the child's own environment, so no case exports anything
+# into this shell and none of them leak into the next case. `await_case` empties
+# the array, and the `+` guard keeps the empty expansion legal under `set -u`.
+AWAIT_ENV=()
+
 run_await() {
-  PATH="$AWAIT_BIN:$PATH" GITHUB_REPOSITORY=regression/gate \
+  env PATH="$AWAIT_BIN:$PATH" GITHUB_REPOSITORY=regression/gate \
     NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
-    "$NMF_HELPER" await
+    ${AWAIT_ENV[@]+"${AWAIT_ENV[@]}"} "$NMF_HELPER" await
 }
 
 await_reads() { wc -c < "$AWAIT_CASE/reads" | tr -d ' '; }
@@ -539,9 +546,9 @@ test_await_refuses_a_superseded_head_immediately() {
 test_await_fails_closed_when_the_live_pr_cannot_be_read() {
   local out err rc
   await_case unreadable
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1)
   rc=0
-  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
-         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
   err=$(cat "$AWAIT_CASE/err")
   [ "$rc" -ne 0 ] || fail "await produced a subject without a sound live read"
   assert_contains "$err" "no sound live read" "the read failure was not reported"
@@ -552,7 +559,7 @@ test_await_fails_closed_when_the_live_pr_cannot_be_read() {
 }
 
 # A malformed bound must not silently become "judge immediately" or "wait
-# forever". The settings are exported inside a subshell rather than passed as a
+# forever". The setting is handed to await through AWAIT_ENV rather than as an
 # `env NAME=v run_await` prefix: run_await is a shell function, so `env` would
 # fail to exec it (127) and the case would pass without ever reaching await.
 test_await_refuses_a_malformed_bound() {
@@ -563,7 +570,8 @@ test_await_refuses_a_malformed_bound() {
       await_case "malformed-$setting"
       await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
       rc=0
-      out=$( export "$setting=$value"; run_await 2>&1 >/dev/null ) || rc=$?
+      AWAIT_ENV=("$setting=$value")
+      out=$(run_await 2>&1 >/dev/null) || rc=$?
       [ "$rc" -ne 0 ] || fail "await accepted $setting='$value'"
       assert_contains "$out" "$setting" "the refusal did not name the malformed setting $setting"
       [ "$(await_reads)" -eq 0 ] \
@@ -653,8 +661,9 @@ test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget() {
   await_fail 2 "gh: Bad Gateway (HTTP 502)"
   await_fail 3 "gh: Bad Gateway (HTTP 502)"
   await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  AWAIT_ENV=(NMF_PUBLICATION_POLL_SECONDS=9)
   rc=0
-  out=$( export NMF_PUBLICATION_POLL_SECONDS=9; run_await 2>/dev/null ) || rc=$?
+  out=$(run_await 2>/dev/null) || rc=$?
   expect_code 0 "$rc" "a transient blip past one read's budget reddened a PR whose attestation did publish"
   [ "$(await_reads)" -eq 4 ] \
     || fail "await made $(await_reads) live reads, expected the 3-attempt budget then a re-read on the next poll"
@@ -677,9 +686,9 @@ test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
   local out err rc widest
   await_case_failing no-sound-read
   await_fail default "gh: Bad Gateway (HTTP 502)"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1)
   rc=0
-  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
-         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
   err=$(cat "$AWAIT_CASE/err")
   [ "$rc" -ne 0 ] || fail "await produced a subject with no sound live read at all"
   case "$out" in
@@ -741,9 +750,9 @@ test_await_withholds_attribution_when_the_window_tail_is_unobserved() {
   await_case_failing sound-then-outage
   await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
   await_fail default "gh: Bad Gateway (HTTP 502)"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=5 NMF_PUBLICATION_POLL_SECONDS=1)
   rc=0
-  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=5 NMF_PUBLICATION_POLL_SECONDS=1
-         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
   err=$(cat "$AWAIT_CASE/err")
   expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
   case "$err" in
@@ -779,8 +788,8 @@ run_recovering_outage_case() {
     await_fail "$read_index" "gh: Bad Gateway (HTTP 502)"
   done
   await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
-  ( export NMF_PUBLICATION_WINDOW_SECONDS="$window" NMF_PUBLICATION_POLL_SECONDS=10
-    run_await 2>"$AWAIT_CASE/err" >"$AWAIT_CASE/out" )
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS="$window" NMF_PUBLICATION_POLL_SECONDS=10)
+  run_await 2>"$AWAIT_CASE/err" >"$AWAIT_CASE/out"
 }
 
 # Clock: poll 1 burns 6s on 502s, +10s poll, poll 2 reads soundly at 16s, +10s
@@ -834,9 +843,9 @@ test_await_attributes_at_a_tail_gap_of_exactly_one_poll_interval() {
   await_case_failing boundary-tail-gap
   await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
   await_fail default "gh: Bad Gateway (HTTP 502)"
-  ( export NMF_PUBLICATION_WINDOW_SECONDS=10 NMF_PUBLICATION_POLL_SECONDS=10 \
-           NMF_LIVE_READ_ATTEMPTS=1
-    run_await 2>"$AWAIT_CASE/err" >/dev/null ) || rc=$?
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=10 NMF_PUBLICATION_POLL_SECONDS=10
+             NMF_LIVE_READ_ATTEMPTS=1)
+  run_await 2>"$AWAIT_CASE/err" >/dev/null || rc=$?
   expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
   err=$(cat "$AWAIT_CASE/err")
   assert_publisher_attribution "$err" "a tail gap of exactly one poll interval was treated as an unobserved tail"

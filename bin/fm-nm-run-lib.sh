@@ -327,6 +327,13 @@ fm_nm_verified_terminal_successor() { # <worktree> <run> <submitted> <head> <bra
 FM_NM_EFFECT_REASON=${FM_NM_EFFECT_REASON:-}
 FM_NM_EFFECT_TUPLE=${FM_NM_EFFECT_TUPLE:-}
 
+# A run THIS process itself cancelled. The producer stops answering for a
+# cancelled run, so a caller that just cancelled one would otherwise be refused
+# by the consequence of its own action. Only the producer read is excused, and
+# only for this exact run id: the retained record's identity is not something a
+# cancellation can change, so every other cause still refuses unchanged.
+FM_NM_RUN_SELF_CANCELLED=${FM_NM_RUN_SELF_CANCELLED:-}
+
 # One conditional consumer for the producer's revocable exact-head tuple.
 # A successful read is current only at the producer snapshot. Every later
 # authority use revalidates the retained tuple; no local write/forge atomicity.
@@ -430,8 +437,11 @@ fm_nm_effect_current() {
   FM_NM_EFFECT_REASON=BINDING_HOME_MISSING
   [ -n "$nm_home" ] && [ -d "$nm_home" ] || return 1
   FM_NM_EFFECT_REASON=PRODUCER
-  FM_NM_EFFECT_TUPLE=$(NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" \
-    fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification") || return 1
+  if ! FM_NM_EFFECT_TUPLE=$(NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" \
+      fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"); then
+    [ -n "$FM_NM_RUN_SELF_CANCELLED" ] && [ "$FM_NM_RUN_SELF_CANCELLED" = "$run" ] || return 1
+    FM_NM_EFFECT_TUPLE=$qualification
+  fi
   FM_NM_EFFECT_REASON=
   printf '%s\n' "$FM_NM_EFFECT_TUPLE"
 }

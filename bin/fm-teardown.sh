@@ -1590,8 +1590,12 @@ conclude_task_no_mistakes_run() {  # <worktree>
   # live-state condition; fully closing the resume race needs upstream compare-and-cancel.
   fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi abort --run "$run_id" >/dev/null 2>&1 || true
   if out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1); then
-    task_status_is_terminal_run "$out" "$run_id" && return 0
+    if task_status_is_terminal_run "$out" "$run_id"; then
+      FM_NM_RUN_SELF_CANCELLED=$run_id
+      return 0
+    fi
   elif task_status_is_run_not_found "$out" "$run_id"; then
+    FM_NM_RUN_SELF_CANCELLED=$run_id
     return 0
   fi
   echo "REFUSED: no-mistakes run for $ID is still parked after axi abort; confirm it stopped (no-mistakes axi status) or abort it manually (no-mistakes axi abort --run <id>) before retrying teardown." >&2

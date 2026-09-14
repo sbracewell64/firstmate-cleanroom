@@ -454,17 +454,18 @@ test_away_reconcile_escalation_reports_once_per_identity() {
   dir=$(make_supercase away-reconcile-dedupe); state="$dir/state"; fakebin="$dir/daemon-bin"
   mkdir -p "$fakebin"
   ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$fakebin/fm-timeout-lib.sh"
-  # Exits non-zero, so the away scan prefixes its own CONTINUATION_CNO line.
-  # A prefix fused onto whichever task the rotation put first would make the
-  # dedupe key differ between scans for identical state.
+  # Exits non-zero, which is the ORDINARY path: each task's resume-handoff
+  # spawns bounded producer reads, so the 10s reconcile bound expires routinely
+  # and the away scan prefixes its own CONTINUATION_CNO line.
   cat > "$fakebin/fm-continuation-resolve.sh" <<EOF
 #!/usr/bin/env bash
 cat "$dir/reconcile-output"
 exit 1
 EOF
   chmod +x "$fakebin/fm-continuation-resolve.sh"
-  # The resolver rotates which task leads, so the same unchanged set arrives
-  # permuted between scans. Two tasks, order flipped, is that exact shape.
+  # The batch composition varies twice over: the resolver rotates which task
+  # leads, and the bound truncates it at a different point each scan. Three
+  # tasks, a different pair surviving each time, is that exact shape.
   printf '%s\n' \
     'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity' \
     'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
@@ -473,30 +474,34 @@ EOF
 
   rm -f "$state/.subsuper-last-scan"
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c . "$state/.subsuper-escalations")" = 1 ] \
-    || fail "the first away reconcile did not escalate exactly once"
+  [ "$(grep -c 'task=t1' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "the first away reconcile did not escalate t1 exactly once"
   grep -q 'CONTINUATION_CNO: away reconciliation unresolved status=1' "$state/.subsuper-escalations" \
     || fail "the unresolved away reconcile did not carry its own CNO disposition"
 
+  # Rotated AND truncated differently: t1 is unchanged and must stay silent,
+  # while t3 is new and must report once.
   printf '%s\n' \
-    'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
+    'COMPLETION_PENDING: task=t3 identity=ghi owner=firstmate reason=manager-capacity' \
     'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=manager-capacity' \
     > "$dir/reconcile-output"
   rm -f "$state/.subsuper-last-scan"
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c . "$state/.subsuper-escalations")" = 1 ] \
-    || fail "a rotated but unchanged away reconcile was re-typed into the away pane"
+  [ "$(grep -c 'task=t1' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "an unchanged per-task result was re-typed into the away pane after a rotated, truncated scan"
+  [ "$(grep -c 'task=t3' "$state/.subsuper-escalations")" = 1 ] \
+    || fail "a newly surfaced task did not report exactly once"
 
+  # A genuinely changed disposition for the same task still reports once.
   printf '%s\n' \
-    'COMPLETION_PENDING: task=t2 identity=def owner=firstmate reason=manager-capacity' \
     'COMPLETION_PENDING: task=t1 identity=abc owner=firstmate reason=dependency-held' \
     > "$dir/reconcile-output"
   rm -f "$state/.subsuper-last-scan"
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
-  [ "$(grep -c . "$state/.subsuper-escalations")" = 2 ] \
-    || fail "a changed away reconcile identity did not report again exactly once"
+  [ "$(grep -c 'task=t1' "$state/.subsuper-escalations")" = 2 ] \
+    || fail "a changed per-task disposition did not report again exactly once"
   [ "$(grep -c 'reason=dependency-held' "$state/.subsuper-escalations")" = 1 ] \
-    || fail "the changed set did not carry its new disposition"
+    || fail "the changed result did not carry its new disposition"
   pass "away reconcile escalations report once per identity, not once per scan"
 }
 

@@ -125,6 +125,21 @@ case "${1:-}" in
   axi)
     shift
     case "${1:-}" in
+      qualification)
+        shift
+        run_id=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in --run) run_id=${2:-}; shift 2 ;; *) shift ;; esac
+        done
+        # The producer stops answering for a run that was cancelled, which is
+        # exactly what this teardown's own abort does to its parked run.
+        if [ -n "${FM_FAKE_NM_ABORT_LOG:-}" ] \
+           && grep -Fxq "abort --run $run_id" "$FM_FAKE_NM_ABORT_LOG" 2>/dev/null; then
+          exit 1
+        fi
+        [ "${FM_FAKE_QUALIFICATION_REVOKED:-0}" != 1 ] || exit 1
+        cat "${FM_FAKE_QUALIFICATION_JSON:?}"
+        ;;
       status)
         shift
         run_id=""
@@ -2635,6 +2650,110 @@ bind_validation_run_meta() {  # <case-dir> <stage>
     >> "$case_dir/state/task-x1.meta"
 }
 
+# A qualification-obligated record: the recorded CI-ready effect, plus the
+# observation binding fm_nm_effect_current requires before it consults the
+# producer at all.
+qualified_ci_ready_meta() {  # <case-dir> <run-id>
+  local case_dir=$1 run=$2 head effect
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  effect=$(jq -cn --arg task task-x1 --arg gen teardown-test-task-x1 \
+    --arg attempt 'producer:0' --arg run "$run" --arg head "$head" \
+    --arg pr 'https://github.com/o/r/pull/7' \
+    '{qualification:{schema:"no-mistakes/ci-qualification/v1",run:$run,repo:"portable-fixture",
+      branch:"fm/task-x1",head:$head,status:"running",attempt:"producer:0",
+      generation:"qualification-1",push_generation:1,
+      evidence:{provider:"github",host:"github.com",repository:"o/r",pr:$pr,declared_no_ci:false,
+        checks:[{name:"portable contract fixture",bucket:"pass"}]},
+      evidence_sha256:"0000000000000000000000000000000000000000000000000000000000000000",
+      validity:"current-at-read; revocable; bind exact identity and revalidate before downstream use"},
+     task:$task,generation:$gen,attempt:$attempt,run:$run,candidate:$head,source_head:$head,pr:$pr}')
+  printf '%s\n' \
+    'stage=ci-ready' \
+    "stage_run=$run" \
+    'stage_attempt=producer:0' \
+    'stage_branch=fm/task-x1' \
+    "stage_head=$head" \
+    'stage_gen=teardown-test-task-x1' \
+    'stage_pr=https://github.com/o/r/pull/7' \
+    "stage_ci_ready_effect=$effect" \
+    >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' "run_id=$run" 'attempt_id=producer:0' "nm_home=$case_dir" \
+    > "$case_dir/state/task-x1.nm-observe"
+  printf '%s' "$effect" | jq -c .qualification > "$case_dir/qualification.json"
+}
+
+# Teardown's own abort cancels the run, and the producer then stops answering
+# for it. The completion checks that run after that abort must not demand
+# evidence teardown itself made impossible - that strands the task.
+# The metadata parser is the declared boundary that refuses stale or conflicting
+# authority fields. A duplicated authority field is a conflicting field, and it
+# belongs here rather than three layers downstream as MALFORMED.
+test_metadata_parse_refuses_a_duplicated_authority_field() {
+  local dir handoff
+  dir="$TMP_ROOT/metadata-duplicate-field"
+  mkdir -p "$dir"
+  handoff='{"identity":"abc","contract":{"schema":"fm-completion-handoff/v1"},"released":false,"status":"pending","receipt":null}'
+  printf '%s\n' 'kind=ship' 'mode=direct-PR' \
+    'pr=https://github.com/o/r/pull/7' "completion_handoff=$handoff" > "$dir/one.meta"
+  fm_pr_metadata_identity_parse "$dir/one.meta" one \
+    || fail 'a single completion handoff must parse'
+
+  printf '%s\n' 'kind=ship' 'mode=direct-PR' 'pr=https://github.com/o/r/pull/7' \
+    "completion_handoff=$handoff" "completion_handoff=$handoff" > "$dir/two.meta"
+  ! fm_pr_metadata_identity_parse "$dir/two.meta" two \
+    || fail 'a duplicated completion handoff must be refused at the metadata boundary'
+  pass 'the metadata boundary refuses a duplicated completion handoff field'
+}
+
+test_parked_own_run_teardown_survives_its_own_abort() {
+  local case_dir rc
+  case_dir=$(make_case parked-run-qualified)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  qualified_ci_ready_meta "$case_dir" 01RUN
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$(git -C "$case_dir/wt" rev-parse HEAD)")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_FAKE_QUALIFICATION_JSON="$case_dir/qualification.json" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-qualified: teardown should complete: $(cat "$case_dir/stderr")"
+  assert_grep 'abort --run 01RUN' "$case_dir/nm-abort.log" \
+    'parked-run-qualified: the parked own run was never aborted'
+  ! grep -q 'exact qualification is invalidated' "$case_dir/stderr" \
+    || fail "parked-run-qualified: teardown refused on the evidence its own abort invalidated"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    'parked-run-qualified: the task record survived a completed teardown'
+  pass "a parked own run's abort does not strand the teardown that performed it"
+}
+
+# The allowance is bound to the run this teardown cancelled and to the producer
+# read alone. An invalidation from any other cause still refuses.
+test_qualification_revoked_by_another_cause_still_refuses() {
+  local case_dir rc
+  case_dir=$(make_case parked-run-other-cause)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  qualified_ci_ready_meta "$case_dir" 01RUN
+  # The recorded effect no longer matches the record's own identity, which no
+  # abort can cause and which is checked before the producer is consulted.
+  sed -i 's/^stage_attempt=producer:0$/stage_attempt=producer:9/' "$case_dir/state/task-x1.meta"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$(git -C "$case_dir/wt" rev-parse HEAD)")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_FAKE_QUALIFICATION_JSON="$case_dir/qualification.json" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" 'parked-run-other-cause: teardown should refuse'
+  grep -q 'exact qualification is invalidated' "$case_dir/stderr" \
+    || fail "parked-run-other-cause: refusal did not name the missing qualification: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    'parked-run-other-cause: refused teardown erased the unresolved record'
+  pass "a qualification invalidated by any other cause still refuses after the abort"
+}
+
 test_bound_run_without_ci_ready_tears_down() {
   local case_dir rc
   case_dir=$(make_case bound-run-no-ci-ready)
@@ -2761,6 +2880,9 @@ test_recorded_ci_ready_effect_still_requires_qualification() {
   pass "a recorded CI-ready effect still requires current qualification evidence"
 }
 
+test_metadata_parse_refuses_a_duplicated_authority_field
+test_parked_own_run_teardown_survives_its_own_abort
+test_qualification_revoked_by_another_cause_still_refuses
 test_bound_run_without_ci_ready_tears_down
 test_bound_run_without_ci_ready_force_discards
 test_unreleased_handoff_refuses_then_force_discards

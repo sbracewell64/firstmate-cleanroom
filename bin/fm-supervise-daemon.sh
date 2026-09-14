@@ -1175,7 +1175,7 @@ housekeeping() {  # <state>
     if afk_active "$state"; then
       # Reuse the existing bounded scan and escalation transport. An empty
       # wake queue or already-presented programme cannot hide an open handoff.
-      local completion completion_rc=0 completion_item completion_marker completion_ident completion_key
+      local completion completion_rc=0 completion_line completion_key completion_marker completion_ident
       # shellcheck source=bin/fm-timeout-lib.sh
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
@@ -1185,23 +1185,25 @@ housekeeping() {  # <state>
       # expiry is genuinely different content and is meant to report again.
       [ "$completion_rc" -eq 0 ] \
         || completion=$(printf '%s\n%s' "CONTINUATION_CNO: away reconciliation unresolved status=$completion_rc" "$completion")
-      if [ -n "$completion" ]; then
-        # A pending handoff is a long-lived manager dependency, so the same
-        # digest must not be re-typed every scan. Keyed on the reconcile
-        # output through the same seen-marker owner every sibling uses.
-        # The key is the SET of per-task lines, not their rendered order: the
-        # resolver rotates which task leads, so the same unchanged state arrives
-        # permuted and an order-sensitive key would re-type it on most scans.
-        completion_item=$(_collapse_newlines "$completion")
-        completion_key=$(_collapse_newlines "$(printf '%s' "$completion" | LC_ALL=C sort)")
-        completion_marker=$(status_daemon_seen_marker_path "$state" away-reconcile)
-        completion_ident=$(status_observed_signature "$state" "${#completion_key}" "$completion_key")
-        if ! status_presentation_marker_reported_matches "$completion_marker" "$completion_ident"; then
-          if escalate_add "$state" "$completion_item"; then
-            status_presentation_marker_report "$completion_marker" "$completion_ident" || true
-          fi
+      # A pending handoff is a long-lived manager dependency, so the same line
+      # must not be re-typed every scan. Each line is deduped against its OWN
+      # marker through the same seen-marker owner every sibling in this loop
+      # uses. GENERAL RULE: a dedupe identity must be PER ITEM, never per
+      # batch, whenever the batch composition can vary. It varies here twice
+      # over - the resolver rotates which task leads, and the 10s bound
+      # truncates the batch at a different point each scan - so a per-batch key
+      # would differ every scan for state that never changed.
+      while IFS= read -r completion_line; do
+        [ -n "$completion_line" ] || continue
+        completion_key=$(printf '%s' "$completion_line" | sed -n 's/^[A-Z_]*: task=\([^ ]*\).*/\1/p')
+        [ -n "$completion_key" ] || completion_key=away-reconcile
+        completion_marker=$(status_daemon_seen_marker_path "$state" "completion-$completion_key")
+        completion_ident=$(status_observed_signature "$state" "${#completion_line}" "$completion_line")
+        status_presentation_marker_reported_matches "$completion_marker" "$completion_ident" && continue
+        if escalate_add "$state" "$completion_line"; then
+          status_presentation_marker_report "$completion_marker" "$completion_ident" || true
         fi
-      fi
+      done <<< "$completion"
     fi
     for f in "$state"/*.status; do
       [ -e "$f" ] || [ -L "$f" ] || continue

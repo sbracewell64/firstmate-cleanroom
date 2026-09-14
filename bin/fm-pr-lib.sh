@@ -289,7 +289,7 @@ fm_pr_regular_destination_on_device_or_absent() {
 }
 
 fm_pr_metadata_identity_parse() {
-  local file=$1 task=${2:-$(basename "$1" .meta)} line value pr_count=0 seen_pr=0 post_pr_invalid=0 effect_count=0 qualification
+  local file=$1 task=${2:-$(basename "$1" .meta)} line value pr_count=0 seen_pr=0 post_pr_invalid=0 effect_count=0 handoff_count=0 qualification
   FM_PR_META_PROVIDER=
   FM_PR_META_URL=
   FM_PR_META_HOST=
@@ -323,6 +323,8 @@ fm_pr_metadata_identity_parse() {
         [ "$effect_count" -eq 1 ] || post_pr_invalid=1
         ;;
       completion_handoff=*)
+        handoff_count=$((handoff_count + 1))
+        [ "$handoff_count" -eq 1 ] || post_pr_invalid=1
         printf '%s' "${line#*=}" | jq -e 'type == "object" and .contract.schema == "fm-completion-handoff/v1"' >/dev/null 2>&1 || post_pr_invalid=1
         ;;
       # The lifecycle owner rewrites these exact fields after registration.

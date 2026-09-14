@@ -288,7 +288,7 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
 teardown_completion_current() {  # <--check|--archive>
   local -a retire=()
   [ "$1" = --archive ] || retire=(--check)
-  if fm_nm_effect_required "$META"; then
+  if fm_nm_recorded_qualification_obligated "$META"; then
     fm_nm_effect_current "$META" >/dev/null || {
       echo "REFUSED: exact qualification is invalidated or unavailable; task $ID remains unresolved" >&2
       return 1

@@ -92,8 +92,11 @@ REAL_MV=$(command -v mv) || fail "these tests need mv to simulate a failed poll 
 
 # Build a fresh sandbox for one test case: a state dir with a task meta and a
 # fakebin with a gh-axi mock that records how it was invoked. Echoes the case dir.
+# Args: name [mode]. These cases exercise the forge merge transport, which is
+# mode-independent; a no-mistakes task additionally carries the qualified-head
+# obligation, so the mode is opt-in per case.
 make_case() {
-  local name=$1 case_dir fakebin
+  local name=$1 mode=${2:-direct-PR} case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$fakebin"
@@ -102,7 +105,7 @@ make_case() {
     "worktree=$case_dir/wt" \
     "project=$case_dir/project" \
     "kind=ship" \
-    "mode=no-mistakes"
+    "mode=$mode"
   printf '%s\n' \
     'state=MERGED' \
     'merged=true' \
@@ -1259,6 +1262,31 @@ test_extra_merge_args_forwarded() {
   pass "fm-pr-merge forwards extra flags to gh-axi pr merge after the -- separator"
 }
 
+# A no-mistakes PR that never reached CI-ready is the case the qualified-head
+# guard exists to stop. An unevaluable qualification must never collapse into
+# permission at the merge chokepoint.
+test_unqualified_no_mistakes_merge_refuses_before_the_forge() {
+  local case_dir rc
+  case_dir=$(make_case unqualified-no-mistakes no-mistakes)
+  mkdir -p "$case_dir/wt"
+  printf '%s\n' 'stage=validation-running' 'stage_run=01BOUNDRUN' >> "$case_dir/state/task-x1.meta"
+  add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unqualified-no-mistakes: the merge should refuse"
+  assert_grep 'NOT_CI_READY' "$case_dir/stderr" \
+    "unqualified-no-mistakes: refusal did not name the missing CI-ready qualification"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "unqualified-no-mistakes: an unqualified no-mistakes PR reached the merge transport"
+  pass "a no-mistakes PR with no recorded CI-ready qualification refuses at the merge boundary"
+}
+
 test_missing_meta_refuses_before_merge() {
   local case_dir fakebin rc
   case_dir="$TMP_ROOT/missing-meta"
@@ -2101,6 +2129,7 @@ test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
 test_github_queue_required_refusal_names_retry_flags
 test_extra_merge_args_forwarded
+test_unqualified_no_mistakes_merge_refuses_before_the_forge
 test_missing_meta_refuses_before_merge
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording

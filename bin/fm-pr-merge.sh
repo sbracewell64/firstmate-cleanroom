@@ -627,7 +627,10 @@ gitlab_confirm_merged() {
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
 record_pr_metadata || exit 1
-if fm_nm_effect_required "$STATE/$ID.meta"; then
+if fm_nm_merge_qualification_obligated "$STATE/$ID.meta"; then
+  fm_nm_recorded_qualification_obligated "$STATE/$ID.meta" || {
+    echo 'error: NOT_CI_READY: a no-mistakes merge carries no recorded CI-ready qualification; merge remains unresolved' >&2; exit 1;
+  }
   fm_nm_effect_current "$STATE/$ID.meta" "$URL" >/dev/null || {
     echo 'error: QUALIFICATION_REVOKED: merge remains unresolved' >&2; exit 1;
   }

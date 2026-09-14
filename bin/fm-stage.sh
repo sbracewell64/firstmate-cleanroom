@@ -796,7 +796,7 @@ do_ci_ready() (
 # A no-mistakes task may neither enter nor remain in a qualified stage without
 # current producer qualification. Binding a validation run is not entering one.
 qualification_applies() {  # <transition>
-  fm_nm_effect_required "$META" && return 0
+  fm_nm_recorded_qualification_obligated "$META" && return 0
   case "$1" in
     ci-ready|landing|activated) grep -qx 'mode=no-mistakes' "$META" ;;
     *) return 1 ;;
@@ -820,12 +820,12 @@ do_landing() {
   engineering_context landing
   current=$(meta stage)
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
-  require_current_qualification landing
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
   if [ -n "$PR_ARG" ] && [ "$PR_ARG" != "$(meta stage_pr)" ] && qualification_applies landing; then
     refuse landing DESTINATION_MISMATCH "--pr $PR_ARG is not the qualified destination $(dash "$(meta stage_pr)"); landing carries the destination CI-ready qualified"
   fi
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
+  require_current_qualification landing
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ]; then
     unchanged landing
@@ -841,7 +841,7 @@ readback_evidence() {  # prints the evidence, or 1
   if [ -f "$marker" ] && [ ! -L "$marker" ]; then
     if { IFS= read -r version && IFS= read -r provider && IFS= read -r host && IFS= read -r path && IFS= read -r number && ! IFS= read -r extra; } < "$marker" \
         && [ "$version" = fm-pr-poll-merge-notified-v1 ] && [ -n "$provider" ] && [ -n "$host" ] && [ -n "$path" ] && [ -n "$number" ]; then
-      if fm_nm_effect_required "$META"; then
+      if fm_nm_recorded_qualification_obligated "$META"; then
         fm_pr_url_parse "$(meta stage_pr)" >/dev/null 2>&1 || return 1
         [ "$provider" = "$FM_PR_PROVIDER" ] && [ "$host" = "$FM_PR_HOST" ] \
           && [ "$path" = "$FM_PR_PATH" ] && [ "$number" = "$FM_PR_NUMBER" ] || return 1
@@ -851,7 +851,7 @@ readback_evidence() {  # prints the evidence, or 1
     fi
   fi
   head=$(meta stage_head)
-  if fm_nm_effect_required "$META"; then
+  if fm_nm_recorded_qualification_obligated "$META"; then
     head=$(fm_nm_effect_current "$META" | jq -er .head) || return 1
   fi
   if [ -n "$head" ] && [ -n "$PROJECT" ] && [ -d "$PROJECT" ]; then

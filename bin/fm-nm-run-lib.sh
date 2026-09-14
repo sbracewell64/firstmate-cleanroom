@@ -332,17 +332,22 @@ fm_nm_qualification_read() {
     args+=(--attempt "$(printf '%s' "$prior" | jq -r .attempt)" --generation "$(printf '%s' "$prior" | jq -r .generation)")
   fi
   result=$(fm_nm_run_checked "$dir" 10 "${args[@]}") || return 1
-  fm_nm_qualification_valid "$result" "$run" "$head" "$branch" "$pr" || return 1
+  fm_nm_qualification_valid "$result" "$run" "$head" "$branch" "$pr" "$prior" || return 1
   result=$(printf '%s' "$result" | jq -cS .) || return 1
-  if [ -n "$prior" ]; then
-    [ "$result" = "$(printf '%s' "$prior" | jq -cS .)" ] || return 1
-  fi
   printf '%s\n' "$result"
 }
 
-fm_nm_qualification_valid() {
-  printf '%s' "$1" | jq -se --arg run "$2" --arg head "$3" --arg branch "$4" --arg pr "$5" '
+# The one owner of what counts as a valid tuple. Given a retained tuple it also
+# pins the identity that may never move; the producer's own advance through
+# status and accumulating green evidence is not a revocation.
+fm_nm_qualification_valid() {  # <tuple> <run> <head> <branch> <pr> [retained tuple]
+  local prior=${6:-}
+  [ -n "$prior" ] || prior=null
+  printf '%s' "$1" | jq -se --arg run "$2" --arg head "$3" --arg branch "$4" --arg pr "$5" \
+    --argjson prior "$prior" '
     length == 1 and (.[0] |
+      ($prior == null or (.repo == $prior.repo and .attempt == $prior.attempt and
+        .generation == $prior.generation and .push_generation == $prior.push_generation)) and
       .schema == "no-mistakes/ci-qualification/v1" and
       .validity == "current-at-read; revocable; bind exact identity and revalidate before downstream use" and
       .run == $run and .head == $head and (.head | test("^[0-9a-f]{40}$")) and
@@ -392,11 +397,21 @@ fm_nm_effect_current() {
   NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"
 }
 
-# A qualified stage - not a merely bound validation run - is the obligation.
-# The recorded stage is checked as well as the effect so that deleting the
-# effect line cannot buy an unqualified retirement.
-fm_nm_effect_required() {
+# Does this record carry a CI-ready qualification obligation? A qualified stage
+# - not a merely bound validation run - is the obligation, and the recorded
+# stage is read as well as the effect so that deleting the effect line cannot
+# buy an unqualified transition, registration, poll or retirement.
+fm_nm_recorded_qualification_obligated() {
   local file=$1
   grep -q '^stage_ci_ready_effect=.' "$file" && return 0
   grep -qx 'mode=no-mistakes' "$file" && grep -qE '^stage=(ci-ready|landing|activated)$' "$file"
+}
+
+# Must this task's PR merge be bound to a qualified head? Every no-mistakes
+# merge must, whatever stage the record reached: a no-mistakes PR that never
+# reached CI-ready is the case the merge guard exists to stop, not a lesser one.
+fm_nm_merge_qualification_obligated() {
+  local file=$1
+  grep -qx 'mode=no-mistakes' "$file" && return 0
+  grep -q '^stage_ci_ready_effect=.' "$file"
 }

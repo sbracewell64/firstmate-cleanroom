@@ -342,7 +342,7 @@ fm_pr_metadata_identity_parse() {
   [ "$pr_count" -eq 1 ] || return 1
   [ "$post_pr_invalid" -eq 0 ] || return 1
   [ -n "$FM_PR_META_URL" ] || return 1
-  if fm_nm_effect_required "$file"; then
+  if fm_nm_recorded_qualification_obligated "$file"; then
     qualification=$(fm_nm_effect_current "$file" "$FM_PR_META_URL" "$task") || return 1
     [ "$(sed -n 's/^pr_head=//p' "$file")" = "$(printf '%s' "$qualification" | jq -r .head)" ] || return 1
   fi

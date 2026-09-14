@@ -145,7 +145,7 @@ META_LOCK_HELD=1
 META_DEVICE=$(fm_pr_file_device "$META") || exit 1
 STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 [ "$META_DEVICE" = "$STATE_DEVICE" ] || { echo "error: task metadata is unavailable" >&2; exit 1; }
-if fm_nm_effect_required "$META"; then
+if fm_nm_recorded_qualification_obligated "$META"; then
   QUALIFICATION=$(fm_nm_effect_current "$META" "$URL") || {
     echo 'error: QUALIFICATION_REVOKED: PR registration remains unresolved' >&2; exit 1;
   }

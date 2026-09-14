@@ -161,7 +161,9 @@ test_retirement_revalidates_report_and_effect() (
         ;;
     esac
     before=$(cat "$FM_STATE_OVERRIDE/source.meta")
-    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
+    force=()
+    [ "$mutation" != advanced-force ] || force=(--force)
+    rc=0; out=$("$ROOT/bin/fm-teardown.sh" source ${force[@]+"${force[@]}"} 2>&1) || rc=$?
     expect_code 1 "$rc" "$mutation report/effect must prevent retirement"
     assert_contains "$out" 'completion handoff remains unresolved' "$mutation must reach completion retirement refusal"
     [ "$before" = "$(cat "$FM_STATE_OVERRIDE/source.meta")" ] || fail 'retirement changed unresolved metadata'
@@ -706,7 +708,7 @@ test_handoff_identity_survives_a_broken_digest_tool() (
 # says, not the admission wording, or a resolved obligation is routed back to
 # the manager as open capacity work.
 test_readmission_reports_the_saved_disposition() (
-  local out identity receipt owner
+  local out rc identity receipt owner
   export FM_STATE_OVERRIDE="$TMP_ROOT/readmission-state"
   mkdir -p "$FM_STATE_OVERRIDE"
   cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
@@ -734,6 +736,16 @@ test_readmission_reports_the_saved_disposition() (
   assert_contains "$out" "owner=$owner" 'a dispatched re-admission must report the saved next owner'
   assert_not_contains "$out" 'reason=downstream-action-unconfirmed' 'a confirmed CI-ready effect carries no inbox downstream obligation'
   [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 're-admission rewrote the dispatched receipt'
+
+  # An invalidated qualification cannot be reported as a confirmed effect while
+  # every sibling caller refuses it.
+  canonical running
+  rc=0; out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a revoked qualification must refuse re-admission'
+  assert_contains "$out" CI_QUALIFICATION_REVOKED 'revoked re-admission must name the revocation'
+  assert_not_contains "$out" COMPLETION_DISPATCHED 'revoked re-admission reported the obligation closed'
+  [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 'refusal erased the historical receipt'
+  canonical completed checks-passed
   pass 'idempotent re-admission reports the saved record disposition, not the admission wording'
 )
 
@@ -780,6 +792,13 @@ test_landing_destination_mismatch_refuses_early() (
   rc=0; out=$(stage landing --pr not-a-url 2>&1) || rc=$?
   expect_code 1 "$rc" 'a malformed --pr must refuse on an activated task'
   assert_contains "$out" BAD_PR 'a malformed PR argument must be refused before the activated short-circuit'
+
+  canonical running
+  rc=0; out=$(stage landing --pr not-a-url 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a malformed --pr must refuse while the producer read is unavailable'
+  assert_contains "$out" BAD_PR 'the caller argument must be named even when qualification cannot be read'
+  assert_not_contains "$out" QUALIFICATION_REVOKED 'argument validation must precede qualification currency'
+  canonical completed checks-passed
 
   out=$(stage landing --pr https://github.com/o/r/pull/7) || fail "activated qualified destination must stay unchanged: $out"
   assert_contains "$out" STAGE_UNCHANGED 'the qualified destination keeps the idempotent activated short-circuit'
@@ -1028,6 +1047,7 @@ test_drain_observation_wait_releases_presentation() (
 
 # R12/R13: the producer, not terminal status, owns exact qualification.
 test_monitoring_qualification_and_revocation() (
+  local out rc
   export FM_STATE_OVERRIDE="$TMP_ROOT/monitoring-state"
   mkdir -p "$FM_STATE_OVERRIDE"
   cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
@@ -1044,6 +1064,33 @@ test_monitoring_qualification_and_revocation() (
   stage resume-handoff > "$TMP_ROOT/monitoring-recovery" || fail 'monitoring effect recovery'
   stage resume-handoff > "$TMP_ROOT/monitoring-repeat" || fail 'monitoring repeat'
   cmp "$TMP_ROOT/monitoring-status" "$FM_STATE_OVERRIDE/source.status" || fail 'monitoring receipt recovery repeated effect'
+
+  # The producer's own advance from green monitoring to a finished run is a
+  # legitimate advance, not a revocation: the retained identity is unchanged,
+  # so every later current use must still read the tuple.
+  [ "$(meta stage_ci_ready_effect | jq -r .qualification.status)" = running ] \
+    || fail 'the stored tuple did not record the monitoring producer status'
+  canonical completed checks-passed
+  unset FM_FAKE_CI_LOGS
+  stage show > "$TMP_ROOT/advance-show" 2>&1 || fail "advanced producer must not revoke show: $(cat "$TMP_ROOT/advance-show")"
+  stage landing --pr https://github.com/o/r/pull/7 > "$TMP_ROOT/advance-landing" 2>&1 \
+    || fail "advanced producer must not revoke landing: $(cat "$TMP_ROOT/advance-landing")"
+  [ "$(meta stage)" = landing ] || fail 'advanced producer blocked landing'
+  printf '%s\n' fm-pr-poll-merge-notified-v1 github github.com o/r 7 > "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
+  stage activated > "$TMP_ROOT/advance-activated" 2>&1 \
+    || fail "advanced producer must not revoke activation: $(cat "$TMP_ROOT/advance-activated")"
+  [ "$(meta stage)" = activated ] || fail 'advanced producer blocked activation'
+  # A moved identity is still a revocation, even though the read itself answers.
+  FM_TEST_QUALIFICATION_FILE=$(mktemp "$TMP_ROOT/foreign-tuple.XXXXXX")
+  meta stage_ci_ready_effect | jq -c '.qualification | .push_generation=2' > "$FM_TEST_QUALIFICATION_FILE"
+  export FM_TEST_QUALIFICATION_FILE
+  rc=0; out=$(stage show 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a changed producer push generation must still revoke'
+  assert_contains "$out" QUALIFICATION_REVOKED 'moved identity must be reported as a revocation'
+  unset FM_TEST_QUALIFICATION_FILE
+  # Restore the monitoring producer so the CI-log lever below still invalidates.
+  canonical ci
+
   cp "$FM_STATE_OVERRIDE/source.meta" "$TMP_ROOT/monitoring-before"
   export FM_FAKE_CI_LOGS='pending checks'
   for verb in show ci-ready landing activated resume-handoff; do
@@ -1056,7 +1103,7 @@ test_monitoring_qualification_and_revocation() (
 )
 
 test_report_changes_during_teardown_status() (
-  local mutation out rc original_wt=$WT proj holder_pid
+  local mutation out rc original_wt=$WT proj holder_pid force
   export FM_STATE_OVERRIDE="$TMP_ROOT/teardown-state"
   mkdir -p "$FM_STATE_OVERRIDE" "$TMP_ROOT/teardown-bin"
   for tool in tmux lsof; do
@@ -1083,7 +1130,7 @@ SH
   # with restored bytes). held: the observation lock is held across the
   # archive and the report changes while finalize waits. unchanged/direct:
   # positive controls.
-  for mutation in ${1:-changed deleted unchanged revoked direct late removed removed-late removed-revoked held}; do
+  for mutation in ${1:-changed deleted unchanged revoked direct advanced advanced-force late removed removed-late removed-revoked held}; do
     WT="$TMP_ROOT/teardown-wt-$mutation"
     proj="$TMP_ROOT/teardown-proj-$mutation"
     git clone -q --no-hardlinks "$original_wt" "$WT" || fail 'private teardown clone'
@@ -1098,6 +1145,18 @@ SH
       revoked|direct)
         stage ci-ready --pr https://github.com/o/r/pull/7 >/dev/null || fail 'direct qualification'
         [ -z "$(meta completion_handoff)" ] || fail 'direct case must carry no handoff'
+        ;;
+      advanced|advanced-force)
+        # Qualified while the run was still green-monitoring, then the producer
+        # finished the run. Retirement must not read that advance as a
+        # revocation, or a normally landed task can never be retired at all.
+        canonical ci
+        FM_FAKE_CI_LOGS='all CI checks passed - still monitoring' \
+          stage ci-ready --pr https://github.com/o/r/pull/7 >/dev/null || fail 'monitoring qualification'
+        [ "$(meta stage_ci_ready_effect | jq -r .qualification.status)" = running ] \
+          || fail 'monitoring qualification did not record the running producer status'
+        canonical completed checks-passed
+        [ -z "$(meta completion_handoff)" ] || fail 'advanced case must carry no handoff'
         ;;
       *)
         stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'teardown handoff'
@@ -1164,16 +1223,17 @@ SH
     mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
     assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
     case "$mutation" in
-      unchanged|direct|removed)
+      unchanged|direct|removed|advanced|advanced-force)
         expect_code 0 "$rc" "$mutation actual teardown: $out"
         assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'final observation refresh must read canonical state'
         assert_absent "$FM_STATE_OVERRIDE/source.meta" "$mutation teardown retained metadata"
         assert_absent "$FM_STATE_OVERRIDE/source.nm-observe" "$mutation teardown retained observation obligation"
         assert_absent "$FM_STATE_OVERRIDE/source.pr-poll" "$mutation teardown retained poll artifact"
         assert_grep 'finalized at' "$FM_DATA_OVERRIDE/source/nm-observation-receipt.md" 'observation receipt not finalized'
-        if [ "$mutation" != direct ]; then
-          assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing'
-        fi
+        case "$mutation" in
+          direct|advanced|advanced-force) ;;
+          *) assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing' ;;
+        esac
         [ "$mutation" != removed ] || assert_absent "$WT" 'backend double must have removed the worktree'
         ;;
       *)

@@ -204,6 +204,10 @@ fm_completion_report_saved() {  # <saved JSON> <identity>
   receipt=$(printf '%s' "$saved" | jq -r '.receipt // empty')
   kind=$(printf '%s' "$saved" | jq -r '.contract.action.kind // empty')
   if [ "$status" = dispatched ] && [ -n "$receipt" ]; then
+    if [ "$kind" != task-inbox ] \
+        && ! fm_completion_ci_ready_effect "$(printf '%s' "$saved" | jq -c .contract)"; then
+      fm_completion_refuse CI_QUALIFICATION_REVOKED; return 1
+    fi
     fm_completion_dispatched_line "$identity" "$receipt" "$owner"
     [ "$kind" != task-inbox ] || fm_completion_downstream_open_line "$identity" "$receipt" "$owner"
   else

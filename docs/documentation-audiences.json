@@ -285,6 +285,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/captain-hold-lifecycle.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },
@@ -301,27 +305,7 @@
       "audience": "operator-current"
     },
     {
-      "path": "docs/captain-hold-lifecycle.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": "docs/programme-continuation.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": "docs/no-mistakes-observation.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": "programmes/cleanroom-af-package/README.md",
-      "audience": "maintainer-architecture"
-    },
-    {
       "path": "docs/documentation-audiences.md",
-      "audience": "maintainer-architecture"
-    },
-    {
-      "path": "docs/extension-bindings.md",
       "audience": "maintainer-architecture"
     },
     {
@@ -345,6 +329,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/extension-bindings.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/fm-test-isolation-proof.md",
       "audience": "maintainer-verification"
     },
@@ -361,11 +349,19 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/no-mistakes-observation.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/orca-backend.md",
       "audience": "operator-current"
     },
     {
       "path": "docs/pi-supervision-branch.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/programme-continuation.md",
       "audience": "maintainer-architecture"
     },
     {
@@ -429,6 +425,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/enforcing-call-sites.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/muse.md",
       "audience": "maintainer-verification"
     },
@@ -471,6 +471,10 @@
     {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "programmes/cleanroom-af-package/README.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "skills/stow/SKILL.md",

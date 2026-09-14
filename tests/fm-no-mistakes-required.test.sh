@@ -543,25 +543,34 @@ test_await_refuses_a_malformed_bound() {
 # answer propagates at once. `await_fail` scripts a failing read at a given
 # attempt index with the stderr gh would produce.
 
+# `status` defaults to gh's generic failure exit 1; pass 4 for "authentication
+# required" or 127 for a gh that is not on PATH, the two definitive failures
+# that carry no HTTP status in their message.
 await_fail() {
-  local which=$1 message=$2
+  local which=$1 message=$2 status=${3:-1}
   printf '%s' "$message" > "$AWAIT_CASE/fail-$which.txt"
+  printf '%s' "$status" > "$AWAIT_CASE/fail-$which.rc"
 }
 
-# Extend the scripted provider with per-read failures.
+# Extend the scripted provider with per-read failures. An entry scripted for an
+# exact read index wins over the default entry, so a case can script a sound
+# first read followed by a failing rest (or the reverse).
 await_case_failing() {
   await_case "$1"
   cat > "$AWAIT_BIN/gh" <<SH
 #!/usr/bin/env bash
 printf 'x' >> "$AWAIT_CASE/reads"
 reads=\$(wc -c < "$AWAIT_CASE/reads" | tr -d ' ')
-failure="$AWAIT_CASE/fail-\$reads.txt"
-[ -f "\$failure" ] || failure="$AWAIT_CASE/fail-default.txt"
-if [ -f "\$failure" ]; then cat "\$failure" >&2; exit 1; fi
-response="$AWAIT_CASE/read-\$reads.json"
-[ -f "\$response" ] || response="$AWAIT_CASE/read-default.json"
-[ -f "\$response" ] || exit 1
-cat "\$response"
+for slot in "\$reads" default; do
+  failure="$AWAIT_CASE/fail-\$slot.txt"
+  if [ -f "\$failure" ]; then
+    cat "\$failure" >&2
+    exit "\$(cat "$AWAIT_CASE/fail-\$slot.rc")"
+  fi
+  response="$AWAIT_CASE/read-\$slot.json"
+  if [ -f "\$response" ]; then cat "\$response"; exit 0; fi
+done
+exit 1
 SH
   chmod +x "$AWAIT_BIN/gh"
 }
@@ -650,6 +659,58 @@ test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
   pass "a window that closes with no sound live read fails closed and says so"
 }
 
+# The two deadline diagnoses are different and must not be confused. A wait whose
+# reads were sound but whose publication never landed is a STALLED PUBLICATION -
+# the PR 42/45/46/47 shape - and the verifier owns that verdict, so the deadline
+# must still hand it the most recent sound subject even when the final poll's
+# read happened to blip. Reporting a read outage there would be a false
+# diagnosis and would suppress the verifier's "attested to X, not head Y"
+# refusal that the CI-fix loop keys on.
+test_await_hands_off_a_stalled_publication_even_when_the_last_read_blips() {
+  local out err rc verifier_out
+  await_case_failing stalled-then-blip
+  await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  await_fail default "gh: Bad Gateway (HTTP 502)"
+  rc=0
+  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
+         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
+  err=$(cat "$AWAIT_CASE/err")
+  expect_code 0 "$rc" "the deadline refused a stalled publication instead of letting the verifier judge it"
+  case "$err" in
+    *"no sound live read"*) fail "a stalled publication was misreported as a live-read outage" ;;
+  esac
+  assert_contains "$err" "publication window is closed" \
+    "the deadline did not report the closed publication window"
+  # Exact-head association: the handed-over subject is the sound read's own head.
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
+    || fail "the deadline handed over a head other than the sound read's live head"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never published was allowed to pass the gate"
+  assert_contains "$verifier_out" "$OLD_SHA" \
+    "the verifier's authoritative refusal did not name the head the body was attested to"
+  pass "a stalled publication still reaches the verifier when the last poll's read blips"
+}
+
+# A definitive failure that carries no HTTP status - an absent or invalid
+# GH_TOKEN is the reachable one - must be told apart from a transport blip by
+# gh's exit status, not by its message text, and must never spend the window.
+test_await_does_not_retry_a_definitive_non_http_failure() {
+  local err rc
+  await_case_failing auth-failure
+  await_fail default \
+    "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable." 4
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await produced a subject after an authentication failure"
+  assert_contains "$err" "GH_TOKEN" "the refusal did not carry the authentication failure"
+  [ "$(await_reads)" -eq 1 ] \
+    || fail "await retried an authentication failure $(await_reads) times instead of failing at once"
+  [ "$(await_sleeps)" -eq 0 ] \
+    || fail "await spent $(await_sleeps) wait(s) of the publication window on a misconfiguration"
+  pass "an authentication failure propagates immediately without spending the window"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
 fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
@@ -683,3 +744,5 @@ test_await_retries_a_transient_read_and_still_binds
 test_await_does_not_retry_a_definitive_read_failure
 test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget
 test_await_fails_closed_when_the_window_closes_with_no_sound_read
+test_await_hands_off_a_stalled_publication_even_when_the_last_read_blips
+test_await_does_not_retry_a_definitive_non_http_failure

@@ -26,10 +26,12 @@
 #              re-read on the next poll - always within the same window),
 #              classifies each read through 'resolve', waits while a publication
 #              is demonstrably in flight, and emits exactly one resolved subject
-#              for the verifier. A window that closes with no sound live read in
-#              hand fails closed with no subject at all. The workflow never
-#              re-spells the window, the poll cadence, the retry budget, or the
-#              deadline behavior.
+#              for the verifier. A window that closes having never obtained a
+#              sound live read fails closed with no subject at all; one that
+#              closes on a publication that never landed hands the most recent
+#              sound read to the verifier, which owns that verdict. The workflow
+#              never re-spells the window, the poll cadence, the retry budget,
+#              or the deadline behavior.
 #   resolve    the pure classifier behind 'await': given the event's expected
 #              subject (PR number and head SHA) and one live read (number, head,
 #              body), it binds PR identity, refuses a superseded subject (a live
@@ -135,7 +137,7 @@ NMF_LIVE_READ_ATTEMPTS_DEFAULT=3
 NMF_LIVE_READ_BACKOFF_SECONDS_DEFAULT=2
 
 usage() {
-  sed -n '2,126{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,128{s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.
@@ -306,15 +308,25 @@ resolve() {
   emit_subject "$live_number" "$live_head" "$live_body"
 }
 
-# Classify a failed live read. Only a failure that could answer differently on
-# the next attempt may be retried: a transport failure, which prints no HTTP
-# status at all, and a 5xx or 429, which are the forge declining to answer right
-# now. Every other status is the forge's definitive answer about this PR - a 404
-# or an auth failure must propagate immediately rather than be retried, and no
-# retry may ever turn a genuinely missing attestation into a pass.
+# Classify a failed live read from the two structural signals the read produces:
+# the exit status, and the HTTP status the forge printed. Only a failure that
+# could answer differently on the next attempt may be retried: a transport
+# failure, which reaches us as a generic exit with no HTTP status at all, and a
+# 5xx or 429, which are the forge declining to answer right now.
+#
+# Everything else is definitive and must propagate immediately rather than be
+# retried, because no number of attempts can change it and no retry may ever
+# turn a genuinely missing attestation into a pass. gh's own exit status names
+# two of those that carry no HTTP status and so cannot be told apart from a
+# transport failure by message text: 4 is "authentication required" (an absent
+# or invalid GH_TOKEN), and 127 is the shell's "command not found" for a gh that
+# is not on PATH. Both are misconfiguration, not weather.
 live_read_is_transient() {
-  local status
-  status=$(printf '%s' "$1" | sed -n 's/.*(HTTP \([0-9][0-9][0-9]\)).*/\1/p' | head -1)
+  local exit_status=$1 status
+  case "$exit_status" in
+    4|127) return 1 ;;
+  esac
+  status=$(printf '%s' "$2" | sed -n 's/.*(HTTP \([0-9][0-9][0-9]\)).*/\1/p' | head -1)
   case "$status" in
     '') return 0 ;;
     5??|429) return 0 ;;
@@ -358,9 +370,9 @@ read_live_subject() {
       return 0
     fi
     reason=$(tr '\n' ' ' < "$errfile")
-    if ! live_read_is_transient "$reason"; then
+    if ! live_read_is_transient "$rc" "$reason"; then
       rm -f "$errfile"
-      die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number}; the forge answered definitively, so there is no sound live subject and no retry can establish one: ${reason}"
+      die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number}; the read failed definitively (exit ${rc}), so there is no sound live subject and no retry can establish one: ${reason}"
     fi
     if [ "$attempt" -ge "$attempts" ]; then
       rm -f "$errfile"
@@ -393,16 +405,17 @@ await() {
   require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
   require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started elapsed reads=0 rc read_rc out
+  local started elapsed polls=0 rc read_rc out sound_read=
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=
   started=$(date +%s)
   while : ; do
-    reads=$(( reads + 1 ))
+    polls=$(( polls + 1 ))
     read_rc=0
     read_live_subject "$repo" "$event_number" "$attempts" "$backoff" || read_rc=$?
     if [ "$read_rc" -eq 0 ]; then
+      sound_read=1
       rc=0
       out=$(resolve) || rc=$?
       if [ "$rc" -eq 0 ]; then
@@ -415,15 +428,19 @@ await() {
     fi
     elapsed=$(( $(date +%s) - started ))
     if [ "$elapsed" -ge "$window" ]; then
-      # A poll whose read never came back soundly leaves no live body to hand
-      # over, so the deadline cannot fall through to the verifier here. That is
-      # a different diagnosis from an attestation that failed to publish, and
-      # the message must say which one the operator is looking at.
-      if [ "$read_rc" -ne 0 ]; then
-        die 1 "fm-nmf-verify-input.sh await: the ${window}s publication window closed with no sound live read of repos/${repo}/pulls/${event_number} in hand after ${elapsed}s and ${reads} poll(s); the reads kept failing transiently, the last with: ${LAST_LIVE_READ_FAILURE}. There is no live subject to hand to the verifier, so this fails closed."
+      # Which of the two deadline diagnoses this is turns on whether a sound
+      # live read was EVER obtained, not on how the last poll happened to end.
+      # A wait whose reads were sound and whose publication simply never landed
+      # is a stalled publication, and the verifier owns that verdict; only a
+      # wait that never established any live subject is a read outage. The
+      # NMF_LIVE_* inputs still hold the most recent sound read, so 'resolve'
+      # re-applies the identity and superseded-subject guards to it before it
+      # can be handed over.
+      if [ -z "$sound_read" ]; then
+        die 1 "fm-nmf-verify-input.sh await: the ${window}s publication window closed with no sound live read of repos/${repo}/pulls/${event_number} ever obtained, across ${elapsed}s and ${polls} poll(s); every read failed transiently, the last with: ${LAST_LIVE_READ_FAILURE}. There is no live subject to hand to the verifier, so this fails closed."
       fi
-      printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s live reads; the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
-        "$event_number" "$event_head" "$elapsed" "$reads" "$window" >&2
+      printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s poll(s); the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
+        "$event_number" "$event_head" "$elapsed" "$polls" "$window" >&2
       NMF_PUBLICATION_FINAL=1
       rc=0
       out=$(resolve) || rc=$?

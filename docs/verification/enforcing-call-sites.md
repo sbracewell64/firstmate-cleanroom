@@ -28,6 +28,9 @@ JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
 Command substitutions inside that text survive, so a genuine call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - still counts as enforcement.
 
+A function call site must also have the library in scope: the site is the defining library itself, or a file that sources it directly or through a chain of sourced libraries.
+Without that link a bare name proves nothing, because two files can define independent functions of the same name, and the repository already contains such homonyms.
+
 An entry may also record `rejectedCallSites`: a path that names the capability only in comment or emitted text, with the reason.
 The check asserts each one is still named by the file and still rejected by the matcher, so weakening the executable-reference rule fails loudly against a real production file rather than silently inflating the verified count.
 
@@ -115,7 +118,13 @@ That would wire a new call into `bin/fm-session-start.sh`, which a concurrent la
 The prose side was swept over `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, and every file under `docs/`, looking for sections that assert mechanical enforcement (`refuses`, `fails closed`, `enforces`) while naming no owning script or workflow anywhere in the section.
 Twenty-seven sections matched that section-local shape, and each names its owner at the document level instead: `docs/subagent-guard.md` over `bin/fm-subagent-pretool-check.sh`, `docs/configuration.md`'s away-mode backend section over `bin/fm-supervise-daemon.sh`, `docs/extension-bindings.md` over the registered Pi extension, and so on.
 `AGENTS.md`'s own mechanical claims were checked individually and each resolves to enforcing code: the explicit-home refusal in `bin/fm-send.sh`, the commit-identity refusal reached from `bin/fm-pr-check.sh`, the delivery-contract and backlog-gate refusals in `bin/fm-spawn.sh`, the completion gate `bin/fm-teardown.sh` reaches through `bin/fm-captain-hold.sh:verify`, and the worktree-isolation refusal in `bin/fm-spawn.sh` paired with the assertion `bin/fm-brief.sh` writes into every ship brief.
-No tracked prose invariant was left UNPROVEN by this sweep.
+By that criterion, no section asserting mechanical enforcement failed to name an owning script or workflow at document level.
+
+That criterion is narrower than the governing principle, and one tracked prose invariant does not survive the principle.
+`AGENTS.md` states that a session which cannot acquire and verify the session lock must remain read-only and must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
+`bin/fm-guard.sh` was the shared call site every one of those commands traverses, and this sweep reclassified it away from that invariant because it always exits 0 and every caller discards its status.
+This sweep did NOT establish whether a narrower owner enforces the lock at another boundary, so the per-home session lock is recorded as UNPROVEN here rather than claimed to be unenforced.
+Reading it as ACTIVE because the rule is well known is exactly the softening the governing principle forbids.
 
 The one prose instance of this family that did exist, the outbound-write discipline, lived in the untracked private `data/learnings.md` rather than in tracked prose, which is why no repository check could have caught it.
 Its repair moved the rule into `bin/fm-outbound-write-lib.sh`, where this check now holds it.

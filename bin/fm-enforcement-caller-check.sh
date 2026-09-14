@@ -60,7 +60,8 @@ FUNCTION_RE = re.compile(r"^(fm_[a-z0-9_]+)\(\)")
 # its unprefixed helpers are reached through the dispatcher discovery already
 # covers, and harvesting them would bury the entry points that matter.
 LIBRARY_FUNCTION_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)")
-SOURCE_RE = re.compile(r"^\s*(?:\.|source)\s+\S*?([A-Za-z0-9._-]+\.sh)\b")
+SOURCE_KEYWORD_RE = re.compile(r"^\s*(?:\.|source)\s")
+SHELL_NAME_RE = re.compile(r"([A-Za-z0-9._-]+\.sh)\b")
 
 # Emitted operator text is not a call. A heredoc body and the argument text of
 # printf/echo/cat are dropped before matching, but a command substitution inside
@@ -180,23 +181,56 @@ def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str
                     found[f"{rel}:{alias}"] = "flag"
 
 
-def sourced_libraries(root: Path, tracked: list[str]) -> set[str]:
-    """Basenames that some tracked script brings in with `.` or `source`."""
-    names: set[str] = set()
+# Which script brings in which library. A function is only in scope for a file
+# that sources its library, so the same bare name in a file that does not is a
+# different function, not a caller.
+_SOURCE_GRAPH: dict[str, set[str]] = {}
+_SCRIPT_BY_NAME: dict[str, str] = {}
+
+
+def build_source_graph(root: Path, tracked: list[str]) -> None:
+    _SOURCE_GRAPH.clear()
+    _SCRIPT_BY_NAME.clear()
     for rel in tracked:
         if not rel.endswith(".sh"):
             continue
+        _SCRIPT_BY_NAME.setdefault(Path(rel).name, rel)
+        names: set[str] = set()
         for line in executable_source(root, rel).splitlines():
-            match = SOURCE_RE.match(line)
-            if match:
-                names.add(match.group(1))
-    return names
+            if SOURCE_KEYWORD_RE.match(line):
+                names.update(SHELL_NAME_RE.findall(line))
+        _SOURCE_GRAPH[rel] = names
+
+
+def sourced_libraries() -> set[str]:
+    """Basenames that some tracked script brings in with `.` or `source`."""
+    return {name for names in _SOURCE_GRAPH.values() for name in names}
+
+
+def reaches_library(site_path: str, library_path: str) -> bool:
+    """Is the library's function in scope here, directly or through a chain?"""
+    if site_path == library_path:
+        return True
+    target = Path(library_path).name
+    seen: set[str] = set()
+    stack = list(_SOURCE_GRAPH.get(site_path, ()))
+    while stack:
+        name = stack.pop()
+        if name == target:
+            return True
+        if name in seen:
+            continue
+        seen.add(name)
+        nxt = _SCRIPT_BY_NAME.get(name)
+        if nxt is not None:
+            stack.extend(_SOURCE_GRAPH.get(nxt, ()))
+    return False
 
 
 def discover(root: Path, tracked: list[str]) -> dict[str, str]:
     """Map candidate entry-point id -> discovery axis."""
     found: dict[str, str] = {}
-    sourced = sourced_libraries(root, tracked)
+    sourced = sourced_libraries()
     for rel in tracked:
         if not (fnmatch.fnmatch(rel, "bin/*.sh") or fnmatch.fnmatch(rel, "bin/backends/*.sh")):
             continue
@@ -328,13 +362,30 @@ def heredoc_opener(line: str) -> re.Match[str] | None:
     heredoc that swallows the real calls below it.
     """
     quote: str | None = None
+    enclosing: list[str] = []
     arithmetic = 0
     index = 0
     size = len(line)
     while index < size:
         char = line[index]
+        if quote != "'" and line.startswith("$((", index):
+            arithmetic += 1
+            index += 3
+            continue
+        if arithmetic:
+            if line.startswith("))", index):
+                arithmetic -= 1
+                index += 2
+                continue
+            index += 1
+            continue
         if quote is not None:
             if char == "\\" and quote == '"' and index + 1 < size:
+                index += 2
+                continue
+            if quote == '"' and line.startswith("$(", index):
+                enclosing.append(quote)
+                quote = None
                 index += 2
                 continue
             if char == quote:
@@ -348,15 +399,11 @@ def heredoc_opener(line: str) -> re.Match[str] | None:
             quote = char
             index += 1
             continue
-        if line.startswith("$((", index):
-            arithmetic += 1
-            index += 3
+        if char == ")" and enclosing:
+            quote = enclosing.pop()
+            index += 1
             continue
-        if arithmetic and line.startswith("))", index):
-            arithmetic -= 1
-            index += 2
-            continue
-        if arithmetic == 0 and line.startswith("<<", index):
+        if line.startswith("<<", index):
             opener = HEREDOC_RE.match(line, index)
             if opener is not None:
                 return opener
@@ -431,8 +478,11 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
             return False
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("#") or LIBRARY_FUNCTION_RE.match(line):
+            if stripped.startswith("#"):
                 continue
+            definition = LIBRARY_FUNCTION_RE.match(line)
+            if definition is not None:
+                stripped = line[definition.end():].strip()
             if re.search(rf"\b{re.escape(token)}\b", stripped):
                 return True
         return False
@@ -534,6 +584,8 @@ def where_referenced(root: Path, tracked: list[str], entry_id: str, axis: str) -
             continue
         if not (root / rel).is_file():
             continue
+        if axis == "function" and not reaches_library(rel, path):
+            continue
         if not references(executable_source(root, rel), owner_base, token, axis):
             continue
         if is_production(rel):
@@ -577,6 +629,11 @@ def check_call_sites(
             fail(f"{entry_id}: declared call site is missing: {site_path}")
         if not references(executable_source(root, site_path), owner_base, token, axis):
             fail(f"{entry_id}: declared call site {site_path} does not call it")
+        if axis == "function" and not reaches_library(site_path, path):
+            fail(
+                f"{entry_id}: declared call site {site_path} never sources {path}, so the name it "
+                f"calls is a different function of the same name"
+            )
         if via == "production":
             if not is_production(site_path):
                 fail(
@@ -651,6 +708,7 @@ def check_function_call_site(root: Path, entry_id: str, tracked: list[str]) -> N
 def validate(root: Path, inventory_path: Path) -> dict[str, int]:
     data = load_inventory(inventory_path)
     tracked = git_tracked(root)
+    build_source_graph(root, tracked)
     discovered = discover(root, tracked)
     entries = data["entryPoints"]
 

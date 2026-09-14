@@ -88,6 +88,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 validate_widget_binding "$1"
 FIX
 
+  # An independent homonym: the same enforce-verb name, defined and called by a
+  # file that never sources the library, so it is a different function.
+  cat > "$repo/bin/fm-widget-homonym.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+validate_widget_binding() {
+  [ "${1:-}" = local-only ]
+}
+validate_widget_binding "$1"
+FIX
+
   cat > "$repo/bin/fm-audit-check.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -198,6 +209,10 @@ elif mode == "drop-gadget":
 elif mode == "drop-shared-function":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
+    ]
+elif mode == "homonym-as-call-site":
+    entries["bin/fm-widget-shared.sh:validate_widget_binding"]["callSites"] = [
+        {"path": "bin/fm-widget-homonym.sh", "via": "production"}
     ]
 elif mode == "rejected-site-is-a-real-call":
     entries["bin/fm-widget.sh:enforce"]["rejectedCallSites"] = [
@@ -421,6 +436,50 @@ FIX
   pass "a <<WORD inside quotes or an arithmetic shift does not start a phantom heredoc"
 }
 
+test_homonym_without_the_library_is_not_a_caller() {
+  local repo="$TMP_ROOT/homonym"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" homonym-as-call-site
+  run_expect_failure "never sources bin/fm-widget-shared.sh" "$CHECK" --root "$repo"
+  pass "a file that defines its own function of the same name is not the library's caller"
+}
+
+test_one_line_definition_keeps_its_body() {
+  local repo="$TMP_ROOT/one-line-definition"
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-binding-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-widget-shared.sh"
+guard_it() { validate_widget_binding "$1"; }
+guard_it "$1"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a call inside a single-line function definition was discarded with its header"
+  pass "a single-line function definition keeps the call in its body"
+}
+
+test_heredoc_in_a_quoted_command_substitution_is_stripped() {
+  local repo="$TMP_ROOT/quoted-command-substitution"
+  write_fixture "$repo"
+  # The capability is named only inside a heredoc opened within "$( ... )", so
+  # the opener sits in a double-quoted region but in command context.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+MSG="$(cat <<'NOTE'
+Handle with real tools: bin/fm-widget.sh enforce <widget> when a widget is reported.
+NOTE
+)"
+printf '%s\n' "$MSG"
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  pass "operator prose in a heredoc opened inside a command substitution is not read as a call"
+}
+
 test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
@@ -433,3 +492,6 @@ test_undeclared_entry_point_fails
 test_undeclared_variable_dispatch_subcommand_fails
 test_undeclared_sourced_library_function_fails
 test_quoted_shift_does_not_start_a_heredoc
+test_homonym_without_the_library_is_not_a_caller
+test_one_line_definition_keeps_its_body
+test_heredoc_in_a_quoted_command_substitution_is_stripped

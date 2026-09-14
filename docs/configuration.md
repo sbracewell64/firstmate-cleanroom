@@ -250,14 +250,14 @@ Portable shard evidence and coverage rules are in [fm-test-portable-shards.md](f
 
 ## Captain Preferences (data/captain.md / data/captain-shared.md)
 
-Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.
+Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md` when it fits the startup memory budget below.
 Before changing it, inspect the current file and curate the matching bullet in place under the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) tiering and archive contract; add a new bullet only for a genuinely new durable preference.
 Shared captain preferences that apply across secondmate domains live only in the primary home's optional `data/captain-shared.md`.
 `secondmate-provisioning` owns its propagation contract, including the required header, read-only secondmate copies, quarantine diagnostics, and the rollout rule that existing homes trim `data/captain.md` by hand after first propagation rather than deleting private content automatically.
 
 ## Operational learnings (data/learnings.md)
 
-Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
+Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest when it fits the startup memory budget below.
 The file is created lazily on first learning and follows the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) aging-tier and cold-archive contract: inspect the current file first and curate it instead of appending forever.
 There is no shared learnings file by captain decision.
 
@@ -271,6 +271,14 @@ The file must be one positive base-10 integer followed by exactly one newline in
 Malformed, multi-line, symlinked, hardlinked, special, or otherwise unsafe values are rejected rather than treated as a default.
 Use `bin/fm-startup-memory-budget.sh read` to validate and print the effective value, or `bin/fm-startup-memory-budget.sh report` to account for the three files.
 `report` always exits 0 when the accounting runs, so its exit code is not a compliance signal; `bin/fm-startup-memory-budget.sh enforce` prints the same accounting but ties its exit code to compliance (0 within budget, 3 over budget, 2 on an accounting failure) so a caller at a startup/consumption or durable-memory-write boundary can gate on it.
+`bin/fm-session-start.sh` is the startup consumption caller: before its CONTEXT section prints the three files, it copies them into one private snapshot, runs `enforce` on that snapshot against the live `config/`, and prints only from the snapshot, so the bytes measured are the bytes injected.
+Within budget the digest is unchanged.
+Over budget the digest prints one `STARTUP_MEMORY_BUDGET: over budget - ...` line naming the estimate, the budget, and `/stow` as the curation owner, then injects whole files in the order `captain.md`, `captain-shared.md`, `learnings.md` up to the first one that no longer fits, and marks that file and every later non-empty file `WITHHELD` instead of truncating it mid-file.
+An absent or empty file costs nothing and keeps its usual `ABSENT` or `(present, empty)` marker.
+When the accounting cannot complete (an absent, malformed, or unsafe budget file, or a memory file that is unreadable or not an ordinary regular file), the digest prints one `STARTUP_MEMORY_BUDGET: memory not injected - ...` line and withholds all three files rather than injecting a partial or stale set.
+That gate only reads: it never creates or repairs the budget file, and a lock-refused read-only session or a context re-emit gates identically.
+The crewmate dispatch path (`bin/fm-brief.sh`, `bin/fm-spawn.sh`) reads none of the three files, so it has no consumption boundary to gate.
+No raw-shell or direct write to these files is intercepted anywhere; the gate covers only the qualified owner boundaries that call it.
 The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative portable approximation rather than a provider-exact tokenizer.
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.

@@ -296,10 +296,13 @@ resolve() {
       pending "fm-nmf-verify-input.sh resolve: live body attestation is bound to $attested_head, not the live head $live_head; awaiting re-publication for the current head within the bounded window."
     fi
     # Waiting cannot help, so hand the live subject over now and let the pinned
-    # verifier state the authoritative outcome against the live head.
+    # verifier state the authoritative outcome against the live head. This
+    # states only what the subject carries: WHY the wait ended - a stalled
+    # publication or a forge that stopped answering - is the caller's to report,
+    # since only the caller saw the whole window.
     if body_has_signature "$live_body"; then
-      printf '::warning::fm-nmf-verify-input.sh resolve: the publication window closed with the live body attested to %s, not the live head %s; handing the live subject to the verifier, which judges the head bind.\n' \
-        "${attested_head:-no head}" "$live_head" >&2
+      printf '::warning::fm-nmf-verify-input.sh resolve: this is the final judgement for head %s and the live body is attested to %s, not that head; handing the live subject to the verifier, which judges the head bind.\n' \
+        "$live_head" "${attested_head:-no head}" >&2
     else
       printf '::notice::fm-nmf-verify-input.sh resolve: the live body carries no no-mistakes signature, so no publication is in flight for head %s; handing the live subject to the verifier now instead of waiting.\n' \
         "$live_head" >&2
@@ -355,6 +358,9 @@ live_read_is_transient() {
 # consults the deadline, so a raised NMF_LIVE_READ_ATTEMPTS could let a single
 # poll outlast the window. A window that closes with no sound read at all still
 # fails closed, in the caller, with no subject handed over.
+# The most recent live-read failure seen in this wait. A sound read does not
+# clear it: the caller needs it at the deadline to name what went wrong even
+# when a later poll recovered.
 LAST_LIVE_READ_FAILURE=
 read_live_subject() {
   local repo=$1 number=$2 attempts=$3 backoff=$4
@@ -365,7 +371,6 @@ read_live_subject() {
     pr=$(gh api "repos/${repo}/pulls/${number}" 2>"$errfile") || rc=$?
     if [ "$rc" -eq 0 ]; then
       rm -f "$errfile"
-      LAST_LIVE_READ_FAILURE=
       # Deliberately not exported: 'resolve' runs in this shell, while an
       # exported body would be copied into every later child's environment.
       NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
@@ -409,7 +414,7 @@ await() {
   require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
   require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started elapsed polls=0 rc read_rc out sound_read= observed_head
+  local started elapsed polls=0 unread_polls=0 rc read_rc out sound_read= observed_head
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=
@@ -429,14 +434,18 @@ await() {
       # Exit 3 is PENDING (a publication is in flight); any other non-zero is a
       # hard fail-closed refusal that must propagate immediately.
       [ "$rc" -eq 3 ] || exit "$rc"
+    else
+      unread_polls=$(( unread_polls + 1 ))
     fi
     elapsed=$(( $(date +%s) - started ))
     if [ "$elapsed" -ge "$window" ]; then
       # The deadline reports what was OBSERVED, not one coarse conclusion, so
       # the operator and the CI-fix loop can tell a stalled publisher from a
-      # forge that stopped answering. Only a wait whose polls all read soundly
-      # may attribute the outcome to the publisher; a trailing unreadable
-      # stretch observed nothing, and the publication may have landed unseen.
+      # forge that stopped answering. Only a wait in which every poll read
+      # soundly may attribute the outcome to the publisher, which is why this
+      # branches on the counted unreadable polls rather than on the most recent
+      # read: an outage anywhere in the window means part of it observed
+      # nothing, and the publication may have landed unseen there.
       #
       # The NMF_LIVE_* inputs still hold the most recent sound read, so the
       # hand-off carries that read's own body and head - the same bytes resolve
@@ -446,10 +455,11 @@ await() {
       if [ -z "$sound_read" ]; then
         die 1 "fm-nmf-verify-input.sh await: the ${window}s publication window closed with no sound live read of repos/${repo}/pulls/${event_number} ever obtained, across ${elapsed}s and ${polls} poll(s); every read failed transiently, the last with: ${LAST_LIVE_READ_FAILURE}. There is no live subject to hand to the verifier, so this fails closed."
       fi
-      if [ -n "$LAST_LIVE_READ_FAILURE" ]; then
+      if [ "$unread_polls" -gt 0 ]; then
         observed_head=$(attested_head_of_body "$NMF_LIVE_BODY")
-        printf '::warning::fm-nmf-verify-input.sh await: the %ss publication window closed with the trailing poll(s) for PR #%s unreadable (%s), so the later part of the window observed nothing and a publication may have landed unseen. The last sound read, %ss into the window, saw the body attested to %s, not the live head %s. Handing that read to the verifier, which judges the head bind.\n' \
-          "$window" "$event_number" "$LAST_LIVE_READ_FAILURE" "$sound_read" "${observed_head:-no head}" "$event_head" >&2
+        printf '::warning::fm-nmf-verify-input.sh await: the %ss publication window for PR #%s closed after %s poll(s), %s of which could not be read (the most recent such read failed with: %s), so part of the window observed nothing and a publication may have landed unseen. The last sound read, %ss into the window, saw the body attested to %s, not the live head %s. Handing that read to the verifier, which judges the head bind.\n' \
+          "$window" "$event_number" "$polls" "$unread_polls" "$LAST_LIVE_READ_FAILURE" \
+          "$sound_read" "${observed_head:-no head}" "$event_head" >&2
       else
         printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s poll(s), every one of which read soundly; the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
           "$event_number" "$event_head" "$elapsed" "$polls" "$window" >&2

@@ -457,7 +457,7 @@ test_await_stops_at_the_deadline_and_fails_closed() {
   assert_contains "$err" "still unpublished" \
     "a wait whose every poll read soundly did not attribute the outcome to the publisher"
   case "$err" in
-    *"trailing poll(s)"*) fail "a wait with no failed read reported an unreadable trailing stretch" ;;
+    *"could not be read"*) fail "a wait with no failed read reported unreadable polls" ;;
   esac
   await_case never-publishes-verdict
   await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
@@ -666,13 +666,13 @@ test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
   pass "a window that closes with no sound live read fails closed and says so"
 }
 
-# A wait that read soundly and then went blind for the rest of the window is
-# NOT a stalled publication: most of the window observed nothing and the
-# publication may have landed unseen. The deadline must still hand the most
-# recent sound read to the verifier - fail-closed is unchanged - but it must
-# report what it actually saw: that the trailing polls could not be read, and
-# what the last sound read observed and when. Calling this a stalled publisher
-# would send the operator and the CI-fix loop after the wrong cause.
+# A wait that went blind for part of the window is NOT a stalled publication:
+# the unread stretch observed nothing and the publication may have landed
+# unseen there. The deadline must still hand the most recent sound read to the
+# verifier - fail-closed is unchanged - but it must report what it actually saw:
+# how many polls could not be read, and what the last sound read observed and
+# when. Calling this a stalled publisher would send the operator and the CI-fix
+# loop after the wrong cause.
 test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher() {
   local out err rc verifier_out outage
   await_case_failing sound-then-outage
@@ -687,8 +687,8 @@ test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher() {
     *"no sound live read"*) fail "a wait that did read soundly was reported as having read nothing" ;;
     *"still unpublished"*) fail "a trailing read outage was attributed to the publisher" ;;
   esac
-  outage=$(printf '%s\n' "$err" | grep 'trailing poll(s)') \
-    || fail "the deadline never reported that the trailing polls could not be read"
+  outage=$(printf '%s\n' "$err" | grep 'could not be read') \
+    || fail "the deadline never reported that any poll could not be read"
   assert_contains "$outage" "502" "the outage report did not name the read failure that caused it"
   assert_contains "$outage" "$OLD_SHA" \
     "the outage report did not say what the last sound read observed"
@@ -703,6 +703,73 @@ test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher() {
   assert_contains "$verifier_out" "$OLD_SHA" \
     "the verifier's authoritative refusal did not name the head the body was attested to"
   pass "a trailing read outage is reported as one, and the sound read still reaches the verifier"
+}
+
+# The unreadable-poll count must be COUNTED, not inferred from how the last poll
+# happened to end. These two cases drive an outage that RECOVERS, so the final
+# poll reads soundly: the deadline must still say how many polls observed
+# nothing. The second is the shape that previously lied outright - the outage
+# covers the start of the window and only the later polls read - and it reported
+# "every one of which read soundly". Each failing poll spends the whole 3-attempt
+# budget, so the unreadable-poll count is fixed by the scripted read sequence
+# however many sound polls follow before the deadline.
+assert_outage_report() {
+  local err=$1 unread=$2 outage
+  case "$err" in
+    *"every one of which read soundly"*)
+      fail "a wait with $unread unreadable poll(s) claimed every poll read soundly" ;;
+    *"still unpublished"*)
+      fail "a wait with $unread unreadable poll(s) was attributed to the publisher" ;;
+    *"no sound live read"*)
+      fail "a wait that did read soundly was reported as having read nothing" ;;
+  esac
+  outage=$(printf '%s\n' "$err" | grep 'could not be read') \
+    || fail "the deadline never reported that any poll could not be read"
+  assert_contains "$outage" "$unread of which could not be read" \
+    "the deadline did not report the real number of unreadable polls"
+  assert_contains "$outage" "502" "the outage report did not name the read failure"
+  assert_contains "$outage" "$OLD_SHA" \
+    "the outage report did not say what the last sound read observed"
+  assert_contains "$outage" "into the window" \
+    "the outage report did not say when the last sound read was taken"
+}
+
+run_recovering_outage_case() {
+  local name=$1 failing_reads=$2 read_index
+  await_case_failing "$name"
+  for read_index in $(seq 1 "$failing_reads"); do
+    await_fail "$read_index" "gh: Bad Gateway (HTTP 502)"
+  done
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  ( export NMF_PUBLICATION_WINDOW_SECONDS=2 NMF_PUBLICATION_POLL_SECONDS=1
+    run_await 2>"$AWAIT_CASE/err" >"$AWAIT_CASE/out" )
+}
+
+test_await_counts_the_unreadable_polls_when_the_read_recovers() {
+  local rc=0
+  run_recovering_outage_case recovering-outage 3 || rc=$?
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  assert_outage_report "$(cat "$AWAIT_CASE/err")" 1
+  pass "an outage that recovers is still counted and reported at the deadline"
+}
+
+# The regression: an outage covering the start of the window used to be erased
+# because the marker it was read from is cleared by every sound read.
+test_await_still_reports_an_early_outage_when_the_last_polls_read_soundly() {
+  local rc=0 out verifier_out
+  run_recovering_outage_case early-outage 6 || rc=$?
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  assert_outage_report "$(cat "$AWAIT_CASE/err")" 2
+  out=$(cat "$AWAIT_CASE/out")
+  # Fail-closed and exact-head association are unchanged on this path.
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
+    || fail "the deadline handed over a head other than the sound read's live head"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never bound the live head passed the gate"
+  assert_contains "$verifier_out" "$OLD_SHA" \
+    "the verifier's refusal did not name the head the body was attested to"
+  pass "an early outage is still reported when the trailing polls read soundly"
 }
 
 # A definitive failure that carries no HTTP status - an absent or invalid
@@ -758,4 +825,6 @@ test_await_does_not_retry_a_definitive_read_failure
 test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget
 test_await_fails_closed_when_the_window_closes_with_no_sound_read
 test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher
+test_await_counts_the_unreadable_polls_when_the_read_recovers
+test_await_still_reports_an_early_outage_when_the_last_polls_read_soundly
 test_await_does_not_retry_a_definitive_non_http_failure

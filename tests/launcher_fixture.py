@@ -52,7 +52,27 @@ args=args[:-2]
 if not args:
     (p/'attached').touch()
     sys.exit(int(os.environ.get('FAIL_ATTACH','0')))
-if args[:2]==['session','list']: out={'sessions':[{'name':'synthetic','socket_path':'/synthetic.sock'}]}
+if args[:2]==['session','list']: out={'sessions':[{'name':'synthetic','socket_path':'/synthetic.sock','running':True}]}
+elif args[:2]==['pane','get']:
+    panes=json.loads((p/'inventory').read_text())['result']['panes']
+    hits=[row for row in panes if row['pane_id']==args[2]]
+    if len(hits)!=1: print('no such pane',file=sys.stderr);sys.exit(1)
+    out={'result':{'pane':{'pane_id':args[2],'workspace_id':hits[0]['workspace_id'],'tab_id':os.environ.get('FIXTURE_PANE_TAB') or hits[0]['workspace_id']+':t1'}}}
+elif args[:2]==['tab','get']:
+    out={'result':{'tab':{'tab_id':args[2],'workspace_id':os.environ.get('FIXTURE_TAB_WORKSPACE') or args[2].split(':')[0]}}}
+elif args[:2]==['tab','create']:
+    with (p/'effects').open('a') as f:f.write('tab-create\n')
+    if os.environ.get('FAIL_CREATE'):sys.exit(74)
+    (p/'tab-env').write_text(json.dumps(args))
+    ws=args[args.index('--workspace')+1]
+    inv=json.loads((p/'inventory').read_text());inv['result']['panes'].append({'workspace_id':ws,'pane_id':ws+':p9'})
+    (p/'inventory').write_text(json.dumps(inv))
+    out={'result':{'tab':{'tab_id':ws+':t9'},'root_pane':{'pane_id':ws+':p9'}}}
+elif args[:2]==['tab','focus']:
+    (p/'focus').write_text(args[2]);out={}
+elif args[0] in ('pane','tab','workspace') and args[1] in ('close','rename','move','split','swap','send-text','send-keys'):
+    with (p/'effects').open('a') as f:f.write(args[0]+'-'+args[1]+'\n')
+    out={}
 elif args[:1]==['server']: sys.exit(0)
 elif args[:1]==['status']:
     stopped=os.environ.get('START_SERVER') and not (p/'started').exists()
@@ -75,7 +95,7 @@ elif args[:2]==['pane','run']:
     (p/'pane-command').write_text(args[-1])
     if os.environ.get('FAIL_RUN'):sys.exit(76)
     if os.environ.get('REAL_CONSOLE'):
-        env=dict(os.environ, HERDR_PANE_ID=args[2], HERDR_SESSION='synthetic')
+        env=dict(os.environ, HERDR_PANE_ID=args[2], HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock', HERDR_WORKSPACE_ID=args[2].split(':')[0])
         with (p/'console-output').open('w') as log:
             subprocess.run(['bash',str(p/'home/enter-firstmate.sh'),'--console'],env=env,stdout=log,stderr=log)
         print('{}');sys.exit(0)

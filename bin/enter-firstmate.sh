@@ -200,7 +200,47 @@
 # validators, and credential handling are untouched, and machine-global harness
 # settings are never written.
 #
+# CONSOLE OWNERSHIP HANDOVER AND IN-SESSION LAUNCH (2026-09-13, console
+# ownership handover repair). Ownership of the captain console is the EXACT
+# Herdr session/workspace/pane identity in state/captain-console.json, never a
+# workspace label: the upstream adapter labels every primary AND every worker
+# workspace "firstmate", so a label proves nothing. The record classifies as:
+#   * live exact canonical console            -> reuse / converge (unchanged);
+#   * explicitly relinquished (launch_stage
+#     "handoff-relinquished" with a handoff_at
+#     timestamp and a dead console pid)       -> an AUTHORIZED ownership
+#     transition: a new exact identity is established through the ordinary
+#     launcher-owned creation path (console_record_pane returns 3;
+#     ensure_console_workspace), and only once that successor console exists
+#     is the record archived under state/console-history/ (an archive failure
+#     closes the tab or workspace this launch just created, so no unrecorded
+#     console is left behind);
+#   * stale, malformed, ambiguous, conflicting -> refuse, unchanged: a record
+#     whose pane is gone while "firstmate"-labeled workspaces exist, a
+#     relinquished record whose console pid is still alive or was never
+#     recorded (absent = unproven, not dead), or a relinquished record without
+#     handoff_at all refuse, and nothing is ever adopted by label.
+# Placement follows where the launch runs (console_placement): started OUTSIDE
+# Herdr, the console gets its own new workspace and the TUI is attached
+# (unchanged); started INSIDE a pane of the clean-room session, the launch
+# inherits that pane's exact live session/workspace identity through the
+# upstream seam bin/backends/herdr.sh fm_backend_herdr_launcher_identity
+# (socket-bound session proof, live pane->tab->workspace read, never the
+# HERDR_WORKSPACE_ID snapshot) and creates ONE new console tab in that
+# workspace; existing panes and tabs there are never typed into, closed,
+# renamed, moved, or resized, and no nested TUI is attached. Both the
+# in-session launch and --console must carry Herdr's injected HERDR_SOCKET_PATH
+# matching this session's server (console_ancestry_socket_proof): pane ids
+# repeat across servers and HERDR_SESSION is inherited, so a socket-less
+# ancestry is refused as unverifiable. --console itself never establishes
+# identity: hand-run in a pane the record does not name, or in the pane a
+# relinquished record still names, it refuses and names the in-session launch
+# command. The pure classifier is
+# console_ownership_class (tests/enter-firstmate-launch.test.sh); the executable
+# regressions live in tests/test_console_lifecycle.py.
+#
 # Usage:  enter-firstmate.sh [harness arguments...]     start/attach the console inside Herdr
+#         (from a pane of the clean-room session)       establish or reuse the console as a tab of THAT pane's workspace; no TUI attach
 #         enter-firstmate.sh --doctor                    print every effective identity, start nothing
 #         enter-firstmate.sh --console [harness args]    (internal) run the harness in the current clean-room pane
 #         FM_ENTRY_DRY_RUN=1 enter-firstmate.sh          same as --doctor
@@ -284,13 +324,30 @@ CONSOLE_RECORD=$FM_HOME/state/captain-console.json
 console_record_field() { jq -r --arg k "$1" '.[$k] // empty' "$CONSOLE_RECORD" 2>/dev/null || true; }
 # console_record_update <json-object>: merge launch fields into the record, only
 # when it names the pane this --console runs in (a hand-run --console in some
-# other pane never becomes the captain's console by writing here).
+# other pane never becomes the captain's console by writing here) and the record
+# has not relinquished ownership (console_ownership_class): a relinquished record
+# is consumed only by the launcher's archive/supersede transition, never
+# reclaimed or overwritten by the pane it still names.
+console_socket_canonical() {  # <socket-path>: the directory resolved physically, as the upstream adapter compares sockets
+  local d b
+  d=$(dirname "$1"); b=$(basename "$1")
+  if [ -d "$d" ]; then d=$(cd "$d" 2>/dev/null && pwd -P) || { printf '%s' "$1"; return 0; }; fi
+  printf '%s/%s' "$d" "$b"
+}
 console_record_update() {
-  local tmp
+  local tmp rec_sock
   [ -f "$CONSOLE_RECORD" ] || return 1
   [ "$(console_record_field pane_id)" = "${HERDR_PANE_ID:-}" ] || return 1
   [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
   [ "$(console_record_field session)" = "${FM_HERDR_SESSION:-${HERDR_SESSION:-}}" ] || return 1
+  [ "$(console_ownership_class "$(console_record_field launch_stage)" "$(console_record_field handoff_at)" 0)" = ordinary ] || return 1
+  # Exact identity: a record that names its server socket is updated only by a
+  # pane Herdr injected that same socket into (pane ids repeat across sessions).
+  rec_sock=$(console_record_field socket)
+  if [ -n "$rec_sock" ]; then
+    [ -n "${HERDR_SOCKET_PATH:-}" ] || return 1
+    [ "$(console_socket_canonical "$HERDR_SOCKET_PATH")" = "$(console_socket_canonical "$rec_sock")" ] || return 1
+  fi
   tmp=$(mktemp "$FM_HOME/state/.captain-console.XXXXXX") || return 1
   if jq --argjson add "$1" '. + $add' "$CONSOLE_RECORD" > "$tmp" 2>/dev/null; then mv "$tmp" "$CONSOLE_RECORD"; else rm -f "$tmp"; return 1; fi
 }
@@ -669,6 +726,32 @@ console_converge_action() {
     *) echo leave ;;
   esac
 }
+# console_ownership_class <launch-stage> <handoff-at> <console-pid-alive 0|1|unknown>
+# -> ordinary | relinquished | relinquished-conflicting | relinquished-malformed
+# The explicit handover state of the console record, decided from plain tokens:
+#   ordinary                 no relinquishment claimed; the pane and process
+#                            observations decide (reuse, converge, stale)
+#   relinquished             an AUTHORIZED transition: stage handoff-relinquished,
+#                            a handoff_at timestamp, and the relinquishing
+#                            console pid is not alive
+#   relinquished-conflicting the relinquishing console is still alive (or its pid
+#                            cannot be judged): two consoles would exist; refuse
+#   relinquished-malformed   the stage claims a handover with no handoff_at; refuse
+console_ownership_class() {
+  local stage=${1:-} at=${2:-} alive=${3:-unknown}
+  [ "$stage" = handoff-relinquished ] || { echo ordinary; return 0; }
+  [ -n "$at" ] || { echo relinquished-malformed; return 0; }
+  [ "$alive" = 0 ] || { echo relinquished-conflicting; return 0; }
+  echo relinquished
+}
+# console_placement <mode> <ancestry-kept 0|1> -> inherited-workspace | new-workspace
+# Where a launch that must CREATE the console puts it: a console-launch running
+# inside a pane of the clean-room session inherits that pane's exact workspace
+# (a new tab there, no TUI attach); everything else creates a new workspace.
+console_placement() {
+  local mode=${1:-} kept=${2:-0}
+  if [ "$mode" = console-launch ] && [ "$kept" = 1 ]; then echo inherited-workspace; else echo new-workspace; fi
+}
 
 # cold_arm_claim_deliverable <owner-kind>: can the open auto-arm claim deliver a
 # captured wake to a freshly (re)launched, turn-idle console? Only a LIVE
@@ -828,6 +911,30 @@ console_log() { printf '%s pid=%s %s\n' "$(date -u +%FT%TZ)" "$$" "$*" 2>/dev/nu
 # An ancestry already inside the configured clean-room session is kept, which is
 # exactly the --console case, where the harness must see its own pane so workers
 # appear beside the captain.
+# Session helpers needed by the ancestry proof below (the rest of the Herdr
+# helpers follow the no-mistakes block). Every CLI call names the session
+# explicitly (HERDR_SESSION alone is not reliably honored).
+hs() { herdr "$@" --session "$FM_HERDR_SESSION"; }
+session_running() { herdr status --json --session "$FM_HERDR_SESSION" 2>/dev/null | jq -e '.server.running == true' >/dev/null 2>&1; }
+session_socket() { hs session list --json 2>/dev/null | jq -r --arg s "$FM_HERDR_SESSION" '[.sessions[]? | select(.name==$s) | .socket_path][0] // empty' 2>/dev/null; }
+console_workspaces() {  # workspace ids carrying the console label, one per line
+  hs workspace list 2>/dev/null | jq -r --arg l "$FM_CONSOLE_LABEL" '.result.workspaces[]? | select(.label==$l) | .workspace_id' 2>/dev/null
+}
+# console_ancestry_socket_proof: a kept ancestry whose pane carries Herdr's
+# injected HERDR_SOCKET_PATH must belong to THIS session's server. Herdr pane
+# ids restart at the same low numbers in every session, and HERDR_SESSION is
+# an inherited environment value, so the injected socket is the one identity
+# a pane cannot borrow from another server. Refuses when no socket is injected
+# (older injection shapes are unverifiable, as fm_backend_herdr_launcher_identity
+# treats them), on a mismatch, or when the session's own socket cannot be read.
+console_ancestry_socket_proof() {
+  local have want
+  [ -n "${HERDR_SOCKET_PATH:-}" ] || die "pane ${HERDR_PANE_ID:-?} claims session '$FM_HERDR_SESSION' without an injected HERDR_SOCKET_PATH; refusing an unverifiable ancestry (its HERDR_SESSION value was inherited, not proven)"
+  want=$(session_socket) || want=''
+  [ -n "$want" ] || die "pane ${HERDR_PANE_ID:-?} claims session '$FM_HERDR_SESSION' through socket '$HERDR_SOCKET_PATH', but that session's own socket could not be read; refusing to treat this pane as part of the clean-room session"
+  have=$(console_socket_canonical "$HERDR_SOCKET_PATH"); want=$(console_socket_canonical "$want")
+  [ "$have" = "$want" ] || die "pane ${HERDR_PANE_ID:-?} belongs to the Herdr server at '$HERDR_SOCKET_PATH', not to session '$FM_HERDR_SESSION' at '$want'; refusing a cross-session ancestry (its HERDR_SESSION value was inherited, not proven)"
+}
 FM_HERDR_ANCESTRY=kept
 if [ -n "${HERDR_PANE_ID:-}" ] && [ "${HERDR_SESSION:-}" != "$FM_HERDR_SESSION" ]; then
   FM_HERDR_ANCESTRY="dropped (pane ${HERDR_PANE_ID} of session '${HERDR_SESSION:-<unnamed>}')"
@@ -836,16 +943,33 @@ elif [ -z "${HERDR_PANE_ID:-}" ]; then
   FM_HERDR_ANCESTRY="none (started outside Herdr)"
 fi
 export HERDR_SESSION="$FM_HERDR_SESSION"
+# Where a creating launch places the console (see the header): inside a pane of
+# the clean-room session the launch inherits that pane's exact live workspace.
+CONSOLE_ANCESTRY_KEPT=$( [ "$FM_HERDR_ANCESTRY" = kept ] && [ -n "${HERDR_PANE_ID:-}" ] && echo 1 || echo 0 )
+CONSOLE_PLACEMENT=$(console_placement "$MODE" "$CONSOLE_ANCESTRY_KEPT")
+# console_claim_refusal: why a --console in this pane cannot claim the record.
+console_claim_refusal() {
+  local stage at
+  [ -f "$CONSOLE_RECORD" ] || { printf 'no console record exists for this home'; return 0; }
+  stage=$(console_record_field launch_stage); at=$(console_record_field handoff_at)
+  if [ "$(console_ownership_class "$stage" "$at" 0)" != ordinary ]; then
+    printf "the recorded console (pane %s) relinquished ownership at %s, and --console never establishes a new identity itself; run '%s' (without --console) from a pane of session %s to establish the console as a new tab of that pane's workspace" \
+      "$(console_record_field pane_id)" "${at:-<unrecorded>}" "$FM_HOME/enter-firstmate.sh" "$FM_HERDR_SESSION"
+  else
+    printf 'the record names pane %s of session %s; --console is started by the launcher into the recorded console pane only' "$(console_record_field pane_id)" "$(console_record_field session)"
+  fi
+}
 if [ "$MODE" = console-run ]; then
   [ -n "${HERDR_PANE_ID:-}" ] || die "--console must run inside a pane of the clean-room Herdr session '$FM_HERDR_SESSION'; it was started with no Herdr ancestry"
   [ "$FM_HERDR_ANCESTRY" = kept ] || die "--console refuses a foreign Herdr ancestry: $FM_HERDR_ANCESTRY"
+  console_ancestry_socket_proof
   # Claim the console record FIRST, before the identity probes below take their
   # seconds, so the Desktop launch classifies this pane as `starting` (never as
   # a stranded shell) from the moment the contract is running here.
   if console_record_update "$(jq -n --arg pid "$$" --arg t "$(date -u +%FT%TZ)" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" '{profile:$profile, model:$model, console_pid:($pid|tonumber), launch_stage:"starting", started_at:$t, launch_mode:"", resume_id:"", exit_rc:null}')"; then
     console_log "console: starting in pane $HERDR_PANE_ID (record claimed)"
   else
-    die "console ownership claim rejected for pane $HERDR_PANE_ID; an existing matching session/pane record is required before startup"
+    die "console ownership claim rejected for pane $HERDR_PANE_ID; an existing matching session/pane record is required before startup ($(console_claim_refusal))"
   fi
 fi
 
@@ -891,13 +1015,7 @@ tool_profile_observe() {  # <direct|login>
 
 cd "$FM_CODE_ROOT"
 
-# --- Herdr session helpers -------------------------------------------------------
-hs() { herdr "$@" --session "$FM_HERDR_SESSION"; }   # every CLI call names the session explicitly (HERDR_SESSION alone is not reliably honored)
-session_running() { herdr status --json --session "$FM_HERDR_SESSION" 2>/dev/null | jq -e '.server.running == true' >/dev/null 2>&1; }
-session_socket() { hs session list --json 2>/dev/null | jq -r --arg s "$FM_HERDR_SESSION" '[.sessions[]? | select(.name==$s) | .socket_path][0] // empty' 2>/dev/null; }
-console_workspaces() {  # workspace ids carrying the console label, one per line
-  hs workspace list 2>/dev/null | jq -r --arg l "$FM_CONSOLE_LABEL" '.result.workspaces[]? | select(.label==$l) | .workspace_id' 2>/dev/null
-}
+# --- Herdr session helpers (hs, session_running, session_socket, console_workspaces are defined above the ancestry proof) ---
 SESSION_STARTED_NOW=0   # 1 when THIS launch started the server: Herdr's restore is then in flight
 session_env_field() {  # <pid> <VAR> -> the server process's own value of VAR (Linux /proc), or nothing
   tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -1
@@ -943,9 +1061,22 @@ console_absence_proven() {
   [ "$count" = 0 ] || return 2
   return 1
 }
-# Return 1 only for proven absence; 2 for unreadable/conflicting ownership.
+console_record_pid_alive() {  # -> 0 | 1 | unknown, for the record's console_pid (absent/null = never claimed = unknown)
+  local cpid
+  cpid=$(console_record_field console_pid)
+  case "$cpid" in
+    ''|null) echo unknown ;;
+    0) echo 0 ;;
+    *[!0-9]*) echo unknown ;;
+    *) if kill -0 "$cpid" 2>/dev/null; then echo 1; else echo 0; fi ;;
+  esac
+}
+# Return 0 with "<ws> <pane>" for the live exact console identity; 1 only for
+# proven absence; 2 for unreadable/malformed/conflicting ownership; 3 for an
+# explicitly relinquished record (console_ownership_class), which authorizes
+# the caller to archive it and establish a new exact identity.
 console_record_pane() {
-  local ws pane rec_harness inventory count pane_count
+  local ws pane rec_harness inventory count pane_count owner
   if [ ! -e "$CONSOLE_RECORD" ]; then console_absence_proven; return $?; fi
   if ! jq -e 'type == "object" and (.workspace_id | type == "string" and length > 0)
       and (.pane_id | type == "string" and length > 0)
@@ -956,6 +1087,16 @@ console_record_pane() {
   fi
   ws=$(jq -r '.workspace_id' "$CONSOLE_RECORD"); pane=$(jq -r '.pane_id' "$CONSOLE_RECORD")
   [ "$(jq -r '.session' "$CONSOLE_RECORD")" = "$FM_HERDR_SESSION" ] || return 2
+  owner=$(console_ownership_class "$(console_record_field launch_stage)" "$(console_record_field handoff_at)" "$(console_record_pid_alive)")
+  case "$owner" in
+    relinquished) return 3 ;;
+    relinquished-conflicting)
+      printf 'enter-firstmate: console ownership record for pane %s is marked relinquished but its console pid %s is still alive or unverifiable; refusing a second console\n' "$pane" "$(console_record_field console_pid | grep . || echo '<unrecorded>')" >&2
+      return 2 ;;
+    relinquished-malformed)
+      printf 'enter-firstmate: console ownership record for pane %s claims a handover without a handoff_at timestamp; refusing (malformed relinquishment)\n' "$pane" >&2
+      return 2 ;;
+  esac
   inventory=$(hs pane list 2>/dev/null) || return 2
   printf '%s' "$inventory" | jq -e '.result.panes | type == "array" and all(.[]; (.pane_id | type == "string" and length > 0) and (.workspace_id | type == "string" and length > 0))' >/dev/null 2>&1 || return 2
   count=$(printf '%s' "$inventory" | jq --arg p "$pane" --arg w "$ws" '[.result.panes[] | select(.pane_id==$p and .workspace_id==$w)] | length') || return 2
@@ -974,8 +1115,12 @@ console_record_pane() {
   fi
   printf '%s %s\n' "$ws" "$pane"
 }
+console_launcher_identity() {  # -> "<workspace> <tab> <pane>" of the pane this launch runs in, from the upstream exact-identity seam
+  # shellcheck disable=SC2016 # the expression is evaluated inside the sourced backend shell, not here
+  console_backend eval 'fm_backend_herdr_launcher_identity "$HERDR_SESSION" || exit 1; printf "%s %s %s\n" "$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID" "$FM_BACKEND_HERDR_LAUNCHER_TAB_ID" "$FM_BACKEND_HERDR_LAUNCHER_PANE_ID"'
+}
 ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existing"
-  local rec out ws pane others record_rc
+  local rec out ws pane tab others record_rc reason archive='' parent
   mkdir -p "$FM_HOME/state" || return 2
   command -v flock >/dev/null 2>&1 || { printf 'enter-firstmate: flock required for console ownership\n' >&2; return 2; }
   exec 9>"$FM_HOME/state/console-launch.lock" || return 2
@@ -992,22 +1137,51 @@ ensure_console_workspace() (  # prints "<workspace-id> <pane-id> created|existin
     return 0
   else
     record_rc=$?
-    [ "$record_rc" = 1 ] || { printf 'enter-firstmate: console ownership unavailable or conflicting; refusing another primary\n' >&2; return "$record_rc"; }
+    case "$record_rc" in
+      1) reason=absent ;;
+      3) reason='handoff-relinquished'
+         console_log "ownership: record for pane $(console_record_field pane_id) relinquished at $(console_record_field handoff_at); establishing a new console identity ($CONSOLE_PLACEMENT)" ;;
+      *) printf 'enter-firstmate: console ownership unavailable or conflicting; refusing another primary\n' >&2; return "$record_rc" ;;
+    esac
   fi
-  # Retain a stale record as handover evidence before replacing its identity.
+  if [ -f "$CONSOLE_RECORD" ]; then mkdir -p "$FM_HOME/state/console-history" || return 2; fi
+  tab=''
+  local -a console_env=(--env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE")
+  case "$CONSOLE_PLACEMENT" in
+    inherited-workspace)
+      # Inside a pane of the clean-room session: the console becomes ONE new tab
+      # of that pane's exact live workspace (upstream seam; socket-bound session
+      # proof, live pane->tab->workspace read). Nothing already there is touched.
+      parent=$(console_launcher_identity) || die "could not establish this pane's exact Herdr workspace in session $FM_HERDR_SESSION (see the error above); refusing to place the console by label"
+      ws=${parent%% *}
+      out=$(hs tab create --workspace "$ws" --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus "${console_env[@]}" 2>&1) \
+        || die "herdr tab create in workspace $ws failed: $out"
+      tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty')
+      pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
+      [ -n "$tab" ] && [ -n "$pane" ] || die "herdr tab create returned no tab/pane id: $out"
+      console_log "placement: inherited workspace $ws from pane ${HERDR_PANE_ID:-?} (tab ${parent#* }); console tab $tab pane $pane" ;;
+    *)
+      out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus "${console_env[@]}" 2>&1) \
+        || die "herdr workspace create failed: $out"
+      ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
+      pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
+      [ -n "$ws" ] && [ -n "$pane" ] || die "herdr workspace create returned no workspace/pane id: $out" ;;
+  esac
+  # Retain the stale or relinquished record as handover evidence, now that its
+  # successor exists; the new record names the archived copy it superseded.
   if [ -f "$CONSOLE_RECORD" ]; then
-    mkdir -p "$FM_HOME/state/console-history" || return 2
-    cp -p "$CONSOLE_RECORD" "$FM_HOME/state/console-history/$(date -u +%Y%m%dT%H%M%S)-$$.json" || return 2
+    archive="$FM_HOME/state/console-history/$(date -u +%Y%m%dT%H%M%S)-$$.json"
+    if ! cp -p "$CONSOLE_RECORD" "$archive"; then
+      printf 'enter-firstmate: could not archive the superseded console record to %s; closing the console %s this launch just created\n' "$archive" "${tab:+tab $tab}${tab:-workspace $ws}" >&2
+      if [ -n "$tab" ]; then hs tab close "$tab" >/dev/null 2>&1; else hs workspace close "$ws" >/dev/null 2>&1; fi
+      return 2
+    fi
   fi
-  out=$(hs workspace create --cwd "$FM_CODE_ROOT" --label "$FM_CONSOLE_LABEL" --focus \
-        --env "FM_HOME=$FM_HOME" --env "NM_HOME=$NM_HOME" --env "HERDR_SESSION=$FM_HERDR_SESSION" --env "FM_HARNESS=$FM_HARNESS" --env "FM_CONSOLE_PROFILE=$FM_CONSOLE_PROFILE" 2>&1) \
-    || die "herdr workspace create failed: $out"
-  ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
-  pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
-  [ -n "$ws" ] && [ -n "$pane" ] || die "herdr workspace create returned no workspace/pane id: $out"
   mkdir -p "$FM_HOME/state"
-  jq -n --arg s "$FM_HERDR_SESSION" --arg sock "$(session_socket)" --arg w "$ws" --arg p "$pane" --arg t "$(date -u +%FT%TZ)" --arg h "$FM_HARNESS" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" \
-    '{record:"fm-cleanroom-captain-console/v1", session:$s, socket:$sock, workspace_id:$w, pane_id:$p, label:"firstmate", harness:$h, profile:$profile, model:$model, created_at:$t, transport:"herdr-session"}' > "$CONSOLE_RECORD"
+  jq -n --arg s "$FM_HERDR_SESSION" --arg sock "$(session_socket)" --arg w "$ws" --arg p "$pane" --arg tab "$tab" --arg t "$(date -u +%FT%TZ)" --arg h "$FM_HARNESS" --arg profile "$FM_CONSOLE_PROFILE" --arg model "$FM_CONSOLE_MODEL" \
+    --arg placement "$CONSOLE_PLACEMENT" --arg from "$reason" --arg archive "$archive" --arg parent "${HERDR_PANE_ID:-}" \
+    '{record:"fm-cleanroom-captain-console/v1", session:$s, socket:$sock, workspace_id:$w, pane_id:$p, tab_id:$tab, label:"firstmate", harness:$h, profile:$profile, model:$model, created_at:$t, transport:"herdr-session",
+      placement:$placement, established_from:$from, superseded_record:$archive, launched_from_pane:$parent}' > "$CONSOLE_RECORD"
   # The console is the harness itself, started by this same script in its own
   # pane; no worker is spawned to build the UI (workers remain a separate
   # FirstMate action). `pane run` types the command into the pane's shell.
@@ -1715,6 +1889,8 @@ if [ "$MODE" = doctor ]; then
   console_state="absent (created on the next console launch)"
   if rec=$(console_record_pane 2>/dev/null); then
     console_state="present: workspace ${rec% *} pane ${rec#* } (this home's recorded console)"
+  elif [ "$?" = 3 ]; then
+    console_state="recorded pane $(console_record_field pane_id) explicitly relinquished at $(console_record_field handoff_at) (archived and superseded by the next console launch)"
   elif [ -f "$CONSOLE_RECORD" ]; then
     console_state="recorded but its pane is gone (re-created on the next console launch)"
   fi
@@ -1743,6 +1919,11 @@ if [ "$MODE" = doctor ]; then
   echo "  console command:   $FM_HOME/enter-firstmate.sh --console  (typed into the workspace's root pane; no worker spawned)"
   echo "  console record:    $CONSOLE_RECORD"
   echo "  '$FM_CONSOLE_LABEL' workspaces: ${console_labeled:-none}  (label is not identity; the record is)"
+  doc_placement=$(console_placement console-launch "$CONSOLE_ANCESTRY_KEPT")
+  if [ "$doc_placement" = inherited-workspace ] && ! doc_proof=$( (console_ancestry_socket_proof) 2>&1 ); then
+    doc_placement="refused (${doc_proof#enter-firstmate: })"
+  fi
+  echo "  launch placement:  $doc_placement  (what a console launch from this pane would use; inherited-workspace = a launch from inside a pane of this session creates the console as a new tab of that pane's live workspace, no TUI attach; new-workspace = an outside launch creates its own workspace and attaches)"
   if rec=$(console_record_pane 2>/dev/null); then
     doc_pane=${rec#* }
     doc_proc=$(console_pane_process "$doc_pane" 2>/dev/null || echo 'unreadable')
@@ -1928,10 +2109,23 @@ assert_session_env
 sock=$(session_socket)
 [ -n "$sock" ] || die "the clean-room session '$FM_HERDR_SESSION' reports no socket"
 case "$sock" in "$HOME/.config/herdr/herdr.sock") die "the clean-room session resolved to the DEFAULT server socket; refusing to attach to the legacy session" ;; esac
+# A launch from inside a pane must prove that pane belongs to THIS session's
+# server before it may reuse or place anything from that ancestry.
+[ "$CONSOLE_PLACEMENT" != inherited-workspace ] || console_ancestry_socket_proof
 console_location=$(ensure_console_workspace) || exit $?
 read -r ws pane how <<< "$console_location"
 [ -n "$ws" ] && [ -n "$pane" ] && [ -n "$how" ] || die "console workspace result is incomplete"
 printf 'enter-firstmate: console workspace %s pane %s (%s) in session %s at %s\n' "$ws" "$pane" "$how" "$FM_HERDR_SESSION" "$sock" >&2
+if [ "$CONSOLE_PLACEMENT" = inherited-workspace ]; then
+  # Launched from inside the session: the TUI the captain is looking at already
+  # shows this server, so no nested TUI is attached; the console tab is brought
+  # to the front (best effort, display only) and this pane is left as it was.
+  [ "$how" != deferred ] || die "a launch from inside pane ${HERDR_PANE_ID:-?} cannot have started the server it runs in; refusing an inconsistent deferred convergence"
+  console_tab=$(console_record_field tab_id)
+  [ -z "$console_tab" ] || hs tab focus "$console_tab" >/dev/null 2>&1 || true
+  printf 'enter-firstmate: the console is running in pane %s of workspace %s%s; this terminal was left as it was (no TUI attached from inside the session)\n' "$pane" "$ws" "${console_tab:+ (tab $console_tab)}" >&2
+  exit 0
+fi
 converge_pid=''
 if [ "$how" = deferred ]; then
   # This launch started the server: Herdr will spawn the restored console pane

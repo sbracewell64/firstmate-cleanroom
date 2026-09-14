@@ -13,13 +13,13 @@ class StartupBoundaryTests(unittest.TestCase):
     def tearDown(self): self.f.close()
     def console(self, **env):
         self.f.record(harness='codex')
-        return self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', **env)
+        return self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock', **env)
     def evidence_console(self, pane):
         harness = self.f.tools/'bin/synthetic-harness'
         self.f.script(harness, 'printf "harness\\n" >> "$FIXTURE_ROOT/startup-effects"\n')
         projection = self.f.root/'projection.py'
         projection.write_text('import os\nfrom pathlib import Path\nwith (Path(os.environ["FIXTURE_ROOT"])/"startup-effects").open("a") as output: output.write("preparation\\n")\n')
-        return self.f.run('--console', HERDR_PANE_ID=pane, HERDR_SESSION='synthetic',
+        return self.f.run('--console', HERDR_PANE_ID=pane, HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock',
                           FM_HARNESS=str(harness), FM_EXCHANGE_OWNER=str(projection))
 
     def test_missing_record_refuses_before_preparation(self):

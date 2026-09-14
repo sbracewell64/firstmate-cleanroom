@@ -875,6 +875,62 @@ test_await_does_not_retry_a_definitive_non_http_failure() {
 }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
+
+# --- the gate job actually delegates the wait to its owner -------------------
+#
+# The helper owns the publication window, the poll cadence, the retry budget and
+# the deadline behavior, and derives the window from the observed publication
+# latency. The workflow can silently defeat all of that in two ways: by calling
+# a different subcommand, or by pinning NMF_PUBLICATION_WINDOW_SECONDS in the
+# step env, which overrides the derived bound without changing a line of the
+# helper - the previous wiring pinned 90s, below every observed failure. Both
+# regressions are invisible in the helper's own tests, so assert them against the
+# workflow's parsed semantic model (bin/fm-workflow-yaml.sh, the repo's owner for
+# that parse), never against its source bytes.
+
+WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
+
+gate_resolve_step_json() {
+  "$ROOT/bin/fm-workflow-yaml.sh" "$WORKFLOW" | python3 -c '
+import json, sys
+workflow = json.load(sys.stdin)
+steps = workflow["jobs"]["check"]["steps"]
+step = [s for s in steps if s.get("name") == "Resolve live PR subject"]
+if len(step) != 1:
+    raise SystemExit("expected exactly one Resolve live PR subject step, found %d" % len(step))
+json.dump(step[0], sys.stdout)
+'
+}
+
+test_gate_step_delegates_the_wait_to_the_helper() {
+  local step
+  "$ROOT/bin/fm-workflow-yaml.sh" --probe >/dev/null 2>&1 \
+    || { pass "workflow parser capability absent; skipping the gate wiring assertions"; return 0; }
+  step=$(gate_resolve_step_json) || fail "could not resolve the gate step from the workflow model"
+  printf '%s' "$step" | python3 -c '
+import json, sys
+step = json.load(sys.stdin)
+run = step.get("run", "")
+env = step.get("env", {}) or {}
+problems = []
+if "fm-nmf-verify-input.sh await" not in run:
+    problems.append("the step does not delegate to the helper await subcommand; run=%r" % run)
+for pin in ("NMF_PUBLICATION_WINDOW_SECONDS", "NMF_PUBLICATION_POLL_SECONDS",
+            "NMF_LIVE_READ_ATTEMPTS", "NMF_LIVE_READ_BACKOFF_SECONDS"):
+    if pin in env:
+        problems.append("the step pins %s=%r, overriding the bound the helper derives" % (pin, env[pin]))
+if "current" not in str(step.get("if", "")):
+    problems.append("the step no longer gates on current mode; if=%r" % step.get("if"))
+if problems:
+    raise SystemExit("; ".join(problems))
+' || fail "gate wiring regressed: $(printf '%s' "$step" | python3 -c '
+import json,sys
+step=json.load(sys.stdin)
+print("run=%r env=%r" % (step.get("run"), step.get("env")))
+')"
+  pass "the gate step delegates the wait to the helper and pins none of its derived bounds"
+}
+
 fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
@@ -913,3 +969,4 @@ test_await_attributes_a_recovered_outage_to_the_publisher_with_context
 test_await_still_counts_an_early_outage_when_the_last_polls_read_soundly
 test_await_attributes_at_a_tail_gap_of_exactly_one_poll_interval
 test_await_does_not_retry_a_definitive_non_http_failure
+test_gate_step_delegates_the_wait_to_the_helper

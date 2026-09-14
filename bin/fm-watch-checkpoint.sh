@@ -47,10 +47,13 @@ case "$SECONDS_ARG" in
 esac
 
 # Reconcile the existing durable owner before waiting and after the finite
-# checkpoint. No wake/presentation cursor is used as an execution receipt.
+# checkpoint. Each call takes the same ten-second bound every sibling caller
+# uses, so the reported checkpoint duration stays truthful and the supervision
+# cadence is not overrun. No wake/presentation cursor is an execution receipt.
+FM_CHECKPOINT_RECONCILE_SECONDS=10
 reconcile_completion() {
   local out rc=0
-  out=$(fm_run_timed "$SECONDS_ARG" "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || rc=$?
+  out=$(fm_run_timed "$FM_CHECKPOINT_RECONCILE_SECONDS" "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || rc=$?
   [ -z "$out" ] || printf '%s\n' "$out"
   [ "$rc" -eq 0 ] || printf 'CONTINUATION_CNO: checkpoint retains unresolved report/action obligations boundary=%s status=%s\n' "$1" "$rc" >&2
   return 0

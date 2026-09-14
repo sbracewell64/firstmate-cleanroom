@@ -11,7 +11,9 @@
 #                              [--expect-nm-home <path>] [--expect-path0 <dir>]
 #   FM_HOME=<home> fm-stage.sh <task-id> running [--run <run-id>]
 #   FM_HOME=<home> fm-stage.sh <task-id> ci-ready --pr <url>
-#   FM_HOME=<home> fm-stage.sh <task-id> landing [--pr <url>]
+#   FM_HOME=<home> fm-stage.sh <task-id> landing [--pr <url>]   (--pr must be the
+#                              recorded qualified destination; a different URL is
+#                              refused as DESTINATION_MISMATCH, not a revocation)
 #   FM_HOME=<home> fm-stage.sh <task-id> activated
 #   FM_HOME=<home> fm-stage.sh <task-id> show
 #   FM_HOME=<home> fm-stage.sh <task-id> handoff --handoff-json <file>
@@ -87,12 +89,12 @@
 #              and class. Candidate currentness uses the STALE_CANDIDATE rule
 #              above, with pipeline custody owned by bin/fm-nm-run-lib.sh.
 #   ci-ready   The worker runs this when the pipeline reports CI green. The
-#              verdict is the canonical one bin/fm-crew-state.sh renders from the
-#              run step (`state: done` from `source: run-step`), never the
-#              worker's narration, the command's exit status, or a status-log
-#              line; the observer's `refresh` records the run's status and class
-#              beside it. Records `ci-ready` with the PR and stops the worker:
-#              the configured merge authority owns landing.
+#              verdict is the producer qualification bin/fm-nm-run-lib.sh reads
+#              for the exact run/head/branch/PR, never the worker's narration,
+#              the command's exit status, or a status-log line; the observer's
+#              `refresh` records the run's status and class beside it. Records
+#              `ci-ready` with the PR and stops the worker: the configured merge
+#              authority owns landing.
 #   landing    Firstmate runs this when the configured merge authority is
 #              landing the change (before bin/fm-pr-merge.sh or
 #              bin/fm-merge-local.sh). Records `landing`; never merges anything.
@@ -101,7 +103,9 @@
 #              identity, or the candidate head reachable from the project
 #              clone's checked-out head. No read-back refuses as NO_READBACK;
 #              nothing here fetches, merges, or syncs.
-#   show       Prints the recorded stage and its `next:` line, then reconciles
+#   show       Revalidates the recorded qualification first, so a revoked
+#              qualification refuses before anything is printed; otherwise
+#              prints the recorded stage and its `next:` line, then reconciles
 #              canonical observations and admitted completion handoffs.
 #              A worker resuming after a restart runs this first and continues
 #              from the recorded stage.
@@ -128,6 +132,11 @@
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
 #   stage_pr=<PR url>          stage_reason=<validation-pending reason, or the
 #                                            activated read-back evidence>
+#   stage_ci_ready_effect=<admitted CI-ready effect JSON with its revocable
+#                          producer qualification, carried through landing and
+#                          activated>
+#   completion_handoff=<durable handoff contract/receipt; bin/fm-completion-lib.sh
+#                       is the only writer, under this script's metadata lock>
 #
 # Receipt fields, in this order on every stage line (`-` when not applicable;
 # values percent-encode space, percent, and tab, and the classifier decodes
@@ -409,11 +418,14 @@ receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
 # receipt without its record, and the next run appends it again: a bounded
 # duplicate, never a lost transition.
 issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...]
-  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv ci_effect=
+  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock own_lock= kv ci_effect=
   shift 6
   line=$(receipt_line "$stage" "$owner" "$reason" "$branch" "$head" "$tree")
   lock=$(fm_meta_lock_path "$META") || exit 2
-  [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_acquire_wait "$lock"
+  if [ "$lock" != "$CI_READY_META_LOCK" ]; then
+    fm_lock_acquire_wait "$lock"
+    own_lock=$lock
+  fi
   tmp="$STATE/.$ID.meta.stage.${BASHPID:-$$}"
   if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
     [ "$lock" = "$CI_READY_META_LOCK" ] || fm_lock_release "$lock"
@@ -441,7 +453,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
         "$(printf '%s' "$ci_effect" | jq -c .qualification)" >/dev/null \
         || refuse ci-ready QUALIFICATION_REVOKED 'exact producer qualification changed before publication'
       ;;
-    landing|activated) require_current_qualification "$stage" "$STAGE_PR_VALUE" ;;
+    landing|activated) require_current_qualification "$stage" "$STAGE_PR_VALUE" "$own_lock" ;;
   esac
   case "$stage" in
     ci-ready|landing|activated)
@@ -525,10 +537,6 @@ observe() {  # <verb> [args...] -> OBS_OUT, OBS_RC
   OBS_RC=0
   OBS_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
     "$SCRIPT_DIR/fm-nm-observe.sh" "$@" 2>&1) || OBS_RC=$?
-}
-
-crew_state() {
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-crew-state.sh" "$ID" 2>/dev/null || true
 }
 
 # Reuse the work-context owner at existing stage boundaries. The canonical
@@ -786,11 +794,13 @@ do_ci_ready() (
 )
 
 # Historical stage labels never substitute for current producer qualification.
-require_current_qualification() {
-  local expected_pr=${2:-$(meta stage_pr)}
+require_current_qualification() {  # <transition> [expected PR] [lock to release before refusing]
+  local expected_pr=${2:-$(meta stage_pr)} held_lock=${3:-}
   if fm_nm_effect_required "$META"; then
-    fm_nm_effect_current "$META" "$expected_pr" >/dev/null \
-      || refuse "$1" QUALIFICATION_REVOKED 'exact stage qualification is missing or no longer current; historical record retained'
+    if ! fm_nm_effect_current "$META" "$expected_pr" >/dev/null; then
+      [ -z "$held_lock" ] || fm_lock_release "$held_lock"
+      refuse "$1" QUALIFICATION_REVOKED 'exact stage qualification is missing or no longer current; historical record retained'
+    fi
   fi
 }
 
@@ -803,6 +813,9 @@ do_landing() {
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
+  if [ -n "$PR_ARG" ] && [ "$PR_ARG" != "$(meta stage_pr)" ] && fm_nm_effect_required "$META"; then
+    refuse landing DESTINATION_MISMATCH "--pr $PR_ARG is not the qualified destination $(dash "$(meta stage_pr)"); landing carries the destination CI-ready qualified"
+  fi
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ]; then
     unchanged landing

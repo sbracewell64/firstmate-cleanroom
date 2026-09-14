@@ -615,7 +615,7 @@ test_checkpoint_observation_lock_bounds() (
       done
       [ -f "$TMP_ROOT/observation-held" ] || fail 'observation holder absent'
     fi
-    FM_POLL=1 FM_CHECK_INTERVAL=999999 fm_run_timed 30 "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 5 \
+    FM_POLL=1 FM_CHECK_INTERVAL=999999 fm_run_timed 60 "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 5 \
       > "$TMP_ROOT/checkpoint-$boundary.out" 2> "$TMP_ROOT/checkpoint-$boundary.err" &
     checkpoint=$!
     rc=0; wait "$checkpoint" || rc=$?
@@ -629,6 +629,71 @@ test_checkpoint_observation_lock_bounds() (
     assert_absent "$FM_STATE_OVERRIDE/guarded.inbox/001.msg" 'timed-out reconciliation dispatched action'
   done
   pass 'finite checkpoint bounds entry and exit reconciliation against a live observation lock'
+)
+
+# R27: a host whose shasum produces no digest must not collapse every handoff
+# identity to the empty string, which would let changed contract bytes pass the
+# CONFLICTING_HANDOFF check as ""=="".
+test_handoff_identity_survives_a_broken_digest_tool() (
+  local out rc=0 identity
+  export FM_STATE_OVERRIDE="$TMP_ROOT/digest-state"
+  mkdir -p "$FM_STATE_OVERRIDE" "$TMP_ROOT/digest-bin"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  canonical running
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_ROOT/digest-bin/shasum"
+  chmod +x "$TMP_ROOT/digest-bin/shasum"
+  export PATH="$TMP_ROOT/digest-bin:$PATH"
+
+  out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json") || fail "broken shasum admission: $out"
+  identity=$(meta completion_handoff | jq -r .identity)
+  [[ "$identity" =~ ^[0-9a-f]{64}$ ]] || fail "admitted identity is not a digest: '$identity'"
+  jq '.action.id="ci2"' "$TMP_ROOT/handoff.json" > "$TMP_ROOT/digest-other.json"
+  rc=0; out=$(stage handoff --handoff-json "$TMP_ROOT/digest-other.json") || rc=$?
+  expect_code 1 "$rc" 'changed contract bytes must refuse'
+  assert_contains "$out" CONFLICTING_HANDOFF 'changed contract bytes must not pass as an equal identity'
+  [ "$(meta completion_handoff | jq -r .identity)" = "$identity" ] || fail 'refused handoff replaced the admitted contract'
+  [ "$(meta completion_handoff | jq -r .contract.action.id)" = ci ] || fail 'refused handoff became authoritative'
+
+  export FM_STATE_OVERRIDE="$TMP_ROOT/digest-none-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP_ROOT/digest-bin/sha256sum"
+  chmod +x "$TMP_ROOT/digest-bin/sha256sum"
+  rc=0; out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json") || rc=$?
+  expect_code 1 "$rc" 'no usable digest tool must refuse'
+  assert_contains "$out" DIGEST_UNAVAILABLE 'unavailable digest must be a typed refusal'
+  [ -z "$(meta completion_handoff)" ] || fail 'unavailable digest stored an identity-less handoff'
+  pass 'handoff identity falls back to a real digest and refuses when no tool produces one'
+)
+
+# R29: landing carries the destination CI-ready qualified. A different --pr is a
+# destination mismatch, not a revoked qualification.
+test_landing_destination_mismatch_refuses_early() (
+  local out rc=0 before
+  export FM_STATE_OVERRIDE="$TMP_ROOT/destination-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  canonical completed checks-passed
+  stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'destination fixture admission'
+  stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'destination fixture release'
+  [ "$(meta stage)" = ci-ready ] || fail 'destination fixture did not reach ci-ready'
+  before=$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")
+
+  rc=0; out=$(stage landing --pr https://github.com/o/r/pull/9 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a different landing destination must refuse'
+  assert_contains "$out" DESTINATION_MISMATCH 'refusal must name the destination mismatch'
+  case "$out" in *QUALIFICATION_REVOKED*) fail 'destination mismatch mislabelled as a revocation' ;; esac
+  [ "$before" = "$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")" ] \
+    || fail 'refused landing mutated the record'
+
+  out=$(stage landing --pr https://github.com/o/r/pull/7) || fail "qualified destination must land: $out"
+  [ "$(meta stage)" = landing ] || fail 'qualified destination did not record landing'
+  pass 'landing refuses an unqualified destination as a mismatch and accepts the qualified one'
 )
 
 test_opposite_direction_delivery_does_not_deadlock() {
@@ -1269,3 +1334,5 @@ test_ci_ready_child_revalidates_admitted_identity
 test_away_housekeeping_bounds_observation_wait
 test_qualified_successor_identity
 test_drain_observation_wait_releases_presentation
+test_handoff_identity_survives_a_broken_digest_tool || exit 1
+test_landing_destination_mismatch_refuses_early || exit 1

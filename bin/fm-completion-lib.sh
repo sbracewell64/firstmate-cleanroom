@@ -34,7 +34,15 @@ fm_completion_refuse() {
 }
 
 fm_completion_hash() {
-  printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  local digest=
+  if command -v shasum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)
+  fi
+  if ! [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1)
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
 }
 
 fm_completion_report_current() {
@@ -101,15 +109,16 @@ fm_completion_binding_current() { # <contract JSON>
 }
 
 fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
-  local saved=$1 contract
+  local saved=$1 contract identity
   printf '%s' "$saved" | jq -e '
     type == "object" and (.released | type == "boolean") and
     (.status == "pending" or .status == "dispatched") and
     (.receipt == null or (.receipt | type == "string" and length > 0))
   ' >/dev/null 2>&1 || return 1
   contract=$(printf '%s' "$saved" | jq -cS .contract) || return 1
-  fm_completion_contract_valid "$contract" &&
-    [ "$(printf '%s' "$saved" | jq -r .identity)" = "$(fm_completion_hash "$contract")" ] &&
+  fm_completion_contract_valid "$contract" || return 1
+  identity=$(fm_completion_hash "$contract") || return 1
+  [ "$(printf '%s' "$saved" | jq -r .identity)" = "$identity" ] &&
     fm_completion_binding_current "$contract"
 }
 
@@ -159,7 +168,7 @@ fm_completion_admit() {
   fm_completion_contract_valid "$contract" || { fm_completion_refuse MALFORMED; return 1; }
   fm_completion_binding_current "$contract" || { fm_completion_refuse STALE_BINDING; return 1; }
   fm_completion_target_current "$contract" || return 1
-  identity=$(fm_completion_hash "$contract") || return 1
+  identity=$(fm_completion_hash "$contract") || { fm_completion_refuse DIGEST_UNAVAILABLE; return 1; }
   old=$(meta completion_handoff)
   if [ -n "$old" ]; then
     fm_completion_saved_valid "$old" || { fm_completion_refuse MALFORMED; return 1; }

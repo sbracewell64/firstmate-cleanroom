@@ -41,7 +41,7 @@ Timeouts leave durable handoffs unresolved; they never supply completion evidenc
 | Session start | Ten seconds for reconciliation, within the existing overall startup budget | `test_session_start_reconciles_durable_handoff` in `tests/fm-completion.test.sh`; runtime-bound tests in `tests/fm-session-start.test.sh` |
 | Wake drain | Ten seconds while holding presentation custody, then release custody and report CNO | `test_drain_observation_wait_releases_presentation` in `tests/fm-completion.test.sh` |
 | Codex Stop | Ten seconds, followed by its existing bounded recovery/CNO policy | `tests/fm-watch-checkpoint.test.sh` and `tests/fm-codex-continuation.test.sh` |
-| Foreground checkpoint | Each reconciliation call is bounded by the requested checkpoint duration | `test_checkpoint_observation_lock_bounds` in `tests/fm-completion.test.sh` |
+| Foreground checkpoint | Ten seconds per reconciliation call, matching every sibling caller, so the reported checkpoint duration stays truthful | `test_checkpoint_observation_lock_bounds` in `tests/fm-completion.test.sh` |
 | Away housekeeping | Ten seconds, then retain an escalation and continue housekeeping | `test_away_housekeeping_bounds_observation_wait` in `tests/fm-completion.test.sh` |
 | Explicit stage transitions and resolver reconciliation | Synchronous authority operations; the embedding caller supplies its deadline and must retain unresolved work on interruption | Custody, concurrent delivery, and interrupted-effect reconstruction cases in `tests/fm-completion.test.sh` |
 

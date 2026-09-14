@@ -1325,6 +1325,9 @@ secondmate_current_json() {  # <parent-tasks-json>
         summary='{}'
         [ "$summary_rc" -eq 124 ] && reason="structured home snapshot timed out" || reason="structured home snapshot failed"
       else
+        # A rejected sample resets summary to {} so raw remote stdout never
+        # reaches the positional stdin bindings below; reason alone carries
+        # the rejection detail.
         summary_bytes=$(printf '%s' "$summary" | LC_ALL=C wc -c | tr -d ' ')
         if [ "$summary_bytes" -gt "$FM_SNAPSHOT_SECONDMATE_MAX_BYTES" ]; then
           summary='{}'

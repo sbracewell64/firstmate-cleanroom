@@ -84,7 +84,20 @@ SH
 #!/usr/bin/env bash
 cat > /dev/null
 printf '%s\n' "$*" >> "$FM_SSH_LOG"
-exit "${FM_FAKE_SSH_RC:-0}"
+[ "${FM_FAKE_SSH_RC:-0}" -eq 0 ] || exit "${FM_FAKE_SSH_RC}"
+# A successful send leg answers with the read-back digest of the message it
+# recorded (argv: fm-remote-secondmate-control.sh send <id> <message>), which
+# the parent compares with the bytes it retained before calling it delivered.
+while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; *) shift ;; esac; done
+argv_b64=${6:-}
+if [ -n "$argv_b64" ]; then
+  message=$(perl -MMIME::Base64=decode_base64 -e '$d=decode_base64($ARGV[0]); @a=split(/\0/, $d, -1); print $a[3] if $a[0] eq "fm-remote-secondmate-control.sh" && $a[1] eq "send"' "$argv_b64")
+  if [ -n "$message" ]; then
+    if command -v shasum >/dev/null 2>&1; then sha=$(printf '%s' "$message" | shasum -a 256 | awk '{print $1}'); else sha=$(printf '%s' "$message" | sha256sum | awk '{print $1}'); fi
+    printf 'record=fixture\nsha256=%s\nbytes=%s\n' "$sha" "$(printf '%s' "$message" | LC_ALL=C wc -c | tr -d ' ')"
+  fi
+fi
+exit 0
 SH
   chmod +x "$fb/fake-ssh"
   printf '%s\n' "$fb"

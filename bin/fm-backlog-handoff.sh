@@ -81,6 +81,8 @@ MAIN_BACKLOG="$DATA/backlog.md"
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-outbound-write-lib.sh
+. "$SCRIPT_DIR/fm-outbound-write-lib.sh"
 
 RECEIVER_WAKE_MESSAGE='New routed work is in your backlog. Run bin/fm-session-start.sh now, then act on the routed task.'
 
@@ -518,48 +520,86 @@ outbox_item_count() { # <path>
   awk '/^- \[[ x]\] / { count++ } END { print count + 0 }' "$1"
 }
 
+# handoff_receipt_accounts_for <receipt-output> <secondmate-id> <item-count>:
+# the canonical read-back of a remote handoff. fm-backlog-receive.sh re-reads
+# the destination backlog for every delivered key before it answers, and its
+# last line is "received: <id> moved=<n> already=<m>"; the handoff is delivered
+# only when that receipt names this secondmate and moved+already accounts for
+# every item in the exact payload that was sent. Exit 0 verified, 1 mismatch,
+# 2 when no receipt line is present.
+handoff_receipt_accounts_for() { # <receipt-output> <secondmate-id> <item-count>
+  local out=$1 id=$2 want=$3 line rid moved already
+  line=$(printf '%s\n' "$out" | grep -E '^received: ' | tail -n1)
+  [ -n "$line" ] || return 2
+  rid=${line#received: }; rid=${rid%% *}
+  moved=${line#*moved=}; moved=${moved%% *}
+  already=${line#*already=}; already=${already%% *}
+  case "$moved" in ''|*[!0-9]*) return 1 ;; esac
+  case "$already" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$rid" = "$id" ] || return 1
+  [ "$((moved + already))" -eq "$want" ]
+}
+
 remote_deliver_outbox() { # <secondmate-id> <outbox-path>
-  local id=$1 outbox=$2 remote_rel receive_out snapshot bytes hash generation counter counter_tmp current marker
+  local id=$1 outbox=$2 remote_rel receive_out bytes hash generation counter counter_tmp current marker ledger items rc readback_rc
   [ -f "$outbox" ] && [ ! -L "$outbox" ] || {
     echo "error: pending outbox is unavailable or unsafe: $outbox" >&2
     return 1
   }
-  snapshot=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-handoff-payload.XXXXXX") || return 1
-  if ! cp -p -- "$outbox" "$snapshot"; then
-    rm -f -- "$snapshot"
-    return 1
-  fi
-  bytes=$(LC_ALL=C wc -c < "$snapshot" | tr -d ' ')
-  hash=$(sha256_file "$snapshot") || { rm -f -- "$snapshot"; return 1; }
   counter="$STATE/.remote-handoff-$id.generation"
   current=0
   if [ -e "$counter" ] || [ -L "$counter" ]; then
-    [ -f "$counter" ] && [ ! -L "$counter" ] || { rm -f -- "$snapshot"; return 1; }
-    IFS= read -r current < "$counter" || { rm -f -- "$snapshot"; return 1; }
-    case "$current" in ''|*[!0-9]*) rm -f -- "$snapshot"; return 1 ;; esac
-    [ "${#current}" -le 17 ] || { rm -f -- "$snapshot"; return 1; }
+    [ -f "$counter" ] && [ ! -L "$counter" ] || return 1
+    IFS= read -r current < "$counter" || return 1
+    case "$current" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#current}" -le 17 ] || return 1
   fi
   generation=$((current + 1))
-  counter_tmp=$(umask 077; mktemp "$STATE/.remote-handoff-generation.XXXXXX") \
-    || { rm -f -- "$snapshot"; return 1; }
-  printf '%s\n' "$generation" > "$counter_tmp" \
-    || { rm -f -- "$snapshot" "$counter_tmp"; return 1; }
-  chmod 600 "$counter_tmp" \
-    || { rm -f -- "$snapshot" "$counter_tmp"; return 1; }
-  mv -f -- "$counter_tmp" "$counter" \
-    || { rm -f -- "$snapshot" "$counter_tmp"; return 1; }
+  counter_tmp=$(umask 077; mktemp "$STATE/.remote-handoff-generation.XXXXXX") || return 1
+  printf '%s\n' "$generation" > "$counter_tmp" || { rm -f -- "$counter_tmp"; return 1; }
+  chmod 600 "$counter_tmp" || { rm -f -- "$counter_tmp"; return 1; }
+  mv -f -- "$counter_tmp" "$counter" || { rm -f -- "$counter_tmp"; return 1; }
+  # Outbound-write discipline (bin/fm-outbound-write-lib.sh): the exact outbox
+  # bytes are retained with their digest before transfer, the transport reads
+  # them from that retained copy over stdin, the receipt is read back against
+  # the item count of that same payload, and the outcome is classified from the
+  # remote leg's returned status alone.
+  items=$(outbox_item_count "$outbox")
+  ledger=$(fm_outbound_prepare "$STATE" "$outbox" writer=fm-backlog-handoff \
+    "destination=remote:$id:state/handoff/$id.outbox.md" \
+    "account=ssh:$(secondmate_registry_field "$REG" "$id" host 2>/dev/null || printf unknown)" \
+    "authority=secondmate-registry:$REG" disclosure=fleet \
+    "correlation=handoff:$id:$generation") || {
+    echo "error: could not retain the handoff payload in state/outbound-writes; outbox preserved at $outbox" >&2
+    return 1
+  }
+  bytes=$(fm_outbound_get "$STATE" "$ledger" bytes)
+  hash=$(fm_outbound_get "$STATE" "$ledger" sha256)
+  [ -n "$bytes" ] && [ -n "$hash" ] || return 1
   remote_rel="state/handoff/$id.outbox.md"
-  if ! "$SCRIPT_DIR/fm-on.sh" --stdin "$id" fm-remote-file.sh put "$remote_rel" 1048576 \
-    "$bytes" "$hash" "$generation" < "$snapshot"; then
-    rm -f -- "$snapshot"
+  rc=0
+  fm_outbound_send "$STATE" "$ledger" stdin "$SCRIPT_DIR/fm-on.sh" --stdin "$id" fm-remote-file.sh put \
+    "$remote_rel" 1048576 "$bytes" "$hash" "$generation" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fm_outbound_classify "$STATE" "$ledger" exit "$rc" >/dev/null
     echo "error: handoff transfer to $id was unavailable or completion is unknown; outbox preserved at $outbox" >&2
     return 1
   fi
-  rm -f -- "$snapshot"
-  if ! receive_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-backlog-receive.sh \
-    "$remote_rel" "$bytes" "$hash" "$generation" < /dev/null 2>&1); then
+  rc=0
+  receive_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-backlog-receive.sh \
+    "$remote_rel" "$bytes" "$hash" "$generation" < /dev/null 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fm_outbound_classify "$STATE" "$ledger" exit "$rc" >/dev/null
     [ -z "$receive_out" ] || printf '%s\n' "$receive_out" >&2
     echo "error: handoff receipt by $id was unavailable or completion is unknown; outbox preserved at $outbox" >&2
+    return 1
+  fi
+  readback_rc=0
+  fm_outbound_readback "$STATE" "$ledger" custom handoff_receipt_accounts_for "$receive_out" "$id" "$items" || readback_rc=$?
+  fm_outbound_classify "$STATE" "$ledger" exit 0 >/dev/null
+  if [ "$readback_rc" -ne 0 ]; then
+    [ -z "$receive_out" ] || printf '%s\n' "$receive_out" >&2
+    echo "error: handoff receipt from $id does not account for the $items item(s) sent (read-back mismatch, recorded undelivered as state/outbound-writes/$ledger.record); outbox preserved at $outbox" >&2
     return 1
   fi
   marker="$STATE/.backlog-handoff-$id.wake-pending"

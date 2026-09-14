@@ -38,6 +38,7 @@
 #                                - build the answer/followup POST body
 #   fmx_reply_outbox_json <request_id> <chunks> <n> <followup-0|1> [image-preview-json]
 #                                - build the dry-run record without image bytes
+#   fmx_token_fingerprint      - 12-hex non-reversible identity of the loaded token
 #   fmx_post_json <endpoint> <payload-file> [body-file] - POST JSON to the relay,
 #                                printing HTTP code and writing response body
 #   fmx_meta_get <meta> <key>  - read one key=value line from a task meta file
@@ -864,6 +865,20 @@ fmx_reply_outbox_json() {
       fi
     fi
   fi
+}
+
+# fmx_token_fingerprint: a non-reversible 12-hex identity for the loaded pairing
+# token, so an outbound-write ledger record can name WHICH relay account a post
+# used without ever storing the token itself. Empty when no token is loaded.
+fmx_token_fingerprint() {
+  local hex
+  [ -n "${FMX_TOKEN:-}" ] || return 0
+  if command -v shasum >/dev/null 2>&1; then
+    hex=$(printf '%s' "$FMX_TOKEN" | shasum -a 256 2>/dev/null | awk '{print $1}')
+  else
+    hex=$(printf '%s' "$FMX_TOKEN" | sha256sum 2>/dev/null | awk '{print $1}')
+  fi
+  printf '%s' "${hex:0:12}"
 }
 
 fmx_post_json() (

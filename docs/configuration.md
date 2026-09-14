@@ -42,6 +42,8 @@ Untracked files and directories whose names begin with `scratchpad` are also git
 The producing PR and Relay helpers own the fields they append, `bin/fm-stage.sh` owns the `stage=` and `stage_*` lifecycle fields and the stage receipts it appends to the status log, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 `bin/fm-nm-observe.sh` owns the no-mistakes observation obligation at `state/<id>.nm-observe`, the durable per-task receipt at `data/<id>/nm-observation-receipt.md`, and the reconciliation cursor at `state/.nm-observe-watermark`; [`no-mistakes-observation.md`](no-mistakes-observation.md) owns the entrypoint census and coverage claims.
 `bin/fm-nm-assess.sh` owns the per-run two-level assessment at `state/<id>.nm-assessment`, its durable receipt at `data/<id>/nm-assessment-receipt.md`, and the finding families at `data/nm-finding-families/`; the same document owns its assessment invariant.
+`bin/fm-outbound-write-lib.sh` owns the private outbound-write ledger at `state/outbound-writes/` (mode 0700), where every tracked writer that sends firstmate-authored bytes out of the home - the Relay reply, follow-up, and dismiss clients, the promised public reply, the remote backlog handoff, and the remote secondmate steer - retains the exact outgoing payload with its length and sha256 in a mode-0600 record before the transport runs, records the read-back verdict and the provider's returned evidence, and keeps exactly one undelivered record for a rejected write so it is never retried automatically.
+That ledger is pruned on the same seven-day horizon as `state/x-context/` at every prepare, so it stays bounded without a separate sweep; the library header owns the record fields, conveyance modes, read-back modes, and exit statuses.
 Wake, watcher, away-mode, and Relay-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
@@ -649,6 +651,7 @@ When an image is attached, the dry-run record uses compact `{media_type, bytes, 
 In dry-run, `fm-x-dismiss.sh` records `{request_id, endpoint:"dismiss"}` to the same outbox path, prints a `DRY RUN` summary, echoes the `request_id`, and exits 0.
 The live answer and follow-up bodies intentionally stay the same shape, including optional `image`; the relay distinguishes them by endpoint, and dismiss stays `{request_id}`.
 These paths need `jq` to build the JSON payload, but they run before token and network checks, so they need neither `FMX_PAIRING_TOKEN` nor `curl`.
+A live reply, follow-up, or dismiss first retains its exact POST body in `state/outbound-writes/` and then classifies the relay's answer from the returned status alone: any 4xx other than 401, 403, and 409 is a rejection that exits 10, stays recorded as undelivered, and is never re-posted automatically, while 5xx and transport failures remain the retryable exit 1 (`bin/fm-outbound-write-lib.sh`).
 
 ### Promised public replies (state/public-followup)
 

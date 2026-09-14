@@ -1295,6 +1295,38 @@ test_exhausted_binding_is_not_retried() {
   pass "a relay-exhausted follow-up binding is escalated rather than retried into the thread"
 }
 
+# A relay rejection of the reply itself (any 4xx other than 401/403/409) is a
+# safety-class refusal: the exact payload is retained as one undelivered record
+# and the obligation must never auto-retry into the public thread.
+test_relay_rejection_is_undelivered_and_not_retried() {
+  local home log posts rec
+  home=$(make_home rejected)
+  log="$home/curl.log"; : > "$log"
+  seed_commitment "$home" pf-rej req-rej discord main work-rej
+  emit_terminal "$home" "$home" pf-rej main work-rej >/dev/null || fail "emit failed"
+  FAKE_CURL_LOG="$log" run_pf "$home" consume >/dev/null || fail "consume failed"
+
+  FAKE_CURL_LOG="$log" FAKE_FOLLOWUP_CODE=422 \
+    expect_failure "a rejected post must not report success" \
+    run_pf "$home" deliver pf-rej
+  assert_contains "$EXPECT_OUT" "not retried automatically" "the rejection must be typed as not retried"
+  assert_contains "$EXPECT_OUT" "undelivered" "the rejection must be reported undelivered"
+  [ "$(delivery_state "$home" pf-rej)" = expired-action-required ] \
+    || fail "a rejected post must need action, not retry, got $(delivery_state "$home" pf-rej)"
+  [ "$(task_state "$home" pf-rej)" != 'done' ] || fail "a rejected post must never close the commitment"
+  rec=$(find "$home/state/outbound-writes" -name '*.record' 2>/dev/null | head -1)
+  [ -n "$rec" ] || fail "the rejected post must leave its undelivered ledger record"
+  grep -q '^outcome=undelivered$' "$rec" || fail "the ledger record must be undelivered: $(cat "$rec")"
+
+  # A later delivery pass does not post again: the obligation is held for a
+  # decision and the ledger refuses the same thread.
+  FAKE_CURL_LOG="$log" expect_failure "a later pass must not retry a rejected post" \
+    run_pf "$home" deliver pf-rej
+  posts=$(followup_posts "$log")
+  [ "$posts" -eq 1 ] || fail "the rejected attempt is the only relay call, got $posts"
+  pass "a relay rejection of the public reply is one undelivered record and is never retried into the thread"
+}
+
 # The relay poll is the only thing that runs on a cadence in an opted-in home, so
 # it must stay a hard no-op without a token, and must not start scanning when a
 # relay-enabled home has no public commitments at all.
@@ -2308,6 +2340,7 @@ test_cleanup_refuses_while_a_public_reply_is_owed
 test_relay_disabled_home_pays_nothing
 test_relay_enabled_empty_state_makes_no_calls
 test_exhausted_binding_is_not_retried
+test_relay_rejection_is_undelivered_and_not_retried
 test_relay_poll_stays_inert_and_surfaces_once
 test_session_start_surfaces_only_when_owed
 test_typed_records_exclude_raw_public_material

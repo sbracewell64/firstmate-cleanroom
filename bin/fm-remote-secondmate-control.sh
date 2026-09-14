@@ -6,6 +6,9 @@
 #   fm-remote-secondmate-control.sh state <id>
 #   fm-remote-secondmate-control.sh route <id>
 #   fm-remote-secondmate-control.sh send <id> <message> [fire-and-forget]
+#     prints record=<path>, sha256=<hex>, and bytes=<n> for the durable record
+#     it re-read, the read-back evidence the parent's outbound-write ledger
+#     compares before calling the steer delivered
 #   fm-remote-secondmate-control.sh key <id> <key>
 #   fm-remote-secondmate-control.sh capture <id> [lines]
 #   fm-remote-secondmate-control.sh observe <id>
@@ -185,6 +188,21 @@ cmd_launch() {
   print_route "$id"
 }
 
+send_readback_evidence() { # <record-path>
+  local rec=$1 body sha bytes
+  body=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-remote-send-readback.XXXXXX") || return 1
+  if ! fm_task_inbox_body "$rec" > "$body"; then rm -f -- "$body"; return 1; fi
+  bytes=$(LC_ALL=C wc -c < "$body" | tr -d ' ')
+  if command -v shasum >/dev/null 2>&1; then
+    sha=$(shasum -a 256 "$body" 2>/dev/null | awk '{print $1}')
+  else
+    sha=$(sha256sum "$body" 2>/dev/null | awk '{print $1}')
+  fi
+  rm -f -- "$body"
+  [ "${#sha}" -eq 64 ] || return 1
+  printf 'record=%s\nsha256=%s\nbytes=%s\n' "$rec" "$sha" "$bytes"
+}
+
 cmd_send() {
   local id=$1 message=$2 delivery_mode=${3:-} rec ring_rc=0 meta meta_lock
   validate_id "$id"
@@ -212,6 +230,11 @@ cmd_send() {
     die "steering-inbox record could not be written under $CONTROL_STATE/$id.inbox"
   fi
   fm_lock_release "$meta_lock"
+  # Canonical read-back for the parent's outbound-write ledger: re-read the
+  # durable record's body and return its digest and length on stdout, so the
+  # parent can compare them with the exact bytes it prepared before it calls
+  # this steer delivered (bin/fm-outbound-write-lib.sh readback, sha256 mode).
+  send_readback_evidence "$rec" || die "steering-inbox record could not be read back at $rec"
   case "$rec" in
     */handled/*)
       # The dedup landed on a record the worker already acknowledged: the

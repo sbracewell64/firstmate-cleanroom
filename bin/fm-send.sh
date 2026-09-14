@@ -118,8 +118,13 @@
 #
 # Remote secondmate delivery: the send crosses fm-on.sh to a host-local leg
 # (bin/fm-remote-secondmate-control.sh cmd_send) that writes the message as a
-# durable record into the remote home's steering inbox and rings the remote
-# doorbell, best-effort. The remote record is the delivery, exactly as it is
+# durable record into the remote home's steering inbox, returns that record's
+# read-back digest, and rings the remote doorbell, best-effort. The remote
+# record is the delivery only once its read-back digest matches the exact bytes
+# this home retained before the transport ran (bin/fm-outbound-write-lib.sh);
+# a mismatch is reported undelivered and never retried automatically, and a
+# leg that returns no digest leaves delivery unconfirmed. It is otherwise
+# exactly as it is
 # locally: leg exit 0 means durably recorded (fm-send then exits 0, marks the
 # pending-reply expectation delivered, and closes any --resolve-key
 # decisions), and any real remote failure fails loudly with the remote leg's
@@ -197,6 +202,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
+# shellcheck source=bin/fm-outbound-write-lib.sh
+. "$SCRIPT_DIR/fm-outbound-write-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never steer
 # a crewmate (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -806,8 +813,31 @@ else
     fi
     remote_rc=0
     remote_completion_unknown=0
+    remote_readback_missing=0
     REMOTE_SEND_ARGS=("$TARGET_REMOTE_ID" "$MESSAGE")
     [ -z "$FIRE_AND_FORGET_ID" ] || REMOTE_SEND_ARGS+=(fire-and-forget)
+    # Outbound-write discipline (bin/fm-outbound-write-lib.sh): retain the exact
+    # steer bytes with their digest before the transport runs, declare that the
+    # message rides fm-on.sh's opaque NUL-encoded argv (element 7 of the command
+    # below), compare the remote leg's read-back digest with those bytes, and
+    # classify only from the returned exit status. Without a verified read-back
+    # the steer is never called delivered.
+    OUTBOUND_PAYLOAD=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-send-payload.XXXXXX") || exit 1
+    printf '%s' "$MESSAGE" > "$OUTBOUND_PAYLOAD" || { rm -f -- "$OUTBOUND_PAYLOAD"; exit 1; }
+    OUTBOUND_CORR=${PENDING_REPLY_CORR:-${FIRE_AND_FORGET_ID:-}}
+    [ -n "$OUTBOUND_CORR" ] || OUTBOUND_CORR="steer:$(fm_outbound_sha256_file "$OUTBOUND_PAYLOAD" | cut -c1-16)"
+    OUTBOUND_LEDGER=$(fm_outbound_prepare "$STATE" "$OUTBOUND_PAYLOAD" writer=fm-send \
+      "destination=remote:$TARGET_REMOTE_ID:inbox" "account=ssh:$TARGET_REMOTE_HOST" \
+      "authority=task-meta:$TARGET_META" disclosure=fleet "correlation=$OUTBOUND_CORR") || OUTBOUND_LEDGER=
+    rm -f -- "$OUTBOUND_PAYLOAD"
+    if [ -z "$OUTBOUND_LEDGER" ]; then
+      fm_lock_release "$REMOTE_META_LOCK"
+      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
+        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
+      fi
+      echo "error: steer not sent to remote secondmate $TARGET_REMOTE_ID: the outgoing bytes could not be retained in state/outbound-writes" >&2
+      exit 1
+    fi
     # Each transport attempt is bounded by FM_SEND_REMOTE_BUDGET seconds.
     # fm_run_timed's 124 means the attempt was killed at the bound with remote
     # completion unknown - the enqueue may have landed - so it exits through
@@ -815,26 +845,58 @@ else
     # retry that would only wait out the same busy remote queue again. (A
     # remote job's own timeout also relays as 124; treating it as unconfirmed
     # stays safe because the remote enqueue deduplicates.)
-    fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
-      fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
+    remote_out=$(fm_outbound_send "$STATE" "$OUTBOUND_LEDGER" argv:7 \
+      fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
+      fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null) || remote_rc=$?
     if [ "$remote_rc" -eq 124 ]; then
       remote_completion_unknown=1
     elif [ "$remote_rc" -eq 255 ]; then
       remote_completion_unknown=1
       remote_rc=0
-      fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
-        fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null || remote_rc=$?
+      remote_out=$(fm_outbound_send "$STATE" "$OUTBOUND_LEDGER" argv:7 \
+        fm_run_timed "$FM_SEND_REMOTE_BUDGET" "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" \
+        fm-remote-secondmate-control.sh send "${REMOTE_SEND_ARGS[@]}" < /dev/null) || remote_rc=$?
     fi
     fm_lock_release "$REMOTE_META_LOCK"
+    if [ "$remote_rc" -eq 0 ]; then
+      readback_rc=0
+      fm_outbound_readback "$STATE" "$OUTBOUND_LEDGER" sha256 printf '%s\n' "$remote_out" || readback_rc=$?
+      fm_outbound_classify "$STATE" "$OUTBOUND_LEDGER" exit 0 >/dev/null
+      case "$readback_rc" in
+        0) ;;
+        1)
+          fm_send_known_undelivered_cleanup || \
+            echo "error: known-undelivered pending-reply state could not be reset for $TARGET_TASK_ID" >&2
+          echo "error: steer to remote secondmate $TARGET_REMOTE_ID is UNDELIVERED: the remote inbox record read back with a different digest than the bytes sent (recorded as state/outbound-writes/$OUTBOUND_LEDGER.record); not retried automatically" >&2
+          exit 1
+          ;;
+        *)
+          # The remote leg confirmed nothing this home can compare: an older
+          # remote runtime, or a leg that printed no evidence. Delivery stays
+          # unconfirmed rather than assumed.
+          remote_completion_unknown=1
+          remote_readback_missing=1
+          remote_rc=1
+          ;;
+      esac
+    else
+      fm_outbound_classify "$STATE" "$OUTBOUND_LEDGER" exit "$remote_rc" >/dev/null
+    fi
     if [ "$remote_rc" -ne 0 ] && [ "$remote_completion_unknown" -eq 1 ]; then
       if [ -n "$FIRE_AND_FORGET_ID" ]; then
-        echo "error: fire-and-forget steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (delivery-id=$FIRE_AND_FORGET_ID); retry only with the same delivery id" >&2
+        if [ "$remote_readback_missing" -eq 1 ]; then
+          echo "error: fire-and-forget steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (delivery-id=$FIRE_AND_FORGET_ID): the remote leg returned no read-back digest for the recorded steer, so delivery cannot be confirmed (update that secondmate's firstmate); retry only with the same delivery id" >&2
+        else
+          echo "error: fire-and-forget steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (delivery-id=$FIRE_AND_FORGET_ID); retry only with the same delivery id" >&2
+        fi
         exit 3
       fi
       if [ -n "$PENDING_REPLY_CORR" ]; then
         fm_pending_reply_mark_delivery_unknown "$STATE" "$PENDING_REPLY_CORR" || true
       fi
-      if [ "$remote_rc" -eq 255 ]; then
+      if [ "$remote_readback_missing" -eq 1 ]; then
+        echo "error: steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (the remote leg returned no read-back digest for the recorded steer, so delivery cannot be confirmed; update that secondmate's firstmate). Only the correlation-reusing resend below is idempotent and lands on the same remote inbox record:" >&2
+      elif [ "$remote_rc" -eq 255 ]; then
         echo "error: steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (transport lost twice; remote completion unknown). Only the correlation-reusing resend below is idempotent and lands on the same remote inbox record:" >&2
       elif [ "$remote_rc" -eq 124 ]; then
         echo "error: steer to remote secondmate $TARGET_REMOTE_ID is unconfirmed (the remote transport did not complete within its ${FM_SEND_REMOTE_BUDGET}s budget; remote completion unknown). Only the correlation-reusing resend below is idempotent and lands on the same remote inbox record:" >&2

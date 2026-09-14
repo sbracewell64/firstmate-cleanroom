@@ -96,6 +96,27 @@ extract_output_body() {
   '
 }
 
+# The helper's own header is its documented interface: docs/scripts.md names the
+# script header, surfaced by --help, as the authoritative description of this
+# helper's behavior, flags and contracts. That makes --help a generated public
+# output whose completeness is a contract, and the header has to be printed to
+# its end - a range that stops short drops documented usage without failing
+# anything. This drives the real executable interface and pins both edges: the
+# last usage line must survive, and the body of the script must not leak in.
+test_help_prints_the_whole_header_and_nothing_below_it() {
+  local out rc=0
+  out=$("$NMF_HELPER" --help) || rc=$?
+  expect_code 0 "$rc" "--help exited non-zero"
+  [ "$(printf '%s\n' "$out" | tail -1)" = "  fm-nmf-verify-input.sh --help" ] \
+    || fail "--help truncated its own last usage line, ending at: $(printf '%s\n' "$out" | tail -1)"
+  assert_contains "$out" "fm-nmf-verify-input.sh await" \
+    "--help did not document the await subcommand"
+  case "$out" in
+    *"set -eu"*) fail "--help printed script body past the end of the header" ;;
+  esac
+  pass "--help prints the header through its final usage line and stops there"
+}
+
 test_classify_opened_and_edited_are_historical() {
   local action out
   for action in opened edited; do
@@ -849,6 +870,7 @@ fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
 test_missing_head_fails
+test_help_prints_the_whole_header_and_nothing_below_it
 test_classify_opened_and_edited_are_historical
 test_classify_synchronize_and_reopened_are_current
 test_classify_unknown_action_fails_closed

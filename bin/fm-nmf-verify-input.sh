@@ -138,8 +138,12 @@ NMF_PUBLICATION_POLL_SECONDS_DEFAULT=10
 NMF_LIVE_READ_ATTEMPTS_DEFAULT=3
 NMF_LIVE_READ_BACKOFF_SECONDS_DEFAULT=2
 
+# The header block below the shebang IS the usage text, so its extent is found
+# structurally - every line from 2 until the first non-comment one - rather than
+# pinned to a line number that silently truncates the documented interface the
+# next time the header grows.
 usage() {
-  sed -n '2,129{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.

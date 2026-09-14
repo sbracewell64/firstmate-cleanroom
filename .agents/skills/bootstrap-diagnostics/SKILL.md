@@ -38,7 +38,9 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Nothing is lost: the withheld files are still on disk, but do not re-read them every session; run `/stow` so its curation pass brings this home back within budget, and read a withheld file directly only when this turn truly needs it.
   A trailing `primary-owned data/captain-shared.md alone exceeds this budget` clause in a secondmate home means local curation cannot resolve it; route that to the primary owner per the `/stow` skill.
 - `STARTUP_MEMORY_BUDGET: memory not injected - <reason>; ...` (CONTEXT section) - the budget or one of the three memory files could not be validated as one set (an absent, malformed, or unsafe budget file, or a memory file that is not an ordinary regular file), so all three were withheld rather than injected partially or stale.
-  Fix the named file; an absent budget in a read-only session is materialized by the next locked session start, never by this gate.
+  Fix the named file; this gate never materializes anything.
+  In a primary home an absent budget is materialized by the next locked session start.
+  In a secondmate home the budget converges from the primary through inherited-config propagation (`bin/fm-config-inherit-lib.sh`, `bin/fm-config-push.sh`), so the primary owner fixes it, not the secondmate's own locked start.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.
 - `FLEET_SYNC: <repo>: skipped: <reason>` - a benign one-off skip (offline, no origin, local-only); bootstrap continued, investigate only if it blocks work.
   A skip can also report the bounded fleet-refresh timeout (`FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT`, or a fleet-size-aware default with a 20 second floor); a timeout never blocks startup.

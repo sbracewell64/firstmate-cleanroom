@@ -429,28 +429,45 @@ print_memory_withheld() {  # <file> <reason>
 }
 
 print_memory_refused() {  # <reason>: the whole set is withheld
-  local file
-  printf '\nSTARTUP_MEMORY_BUDGET: memory not injected - %s; data/captain.md, data/captain-shared.md, and data/learnings.md are withheld rather than injected as a partial or stale set; fix the named cause (a locked session start materializes an absent budget) and re-emit\n' "$1"
+  local file owner
+  if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
+    owner='this secondmate never materializes its own budget: an absent one converges from the primary through inherited-config propagation, so the primary owner fixes it with its next locked session start or bin/fm-config-push.sh'
+  else
+    owner='a locked session start materializes an absent budget in this primary home'
+  fi
+  printf '\nSTARTUP_MEMORY_BUDGET: memory not injected - %s; data/captain.md, data/captain-shared.md, and data/learnings.md are withheld rather than injected as a partial or stale set; fix the named cause (%s) and re-emit\n' "$1" "$owner"
   for file in $MEMORY_FILES; do
     print_memory_withheld "$file" 'the startup-memory budget could not be verified'
   done
 }
 
+MEMORY_SNAPSHOT=''
+
+memory_snapshot_discard() {
+  [ -z "$MEMORY_SNAPSHOT" ] || rm -rf "$MEMORY_SNAPSHOT" 2>/dev/null || true
+  MEMORY_SNAPSHOT=''
+}
+trap memory_snapshot_discard EXIT
+trap 'memory_snapshot_discard; exit 129' HUP
+trap 'memory_snapshot_discard; exit 130' INT
+trap 'memory_snapshot_discard; exit 143' TERM
+
 print_memory_files_gated() {
   local snap file out rc reason budget total tokens sum=0 injecting=1 withheld='' exception=''
-  snap=$(mktemp -d "${TMPDIR:-/tmp}/fm-session-start-memory.XXXXXX" 2>/dev/null) || snap=
+  MEMORY_SNAPSHOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-session-start-memory.XXXXXX" 2>/dev/null) || MEMORY_SNAPSHOT=
+  snap=$MEMORY_SNAPSHOT
   if [ -z "$snap" ]; then
     print_memory_refused 'could not create the private snapshot that validates the three files as one set'
     return 0
   fi
   for file in $MEMORY_FILES; do
     if [ -L "$DATA/$file" ] || { [ -e "$DATA/$file" ] && [ ! -f "$DATA/$file" ]; }; then
-      rm -rf "$snap"
+      memory_snapshot_discard
       print_memory_refused "memory file is not an ordinary regular file: data/$file"
       return 0
     fi
     if [ -f "$DATA/$file" ] && ! cp -- "$DATA/$file" "$snap/$file" 2>/dev/null; then
-      rm -rf "$snap"
+      memory_snapshot_discard
       print_memory_refused "could not read memory file: data/$file"
       return 0
     fi
@@ -499,7 +516,7 @@ print_memory_files_gated() {
       print_memory_refused "$reason"
       ;;
   esac
-  rm -rf "$snap"
+  memory_snapshot_discard
 }
 
 print_backlog_pointer() {

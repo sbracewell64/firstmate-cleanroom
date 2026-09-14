@@ -184,7 +184,8 @@ Approved project-level destinations are not produced by stow: they ship normally
 - A project-level skill in the project's own repository, for situation-conditional knowledge within one project, through the same ship-task path.
 
 Forbidden destinations: any firstmate-repo-tracked skill per the hard rule; firstmate's own `AGENTS.md`, which is always-loaded for every fleet session; `docs/` alone, which is never agent-loaded on demand, though a skill body may point into docs for depth; and any committed surface for private content.
-A local skill exists only in this home, so offloading an entry out of `data/captain-shared.md` removes it from every inheriting home's always-injected memory: the proposal must say so, and the default for shared entries is keep.
+A local skill exists only in this home, so offloading an entry out of `data/captain-shared.md` removes it from every inheriting home's startup memory: the proposal must say so, and the default for shared entries is keep.
+The three memory files are injected at session start when they fit the startup-memory budget and withheld with a `STARTUP_MEMORY_BUDGET` diagnostic otherwise, so an entry stays reachable only while the whole set fits.
 
 ### Flow: reduce, approve, migrate, remove
 
@@ -204,7 +205,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    An approved project destination ships as a normal task through that project's registered delivery mode.
    The migration's source of truth is the entry as quoted in the proposal.
 4. Remove only once live.
-   The memory entry leaves its always-injected file only after the destination is live: the local skill exists with its verified line in the active home's resolved repository-local exclude file, or the project change has landed.
+   The memory entry leaves its startup-memory file only after the destination is live: the local skill exists with its verified line in the active home's resolved repository-local exclude file, or the project change has landed.
    Until then the entry stays, so knowledge is never in limbo between owners.
    Leave no pointer behind by default, and at most one line only when the destination's discoverability is genuinely doubtful.
 

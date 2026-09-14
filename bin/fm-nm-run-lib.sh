@@ -392,8 +392,11 @@ fm_nm_effect_current() {
   NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"
 }
 
+# A qualified stage - not a merely bound validation run - is the obligation.
+# The recorded stage is checked as well as the effect so that deleting the
+# effect line cannot buy an unqualified retirement.
 fm_nm_effect_required() {
   local file=$1
   grep -q '^stage_ci_ready_effect=.' "$file" && return 0
-  grep -qx 'mode=no-mistakes' "$file" && grep -q '^stage_run=.' "$file"
+  grep -qx 'mode=no-mistakes' "$file" && grep -qE '^stage=(ci-ready|landing|activated)$' "$file"
 }

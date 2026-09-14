@@ -669,6 +669,40 @@ test_handoff_identity_survives_a_broken_digest_tool() (
   pass 'handoff identity falls back to a real digest and refuses when no tool produces one'
 )
 
+# Re-admitting an already dispatched handoff must report what the saved record
+# says, not the admission wording, or a resolved obligation is routed back to
+# the manager as open capacity work.
+test_readmission_reports_the_saved_disposition() (
+  local out identity receipt owner
+  export FM_STATE_OVERRIDE="$TMP_ROOT/readmission-state"
+  mkdir -p "$FM_STATE_OVERRIDE"
+  cp "$TMP_ROOT/initial.meta" "$FM_STATE_OVERRIDE/source.meta"
+  cp "$TMP_ROOT/initial.observe" "$FM_STATE_OVERRIDE/source.nm-observe"
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
+  canonical running
+
+  out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json") || fail "readmission admission: $out"
+  identity=$(meta completion_handoff | jq -r .identity)
+  assert_contains "$out" 'owner=firstmate reason=manager-capacity' 'a fresh admission is an open manager-capacity obligation'
+  out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json") || fail "unreleased re-admission: $out"
+  assert_contains "$out" 'owner=firstmate reason=manager-capacity' 'an unreleased re-admission keeps its pending owner'
+
+  canonical completed checks-passed
+  out=$(stage handoff-release --identity "$identity") || fail "readmission release: $out"
+  assert_contains "$out" COMPLETION_DISPATCHED 'release must dispatch the eligible stage'
+  [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'release left no dispatched record to report'
+  receipt=$(meta completion_handoff | jq -r .receipt)
+  owner=$(meta completion_handoff | jq -r .next_owner)
+
+  out=$(stage handoff --handoff-json "$TMP_ROOT/handoff.json") || fail "dispatched re-admission: $out"
+  assert_not_contains "$out" 'reason=manager-capacity' 'a dispatched obligation must never be routed back to manager capacity'
+  assert_contains "$out" COMPLETION_DISPATCHED 'a dispatched re-admission must report the saved status'
+  assert_contains "$out" "receipt=$receipt" 'a dispatched re-admission must report the saved receipt'
+  assert_contains "$out" "owner=$owner" 'a dispatched re-admission must report the saved next owner'
+  [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 're-admission rewrote the dispatched receipt'
+  pass 'idempotent re-admission reports the saved record disposition, not the admission wording'
+)
+
 # R29: landing carries the destination CI-ready qualified. A different --pr is a
 # destination mismatch, not a revoked qualification.
 test_landing_destination_mismatch_refuses_early() (
@@ -693,7 +727,30 @@ test_landing_destination_mismatch_refuses_early() (
 
   out=$(stage landing --pr https://github.com/o/r/pull/7) || fail "qualified destination must land: $out"
   [ "$(meta stage)" = landing ] || fail 'qualified destination did not record landing'
-  pass 'landing refuses an unqualified destination as a mismatch and accepts the qualified one'
+
+  # An already-activated task short-circuits as unchanged. Argument validation
+  # must still precede that short-circuit, or a caller asking to land PR 9 is
+  # told PR 7 succeeded.
+  printf '%s\n' fm-pr-poll-merge-notified-v1 github github.com o/r 7 > "$FM_STATE_OVERRIDE/source.pr-poll-merge-notified"
+  out=$(stage activated) || fail "activation fixture: $out"
+  [ "$(meta stage)" = activated ] || fail 'activation fixture did not record activated'
+  before=$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")
+
+  rc=0; out=$(stage landing --pr https://github.com/o/r/pull/9 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a different landing destination must refuse on an activated task'
+  assert_contains "$out" DESTINATION_MISMATCH 'the activated short-circuit must not precede destination validation'
+  assert_not_contains "$out" STAGE_UNCHANGED 'a mismatched destination must never report unchanged success'
+  [ "$before" = "$(shasum -a 256 "$FM_STATE_OVERRIDE/source.meta" "$FM_STATE_OVERRIDE/source.status")" ] \
+    || fail 'refused landing mutated the activated record'
+
+  rc=0; out=$(stage landing --pr not-a-url 2>&1) || rc=$?
+  expect_code 1 "$rc" 'a malformed --pr must refuse on an activated task'
+  assert_contains "$out" BAD_PR 'a malformed PR argument must be refused before the activated short-circuit'
+
+  out=$(stage landing --pr https://github.com/o/r/pull/7) || fail "activated qualified destination must stay unchanged: $out"
+  assert_contains "$out" STAGE_UNCHANGED 'the qualified destination keeps the idempotent activated short-circuit'
+  [ "$(meta stage)" = activated ] || fail 'idempotent landing regressed the activated stage'
+  pass 'landing validates its destination before the activated short-circuit and accepts the qualified one'
 )
 
 test_opposite_direction_delivery_does_not_deadlock() {
@@ -1335,4 +1392,5 @@ test_away_housekeeping_bounds_observation_wait
 test_qualified_successor_identity
 test_drain_observation_wait_releases_presentation
 test_handoff_identity_survives_a_broken_digest_tool || exit 1
+test_readmission_reports_the_saved_disposition || exit 1
 test_landing_destination_mismatch_refuses_early || exit 1

@@ -793,10 +793,20 @@ do_ci_ready() (
   next_for ci-ready
 )
 
+# A no-mistakes task may neither enter nor remain in a qualified stage without
+# current producer qualification. Binding a validation run is not entering one.
+qualification_applies() {  # <transition>
+  fm_nm_effect_required "$META" && return 0
+  case "$1" in
+    ci-ready|landing|activated) grep -qx 'mode=no-mistakes' "$META" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Historical stage labels never substitute for current producer qualification.
 require_current_qualification() {  # <transition> [expected PR] [lock to release before refusing]
   local expected_pr=${2:-$(meta stage_pr)} held_lock=${3:-}
-  if fm_nm_effect_required "$META"; then
+  if qualification_applies "$1"; then
     if ! fm_nm_effect_current "$META" "$expected_pr" >/dev/null; then
       [ -z "$held_lock" ] || fm_lock_release "$held_lock"
       refuse "$1" QUALIFICATION_REVOKED 'exact stage qualification is missing or no longer current; historical record retained'
@@ -811,11 +821,11 @@ do_landing() {
   require_current_qualification landing
   current=$(meta stage)
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
-  [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
-  if [ -n "$PR_ARG" ] && [ "$PR_ARG" != "$(meta stage_pr)" ] && fm_nm_effect_required "$META"; then
+  if [ -n "$PR_ARG" ] && [ "$PR_ARG" != "$(meta stage_pr)" ] && qualification_applies landing; then
     refuse landing DESTINATION_MISMATCH "--pr $PR_ARG is not the qualified destination $(dash "$(meta stage_pr)"); landing carries the destination CI-ready qualified"
   fi
+  [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ]; then
     unchanged landing

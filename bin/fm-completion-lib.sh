@@ -176,10 +176,26 @@ fm_completion_admit() {
       fm_completion_refuse CONFLICTING_HANDOFF; return 1;
     }
   else
-    fm_completion_store "$(jq -cn --argjson contract "$contract" --arg identity "$identity" \
-      '{identity:$identity,contract:$contract,released:false,status:"pending",next_owner:"firstmate",reason:"manager-capacity",receipt:null}')" || return 1
+    old=$(jq -cn --argjson contract "$contract" --arg identity "$identity" \
+      '{identity:$identity,contract:$contract,released:false,status:"pending",next_owner:"firstmate",reason:"manager-capacity",receipt:null}') || return 1
+    fm_completion_store "$old" || return 1
   fi
-  printf 'COMPLETION_PENDING: task=%s identity=%s owner=firstmate reason=manager-capacity\n' "$ID" "$identity"
+  fm_completion_report_saved "$old" "$identity"
+}
+
+# The saved record - never the admission wording - owns the reported
+# disposition, so a dispatched obligation is not routed back to its admitter.
+fm_completion_report_saved() {  # <saved JSON> <identity>
+  local saved=$1 identity=$2 status owner reason receipt
+  status=$(printf '%s' "$saved" | jq -r '.status // empty') || return 1
+  owner=$(printf '%s' "$saved" | jq -r '.next_owner // empty')
+  reason=$(printf '%s' "$saved" | jq -r '.reason // empty')
+  receipt=$(printf '%s' "$saved" | jq -r '.receipt // empty')
+  if [ "$status" = dispatched ] && [ -n "$receipt" ]; then
+    printf 'COMPLETION_DISPATCHED: task=%s identity=%s receipt=%s owner=%s\n' "$ID" "$identity" "$receipt" "$owner"
+  else
+    printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=%s\n' "$ID" "$identity" "$owner" "$reason"
+  fi
 }
 
 fm_completion_pending() { # <saved JSON> <identity> <owner> <reason>

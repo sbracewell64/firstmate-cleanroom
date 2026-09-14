@@ -2620,6 +2620,106 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# Binding a validation run is not a CI-ready obligation. A no-mistakes task that
+# never reached the CI-ready transition records no qualified effect, so no input
+# could ever satisfy an exact-qualification check - demanding one stranded the
+# task permanently, including on the captain-authorized discard path.
+bind_validation_run_meta() {  # <case-dir> <stage>
+  local case_dir=$1 stage=$2
+  printf '%s\n' \
+    "stage=$stage" \
+    'stage_run=01BOUNDRUN' \
+    'stage_attempt=1789192275-5444939e' \
+    'stage_branch=fm/task-x1' \
+    "stage_head=$(git -C "$case_dir/wt" rev-parse HEAD)" \
+    >> "$case_dir/state/task-x1.meta"
+}
+
+test_bound_run_without_ci_ready_tears_down() {
+  local case_dir rc
+  case_dir=$(make_case bound-run-no-ci-ready)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  bind_validation_run_meta "$case_dir" validation-running
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "bound-run-no-ci-ready: teardown should succeed: $(cat "$case_dir/stderr")"
+  ! grep -q 'exact qualification' "$case_dir/stderr" \
+    || fail "bound-run-no-ci-ready: a merely-bound run demanded CI-ready qualification evidence"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "bound-run-no-ci-ready: teardown left the task record behind"
+  pass "a no-mistakes task that bound a run but never reached CI-ready is torn down"
+}
+
+test_bound_run_without_ci_ready_force_discards() {
+  local case_dir rc
+  case_dir=$(make_case bound-run-force-discard)
+  write_meta "$case_dir" no-mistakes ship
+  # Failed validation: the work is genuinely unlanded and the captain discards it.
+  wt_commit_file "$case_dir" feature.txt hello "unlanded validation work"
+  bind_validation_run_meta "$case_dir" validation-running
+
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "bound-run-force-discard: --force discard should succeed: $(cat "$case_dir/stderr")"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "bound-run-force-discard: the authorized discard path was refused"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "bound-run-force-discard: the discarded task record survived"
+  pass "the captain-authorized discard of a bound-but-unqualified no-mistakes task completes"
+}
+
+test_recorded_qualified_stage_still_requires_qualification() {
+  local case_dir rc stage
+  for stage in ci-ready landing activated; do
+    case_dir=$(make_case "recorded-$stage-requires-qualification")
+    write_meta "$case_dir" no-mistakes ship
+    land_shippable_commit "$case_dir"
+    # The recorded stage is the obligation. Deleting the effect line must not
+    # buy a retirement the qualification itself cannot support.
+    bind_validation_run_meta "$case_dir" "$stage"
+
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+    expect_code 1 "$rc" "recorded-$stage: teardown should refuse without current qualification"
+    grep -q 'exact qualification is invalidated or unavailable' "$case_dir/stderr" \
+      || fail "recorded-$stage: refusal did not name the missing qualification: $(cat "$case_dir/stderr")"
+    assert_present "$case_dir/state/task-x1.meta" \
+      "recorded-$stage: refused teardown erased the unresolved task record"
+  done
+  pass "a recorded CI-ready/landing/activated stage still requires current qualification evidence"
+}
+
+test_recorded_ci_ready_effect_still_requires_qualification() {
+  local case_dir rc
+  case_dir=$(make_case recorded-effect-requires-qualification)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  bind_validation_run_meta "$case_dir" validation-running
+  # A recorded CI-ready effect is an obligation on its own, whatever stage label
+  # the record now carries; revoked or unreadable evidence stays unresolved.
+  printf 'stage_ci_ready_effect=%s\n' '{"task":"task-x1","run":"01BOUNDRUN"}' \
+    >> "$case_dir/state/task-x1.meta"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "recorded-effect: teardown should refuse without current qualification"
+  grep -q 'exact qualification is invalidated or unavailable' "$case_dir/stderr" \
+    || fail "recorded-effect: refusal did not name the missing qualification: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "recorded-effect: refused teardown erased the unresolved task record"
+  pass "a recorded CI-ready effect still requires current qualification evidence"
+}
+
+test_bound_run_without_ci_ready_tears_down
+test_bound_run_without_ci_ready_force_discards
+test_recorded_qualified_stage_still_requires_qualification
+test_recorded_ci_ready_effect_still_requires_qualification
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator

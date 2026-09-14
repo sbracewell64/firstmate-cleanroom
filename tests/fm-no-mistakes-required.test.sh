@@ -502,10 +502,11 @@ test_await_fails_closed_when_the_live_pr_cannot_be_read() {
   local out err rc
   await_case unreadable
   rc=0
-  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
+  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
+         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
   err=$(cat "$AWAIT_CASE/err")
   [ "$rc" -ne 0 ] || fail "await produced a subject without a sound live read"
-  assert_contains "$err" "could not read the live PR" "the read failure was not reported"
+  assert_contains "$err" "no sound live read" "the read failure was not reported"
   case "$out" in
     *"body<<"*) fail "await emitted a body block without a live read" ;;
   esac
@@ -593,17 +594,60 @@ test_await_does_not_retry_a_definitive_read_failure() {
   pass "a definitive live-read refusal propagates immediately without retrying"
 }
 
-test_await_stops_retrying_a_transient_read_at_its_budget() {
-  local err rc
-  await_case_failing exhausted
+# The regression behind this case: a transient blip that outlasts one read's
+# retry budget used to be fatal even with almost the whole window still open, so
+# a few seconds of forge trouble reddened a PR whose attestation does publish -
+# the very defect the wait exists to remove. The budget bounds ONE read, not the
+# wait: when it is spent transiently the loop polls and re-reads.
+test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget() {
+  local out rc verifier_out sleeps
+  await_case_failing blip-outlasts-budget
+  await_fail 1 "gh: Bad Gateway (HTTP 502)"
+  await_fail 2 "gh: Bad Gateway (HTTP 502)"
+  await_fail 3 "gh: Bad Gateway (HTTP 502)"
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  rc=0
+  out=$( export NMF_PUBLICATION_POLL_SECONDS=9; run_await 2>/dev/null ) || rc=$?
+  expect_code 0 "$rc" "a transient blip past one read's budget reddened a PR whose attestation did publish"
+  [ "$(await_reads)" -eq 4 ] \
+    || fail "await made $(await_reads) live reads, expected the 3-attempt budget then a re-read on the next poll"
+  # The budget still bounds a single read: the third failure is followed by the
+  # poll interval, not by a fourth doubled backoff inside the same read.
+  sleeps=$(tr '\n' ' ' < "$AWAIT_CASE/sleeps")
+  [ "$sleeps" = "2 4 9 " ] \
+    || fail "expected two bounded backoffs then one poll wait, recorded waits were: $sleeps"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  expect_code 0 "$rc" "the verifier rejected the attestation await polled through the blip for"
+  pass "a transient blip past one read's budget is absorbed and the publication still binds"
+}
+
+# The window boundary, not the first blip, is where fail-closed lives. A window
+# that closes with no sound read has no live body to hand over, so it must exit
+# non-zero with no subject and name that diagnosis rather than implying the
+# attestation was absent.
+test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
+  local out err rc widest
+  await_case_failing no-sound-read
   await_fail default "gh: Bad Gateway (HTTP 502)"
   rc=0
-  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
+         run_await 2>"$AWAIT_CASE/err" ) || rc=$?
+  err=$(cat "$AWAIT_CASE/err")
   [ "$rc" -ne 0 ] || fail "await produced a subject with no sound live read at all"
-  assert_contains "$err" "could not read the live PR" "the exhausted retry did not report the read failure"
-  [ "$(await_reads)" -eq 3 ] \
-    || fail "await made $(await_reads) live reads, expected exactly the 3-attempt budget"
-  pass "a live read that stays transiently broken fails closed at its bounded budget"
+  case "$out" in
+    *"body<<"*) fail "await emitted a body block with no sound live read" ;;
+  esac
+  assert_contains "$err" "no sound live read" \
+    "the refusal did not name the no-sound-read-within-the-window condition"
+  assert_contains "$err" "publication window closed" \
+    "the refusal did not say the window is what closed"
+  # Every read still spent a bounded budget: 2s then 4s of backoff and never a
+  # further doubling, so no single read can spin the window away.
+  widest=$(sort -n "$AWAIT_CASE/sleeps" | tail -1)
+  [ "$widest" -le 4 ] \
+    || fail "a single read backed off for ${widest}s, past the bounded 2s/4s budget"
+  pass "a window that closes with no sound live read fails closed and says so"
 }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
@@ -637,4 +681,5 @@ test_await_fails_closed_when_the_live_pr_cannot_be_read
 test_await_refuses_a_malformed_bound
 test_await_retries_a_transient_read_and_still_binds
 test_await_does_not_retry_a_definitive_read_failure
-test_await_stops_retrying_a_transient_read_at_its_budget
+test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget
+test_await_fails_closed_when_the_window_closes_with_no_sound_read

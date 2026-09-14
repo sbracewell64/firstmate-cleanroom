@@ -21,12 +21,15 @@
 #   classify   maps the event action to 'historical' or 'current'. Single owner
 #              of that mapping, so the workflow never re-spells the action list.
 #   await      current mode only, the whole live-subject step. Single owner of
-#              the publication wait: it reads the live PR (retrying only a
-#              transient read failure, within the same window), classifies each
-#              read through 'resolve', waits while a publication is demonstrably
-#              in flight, and emits exactly one resolved subject for the
-#              verifier. The workflow never re-spells the window, the poll
-#              cadence, the retry budget, or the deadline behavior.
+#              the publication wait: it reads the live PR (absorbing a transient
+#              read failure - retried a bounded number of times per read, then
+#              re-read on the next poll - always within the same window),
+#              classifies each read through 'resolve', waits while a publication
+#              is demonstrably in flight, and emits exactly one resolved subject
+#              for the verifier. A window that closes with no sound live read in
+#              hand fails closed with no subject at all. The workflow never
+#              re-spells the window, the poll cadence, the retry budget, or the
+#              deadline behavior.
 #   resolve    the pure classifier behind 'await': given the event's expected
 #              subject (PR number and head SHA) and one live read (number, head,
 #              body), it binds PR identity, refuses a superseded subject (a live
@@ -88,6 +91,14 @@
 # returns on the first read, and a body with no no-mistakes signature hands off
 # on the first read instead of waiting out a window it can never satisfy.
 #
+# NMF_PUBLICATION_WINDOW_SECONDS overrides that derived default, so the workflow
+# step that wires this helper must not pin a lower value.
+# The base workflow's "Resolve live PR subject" step currently pins '90' in its
+# env, which is below every failing observation recorded above.
+# Leaving that line in place when the step is wired to 'await' would silently
+# override the derived bound back to 90s, making this fix inert while all of its
+# machinery still runs, so the step that adopts 'await' must drop it.
+#
 # KNOWN, UNEXERCISED GAP: gating the wait on the signature covers a
 # re-publication race but not a FIRST-publication race - a PR a person opened by
 # hand, whose body is still unsigned when 'git push no-mistakes' advances the
@@ -124,7 +135,7 @@ NMF_LIVE_READ_ATTEMPTS_DEFAULT=3
 NMF_LIVE_READ_BACKOFF_SECONDS_DEFAULT=2
 
 usage() {
-  sed -n '2,115{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,126{s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.
@@ -312,16 +323,23 @@ live_read_is_transient() {
 }
 
 # One live PR read into the NMF_LIVE_* inputs 'resolve' classifies, with a small
-# bounded retry for a transient failure. A read that still fails, or that fails
-# definitively, is fatal: without a sound live subject there is nothing to judge,
-# and falling through would hand the verifier the frozen event.
+# bounded retry for a transient failure. Exit 0 means NMF_LIVE_* now describe a
+# sound read; exit 3 means the budget was spent on a TRANSIENT failure and this
+# poll produced no sound read, which the caller treats exactly like PENDING - it
+# re-reads on the next poll while the window is open. A DEFINITIVE failure is
+# never retried and never downgraded to pending: it is fatal on the spot.
 #
-# The retry exists because the wait multiplies this read: one all-or-nothing read
-# per poll means a single 502 anywhere in the window reds a PR whose attestation
-# does publish - the same defect this whole change removes. The budget is
-# deliberately small and is spent INSIDE the publication window (the caller
-# measures elapsed time from one fixed start), so the worst case an operator sees
-# is the window, not the window plus the retries.
+# Fail-closed is preserved at the WINDOW boundary, not at the first transient
+# blip. The retry exists because the wait multiplies this read: one
+# all-or-nothing read per poll means a single 502 anywhere in the window reds a
+# PR whose attestation does publish - the same defect this whole change removes -
+# and dying the moment a 6s budget is spent leaves the rest of the window unused
+# for the same outcome. The budget is deliberately small and is spent INSIDE the
+# publication window (the caller measures elapsed time from one fixed start), so
+# the worst case an operator sees is the window, not the window plus the retries;
+# a window that closes with no sound read at all still fails closed, in the
+# caller, with no subject handed over.
+LAST_LIVE_READ_FAILURE=
 read_live_subject() {
   local repo=$1 number=$2 attempts=$3 backoff=$4
   local attempt=1 pr rc errfile reason
@@ -331,6 +349,7 @@ read_live_subject() {
     pr=$(gh api "repos/${repo}/pulls/${number}" 2>"$errfile") || rc=$?
     if [ "$rc" -eq 0 ]; then
       rm -f "$errfile"
+      LAST_LIVE_READ_FAILURE=
       # Deliberately not exported: 'resolve' runs in this shell, while an
       # exported body would be copied into every later child's environment.
       NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
@@ -339,9 +358,16 @@ read_live_subject() {
       return 0
     fi
     reason=$(tr '\n' ' ' < "$errfile")
-    if [ "$attempt" -ge "$attempts" ] || ! live_read_is_transient "$reason"; then
+    if ! live_read_is_transient "$reason"; then
       rm -f "$errfile"
-      die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number} after $attempt of $attempts attempt(s); no sound live subject established: ${reason}"
+      die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number}; the forge answered definitively, so there is no sound live subject and no retry can establish one: ${reason}"
+    fi
+    if [ "$attempt" -ge "$attempts" ]; then
+      rm -f "$errfile"
+      LAST_LIVE_READ_FAILURE=$reason
+      printf '::notice::fm-nmf-verify-input.sh await: the live PR read failed transiently on all %s attempt(s) of this poll (%s); re-reading on the next poll while the publication window is open.\n' \
+        "$attempts" "$reason" >&2
+      return 3
     fi
     printf '::notice::fm-nmf-verify-input.sh await: live PR read attempt %s of %s failed transiently (%s); retrying in %ss.\n' \
       "$attempt" "$attempts" "$reason" "$backoff" >&2
@@ -367,25 +393,35 @@ await() {
   require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
   require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started elapsed reads=0 rc out
+  local started elapsed reads=0 rc read_rc out
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=
   started=$(date +%s)
   while : ; do
     reads=$(( reads + 1 ))
-    read_live_subject "$repo" "$event_number" "$attempts" "$backoff"
-    rc=0
-    out=$(resolve) || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      printf '%s\n' "$out"
-      return 0
+    read_rc=0
+    read_live_subject "$repo" "$event_number" "$attempts" "$backoff" || read_rc=$?
+    if [ "$read_rc" -eq 0 ]; then
+      rc=0
+      out=$(resolve) || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        printf '%s\n' "$out"
+        return 0
+      fi
+      # Exit 3 is PENDING (a publication is in flight); any other non-zero is a
+      # hard fail-closed refusal that must propagate immediately.
+      [ "$rc" -eq 3 ] || exit "$rc"
     fi
-    # Exit 3 is PENDING (a publication is in flight); any other non-zero is a
-    # hard fail-closed refusal that must propagate immediately.
-    [ "$rc" -eq 3 ] || exit "$rc"
     elapsed=$(( $(date +%s) - started ))
     if [ "$elapsed" -ge "$window" ]; then
+      # A poll whose read never came back soundly leaves no live body to hand
+      # over, so the deadline cannot fall through to the verifier here. That is
+      # a different diagnosis from an attestation that failed to publish, and
+      # the message must say which one the operator is looking at.
+      if [ "$read_rc" -ne 0 ]; then
+        die 1 "fm-nmf-verify-input.sh await: the ${window}s publication window closed with no sound live read of repos/${repo}/pulls/${event_number} in hand after ${elapsed}s and ${reads} poll(s); the reads kept failing transiently, the last with: ${LAST_LIVE_READ_FAILURE}. There is no live subject to hand to the verifier, so this fails closed."
+      fi
       printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s live reads; the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
         "$event_number" "$event_head" "$elapsed" "$reads" "$window" >&2
       NMF_PUBLICATION_FINAL=1

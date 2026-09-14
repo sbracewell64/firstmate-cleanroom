@@ -875,6 +875,142 @@ test_await_does_not_retry_a_definitive_non_http_failure() {
 }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
+
+# --- the gate job actually delegates the wait to its owner -------------------
+#
+# The helper owns the publication window, the poll cadence, the retry budget and
+# the deadline behavior, and derives the window from the observed publication
+# latency. The workflow can silently defeat all of that without changing a line
+# of the helper: by calling a different subcommand, by pinning one of the
+# derived bounds in ANY env the step inherits (Actions env precedence is
+# step > job > workflow, so a pin at either outer level reaches a step that sets
+# none of its own), or by dropping the redirect that routes the helper's stdout
+# to GITHUB_OUTPUT, which leaves the await call in place while the verifier
+# falls back to the frozen event payload this step exists to replace. Every one
+# of those undos is invisible to the helper's own tests, so assert against the
+# workflow's parsed semantic model (bin/fm-workflow-yaml.sh, the repo's owner
+# for that parse), never against its source bytes, and prove each assertion by
+# running the same check over a counterfactual model carrying that one undo.
+
+WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
+GATE_WIRING_CHECK="$TMP_ROOT/gate-wiring-check.py"
+GATE_WIRING_MUTATE="$TMP_ROOT/gate-wiring-mutate.py"
+
+cat > "$GATE_WIRING_CHECK" <<'PY'
+import json, re, sys
+
+STEP_NAME = "Resolve live PR subject"
+DERIVED_BOUNDS = (
+    "NMF_PUBLICATION_WINDOW_SECONDS",
+    "NMF_PUBLICATION_POLL_SECONDS",
+    "NMF_LIVE_READ_ATTEMPTS",
+    "NMF_LIVE_READ_BACKOFF_SECONDS",
+)
+ROUTED = re.compile(r">>\s*\"?\$\{?GITHUB_OUTPUT\}?\"?")
+
+workflow = json.load(sys.stdin)
+job = workflow["jobs"]["check"]
+found = [s for s in job["steps"] if s.get("name") == STEP_NAME]
+if len(found) != 1:
+    raise SystemExit(
+        "UNDO(step-missing): expected exactly one %r step in job 'check', found %d"
+        % (STEP_NAME, len(found)))
+step = found[0]
+run = step.get("run") or ""
+gate = str(step.get("if", ""))
+problems = []
+
+await_lines = [line for line in run.splitlines() if "fm-nmf-verify-input.sh await" in line]
+if not await_lines:
+    problems.append(
+        "UNDO(await-not-called): the step no longer delegates the publication wait to "
+        "'fm-nmf-verify-input.sh await', so the window, poll cadence and retry budget the "
+        "helper owns are never applied; run=%r" % run)
+elif not any(ROUTED.search(line) for line in await_lines):
+    problems.append(
+        "UNDO(output-not-routed): the await call no longer redirects to GITHUB_OUTPUT, so "
+        "steps.resolve.outputs.body and head_sha go empty and the pinned action falls back "
+        "to the frozen event payload; run=%r" % run)
+
+for level, env in (("workflow", workflow.get("env")),
+                   ("job", job.get("env")),
+                   ("step", step.get("env"))):
+    env = env or {}
+    for name in DERIVED_BOUNDS:
+        if name in env:
+            problems.append(
+                "UNDO(bound-pinned-at-%s): the %s env pins %s=%r, overriding the bound the "
+                "helper derives (Actions env precedence is step > job > workflow, and the "
+                "step pins none of its own)" % (level, level, name, env[name]))
+
+if "steps.classify.outputs.mode" not in gate or "'current'" not in gate:
+    problems.append(
+        "UNDO(mode-gate-removed): the step no longer gates on current mode, so a historical "
+        "event could be re-judged against a newer live body or head; if=%r" % gate)
+
+if problems:
+    raise SystemExit("\n".join(problems))
+PY
+
+cat > "$GATE_WIRING_MUTATE" <<'PY'
+import json, sys
+
+mutation = sys.argv[1]
+workflow = json.load(sys.stdin)
+job = workflow["jobs"]["check"]
+step = [s for s in job["steps"] if s.get("name") == "Resolve live PR subject"][0]
+
+if mutation == "pin-at-step":
+    step.setdefault("env", {})["NMF_PUBLICATION_WINDOW_SECONDS"] = "90"
+elif mutation == "pin-at-job":
+    job.setdefault("env", {})["NMF_PUBLICATION_WINDOW_SECONDS"] = "90"
+elif mutation == "pin-at-workflow":
+    workflow.setdefault("env", {})["NMF_LIVE_READ_ATTEMPTS"] = "1"
+elif mutation == "call-resolve":
+    step["run"] = step["run"].replace("await", "resolve")
+elif mutation == "drop-output-redirect":
+    step["run"] = step["run"].split(">>")[0].rstrip()
+elif mutation == "drop-mode-gate":
+    step.pop("if", None)
+else:
+    raise SystemExit("unknown counterfactual mutation %r" % mutation)
+
+json.dump(workflow, sys.stdout)
+PY
+
+test_gate_step_delegates_the_wait_to_the_helper() {
+  local model mutated out rc mutation marker
+  # The parse is a required capability of the validation tool profile, never a
+  # verdict: an absent parser must fail this guard loudly rather than let an
+  # unchecked wiring report green.
+  model=$("$ROOT/bin/fm-workflow-yaml.sh" "$WORKFLOW" 2>"$TMP_ROOT/workflow-yaml.err") || {
+    cat "$TMP_ROOT/workflow-yaml.err" >&2
+    fail "the workflow YAML capability is unavailable, so the gate wiring was never checked (missing capability, not a verdict; see the ENVIRONMENT_UNREADY line above)"
+  }
+  out=$(printf '%s' "$model" | python3 "$GATE_WIRING_CHECK" 2>&1) \
+    || fail "gate wiring regressed:"$'\n'"$out"
+
+  while read -r mutation marker; do
+    [ -n "$mutation" ] || continue
+    mutated=$(printf '%s' "$model" | python3 "$GATE_WIRING_MUTATE" "$mutation") \
+      || fail "could not build the '$mutation' counterfactual workflow model"
+    rc=0
+    out=$(printf '%s' "$mutated" | python3 "$GATE_WIRING_CHECK" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] \
+      || fail "the gate wiring guard accepted the '$mutation' counterfactual, so it cannot catch that silent undo"
+    assert_contains "$out" "$marker" \
+      "the gate wiring guard rejected the '$mutation' counterfactual without naming it as $marker"
+  done <<'EOF'
+call-resolve UNDO(await-not-called)
+drop-output-redirect UNDO(output-not-routed)
+pin-at-step UNDO(bound-pinned-at-step)
+pin-at-job UNDO(bound-pinned-at-job)
+pin-at-workflow UNDO(bound-pinned-at-workflow)
+drop-mode-gate UNDO(mode-gate-removed)
+EOF
+  pass "the gate step delegates the wait to the helper, routes its output, gates on current mode, and pins no derived bound at any env level"
+}
+
 fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
@@ -913,3 +1049,4 @@ test_await_attributes_a_recovered_outage_to_the_publisher_with_context
 test_await_still_counts_an_early_outage_when_the_last_polls_read_soundly
 test_await_attributes_at_a_tail_gap_of_exactly_one_poll_interval
 test_await_does_not_retry_a_definitive_non_http_failure
+test_gate_step_delegates_the_wait_to_the_helper

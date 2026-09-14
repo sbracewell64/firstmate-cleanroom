@@ -552,6 +552,27 @@ test_self_target_delivery() {
   pass 'self-target delivery and receipt persist without recursive metadata locking'
 }
 
+test_readmitted_inbox_effect_retains_its_downstream_obligation() {
+  local identity out receipt owner
+  prepare_delivery
+  stage handoff --handoff-json "$TMP_ROOT/guarded.json" >/dev/null || fail 'inbox readmission admission'
+  identity=$(meta completion_handoff | jq -r .identity)
+  out=$(stage handoff-release --identity "$identity") || fail "inbox readmission release: $out"
+  assert_contains "$out" COMPLETION_DISPATCHED 'release must report the confirmed inbox effect'
+  assert_contains "$out" 'reason=downstream-action-unconfirmed' 'release retains the open downstream obligation'
+  receipt=$(meta completion_handoff | jq -r .receipt)
+  owner=$(meta completion_handoff | jq -r .next_owner)
+
+  out=$(stage handoff --handoff-json "$TMP_ROOT/guarded.json") || fail "inbox re-admission: $out"
+  assert_contains "$out" "COMPLETION_DISPATCHED: task=source identity=$identity receipt=$receipt owner=$owner" \
+    're-admission must report the confirmed inbox effect'
+  assert_contains "$out" "COMPLETION_PENDING: task=source identity=$identity owner=$owner reason=downstream-action-unconfirmed receipt=$receipt" \
+    're-admitting a delivered inbox effect must still report its open downstream obligation'
+  assert_absent "$FM_STATE_OVERRIDE/guarded.inbox/002.msg" 're-admission repeated the inbox effect'
+  [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 're-admission rewrote the inbox receipt'
+  pass 'a re-admitted delivered inbox effect reports delivery and its retained downstream obligation'
+}
+
 test_unqualified_and_foreign_stage_effects_refuse() {
   local out rc saved field effect
   prepare_delivery
@@ -580,6 +601,18 @@ test_unqualified_and_foreign_stage_effects_refuse() {
     [ "$(meta completion_handoff | jq -r '.receipt // "absent"')" = absent ] || fail 'foreign effect repaired receipt'
   done
   cp "$TMP_ROOT/qualified.meta" "$FM_STATE_OVERRIDE/source.meta"
+
+  # A task that never admitted a candidate has nothing to qualify, so the
+  # refusal must name the missing admission rather than a revoked qualification.
+  fm_write_meta "$FM_STATE_OVERRIDE/premature.meta" "worktree=$WT" "project=$WT" \
+    'harness=echo' 'kind=ship' 'mode=no-mistakes' 'yolo=off' 'spawn_gen=p1.1.1'
+  for field in landing activated; do
+    rc=0; out=$("$ROOT/bin/fm-stage.sh" premature "$field" 2>&1) || rc=$?
+    expect_code 1 "$rc" "premature $field must refuse"
+    assert_contains "$out" NOT_ADMITTED "premature $field must name the missing admission"
+    assert_not_contains "$out" QUALIFICATION_REVOKED "premature $field must not blame the qualification owner"
+    [ -z "$(sed -n 's/^stage=//p' "$FM_STATE_OVERRIDE/premature.meta")" ] || fail "premature $field recorded a stage"
+  done
   pass 'direct landing and missing or foreign qualification evidence never reconstruct CI-ready success'
 }
 
@@ -699,6 +732,7 @@ test_readmission_reports_the_saved_disposition() (
   assert_contains "$out" COMPLETION_DISPATCHED 'a dispatched re-admission must report the saved status'
   assert_contains "$out" "receipt=$receipt" 'a dispatched re-admission must report the saved receipt'
   assert_contains "$out" "owner=$owner" 'a dispatched re-admission must report the saved next owner'
+  assert_not_contains "$out" 'reason=downstream-action-unconfirmed' 'a confirmed CI-ready effect carries no inbox downstream obligation'
   [ "$(meta completion_handoff | jq -r .receipt)" = "$receipt" ] || fail 're-admission rewrote the dispatched receipt'
   pass 'idempotent re-admission reports the saved record disposition, not the admission wording'
 )
@@ -1384,6 +1418,7 @@ test_concurrent_resume_dispatches_once
 test_remote_and_destination_lease
 test_destination_changes_while_delivery_waits
 test_self_target_delivery
+test_readmitted_inbox_effect_retains_its_downstream_obligation
 test_unqualified_and_foreign_stage_effects_refuse
 test_checkpoint_observation_lock_bounds
 test_opposite_direction_delivery_does_not_deadlock

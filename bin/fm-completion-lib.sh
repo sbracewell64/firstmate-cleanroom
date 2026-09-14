@@ -183,16 +183,29 @@ fm_completion_admit() {
   fm_completion_report_saved "$old" "$identity"
 }
 
+# Sole owner of the dispatched-receipt line, and of the open downstream
+# obligation an inbox effect retains: dispatched records delivery only, never
+# actual consumption, so every caller reporting a task-inbox effect emits both.
+fm_completion_dispatched_line() {  # <identity> <receipt> <owner>
+  printf 'COMPLETION_DISPATCHED: task=%s identity=%s receipt=%s owner=%s\n' "$ID" "$1" "$2" "$3"
+}
+
+fm_completion_downstream_open_line() {  # <identity> <receipt> <owner>
+  printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=downstream-action-unconfirmed receipt=%s\n' "$ID" "$1" "$3" "$2"
+}
+
 # The saved record - never the admission wording - owns the reported
 # disposition, so a dispatched obligation is not routed back to its admitter.
 fm_completion_report_saved() {  # <saved JSON> <identity>
-  local saved=$1 identity=$2 status owner reason receipt
+  local saved=$1 identity=$2 status owner reason receipt kind
   status=$(printf '%s' "$saved" | jq -r '.status // empty') || return 1
   owner=$(printf '%s' "$saved" | jq -r '.next_owner // empty')
   reason=$(printf '%s' "$saved" | jq -r '.reason // empty')
   receipt=$(printf '%s' "$saved" | jq -r '.receipt // empty')
+  kind=$(printf '%s' "$saved" | jq -r '.contract.action.kind // empty')
   if [ "$status" = dispatched ] && [ -n "$receipt" ]; then
-    printf 'COMPLETION_DISPATCHED: task=%s identity=%s receipt=%s owner=%s\n' "$ID" "$identity" "$receipt" "$owner"
+    fm_completion_dispatched_line "$identity" "$receipt" "$owner"
+    [ "$kind" != task-inbox ] || fm_completion_downstream_open_line "$identity" "$receipt" "$owner"
   else
     printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=%s\n' "$ID" "$identity" "$owner" "$reason"
   fi
@@ -390,10 +403,10 @@ fm_completion_resume() {
     saved=$(printf '%s' "$saved" | jq -c --arg receipt "$record" --arg owner "$owner" \
       '.status="dispatched" | .receipt=$receipt | .next_owner=$owner | .reason="effect-confirmed; downstream completion remains independently owned"')
     fm_completion_store "$saved" || { fm_completion_refuse RECEIPT_WRITE_FAILED; return 1; }
-    printf 'COMPLETION_DISPATCHED: task=%s identity=%s receipt=%s owner=%s\n' "$ID" "$identity" "$record" "$owner"
+    fm_completion_dispatched_line "$identity" "$record" "$owner"
   fi
   if [ "$kind" = task-inbox ]; then
-    printf 'COMPLETION_PENDING: task=%s identity=%s owner=%s reason=downstream-action-unconfirmed receipt=%s\n' "$ID" "$identity" "$owner" "$record"
+    fm_completion_downstream_open_line "$identity" "$record" "$owner"
   fi
 }
 

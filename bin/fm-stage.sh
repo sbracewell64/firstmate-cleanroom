@@ -818,9 +818,9 @@ do_landing() {
   local current
   require_ship landing
   engineering_context landing
-  require_current_qualification landing
   current=$(meta stage)
   [ -n "$current" ] || refuse landing NOT_ADMITTED "no candidate is recorded"
+  require_current_qualification landing
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
   if [ -n "$PR_ARG" ] && [ "$PR_ARG" != "$(meta stage_pr)" ] && qualification_applies landing; then
     refuse landing DESTINATION_MISMATCH "--pr $PR_ARG is not the qualified destination $(dash "$(meta stage_pr)"); landing carries the destination CI-ready qualified"
@@ -890,9 +890,9 @@ do_activated() {
   local current evidence
   require_ship activated
   engineering_context activated
-  require_current_qualification activated
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
+  require_current_qualification activated
   evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the candidate head reachable from the project clone's checked-out head"
   STAGE_PR_VALUE=$(meta stage_pr)
   if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ]; then

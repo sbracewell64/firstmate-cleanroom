@@ -899,8 +899,55 @@ EOF
   pass "producer eligible_queued reflects structural per-task predicates independent of the aggregate state label"
 }
 
+# Regression: a backlog whose parsed JSON exceeds the kernel's argv cap must
+# still snapshot and summarize. Linux caps one argv string at 128 KiB
+# (MAX_ARG_STRLEN) whatever ARG_MAX says, and macOS caps the whole argv at
+# 1 MiB, so the large backlog is sized past both and the old `--argjson`
+# call shape is proven to fail on every CI platform rather than assumed to.
+test_large_backlog_streams_past_argv_limit() {
+  local home out_small out_large big_json bytes rc
+  # One home, two backlogs: the small one is summarized first, then the large
+  # one replaces it, so the two summaries can only differ through the backlog.
+  home=$(make_home bodied-backlog)
+  fm_write_bodied_backlog "$home/data/backlog.md" 40 1
+  out_small=$(run_home_summary "$home") \
+    || fail "home summary failed on the small backlog"
+  fm_write_bodied_backlog "$home/data/backlog.md" 40 32
+
+  out_large=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot --json failed on a backlog larger than the argv cap"
+  big_json=$(printf '%s' "$out_large" | jq -c '.backlog')
+  bytes=${#big_json}
+  [ "$bytes" -gt 1048576 ] \
+    || fail "large fixture must exceed the 1 MiB argv cap to prove anything, got $bytes bytes"
+  rc=0
+  jq -n --argjson backlog "$big_json" 'true' >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "the old --argjson call shape unexpectedly accepted a $bytes-byte argument; the regression is vacuous here"
+  printf '%s' "$out_large" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.backlog.records | length) == 40
+      and (.backlog.records[0].body_lines | length) == 32
+      and .main_inventory.valid == true
+      and (.tasks | length) == 0
+  ' >/dev/null || fail "large-backlog snapshot lost records or inventory validity: $out_large"
+
+  out_large=$(run_home_summary "$home") \
+    || fail "home summary failed on a backlog larger than the argv cap"
+  [ "$out_small" = "$out_large" ] \
+    || fail "home summary must be byte-identical for the small and large backlogs"$'\n'"--- small ---"$'\n'"$out_small"$'\n'"--- large ---"$'\n'"$out_large"
+  printf '%s' "$out_large" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .counts.queued == 20 and .counts.landed == 20
+      and (.eligible_queued | length) == 20
+  ' >/dev/null || fail "large-backlog home summary counts wrong: $out_large"
+
+  pass "producer-sized backlog JSON streams past the kernel argv cap with unchanged output"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_large_backlog_streams_past_argv_limit
 test_eligible_queued_reflects_per_task_predicates
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness

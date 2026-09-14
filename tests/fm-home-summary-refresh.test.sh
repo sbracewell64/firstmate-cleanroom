@@ -969,3 +969,23 @@ case "$report_out" in
     ;;
 esac
 pass "repeated publication failure is reported at session start until it clears"
+
+# Regression: the publication that every session start reports on must survive
+# a backlog whose parsed JSON exceeds the kernel argv cap (the real symptom was
+# a producer failing with "Argument list too long" on every refresh).
+LARGE_HOME="$TMP_ROOT/large-home"
+mkdir -p "$LARGE_HOME/state" "$LARGE_HOME/data" "$LARGE_HOME/config" \
+  "$LARGE_HOME/projects"
+printf '# Seeded Firstmate home\n' > "$LARGE_HOME/AGENTS.md"
+printf 'large\n' > "$LARGE_HOME/.fm-secondmate-home"
+fm_write_bodied_backlog "$LARGE_HOME/data/backlog.md" 40 32
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$LARGE_HOME" \
+  FM_SNAPSHOT_NOW="$NOW_THREE" FM_SNAPSHOT_NOW_EPOCH="$EPOCH_THREE" \
+  "$WRITER" || fail "publication failed on a backlog larger than the argv cap"
+jq -e --arg generated "$NOW_THREE" '
+  .schema == "fm-secondmate-home-summary.v1"
+  and .generated == $generated
+  and .counts.queued == 20 and .counts.landed == 20
+' "$LARGE_HOME/state/home-summary.json" >/dev/null \
+  || fail "the large-backlog ledger was not published complete: $(cat "$LARGE_HOME/state/home-summary.json")"
+pass "publication succeeds when the parsed backlog exceeds the kernel argv cap"

@@ -452,6 +452,13 @@ test_await_stops_at_the_deadline_and_fails_closed() {
   expect_code 0 "$rc" "await must still produce a judged subject when the window closes"
   assert_contains "$err" "publication window is closed" "the timeout message did not say the window closed"
   assert_contains "$err" "$NEW_SHA" "the timeout message did not name the head it waited for"
+  # Every poll read soundly here, so the publisher is the only honest cause to
+  # name; a read outage must not be implied when nothing failed to read.
+  assert_contains "$err" "still unpublished" \
+    "a wait whose every poll read soundly did not attribute the outcome to the publisher"
+  case "$err" in
+    *"trailing poll(s)"*) fail "a wait with no failed read reported an unreadable trailing stretch" ;;
+  esac
   await_case never-publishes-verdict
   await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
   rc=0
@@ -659,37 +666,43 @@ test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
   pass "a window that closes with no sound live read fails closed and says so"
 }
 
-# The two deadline diagnoses are different and must not be confused. A wait whose
-# reads were sound but whose publication never landed is a STALLED PUBLICATION -
-# the PR 42/45/46/47 shape - and the verifier owns that verdict, so the deadline
-# must still hand it the most recent sound subject even when the final poll's
-# read happened to blip. Reporting a read outage there would be a false
-# diagnosis and would suppress the verifier's "attested to X, not head Y"
-# refusal that the CI-fix loop keys on.
-test_await_hands_off_a_stalled_publication_even_when_the_last_read_blips() {
-  local out err rc verifier_out
-  await_case_failing stalled-then-blip
+# A wait that read soundly and then went blind for the rest of the window is
+# NOT a stalled publication: most of the window observed nothing and the
+# publication may have landed unseen. The deadline must still hand the most
+# recent sound read to the verifier - fail-closed is unchanged - but it must
+# report what it actually saw: that the trailing polls could not be read, and
+# what the last sound read observed and when. Calling this a stalled publisher
+# would send the operator and the CI-fix loop after the wrong cause.
+test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher() {
+  local out err rc verifier_out outage
+  await_case_failing sound-then-outage
   await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
   await_fail default "gh: Bad Gateway (HTTP 502)"
   rc=0
   out=$( export NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1
          run_await 2>"$AWAIT_CASE/err" ) || rc=$?
   err=$(cat "$AWAIT_CASE/err")
-  expect_code 0 "$rc" "the deadline refused a stalled publication instead of letting the verifier judge it"
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
   case "$err" in
-    *"no sound live read"*) fail "a stalled publication was misreported as a live-read outage" ;;
+    *"no sound live read"*) fail "a wait that did read soundly was reported as having read nothing" ;;
+    *"still unpublished"*) fail "a trailing read outage was attributed to the publisher" ;;
   esac
-  assert_contains "$err" "publication window is closed" \
-    "the deadline did not report the closed publication window"
+  outage=$(printf '%s\n' "$err" | grep 'trailing poll(s)') \
+    || fail "the deadline never reported that the trailing polls could not be read"
+  assert_contains "$outage" "502" "the outage report did not name the read failure that caused it"
+  assert_contains "$outage" "$OLD_SHA" \
+    "the outage report did not say what the last sound read observed"
+  assert_contains "$outage" "into the window" \
+    "the outage report did not say when the last sound read was taken"
   # Exact-head association: the handed-over subject is the sound read's own head.
   [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
     || fail "the deadline handed over a head other than the sound read's live head"
   rc=0
   verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
-  [ "$rc" -ne 0 ] || fail "a PR whose attestation never published was allowed to pass the gate"
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never bound the live head was allowed to pass the gate"
   assert_contains "$verifier_out" "$OLD_SHA" \
     "the verifier's authoritative refusal did not name the head the body was attested to"
-  pass "a stalled publication still reaches the verifier when the last poll's read blips"
+  pass "a trailing read outage is reported as one, and the sound read still reaches the verifier"
 }
 
 # A definitive failure that carries no HTTP status - an absent or invalid
@@ -744,5 +757,5 @@ test_await_retries_a_transient_read_and_still_binds
 test_await_does_not_retry_a_definitive_read_failure
 test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget
 test_await_fails_closed_when_the_window_closes_with_no_sound_read
-test_await_hands_off_a_stalled_publication_even_when_the_last_read_blips
+test_await_reports_a_trailing_read_outage_instead_of_blaming_the_publisher
 test_await_does_not_retry_a_definitive_non_http_failure

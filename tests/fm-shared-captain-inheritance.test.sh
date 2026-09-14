@@ -285,6 +285,11 @@ new_git_world() {
   mkdir -p "$w/sm/data" "$w/sm/state" "$w/sm/config" "$w/sm/projects"
   printf '%s\n' "charter" > "$w/sm/data/charter.md"
   write_shared "$home/data/captain-shared.md" "shared from primary"
+  # A bootstrapped primary home always carries config/startup-memory-budget
+  # (the locked bootstrap materializes the default). The session-start digest
+  # gates memory injection on it, and a lock-refused session - the CI case, with
+  # no harness ancestor - never materializes one, so the fixture supplies it.
+  printf '%s\n' "$FM_STARTUP_MEMORY_BUDGET_DEFAULT" > "$home/config/startup-memory-budget"
   printf '%s|%s|%s|%s\n' "$w" "$root" "$home" "$w/sm"
 }
 

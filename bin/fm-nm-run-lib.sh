@@ -124,6 +124,92 @@ fm_nm_run_is_active() {  # <toon-output>
   case "$status" in completed|failed|cancelled) return 1 ;; esac
 }
 
+# Whole seconds for one compact duration as `no-mistakes axi status` renders it.
+# Verified against the installed CLI's own rendering: an age is printed as
+# "<duration> ago", where the duration uses the compact Go-ish unit forms
+# "%dd%dh", "%dh%dm", "%dm%ds" and a bare "%ds".
+# Prints the seconds for a recognized form and returns 1 printing nothing for
+# anything else, including the literal "unknown" this surface renders when it has
+# no timestamp at all, so an unrecognized or absent duration is ABSENCE OF
+# EVIDENCE for every caller rather than a fabricated zero that would read as
+# activity this instant. Digit runs are read in base 10 so a zero-padded field
+# cannot be taken as octal.
+fm_nm_duration_secs() {  # <compact-duration>
+  local d num unit total=0 matched=0
+  d=$(printf '%s' "${1-}" | tr -d '[:space:]')
+  [ -n "$d" ] || return 1
+  while [ -n "$d" ]; do
+    num=${d%%[!0-9]*}
+    [ -n "$num" ] || return 1
+    d=${d#"$num"}
+    unit=${d%"${d#?}"}
+    [ -n "$unit" ] || return 1
+    d=${d#?}
+    case "$unit" in
+      s) total=$(( total + 10#$num )) ;;
+      m) total=$(( total + 10#$num * 60 )) ;;
+      h) total=$(( total + 10#$num * 3600 )) ;;
+      d) total=$(( total + 10#$num * 86400 )) ;;
+      *) return 1 ;;
+    esac
+    matched=1
+  done
+  [ "$matched" = 1 ] || return 1
+  printf '%s' "$total"
+}
+
+# Seconds since the attributed run last showed PIPELINE activity, from the
+# `active_steps` block of captured `axi status` TOON $1. That block is the
+# pipeline's own account of what it is doing right now, and its `last_activity`
+# column is maintained per step result by no-mistakes itself, so it answers
+# "is this run still working" for a run whose worker pane has legitimately gone
+# quiet - which neither the pane nor the step status alone can answer.
+#
+# Only rows inside the block are read: the header's indentation bounds it, and
+# the first double-quoted field of a row is `last_activity` because the three
+# columns before it are unquoted. The leading token before the first " ago" is
+# the age, so an activity detail that itself mentions an age cannot be mistaken
+# for the row's own. The SMALLEST age across active rows is the answer, since
+# any one active step still working proves the run is.
+#
+# The CLI renders a step it considers QUIET - one whose step log and native-agent
+# lifecycle have both been silent for longer than its own `step_quiet_warning` -
+# by prefixing the same age with the literal "quiet ". That is still the pipeline
+# reporting how long ago the step it is tracking last did something, so the age is
+# read from both forms; the marker is carried into the printed answer as the same
+# "quiet " prefix rather than dropped, so no caller can present a quiet reading as
+# fresh output.
+#
+# Prints "<secs>", or "quiet <secs>" when the winning row was quiet. Returns 1
+# printing nothing when the run reports no active step, no parseable age, or no
+# block at all. Every caller must treat that as absence of evidence.
+fm_nm_run_active_activity_age() {  # <toon-output>
+  local raw secs quiet best='' best_quiet=0
+  while IFS= read -r raw; do
+    [ -n "$raw" ] || continue
+    quiet=0
+    case "$raw" in 'quiet '*) quiet=1; raw=${raw#quiet } ;; esac
+    secs=$(fm_nm_duration_secs "$raw") || continue
+    if [ -z "$best" ] || [ "$secs" -lt "$best" ]; then best=$secs; best_quiet=$quiet; fi
+  done <<EOF
+$(printf '%s\n' "${1-}" | awk '
+  !inblk && /^[ \t]*active_steps\[/ { match($0, /^[ \t]*/); hi = RLENGTH; inblk = 1; next }
+  inblk {
+    if ($0 ~ /^[ \t]*$/) next
+    match($0, /^[ \t]*/)
+    if (RLENGTH <= hi) { inblk = 0; next }
+    if (match($0, /"[^"]*"/)) {
+      v = substr($0, RSTART + 1, RLENGTH - 2)
+      if (match(v, / ago/)) print substr(v, 1, RSTART - 1)
+    }
+  }
+')
+EOF
+  [ -n "$best" ] || return 1
+  [ "$best_quiet" = 0 ] || printf 'quiet '
+  printf '%s' "$best"
+}
+
 # The one exemption to the head rule above: while the pipeline OWNS the branch
 # (branch_sync.state=pipeline_owned), the daemon's own branch attribution IS
 # the attribution for an ACTIVE run, and

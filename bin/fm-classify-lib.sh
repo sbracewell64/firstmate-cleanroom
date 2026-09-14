@@ -27,7 +27,7 @@
 # A missing, malformed, identity-mismatched, or past-end classified position reads
 # from byte 0, preferring a bounded duplicate over a lost event.
 #
-# There are three documented exceptions. The absorb classification
+# There are four documented exceptions. The absorb classification
 # (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
 # read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
 # to decide whether a crew that just stopped its turn or went stale is working,
@@ -39,7 +39,11 @@
 # stays bounded by new appends instead of re-reading each task's whole lifetime
 # log every time. crew_worktree_written_since reads the task's meta file and walks
 # a bounded slice of its worktree instead of a status file, so callers run it only
-# at the moment they would otherwise escalate.
+# at the moment they would otherwise escalate. The declared-validation-wait pair
+# (crew_pipeline_wait_declared and crew_pipeline_wait_holds) reads that same meta
+# file for the lifecycle stage receipt and, only when it declares a bound run,
+# makes one more fm-crew-state.sh call, under the same
+# only-where-you-would-otherwise-escalate rule.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -98,6 +102,18 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+
+# How long a DECLARED validation wait may go without its pipeline showing any
+# activity before it stops counting as a declared wait and returns to the
+# ordinary wedge schedule (crew_pipeline_wait_holds below).
+# Thirty minutes, matching no-mistakes' own agent step timeout: inside that
+# window the pipeline still owns the step and will fail it itself, so an idle
+# worker pane is the expected shape of the wait; past it the pipeline is no
+# longer meeting its own bound and the pane is a wedge candidate again. The
+# bound is deliberately generous because the pipeline's activity is recorded
+# from its step log, and a legitimately quiet phase - a long CI monitor between
+# two log lines - can go many minutes without writing one.
+FM_PIPELINE_ACTIVITY_MAX_SECS_DEFAULT=1800
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -1712,6 +1728,88 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# --- declared validation wait -----------------------------------------------
+#
+# A crew that has handed its branch to a no-mistakes validation is idle BY
+# CONTRACT: the pipeline drives the run, the worker waits for the next gate, and
+# the crew's own status log gets no new entry for the whole run (AGENTS.md's
+# sparse status-reporting contract). Its pane is therefore quiet for as long as
+# the run takes - routinely far longer than the wedge threshold - and treating
+# that quiet as a possible wedge produced the repeated escalations this pair of
+# predicates exists to stop. The wait is DECLARED by the lifecycle stage receipt
+# rather than by worker prose, and PROVED by the pipeline's own activity, so
+# neither half alone can quiet a pane.
+
+# 0 when <id>'s durable lifecycle stage records a bound, running validation.
+# bin/fm-stage.sh is the only writer of `stage=` and records
+# `validation-running` exactly when the real run is bound to the candidate, so
+# this is the declaration, and it needs no prose from the worker. A pure local
+# metadata read - deliberately the CHEAP half, so the live proof below runs only
+# for a crew that actually declared the wait. Read with the same plain grep the
+# worktree probe below uses, so both stay one obvious pattern.
+# The declaration covers the whole run through to the CI-ready boundary: no
+# further receipt is written until the worker stops there, and `ci-ready` is a
+# terminal stage that must surface for the merge authority rather than wait.
+crew_pipeline_wait_declared() {  # <id> <state>
+  local id=$1 state=$2 stage
+  [ -n "$id" ] || return 1
+  stage=$(grep '^stage=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ "$stage" = validation-running ]
+}
+
+# How long ago <id>'s attributed run last showed pipeline activity, read from
+# the ONE current-state owner (bin/fm-crew-state.sh) rather than by attributing
+# the run a second time here - the attribution rules are subtle enough that a
+# second copy would drift. Requires that owner's authoritative working run-step
+# verdict, so a crew whose run has finished, failed, been cancelled, or become
+# unreadable yields no age at all. Returns 1 printing nothing whenever there is
+# no age to report. NOT a pure read (see the header): one bounded fm-crew-state.sh
+# call, so callers run it only where they would otherwise escalate.
+# Prints the field verbatim as "<secs>", or "quiet <secs>" when the pipeline
+# marked that step quiet. A quiet reading is still the pipeline reporting the age
+# of the step it is tracking, so it is real activity evidence and is measured
+# against the same bound; the marker is carried so nothing downstream can print a
+# quiet reading as fresh output.
+crew_pipeline_activity_age() {  # <id>
+  local id=$1 line state src rest quiet='' age
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = working ] || return 1
+  src=${line#*source: }; src=${src%% *}
+  [ "$src" = run-step ] || return 1
+  case "$line" in *'activity: '*) ;; *) return 1 ;; esac
+  rest=${line#*activity: }
+  case "$rest" in 'quiet '*) quiet='quiet '; rest=${rest#quiet } ;; esac
+  age=${rest%%s*}
+  case "$age" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s%s' "$quiet" "$age"
+}
+
+# 0 when <id> is in a declared validation wait that STILL HOLDS: the stage
+# receipt declares it and the pipeline has done something within
+# FM_PIPELINE_ACTIVITY_MAX_SECS. This is the whole test a supervisor needs to
+# tell a legitimate pipeline wait from a wedge, and every negative outcome -
+# no declaration, no attributed run, a run that stopped progressing, an
+# unreadable verdict, or a malformed bound - returns 1, which leaves the
+# caller's existing escalation schedule exactly as it was. Weakening wedge
+# detection therefore requires positive evidence on both halves, never the
+# absence of evidence on either.
+# Prints the evidence it held on, in crew_pipeline_activity_age's own form, so a
+# caller that defers can name what it actually observed without paying for a
+# second bounded read.
+crew_pipeline_wait_holds() {  # <id> <state>
+  local obs age bound
+  crew_pipeline_wait_declared "$1" "$2" || return 1
+  obs=$(crew_pipeline_activity_age "$1") || return 1
+  age=${obs##* }
+  bound=${FM_PIPELINE_ACTIVITY_MAX_SECS:-$FM_PIPELINE_ACTIVITY_MAX_SECS_DEFAULT}
+  case "$bound" in ''|*[!0-9]*|0) bound=$FM_PIPELINE_ACTIVITY_MAX_SECS_DEFAULT ;; esac
+  [ "$age" -le "$bound" ] || return 1
+  printf '%s' "$obs"
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.

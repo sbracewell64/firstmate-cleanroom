@@ -184,6 +184,29 @@ reset_fakes() {
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
 
+# An actively-executing run as `no-mistakes axi status` renders it WITH the
+# pipeline's own account of what it is doing: the `active_steps` block. Verified
+# shape (installed CLI): the three columns before `last_activity` are unquoted,
+# `last_activity` is a quoted "<age> ago: <what>", and the activity text may
+# itself contain commas and a second age.
+run_running_active() {  # <branch> <last-activity-render>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    review,completed,0,0
+    ci,running,0,0
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    ci,running,26m12s,"$2","",monitoring
+EOF
+}
+
 run_running() {  # <branch>
   cat <<EOF
 run:
@@ -1812,7 +1835,86 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+# --- the pipeline's own activity age on the canonical line -------------------
+# A crew that handed its branch to a validation is idle BY CONTRACT while the
+# pipeline drives the run, so a supervisor needs the run's own account of
+# whether it is still progressing. That account is rendered as the optional
+# `activity:` field, and its ABSENCE must stay absence of evidence rather than a
+# fabricated "active now", or a stopped pipeline would look alive.
+test_active_run_renders_pipeline_activity_age() {
+  reset_fakes
+  local d; d=$(new_case activity-age)
+  make_repo_on_branch "$d/wt" fm/feat-act
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/act.meta" "window=fm:fm-act" "worktree=$d/wt" "kind=ship"
+  # A long CI monitor: the activity text carries its own comma and ellipsis.
+  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-act '14m3s ago: CI checks running, waiting for results...')"
+  FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
+  local out; out=$(run_crew_state "$d" act)
+  assert_contains "$out" "state: working" "an actively-executing run is working"
+  assert_contains "$out" "source: run-step" "the run step remains the source"
+  assert_contains "$out" "activity: 843s" "the pipeline's own activity age is rendered in seconds"
+  pass "an active run renders the pipeline's own activity age"
+}
+
+test_active_run_without_active_steps_renders_no_activity() {
+  reset_fakes
+  local d; d=$(new_case activity-absent)
+  make_repo_on_branch "$d/wt" fm/feat-noact
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/noact.meta" "window=fm:fm-noact" "worktree=$d/wt" "kind=ship"
+  # The plain fixture has no active_steps block at all.
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-noact)"
+  local out; out=$(run_crew_state "$d" noact)
+  assert_contains "$out" "source: run-step" "a run with no active step is still run-step sourced"
+  case "$out" in
+    *"activity:"*) fail "a run reporting no active step fabricated an activity age: $out" ;;
+  esac
+  pass "a run reporting no active step renders no activity age"
+}
+
+test_unparseable_activity_render_is_absence_of_evidence() {
+  reset_fakes
+  local d; d=$(new_case activity-unparseable)
+  make_repo_on_branch "$d/wt" fm/feat-unknown
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unknown.meta" "window=fm:fm-unknown" "worktree=$d/wt" "kind=ship"
+  # "unknown" is what this surface renders with no timestamp, and is NOT an age;
+  # it must not read as 0s.
+  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-unknown 'unknown')"
+  local out; out=$(run_crew_state "$d" unknown)
+  assert_contains "$out" "source: run-step" "an unparseable activity render still reports the run step"
+  case "$out" in
+    *"activity:"*) fail "an unparseable activity render was turned into an age: $out" ;;
+  esac
+  pass "an unparseable activity render is absence of evidence, not a zero age"
+}
+
+# The pipeline marks a step QUIET when its step log and native-agent lifecycle
+# have both been silent longer than the pipeline's own quiet warning, and renders
+# the same age with a literal "quiet " prefix. That is still the run reporting how
+# long ago the step it is tracking last did something, so the age must be read -
+# rejecting the rendering would strand a long CI monitor - and the marker must
+# survive into the line, so no reader can mistake a quiet reading for fresh output.
+test_quiet_activity_render_keeps_its_age_and_its_marker() {
+  reset_fakes
+  local d; d=$(new_case activity-quiet)
+  make_repo_on_branch "$d/wt" fm/feat-quiet
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/quiet.meta" "window=fm:fm-quiet" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running_active fm/feat-quiet 'quiet 14m3s ago: CI checks running, waiting for results...')"
+  FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
+  local out; out=$(run_crew_state "$d" quiet)
+  assert_contains "$out" "state: working" "a quiet-rendered active run is still working"
+  assert_contains "$out" "activity: quiet 843s" "the quiet rendering keeps both its age and its marker"
+  pass "a quiet-rendered activity keeps its age and carries its marker"
+}
+
 test_active_run_is_authoritative
+test_active_run_renders_pipeline_activity_age
+test_active_run_without_active_steps_renders_no_activity
+test_unparseable_activity_render_is_absence_of_evidence
+test_quiet_activity_render_keeps_its_age_and_its_marker
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded

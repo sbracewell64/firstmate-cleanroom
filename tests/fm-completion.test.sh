@@ -1034,7 +1034,7 @@ SH
         case "$mutation" in
           held)
             assert_contains "$out" 'retained unresolved' 'held refusal must expose partial cleanup'
-            assert_contains "$out" 'observation lock held' 'bounded observation wait must warn, never stay silent'
+            assert_contains "$out" 'lock or canonical read still pending' 'bounded observation wait must warn, never stay silent'
             assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'authorization archive taken before the late change must remain as evidence'
             [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
             ;;

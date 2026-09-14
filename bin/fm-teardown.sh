@@ -2924,7 +2924,7 @@ teardown_observe_bounded() {  # <verb> [flags...]
     fm_run_timed "$NM_TEARDOWN_TIMEOUT" "$SCRIPT_DIR/fm-nm-observe.sh" "$1" "$ID" "${@:2}" >/dev/null 2>&1 || rc=$?
   case "$rc" in
     0) ;;
-    124) echo "warning: observation $1 for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (observation lock held); continuing under current evidence" >&2 ;;
+    124) echo "warning: observation $1 for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (lock or canonical read still pending); continuing under current evidence" >&2 ;;
     *) echo "warning: observation $1 for $ID did not complete" >&2 ;;
   esac
 }
@@ -2940,8 +2940,11 @@ fm_run_timed "$NM_TEARDOWN_TIMEOUT" bash -c '
 ' _ "$SCRIPT_DIR" "$STATE" "$ID" || presentation_rc=$?
 case "$presentation_rc" in
   0) ;;
-  124) echo "warning: status presentation retirement for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (presentation lock held); the presenter reconciles the removed task on its next pass" >&2 ;;
-  *) exit 1 ;;
+  124) echo "warning: status presentation retirement for $ID did not complete within ${NM_TEARDOWN_TIMEOUT}s (lock or canonical read still pending); the presenter reconciles the removed task on its next pass" >&2 ;;
+  *)
+    echo "warning: status presentation retirement for $ID failed (status $presentation_rc)" >&2
+    teardown_stopped_after_cleanup
+    ;;
 esac
 teardown_completion_current --check || teardown_stopped_after_cleanup
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1

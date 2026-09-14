@@ -21,11 +21,12 @@
 #   classify   maps the event action to 'historical' or 'current'. Single owner
 #              of that mapping, so the workflow never re-spells the action list.
 #   await      current mode only, the whole live-subject step. Single owner of
-#              the publication wait: it reads the live PR, classifies each read
-#              through 'resolve', waits while a publication is demonstrably in
-#              flight, and emits exactly one resolved subject for the verifier.
-#              The workflow never re-spells the window, the poll cadence, or the
-#              deadline behavior.
+#              the publication wait: it reads the live PR (retrying only a
+#              transient read failure, within the same window), classifies each
+#              read through 'resolve', waits while a publication is demonstrably
+#              in flight, and emits exactly one resolved subject for the
+#              verifier. The workflow never re-spells the window, the poll
+#              cadence, the retry budget, or the deadline behavior.
 #   resolve    the pure classifier behind 'await': given the event's expected
 #              subject (PR number and head SHA) and one live read (number, head,
 #              body), it binds PR identity, refuses a superseded subject (a live
@@ -62,14 +63,14 @@
 #              subject advanced during verification, so an old-head run can never
 #              publish a green result for a newer, already-advanced PR head.
 #
-# All four fail closed: a missing required input, an unreadable live PR, or an
-# unrecognized event action is an error, never a silent pass. On a BOUND or
-# HANDOFF result 'resolve' and 'await' print GITHUB_OUTPUT key=value lines on
-# stdout (the multi-line body uses a random heredoc delimiter, GitHub's
-# documented mitigation for attacker-controlled multi-line values); a hard
-# refusal exits non-zero with a ::error:: line on stderr; PENDING exits 3 with a
-# ::notice:: line and no stdout output, which is a retry signal to 'await',
-# never a pass.
+# All four fail closed: a missing required input, an unreadable or definitively
+# refused live PR, or an unrecognized event action is an error, never a silent
+# pass. On a BOUND or HANDOFF result 'resolve' and 'await' print GITHUB_OUTPUT
+# key=value lines on stdout (the multi-line body uses a random heredoc
+# delimiter, GitHub's documented mitigation for attacker-controlled multi-line
+# values); a hard refusal exits non-zero with a ::error:: line on stderr;
+# PENDING exits 3 with a ::notice:: line and no stdout output, which is a retry
+# signal to 'await', never a pass.
 #
 # Publication wait, and why it is bounded the way it is. 'git push no-mistakes'
 # advances the PR head and then re-publishes the body attestation for the new
@@ -79,18 +80,31 @@
 # passed, 117s, 118s and 117s on three consecutive recent races, and 358s twice
 # earlier - so the previous 90s window was below every failing observation and
 # above neither. NMF_PUBLICATION_WINDOW_SECONDS defaults to 600, which covers
-# the largest observed in-run gap with roughly 1.7x headroom while staying far
-# inside the job's own timeout, so the deadline - not the platform - produces the
+# the largest observed gap with roughly 1.7x headroom while staying far inside
+# the job's own timeout, so the deadline - not the platform - produces the
 # outcome. Past that the pipeline is no longer racing the gate, it has stalled,
 # and a red check the pipeline's own CI-fix loop can act on is the honest
 # result. The wait costs nothing on the two paths that matter most: a bound body
 # returns on the first read, and a body with no no-mistakes signature hands off
 # on the first read instead of waiting out a window it can never satisfy.
 #
+# KNOWN, UNEXERCISED GAP: gating the wait on the signature covers a
+# re-publication race but not a FIRST-publication race - a PR a person opened by
+# hand, whose body is still unsigned when 'git push no-mistakes' advances the
+# head. There is no bound for that case because there is nothing to size one
+# from: across all 89 recorded gate runs and 49 PRs in this repository, no
+# synchronize event has ever seen an unsigned body. Every recorded PR was created
+# by the pipeline already carrying its signature and attestation, and all four
+# failures this wait exists for carried a signed body attested to the PRIOR head
+# for the whole window. Fail-closed still holds there: such a PR fails without a
+# wait rather than passing, and the symptom, if it ever occurs, is one re-run -
+# the same cost as today, not a loss of safety.
+#
 # Usage:
 #   NMF_EVENT_ACTION=<action> fm-nmf-verify-input.sh classify
 #   GITHUB_REPOSITORY=<owner/name> NMF_EVENT_NUMBER=<n> NMF_EVENT_HEAD_SHA=<sha> \
 #     [NMF_PUBLICATION_WINDOW_SECONDS=<s>] [NMF_PUBLICATION_POLL_SECONDS=<s>] \
+#     [NMF_LIVE_READ_ATTEMPTS=<n>] [NMF_LIVE_READ_BACKOFF_SECONDS=<s>] \
 #     fm-nmf-verify-input.sh await
 #   NMF_EVENT_NUMBER=<n> NMF_EVENT_HEAD_SHA=<sha> \
 #     NMF_LIVE_NUMBER=<n> NMF_LIVE_HEAD_SHA=<sha> NMF_LIVE_BODY=<body> \
@@ -104,9 +118,13 @@ set -eu
 # Defaults for the bounded publication wait; the header owns their derivation.
 NMF_PUBLICATION_WINDOW_SECONDS_DEFAULT=600
 NMF_PUBLICATION_POLL_SECONDS_DEFAULT=10
+# Live-read retry budget: at most 3 attempts with 2s then 4s of backoff, so a
+# transient forge failure costs at most 6s of the window it is spent inside.
+NMF_LIVE_READ_ATTEMPTS_DEFAULT=3
+NMF_LIVE_READ_BACKOFF_SECONDS_DEFAULT=2
 
 usage() {
-  sed -n '2,101{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,115{s/^# \{0,1\}//;p;}' "$0"
 }
 
 # ::error:: annotation on stderr, then the given exit code.
@@ -277,18 +295,60 @@ resolve() {
   emit_subject "$live_number" "$live_head" "$live_body"
 }
 
-# One live PR read into the NMF_LIVE_* inputs 'resolve' classifies. A read that
-# fails or returns no PR identity is fatal: without a sound live subject there is
-# nothing to judge, and falling through would hand the verifier the frozen event.
+# Classify a failed live read. Only a failure that could answer differently on
+# the next attempt may be retried: a transport failure, which prints no HTTP
+# status at all, and a 5xx or 429, which are the forge declining to answer right
+# now. Every other status is the forge's definitive answer about this PR - a 404
+# or an auth failure must propagate immediately rather than be retried, and no
+# retry may ever turn a genuinely missing attestation into a pass.
+live_read_is_transient() {
+  local status
+  status=$(printf '%s' "$1" | sed -n 's/.*(HTTP \([0-9][0-9][0-9]\)).*/\1/p' | head -1)
+  case "$status" in
+    '') return 0 ;;
+    5??|429) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# One live PR read into the NMF_LIVE_* inputs 'resolve' classifies, with a small
+# bounded retry for a transient failure. A read that still fails, or that fails
+# definitively, is fatal: without a sound live subject there is nothing to judge,
+# and falling through would hand the verifier the frozen event.
+#
+# The retry exists because the wait multiplies this read: one all-or-nothing read
+# per poll means a single 502 anywhere in the window reds a PR whose attestation
+# does publish - the same defect this whole change removes. The budget is
+# deliberately small and is spent INSIDE the publication window (the caller
+# measures elapsed time from one fixed start), so the worst case an operator sees
+# is the window, not the window plus the retries.
 read_live_subject() {
-  local repo=$1 number=$2 pr
-  pr=$(gh api "repos/${repo}/pulls/${number}") \
-    || die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number}; no sound live subject established."
-  # Deliberately not exported: 'resolve' runs in this shell, while an exported
-  # body would be copied into the environment of every later child process.
-  NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
-  NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
-  NMF_LIVE_BODY=$(printf '%s' "$pr" | jq -r '.body // ""')
+  local repo=$1 number=$2 attempts=$3 backoff=$4
+  local attempt=1 pr rc errfile reason
+  errfile=$(mktemp) || die 1 "fm-nmf-verify-input.sh await: could not create a temporary file for the live PR read."
+  while : ; do
+    rc=0
+    pr=$(gh api "repos/${repo}/pulls/${number}" 2>"$errfile") || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      rm -f "$errfile"
+      # Deliberately not exported: 'resolve' runs in this shell, while an
+      # exported body would be copied into every later child's environment.
+      NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
+      NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+      NMF_LIVE_BODY=$(printf '%s' "$pr" | jq -r '.body // ""')
+      return 0
+    fi
+    reason=$(tr '\n' ' ' < "$errfile")
+    if [ "$attempt" -ge "$attempts" ] || ! live_read_is_transient "$reason"; then
+      rm -f "$errfile"
+      die 1 "fm-nmf-verify-input.sh await: could not read the live PR repos/${repo}/pulls/${number} after $attempt of $attempts attempt(s); no sound live subject established: ${reason}"
+    fi
+    printf '::notice::fm-nmf-verify-input.sh await: live PR read attempt %s of %s failed transiently (%s); retrying in %ss.\n' \
+      "$attempt" "$attempts" "$reason" "$backoff" >&2
+    sleep "$backoff"
+    attempt=$(( attempt + 1 ))
+    backoff=$(( backoff * 2 ))
+  done
 }
 
 await() {
@@ -297,21 +357,24 @@ await() {
   local event_head=${NMF_EVENT_HEAD_SHA:-}
   local window=${NMF_PUBLICATION_WINDOW_SECONDS:-$NMF_PUBLICATION_WINDOW_SECONDS_DEFAULT}
   local poll=${NMF_PUBLICATION_POLL_SECONDS:-$NMF_PUBLICATION_POLL_SECONDS_DEFAULT}
+  local attempts=${NMF_LIVE_READ_ATTEMPTS:-$NMF_LIVE_READ_ATTEMPTS_DEFAULT}
+  local backoff=${NMF_LIVE_READ_BACKOFF_SECONDS:-$NMF_LIVE_READ_BACKOFF_SECONDS_DEFAULT}
   require GITHUB_REPOSITORY "$repo"
   require NMF_EVENT_NUMBER "$event_number"
   require NMF_EVENT_HEAD_SHA "$event_head"
   require_positive_int NMF_PUBLICATION_WINDOW_SECONDS "$window"
   require_positive_int NMF_PUBLICATION_POLL_SECONDS "$poll"
+  require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
+  require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started deadline now reads=0 rc out
+  local started elapsed reads=0 rc out
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=
   started=$(date +%s)
-  deadline=$(( started + window ))
   while : ; do
     reads=$(( reads + 1 ))
-    read_live_subject "$repo" "$event_number"
+    read_live_subject "$repo" "$event_number" "$attempts" "$backoff"
     rc=0
     out=$(resolve) || rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -321,10 +384,10 @@ await() {
     # Exit 3 is PENDING (a publication is in flight); any other non-zero is a
     # hard fail-closed refusal that must propagate immediately.
     [ "$rc" -eq 3 ] || exit "$rc"
-    now=$(date +%s)
-    if [ "$now" -ge "$deadline" ]; then
+    elapsed=$(( $(date +%s) - started ))
+    if [ "$elapsed" -ge "$window" ]; then
       printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s live reads; the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
-        "$event_number" "$event_head" "$(( now - started ))" "$reads" "$window" >&2
+        "$event_number" "$event_head" "$elapsed" "$reads" "$window" >&2
       NMF_PUBLICATION_FINAL=1
       rc=0
       out=$(resolve) || rc=$?

@@ -513,20 +513,97 @@ test_await_fails_closed_when_the_live_pr_cannot_be_read() {
 }
 
 # A malformed bound must not silently become "judge immediately" or "wait
-# forever".
-test_await_refuses_a_malformed_window() {
-  local rc setting
-  for setting in NMF_PUBLICATION_WINDOW_SECONDS NMF_PUBLICATION_POLL_SECONDS; do
-    await_case "malformed-$setting"
-    await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
-    rc=0
-    env "$setting=soon" run_await >/dev/null 2>&1 || rc=$?
-    [ "$rc" -ne 0 ] || fail "await accepted a non-numeric $setting"
-    rc=0
-    env "$setting=0" run_await >/dev/null 2>&1 || rc=$?
-    [ "$rc" -ne 0 ] || fail "await accepted a zero $setting"
+# forever". The settings are exported inside a subshell rather than passed as a
+# `env NAME=v run_await` prefix: run_await is a shell function, so `env` would
+# fail to exec it (127) and the case would pass without ever reaching await.
+test_await_refuses_a_malformed_bound() {
+  local rc out setting value
+  for setting in NMF_PUBLICATION_WINDOW_SECONDS NMF_PUBLICATION_POLL_SECONDS \
+                 NMF_LIVE_READ_ATTEMPTS NMF_LIVE_READ_BACKOFF_SECONDS; do
+    for value in soon 0 -1; do
+      await_case "malformed-$setting"
+      await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+      rc=0
+      out=$( export "$setting=$value"; run_await 2>&1 >/dev/null ) || rc=$?
+      [ "$rc" -ne 0 ] || fail "await accepted $setting='$value'"
+      assert_contains "$out" "$setting" "the refusal did not name the malformed setting $setting"
+      [ "$(await_reads)" -eq 0 ] \
+        || fail "await read the live PR before refusing a malformed $setting"
+    done
   done
-  pass "await refuses a malformed publication window or poll interval"
+  pass "await refuses a non-numeric, zero or negative bound before reading anything"
+}
+
+# --- live-read retry: transient versus definitive -----------------------------
+#
+# The wait multiplies the live read, so one transient forge failure must not red
+# a PR whose attestation does publish. The retry is deliberately narrow: only a
+# failure that could answer differently next time is retried, and a definitive
+# answer propagates at once. `await_fail` scripts a failing read at a given
+# attempt index with the stderr gh would produce.
+
+await_fail() {
+  local which=$1 message=$2
+  printf '%s' "$message" > "$AWAIT_CASE/fail-$which.txt"
+}
+
+# Extend the scripted provider with per-read failures.
+await_case_failing() {
+  await_case "$1"
+  cat > "$AWAIT_BIN/gh" <<SH
+#!/usr/bin/env bash
+printf 'x' >> "$AWAIT_CASE/reads"
+reads=\$(wc -c < "$AWAIT_CASE/reads" | tr -d ' ')
+failure="$AWAIT_CASE/fail-\$reads.txt"
+[ -f "\$failure" ] || failure="$AWAIT_CASE/fail-default.txt"
+if [ -f "\$failure" ]; then cat "\$failure" >&2; exit 1; fi
+response="$AWAIT_CASE/read-\$reads.json"
+[ -f "\$response" ] || response="$AWAIT_CASE/read-default.json"
+[ -f "\$response" ] || exit 1
+cat "\$response"
+SH
+  chmod +x "$AWAIT_BIN/gh"
+}
+
+test_await_retries_a_transient_read_and_still_binds() {
+  local out rc verifier_out
+  await_case_failing transient
+  await_fail 1 "gh: Internal Server Error (HTTP 502)"
+  await_fail 2 "error connecting to api.github.com"
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  rc=0
+  out=$(run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "a transient forge failure reddened a PR whose attestation was published"
+  [ "$(await_reads)" -eq 3 ] || fail "await made $(await_reads) live reads, expected two retries then a good read"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  expect_code 0 "$rc" "the verifier rejected the attestation await retried for"
+  pass "a transient live-read failure is retried and the sound subject still binds"
+}
+
+test_await_does_not_retry_a_definitive_read_failure() {
+  local err rc
+  await_case_failing definitive
+  await_fail default "gh: Not Found (HTTP 404)"
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await produced a subject after a definitive read refusal"
+  assert_contains "$err" "404" "the refusal did not carry the forge's definitive answer"
+  [ "$(await_reads)" -eq 1 ] || fail "await retried a definitive 404 $(await_reads) times"
+  pass "a definitive live-read refusal propagates immediately without retrying"
+}
+
+test_await_stops_retrying_a_transient_read_at_its_budget() {
+  local err rc
+  await_case_failing exhausted
+  await_fail default "gh: Bad Gateway (HTTP 502)"
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await produced a subject with no sound live read at all"
+  assert_contains "$err" "could not read the live PR" "the exhausted retry did not report the read failure"
+  [ "$(await_reads)" -eq 3 ] \
+    || fail "await made $(await_reads) live reads, expected exactly the 3-attempt budget"
+  pass "a live read that stays transiently broken fails closed at its bounded budget"
 }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
@@ -557,4 +634,7 @@ test_await_stops_at_the_deadline_and_fails_closed
 test_await_does_not_wait_when_no_publication_is_in_flight
 test_await_refuses_a_superseded_head_immediately
 test_await_fails_closed_when_the_live_pr_cannot_be_read
-test_await_refuses_a_malformed_window
+test_await_refuses_a_malformed_bound
+test_await_retries_a_transient_read_and_still_binds
+test_await_does_not_retry_a_definitive_read_failure
+test_await_stops_retrying_a_transient_read_at_its_budget

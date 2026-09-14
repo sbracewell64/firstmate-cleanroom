@@ -44,9 +44,35 @@ FLAG_VERBS = ("assert", "check", "enforce", "guard", "refuse", "require", "valid
 FUNCTION_VERBS = ("assert", "enforce", "guard", "refuse", "require", "validate", "verify")
 
 SUBCOMMAND_RE = re.compile(r"^\s{0,4}([a-z0-9|_-]+)\)")
-DISPATCH_RE = re.compile(r'^case\s+"\$\{?1')
-FLAG_RE = re.compile(r"^\s{0,8}(--[a-z][a-z0-9-]*)\)")
+# A dispatcher is a `case` on the script's own argument stream: `$1` itself, or
+# a variable this file assigned directly from `$1`. Deliberately narrow, so an
+# unrelated internal `case` is not harvested as a subcommand table.
+CASE_SUBJECT_RE = re.compile(r'^\s*case\s+"?\$\{?([A-Za-z_0-9][A-Za-z0-9_]*)\b')
+ESAC_RE = re.compile(r"^\s*esac\b")
+ARG_ASSIGN_RE = re.compile(
+    r'^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\{?1\b)'
+)
+# An alias group is discovered on every alternative: `--enforce|--enforce-all)`.
+FLAG_RE = re.compile(r"^\s{0,8}(--[a-z][a-z0-9-]*(?:\|--[a-z][a-z0-9-]*)*)\)")
 FUNCTION_RE = re.compile(r"^(fm_[a-z0-9_]+)\(\)")
+
+# Emitted operator text is not a call. A heredoc body and the argument text of
+# printf/echo/cat are dropped before matching, but a command substitution inside
+# them survives, so a genuine call that sits inside an emitted string counts.
+HEREDOC_RE = re.compile(
+    r"(?<!<)<<(?!<)(-?)(?:'([A-Za-z_][A-Za-z0-9_]*)'"
+    r"|\"([A-Za-z_][A-Za-z0-9_]*)\""
+    r"|\\([A-Za-z_][A-Za-z0-9_]*)"
+    r"|([A-Za-z_][A-Za-z0-9_]*))"
+)
+OUTPUT_COMMAND_RE = re.compile(r"^\s*(?:printf|echo|cat)\b")
+SPLIT_OPERATORS = ("&&", "||", ";;", ";", "|", "&")
+COMMAND_SUB_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>[^`]*)`")
+BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+LINE_COMMENT_RE = re.compile(r"(?<![:\\])//.*$")
+
+HASH_COMMENT_SUFFIXES = (".sh", ".yaml", ".yml")
+SLASH_COMMENT_SUFFIXES = (".mjs", ".js", ".ts")
 
 # Surfaces a running firstmate or its automated gates actually execute.
 PRODUCTION_SURFACES = (
@@ -106,6 +132,47 @@ def function_verb_match(name: str, verbs: tuple[str, ...]) -> bool:
     return any(f"_{verb}_" in f"_{name}_" for verb in verbs)
 
 
+def dispatch_subjects(lines: list[str]) -> set[str]:
+    """`$1` plus every variable this file assigns directly from `$1`."""
+    subjects = {"1"}
+    for line in lines:
+        assigned = ARG_ASSIGN_RE.match(line)
+        if assigned:
+            subjects.add(assigned.group(1))
+    return subjects
+
+
+def discover_functions(rel: str, lines: list[str], found: dict[str, str]) -> None:
+    for line in lines:
+        match = FUNCTION_RE.match(line)
+        if match and function_verb_match(match.group(1), FUNCTION_VERBS):
+            found[f"{rel}:{match.group(1)}"] = "function"
+
+
+def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str]) -> None:
+    subjects = dispatch_subjects(lines)
+    in_dispatch = False
+    for line in lines:
+        if in_dispatch:
+            if ESAC_RE.match(line):
+                in_dispatch = False
+            else:
+                match = SUBCOMMAND_RE.match(line)
+                if match:
+                    for label in match.group(1).split("|"):
+                        if verb_match(label, SUBCOMMAND_VERBS):
+                            found[f"{rel}:{label}"] = "subcommand"
+        else:
+            subject = CASE_SUBJECT_RE.match(line)
+            if subject and subject.group(1) in subjects:
+                in_dispatch = True
+        flag = FLAG_RE.match(line)
+        if flag:
+            for alias in flag.group(1).split("|"):
+                if verb_match(alias[2:], FLAG_VERBS):
+                    found[f"{rel}:{alias}"] = "flag"
+
+
 def discover(root: Path, tracked: list[str]) -> dict[str, str]:
     """Map candidate entry-point id -> discovery axis."""
     found: dict[str, str] = {}
@@ -114,31 +181,14 @@ def discover(root: Path, tracked: list[str]) -> dict[str, str]:
             continue
         stem = Path(rel).stem
         lines = read_text(root, rel).splitlines()
+        discover_functions(rel, lines, found)
         if stem.endswith("-lib"):
-            for line in lines:
-                match = FUNCTION_RE.match(line)
-                if match and function_verb_match(match.group(1), FUNCTION_VERBS):
-                    found[f"{rel}:{match.group(1)}"] = "function"
+            # A sourced library has no argument stream and no name of its own on
+            # the command line; only its functions are entry points.
             continue
         if set(stem.split("-")) & SCRIPT_NAME_SEGMENTS:
             found[rel] = "script"
-        in_dispatch = False
-        for line in lines:
-            if DISPATCH_RE.match(line):
-                in_dispatch = True
-                continue
-            if in_dispatch:
-                if line.startswith("esac"):
-                    in_dispatch = False
-                    continue
-                match = SUBCOMMAND_RE.match(line)
-                if match:
-                    for label in match.group(1).split("|"):
-                        if verb_match(label, SUBCOMMAND_VERBS):
-                            found[f"{rel}:{label}"] = "subcommand"
-            flag = FLAG_RE.match(line)
-            if flag and verb_match(flag.group(1)[2:], FLAG_VERBS):
-                found[f"{rel}:{flag.group(1)}"] = "flag"
+        discover_dispatch_and_flags(rel, lines, found)
     return found
 
 
@@ -166,17 +216,154 @@ def is_production(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, pattern) for pattern in PRODUCTION_SURFACES)
 
 
+def command_substitutions(text: str) -> str:
+    """The executable part of an emitted string: what `$(...)` and backticks run."""
+    return " ".join(
+        match.group("paren") or match.group("tick") or ""
+        for match in COMMAND_SUB_RE.finditer(text)
+    )
+
+
+def shell_segments(line: str) -> list[str]:
+    """Split a shell line at its unquoted control operators, operators kept.
+
+    Quoting, command substitutions and backticks are tracked, so a `;` or `|`
+    inside emitted text never splits and a real pipeline always does.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    depth = 0
+    backtick = False
+    index = 0
+    size = len(line)
+    while index < size:
+        char = line[index]
+        if quote is not None:
+            current.append(char)
+            if char == "\\" and quote == '"' and index + 1 < size:
+                current.append(line[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char == "\\" and index + 1 < size:
+            current.append(char)
+            current.append(line[index + 1])
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == "`":
+            backtick = not backtick
+            current.append(char)
+            index += 1
+            continue
+        if char == "$" and index + 1 < size and line[index + 1] == "(":
+            depth += 1
+            current.append("$(")
+            index += 2
+            continue
+        if char == ")" and depth:
+            depth -= 1
+            current.append(char)
+            index += 1
+            continue
+        if depth == 0 and not backtick:
+            operator = next((op for op in SPLIT_OPERATORS if line.startswith(op, index)), None)
+            if operator is not None:
+                segments.append("".join(current) + operator)
+                current = []
+                index += len(operator)
+                continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    return segments
+
+
+def strip_emitted_arguments(line: str) -> str:
+    """Drop the argument text of printf/echo/cat, keeping the rest of the line.
+
+    Only the emitting command's own segment is dropped, so a real command on the
+    other side of a pipe - `printf %s "$p" | bin/fm-x.sh --guard` - still counts.
+    """
+    return "".join(
+        command_substitutions(segment) if OUTPUT_COMMAND_RE.match(segment) else segment
+        for segment in shell_segments(line)
+    )
+
+
+def shell_executable_text(text: str) -> str:
+    """Shell source with comments, heredoc bodies and emitted argument text gone."""
+    kept: list[str] = []
+    pending: tuple[str, bool, bool] | None = None
+    for line in text.splitlines():
+        if pending is not None:
+            terminator, expands, dashed = pending
+            candidate = line.lstrip("\t") if dashed else line
+            if candidate.rstrip() == terminator:
+                pending = None
+                continue
+            kept.append(command_substitutions(line) if expands else "")
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        opener = HEREDOC_RE.search(line)
+        kept.append(strip_emitted_arguments(line))
+        if opener:
+            terminator = opener.group(2) or opener.group(3) or opener.group(4) or opener.group(5)
+            pending = (terminator, opener.group(5) is not None, opener.group(1) == "-")
+    return "\n".join(kept)
+
+
 def executable_text(rel: str, text: str) -> str:
-    """Drop shell comment lines, so a mention in prose is not read as a call."""
-    if not rel.endswith(".sh"):
-        return text
-    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    """Drop the parts of a caller that cannot execute, per language.
+
+    A capability named in a comment or in emitted operator text is prose, not a
+    call, and reading it as one would report an enforcing caller where none
+    exists. JSON has no comment syntax, so its content is left as written.
+    """
+    if rel.endswith(".sh"):
+        return shell_executable_text(text)
+    if rel.endswith(HASH_COMMENT_SUFFIXES):
+        return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if rel.endswith(SLASH_COMMENT_SUFFIXES):
+        body = BLOCK_COMMENT_RE.sub(" ", text)
+        return "\n".join(LINE_COMMENT_RE.sub("", line) for line in body.splitlines())
+    return text
+
+
+# One run reads the same caller for many entry points; stripping it once keeps
+# the walk linear in tracked files rather than files times entry points.
+_EXECUTABLE_CACHE: dict[str, str] = {}
+
+
+def executable_source(root: Path, rel: str) -> str:
+    cached = _EXECUTABLE_CACHE.get(rel)
+    if cached is None:
+        cached = executable_text(rel, read_text(root, rel))
+        _EXECUTABLE_CACHE[rel] = cached
+    return cached
+
+
+def names_it(text: str, owner_base: str, token: str | None, axis: str) -> bool:
+    """Does this raw file text mention the capability at all, call or prose?"""
+    needle = token if axis == "function" and token is not None else owner_base
+    return needle in text
 
 
 def references(text: str, owner_base: str, token: str | None, axis: str) -> bool:
     """Does this file text read as a call of the entry point?"""
     if axis == "function":
         assert token is not None
+        if token not in text:
+            return False
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or FUNCTION_RE.match(line):
@@ -264,7 +451,7 @@ def entry_exists(root: Path, entry_id: str, axis: str) -> None:
         return
     text = read_text(root, path)
     if axis == "flag":
-        present = re.search(rf"^\s{{0,8}}{re.escape(token)}\)", text, re.M)
+        present = re.search(rf"^\s{{0,8}}(?:--[a-z0-9-]+\|)*{re.escape(token)}(?:\||\))", text, re.M)
     elif axis == "function":
         present = re.search(rf"^{re.escape(token)}\(\)", text, re.M)
     else:
@@ -282,7 +469,7 @@ def where_referenced(root: Path, tracked: list[str], entry_id: str, axis: str) -
             continue
         if not (root / rel).is_file():
             continue
-        if not references(executable_text(rel, read_text(root, rel)), owner_base, token, axis):
+        if not references(executable_source(root, rel), owner_base, token, axis):
             continue
         if is_production(rel):
             seen["production"].append(rel)
@@ -323,9 +510,7 @@ def check_call_sites(
             fail(f"{entry_id}: {site_path} is the entry point itself, not a caller")
         if not (root / site_path).is_file():
             fail(f"{entry_id}: declared call site is missing: {site_path}")
-        if not references(
-            executable_text(site_path, read_text(root, site_path)), owner_base, token, axis
-        ):
+        if not references(executable_source(root, site_path), owner_base, token, axis):
             fail(f"{entry_id}: declared call site {site_path} does not call it")
         if via == "production":
             if not is_production(site_path):
@@ -345,6 +530,40 @@ def check_call_sites(
             fail(
                 f"{entry_id}: ci-suite call site {site_path} is not scheduled into any CI lane, "
                 f"so no automated gate reaches this capability"
+            )
+    return len(sites)
+
+
+def check_rejected_call_sites(root: Path, entry: dict, entry_id: str, axis: str) -> int:
+    """Assert every recorded near-miss really is still rejected by the matcher.
+
+    A sweep that found a declared call site to be prose keeps that find here, so
+    weakening the executable-reference rule fails loudly on a real file.
+    """
+    sites = entry.get("rejectedCallSites")
+    if sites is None:
+        return 0
+    if not isinstance(sites, list) or not sites:
+        fail(f"{entry_id}: rejectedCallSites must be a non-empty array when it is present")
+    path, token = split_id(entry_id)
+    owner_base = Path(path).name
+    for index, site in enumerate(sites):
+        if not isinstance(site, dict):
+            fail(f"{entry_id}: rejectedCallSites[{index}] must be an object")
+        site_path = required_text(site, "path", entry_id)
+        required_text(site, "reason", entry_id)
+        if not (root / site_path).is_file():
+            fail(f"{entry_id}: rejected call site is missing: {site_path}")
+        raw = read_text(root, site_path)
+        if not names_it(raw, owner_base, token, axis):
+            fail(
+                f"{entry_id}: rejected call site {site_path} does not name the capability at all, "
+                f"so it records no near miss"
+            )
+        if references(executable_source(root, site_path), owner_base, token, axis):
+            fail(
+                f"{entry_id}: rejected call site {site_path} now reads as a real call; either the "
+                f"executable-reference rule was weakened or the site became a genuine caller"
             )
     return len(sites)
 
@@ -394,7 +613,14 @@ def validate(root: Path, inventory_path: Path) -> dict[str, int]:
         )
 
     scheduled: set[str] | None = None
-    counts = {"entries": len(ids), "enforced": 0, "operator": 0, "not_enforcement": 0, "call_sites": 0}
+    counts = {
+        "entries": len(ids),
+        "enforced": 0,
+        "operator": 0,
+        "not_enforcement": 0,
+        "call_sites": 0,
+        "rejected": 0,
+    }
     for entry_id in sorted(ids):
         entry = by_id[entry_id]
         axis = axis_for(entry_id, discovered)
@@ -403,6 +629,7 @@ def validate(root: Path, inventory_path: Path) -> dict[str, int]:
             fail(f"{entry_id}: kind must be one of {', '.join(ALLOWED_KINDS)}")
         required_text(entry, "invariant", entry_id)
         entry_exists(root, entry_id, axis)
+        counts["rejected"] += check_rejected_call_sites(root, entry, entry_id, axis)
         if kind == "not-enforcement":
             required_text(entry, "reason", entry_id)
             counts["not_enforcement"] += 1
@@ -456,7 +683,7 @@ def main() -> int:
         "fm-enforcement-caller-check: ok "
         f"entries={counts['entries']} enforced={counts['enforced']} "
         f"operator_invoked={counts['operator']} not_enforcement={counts['not_enforcement']} "
-        f"call_sites={counts['call_sites']}"
+        f"call_sites={counts['call_sites']} rejected_call_sites={counts['rejected']}"
     )
     return 0
 

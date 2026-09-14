@@ -10,14 +10,24 @@ This record is the dated sweep behind that reading, and [`docs/enforcement-point
 ## What the check proves
 
 The check discovers candidate entry points from the tracked tree with rules it owns, so an inventory edit can narrow neither the discovery nor the accepted kinds.
-It discovers four shapes in `bin/`: a script whose name carries an enforce-style word, a top-level dispatch subcommand named with an enforce verb, a long option named with an enforce verb, and a library function whose name carries one.
+It discovers four shapes in `bin/`: a script whose name carries an enforce-style word, a dispatch subcommand named with an enforce verb, a long option named with an enforce verb, and a function whose name carries one.
+A dispatcher is a `case` on the script's own argument stream, which means `$1` itself or a variable the same file assigned directly from `$1`, wherever that `case` appears; an unrelated internal `case` is deliberately not harvested.
+A long option is discovered on every alternative of an alias group, so `--enforce|--enforce-all)` accounts for both.
+A function is discovered in any tracked `bin/` script or backend adapter, not only in a `*-lib.sh`.
 Every discovered candidate must be declared, so a new rule cannot ship without being accounted for.
 
 A declared `enforced` entry must name at least one call site that exists, sits on the production surface, and actually calls the capability.
 The production surface is what a running Firstmate or its automated gates execute: `bin/`, the CI workflows, `.no-mistakes.yaml`, and the registered harness hook files.
 `tests/`, `docs/`, and agent skills are not on it.
 A test that calls the capability is not evidence that the guarded path reaches it, and the check says so mechanically.
-The reference must also be executable: comment lines in a shell caller are stripped before the match, so a header that merely names the capability is not read as a call.
+The reference must also be executable, because a matcher that reads a capability name in text as a caller reports enforcement where none exists - the exact defect this check is for.
+Comments are stripped per language before the match: `#` line comments in `.sh`, `.yaml` and `.yml` callers, and `//` line comments and `/* */` blocks in `.mjs`, `.js` and `.ts` callers.
+JSON has no comment syntax, so a hook registration is matched as written.
+Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
+Command substitutions inside that text survive, so a genuine call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - still counts as enforcement.
+
+An entry may also record `rejectedCallSites`: a path that names the capability only in comment or emitted text, with the reason.
+The check asserts each one is still named by the file and still rejected by the matcher, so weakening the executable-reference rule fails loudly against a real production file rather than silently inflating the verified count.
 
 ## Why a repository gate may name a test
 
@@ -30,23 +40,29 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 ## Honest bounds
 
 The check proves a production call site, not full reachability from an executable entry point.
-A library function called only from another unreached function in the same library still counts, so the `note` field records which executable traverses it.
-Discovery is name-shaped, so a capability whose name carries none of the enforce words is found only when it is declared by hand; the two known-good references below are declared that way.
+A function called only from another unreached function in the same file still counts, so the `note` field records which executable traverses it.
+Discovery is name-shaped, so a capability whose name carries none of the enforce words is found only when it is declared by hand; `bin/fm-outbound-write-lib.sh:fm_outbound_send` is declared that way.
+The same name shape is what makes a namespace prefix look like a verb: `bin/fm-guard.sh`'s `fm_guard_*` banner helpers are discovered and then declared as not enforcement points, which keeps the account explicit rather than special-casing the prefix in discovery.
 `data/` is captain-private and untracked, so a rule that lives only in `data/learnings.md` cannot be gated by a repository check at all.
 
 ## Sweep of 2026-09-14
 
-The check accounts for 31 entry points: 26 enforced, 4 operator-invoked, and 1 that is not an enforcement point.
-It verifies 57 declared call sites.
+The check accounts for 46 entry points: 37 enforced, 4 operator-invoked, and 5 that are not enforcement points.
+It verifies 68 declared call sites and re-rejects 5 recorded near misses.
 
-The executable-reference rule changed the reading of eight call sites that a plain text match had accepted.
-`bin/fm-watch-arm.sh`, `bin/fm-subagent-pretool-check.sh`, `bin/fm-procevent-when.sh`, `bin/fm-check-register.sh`, `bin/fm-watch.sh`, `bin/fm-teardown.sh`, `bin/fm-claude-stop-autoarm.sh`, and `bin/fm-turnend-guard.sh` each name a capability in a header comment without calling it.
-Seven of those entry points keep other real callers.
-The eighth, `bin/fm-check-unregister.sh`, turned out to have none at all.
+The executable-reference rule changed the reading of thirteen references that a plain text match had accepted.
+Eight are shell header comments: `bin/fm-watch-arm.sh`, `bin/fm-subagent-pretool-check.sh`, `bin/fm-procevent-when.sh`, `bin/fm-check-register.sh`, `bin/fm-watch.sh`, `bin/fm-teardown.sh`, `bin/fm-claude-stop-autoarm.sh`, and `bin/fm-turnend-guard.sh` each name a capability without calling it.
+Seven of those entry points keep other real callers; the eighth, `bin/fm-check-unregister.sh`, turned out to have none at all.
+
+The remaining five had been declared as verified call sites and are now recorded as `rejectedCallSites`, so the sweep's own finds became a permanent self-test on real files.
+`bin/fm-stage.sh` and `bin/fm-branch-prompt.sh` name `bin/fm-pr-check.sh` in emitted operator text, and `bin/fm-supervision-instructions.sh` names `bin/fm-turnend-guard-cursor.sh` the same way.
+`bin/fm-cd-command-policy.mjs` names `bin/fm-cd-pretool-check.sh` in a `//` comment, and `.no-mistakes.yaml` names `bin/fm-lint-workflows.sh` in a `#` comment.
+Each of those entry points keeps a genuine caller, so no entry's reading changed from ACTIVE to UNPROVEN; what changed is that the inventory now says where enforcement actually happens.
 
 ### Known-good references, confirmed
 
 Both already-repaired instances of this family still name their production callers, and `tests/fm-enforcement-callers.test.sh` asserts each by name.
+That assertion is proven rather than trusted: the same predicate is run against copies of the inventory with each named caller removed, and both copies must be rejected.
 
 | Entry point | Enforcing call site | Repair |
 | --- | --- | --- |
@@ -56,6 +72,7 @@ Both already-repaired instances of this family still name their production calle
 ### Entries that are not automatically called
 
 Four discovered capabilities have no automatic caller, and each is declared `operator-invoked` with the reason and the prose owner that invokes it.
+Widening discovery added no new instance of this shape: every newly discovered capability has a production caller, except the four `fm_guard_*` banner helpers, which are declared as not enforcement points.
 None of them is the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
 
 | Entry point | Reading | Why |
@@ -66,6 +83,7 @@ None of them is the family's failure shape, because in each case the invariant i
 | `bin/fm-check-unregister.sh` | ACTIVE as the command `AGENTS.md` names | No script calls it: `bin/fm-teardown.sh` removes a spawned task's check artifacts on its own path, so this is the retirement command for a check registered by hand. |
 
 `bin/fm-tool-update-check.sh` is declared as not an enforcement point: it reports a wake line and refuses nothing, and was discovered only because its name carries the word check.
+The four `fm_guard_*` helpers in `bin/fm-guard.sh` are declared the same way: they decide how loudly the watcher-down banner prints and never change whether a fleet mutation is allowed.
 
 ### Observation, not repaired in this slice
 

@@ -75,10 +75,12 @@
         {
           "path": ".grok/hooks/fm-primary-cd-check.json",
           "via": "production"
-        },
+        }
+      ],
+      "rejectedCallSites": [
         {
           "path": "bin/fm-cd-command-policy.mjs",
-          "via": "production"
+          "reason": "Names the hook owner in a // header comment; the policy module is imported by it rather than calling it."
         }
       ]
     },
@@ -250,10 +252,12 @@
         {
           "path": "bin/fm-lint.sh",
           "via": "production"
-        },
+        }
+      ],
+      "rejectedCallSites": [
         {
           "path": ".no-mistakes.yaml",
-          "via": "production"
+          "reason": "Names the workflow linter in a # comment describing the lint step; bin/fm-lint.sh is the command the step runs."
         }
       ]
     },
@@ -317,16 +321,18 @@
       "guards": "runtime",
       "callSites": [
         {
-          "path": "bin/fm-stage.sh",
-          "via": "production"
-        },
-        {
           "path": "bin/fm-pr-merge.sh",
           "via": "production"
+        }
+      ],
+      "rejectedCallSites": [
+        {
+          "path": "bin/fm-stage.sh",
+          "reason": "Names the script inside a printf of operator next-step text, not in a command."
         },
         {
           "path": "bin/fm-branch-prompt.sh",
-          "via": "production"
+          "reason": "Names the script inside the quoted heredoc that renders the branch agent's tool list."
         }
       ]
     },
@@ -433,10 +439,12 @@
         {
           "path": ".cursor/hooks.json",
           "via": "production"
-        },
+        }
+      ],
+      "rejectedCallSites": [
         {
           "path": "bin/fm-supervision-instructions.sh",
-          "via": "production"
+          "reason": "Names the stop-hook owner inside a printf of supervision instruction text, not in a command."
         }
       ]
     },
@@ -487,6 +495,188 @@
       "kind": "not-enforcement",
       "invariant": "Watched tooling with an available or inert update is reported to the supervisor.",
       "reason": "A reporter, not an enforcement point: it prints a wake line and refuses nothing. Discovered only because its name carries the word check."
+    },
+    {
+      "id": "bin/backends/cmux.sh:fm_backend_cmux_refuse_denied",
+      "kind": "enforced",
+      "invariant": "A cmux operation that the daemon denied is refused with the owner action rather than retried blind.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/backends/cmux.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called from the adapter's own send and capture paths, which every cmux-backed lifecycle command traverses."
+    },
+    {
+      "id": "bin/backends/cmux.sh:fm_backend_cmux_refuse_unauth",
+      "kind": "enforced",
+      "invariant": "A cmux operation without daemon authorization is refused rather than treated as a transport error.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/backends/cmux.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called from the adapter's own send and capture paths, which every cmux-backed lifecycle command traverses."
+    },
+    {
+      "id": "bin/fm-afk-launch.sh:fm_afk_launch_record_validate_if_present",
+      "kind": "enforced",
+      "invariant": "Away mode is re-entered only when any surviving launch record is still well formed and its return catch-up has cleared.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-afk-launch.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called on both re-entry paths inside the launcher, which is the only writer of the away-mode record."
+    },
+    {
+      "id": "bin/fm-afk-return.sh:guard",
+      "kind": "enforced",
+      "invariant": "Ordinary captain work is refused while away mode is active or return catch-up is still pending.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-bearings-snapshot.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate",
+      "kind": "enforced",
+      "invariant": "A session backend is used only when an implemented adapter answers to that exact name.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate_spawn",
+      "kind": "enforced",
+      "invariant": "A task is spawned only on a backend whose adapter implements task spawning.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate_task_endpoint",
+      "kind": "enforced",
+      "invariant": "A task's recorded endpoint is proven to belong to that task before any command acts on the session it names.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-remote-secondmate-control.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_claim_stale_banner",
+      "kind": "not-enforcement",
+      "invariant": "The watcher-down banner is announced in full once per down episode and as a reminder afterwards.",
+      "reason": "Presentation bookkeeping, not a refusal: it decides how loudly the existing alarm prints and never changes whether a fleet mutation is allowed. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_clear_stale_banner",
+      "kind": "not-enforcement",
+      "invariant": "A recovered watcher clears the announced-episode marker so the next down episode announces in full.",
+      "reason": "Presentation bookkeeping, not a refusal: it removes a marker file and never changes whether a fleet mutation is allowed. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_stale_banner_seen",
+      "kind": "not-enforcement",
+      "invariant": "A read-only guard pass reports whether this down episode was already announced without claiming it.",
+      "reason": "A read-only predicate over the banner marker, not a refusal. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_stale_episode_key",
+      "kind": "not-enforcement",
+      "invariant": "One continuous watcher-down episode keys on the failing condition rather than the beacon mtime.",
+      "reason": "A pure key formatter for the banner marker, not a refusal. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_refuse_if_default",
+      "kind": "enforced",
+      "invariant": "A lab operation never touches the shared default Herdr session.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by every mutating lab subcommand inside its own script, which is the only owner of lab sessions."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_validate_name",
+      "kind": "enforced",
+      "invariant": "A lab session is addressed only by a well-formed fm-lab-* name this script could have created.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by every lab subcommand inside its own script before the name reaches the backend."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_verify_tripwire",
+      "kind": "enforced",
+      "invariant": "A lab session is destroyed only after its tripwire proves the session is the one this script created.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by the lab teardown paths inside its own script, immediately before the destructive call."
+    },
+    {
+      "id": "bin/fm-public-followup.sh:guard-work",
+      "kind": "enforced",
+      "invariant": "Follow-on work behind a registered public loop is held until that loop's reply has landed.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-backlog-handoff.sh",
+          "via": "production"
+        }
+      ]
     }
   ]
 }

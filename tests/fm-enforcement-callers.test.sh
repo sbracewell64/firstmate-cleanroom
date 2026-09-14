@@ -19,17 +19,16 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 run_expect_failure() {
   local expected=$1
   shift
-  local out rc
-  set +e
-  out=$("$@" 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "expected failure containing '$expected'"
+  local out
+  if out=$("$@" 2>&1); then
+    fail "expected failure containing '$expected'"
+  fi
   assert_contains "$out" "$expected" "failure did not explain '$expected'"
 }
 
 # write_fixture <repo>: a minimal tracked tree carrying one enforce subcommand
-# and one enforce-style script, each reached from a production caller.
+# dispatched on "$1", one dispatched through a variable assigned from "$1", and
+# one enforce-style script, each reached from a production caller.
 write_fixture() {
   local repo=$1
   mkdir -p "$repo/bin" "$repo/tests" "$repo/docs"
@@ -50,6 +49,26 @@ FIX
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$DIR/fm-widget.sh" enforce "$1"
+FIX
+
+  # The same capability shape, dispatched on a variable the script assigned
+  # from its own argument stream rather than on "$1" directly.
+  cat > "$repo/bin/fm-gadget.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+CMD=${1:-}
+shift || true
+case "$CMD" in
+  verify-gadget) [ -f "${1:-}" ] ;;
+  *) exit 2 ;;
+esac
+FIX
+
+  cat > "$repo/bin/fm-gadget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-gadget.sh" verify-gadget "$1"
 FIX
 
   cat > "$repo/bin/fm-audit-check.sh" <<'FIX'
@@ -107,6 +126,13 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-gadget.sh:verify-gadget",
+      "kind": "enforced",
+      "invariant": "A gadget is accepted only when its recorded file exists.",
+      "guards": "runtime",
+      "callSites": [{"path": "bin/fm-gadget-consumer.sh", "via": "production"}]
+    },
+    {
       "id": "bin/fm-audit-check.sh",
       "kind": "enforced",
       "invariant": "The tracked widget inventory stays well formed.",
@@ -118,10 +144,10 @@ write_fixture_inventory() {
 JSON
 }
 
-# set_inventory <repo> <jq-free python mutation>
+# mutate_fixture_inventory <repo> <mode>: rewrite one declaration in place.
 mutate_fixture_inventory() {
   local repo=$1 mode=$2
-  python3 - "$repo/docs/enforcement-points.json" "$mode" <<'PY'
+  python3 - "$repo/docs/enforcement-points.json" "$mode" <<'PY' || fail "could not mutate the fixture inventory for mode $mode"
 import json
 import sys
 from pathlib import Path
@@ -143,6 +169,12 @@ elif mode == "unscheduled-ci-suite":
     ]
 elif mode == "drop-widget":
     data["entryPoints"] = [e for e in data["entryPoints"] if e["id"] != "bin/fm-widget.sh:enforce"]
+elif mode == "drop-gadget":
+    data["entryPoints"] = [e for e in data["entryPoints"] if e["id"] != "bin/fm-gadget.sh:verify-gadget"]
+elif mode == "rejected-site-is-a-real-call":
+    entries["bin/fm-widget.sh:enforce"]["rejectedCallSites"] = [
+        {"path": "bin/fm-widget-consumer.sh", "reason": "claimed to be prose"}
+    ]
 else:
     raise SystemExit(f"unknown mode: {mode}")
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -150,17 +182,10 @@ PY
   git -C "$repo" add -A
 }
 
-test_repository_inventory_passes() {
-  local out
-  out=$("$CHECK") || fail "repository enforcement-caller check failed"
-  assert_contains "$out" "fm-enforcement-caller-check: ok entries=" \
-    "check did not report the accounted entry points"
-  assert_contains "$out" "call_sites=" "check did not report verified call sites"
-  pass "every enforce-style entry point in bin/ names a verified enforcing call site"
-}
-
-test_known_good_repairs_still_have_production_callers() {
-  python3 - "$INVENTORY" <<'PY'
+# known_good_callers <inventory>: the two already-repaired instances of this
+# family must still be declared enforced and still name their production caller.
+known_good_callers() {
+  python3 - "$1" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -181,7 +206,61 @@ for entry_id, caller in expected.items():
     if caller not in sites:
         raise SystemExit(f"{entry_id} no longer names {caller} as a production call site")
 PY
-  pass "the two already-repaired invariants still name their production callers"
+}
+
+# drop_call_site <src> <dst> <entry-id> <caller>: copy the inventory with one
+# declared production call site removed.
+drop_call_site() {
+  python3 - "$@" <<'PY' || fail "could not write the mutated known-good inventory"
+import json
+import sys
+from pathlib import Path
+
+src, dst, entry_id, caller = sys.argv[1:5]
+data = json.loads(Path(src).read_text(encoding="utf-8"))
+for entry in data["entryPoints"]:
+    if entry["id"] == entry_id:
+        entry["callSites"] = [s for s in entry["callSites"] if s["path"] != caller]
+        break
+else:
+    raise SystemExit(f"{entry_id} is not in {src}")
+Path(dst).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+test_repository_inventory_passes() {
+  local out
+  out=$("$CHECK") || fail "repository enforcement-caller check failed"
+  assert_contains "$out" "fm-enforcement-caller-check: ok entries=" \
+    "check did not report the accounted entry points"
+  assert_contains "$out" "call_sites=" "check did not report verified call sites"
+  assert_contains "$out" "rejected_call_sites=" \
+    "check did not report the recorded near-miss call sites it re-rejected"
+  pass "every enforce-style entry point in bin/ names a verified enforcing call site"
+}
+
+test_known_good_repairs_still_have_production_callers() {
+  local mutated
+  known_good_callers "$INVENTORY" \
+    || fail "an already-repaired invariant no longer names its production caller"
+
+  # Prove the assertion has teeth rather than trusting that it ran: drop each
+  # known-good caller in a copy and require the same predicate to reject it.
+  mutated="$TMP_ROOT/known-good-without-session-start.json"
+  drop_call_site "$INVENTORY" "$mutated" \
+    bin/fm-startup-memory-budget.sh:enforce bin/fm-session-start.sh
+  if known_good_callers "$mutated" >/dev/null 2>&1; then
+    fail "dropping bin/fm-session-start.sh did not break the known-good assertion"
+  fi
+
+  mutated="$TMP_ROOT/known-good-without-send.json"
+  drop_call_site "$INVENTORY" "$mutated" \
+    bin/fm-outbound-write-lib.sh:fm_outbound_send bin/fm-send.sh
+  if known_good_callers "$mutated" >/dev/null 2>&1; then
+    fail "dropping bin/fm-send.sh did not break the known-good assertion"
+  fi
+
+  pass "the two already-repaired invariants still name their production callers, provably"
 }
 
 test_removing_the_enforcing_call_fails() {
@@ -215,6 +294,44 @@ FIX
   pass "a header comment naming the capability is not read as an enforcing call"
 }
 
+test_emitted_operator_text_is_not_a_call() {
+  local repo="$TMP_ROOT/emitted-prose"
+  write_fixture "$repo"
+  # Both prose shapes the sweep found in real callers: a printf of operator
+  # next-step text, and a quoted heredoc that renders a tool list.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+printf 'next: firstmate runs bin/fm-widget.sh enforce before the widget lands\n'
+cat <<'NOTE'
+Handle with real tools: `bin/fm-widget.sh enforce <widget>` when a widget is reported.
+NOTE
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # The rule drops emitted argument text, not the whole line: a real call on the
+  # other side of a pipe is still enforcement.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+printf '%s\n' "$1" | "$DIR/fm-widget.sh" enforce "$1"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a genuine call piped from an emitting command was read as prose"
+  pass "a capability named only in emitted operator text is not read as an enforcing call"
+}
+
+test_recorded_rejected_site_must_stay_rejected() {
+  local repo="$TMP_ROOT/rejected-sites"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" rejected-site-is-a-real-call
+  run_expect_failure "now reads as a real call" "$CHECK" --root "$repo"
+  pass "a recorded near-miss call site that is really a call is refused, not quietly counted"
+}
+
 test_test_only_caller_is_not_evidence() {
   local repo="$TMP_ROOT/test-only"
   write_fixture "$repo"
@@ -241,10 +358,21 @@ test_undeclared_entry_point_fails() {
   pass "a new enforce-style entry point cannot ship without being accounted for"
 }
 
+test_undeclared_variable_dispatch_subcommand_fails() {
+  local repo="$TMP_ROOT/undeclared-dispatch"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-gadget
+  run_expect_failure "bin/fm-gadget.sh:verify-gadget" "$CHECK" --root "$repo"
+  pass "a subcommand dispatched through a variable assigned from \$1 is discovered too"
+}
+
 test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
 test_comment_mention_is_not_a_call
+test_emitted_operator_text_is_not_a_call
+test_recorded_rejected_site_must_stay_rejected
 test_test_only_caller_is_not_evidence
 test_unscheduled_repository_gate_fails
 test_undeclared_entry_point_fails
+test_undeclared_variable_dispatch_subcommand_fails

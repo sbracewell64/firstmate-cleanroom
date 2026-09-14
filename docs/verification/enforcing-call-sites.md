@@ -31,7 +31,8 @@ JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
 Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
 
-A subcommand or long option must appear near the script's name rather than merely somewhere in the same file: the token has to fall within 200 characters after the basename.
+A subcommand token must appear near the script's name rather than merely somewhere in the same file: it has to fall within 200 characters after the basename.
+A long option is not held to that window; once the basename appears in the file, a word-bounded option token anywhere in the same file satisfies the reference, and the bound below records what that costs.
 A function token is matched on word boundaries, so `fm_lease_guard` is not satisfied by `fm_lease_guard_release`.
 
 A function call site must also have the library in scope: the site is the defining library itself, or a file that sources it directly or through a chain of sourced libraries.
@@ -50,10 +51,14 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
-A named reference is not an invocation, and these three residues are reproducible against the tree as it stands.
+A named reference is not an invocation, and these four residues are reproducible against the tree as it stands.
 A path assigned but never executed still counts: in `bin/fm-tool-update-check.sh`, delete the exec at line 873 and the assignment `REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"` at line 79 alone keeps `bin/fm-check-register.sh` reported as enforced.
 An existence test still counts: in `bin/fm-pr-check.sh`, delete the invocation at line 118 and the surviving `[ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]` at line 105 alone keeps `bin/fm-commit-identity-verify.sh` reported as enforced.
 A subcommand token within 200 characters after the basename counts even across a line break, so a caller that runs `fm-startup-memory-budget.sh report` with a bare `enforce` word in a neighbouring command reads as the `enforce` call.
+A long option is looser still, because no window applies to it: a file that runs the script without the flag and passes that same flag to an unrelated command elsewhere satisfies the reference.
+Both declared sites for `bin/fm-tool-profile.sh:--require` rest on that co-occurrence rather than on a colocated pairing, and neither names the script and the flag on one line of executable text.
+`bin/enter-firstmate.sh` names the script at line 1001 and builds `--require` into a command string at line 1006 through the `TOOL_PROFILE_OWNER` variable, and `bin/fm-nm-observe.sh` assembles `--require` with `set --` at line 593 and runs the script with `"$@"` at line 596.
+Both were read and are genuine callers, so the entry's reading is right; what the check contributes there is co-occurrence, not the pairing.
 Word boundaries do separate a longer sibling on the function axis, so `fm_lease_guard_release` does not satisfy `fm_lease_guard`; the script axis has no such separator, because the basename is matched as a plain substring of the executable text.
 
 Even where a declared call site really is an invocation, the check does not show that the caller consumes the callee's verdict.

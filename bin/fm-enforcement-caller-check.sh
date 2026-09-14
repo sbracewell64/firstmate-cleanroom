@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fm-enforcement-caller-check.sh - prove every enforce-style entry point in bin/
-# names a real enforcing call site.
+# declares a call site that still names it in executable text.
 #
 # Usage:
 #   bin/fm-enforcement-caller-check.sh
@@ -801,7 +801,10 @@ def validate(root: Path, inventory_path: Path) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Prove every enforce-style entry point in bin/ has an enforcing call site."
+        description=(
+            "Prove every enforce-style entry point in bin/ declares a call site that still "
+            "names it in executable text. This does not prove the shell executes that call."
+        )
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--inventory", type=Path)

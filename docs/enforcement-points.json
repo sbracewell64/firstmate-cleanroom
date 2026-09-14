@@ -146,7 +146,7 @@
     {
       "id": "bin/fm-enforcement-caller-check.sh",
       "kind": "enforced",
-      "invariant": "Every enforce-style entry point in bin/ names an enforcing call site rather than shipping inert.",
+      "invariant": "Every enforce-style entry point in bin/ declares a call site that still names it in executable text, rather than shipping with no declared caller at all.",
       "guards": "repository",
       "callSites": [
         {

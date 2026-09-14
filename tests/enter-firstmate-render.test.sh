@@ -16,6 +16,17 @@
 #   - a MISSING required menu capability is an explicit qualification GAP (a FAIL
 #     that exits nonzero), never a silent PASS.
 #
+# Every staging that passes the donor guard runs the tool's full qualification,
+# which includes the whole launcher test family (enter-firstmate-{arm,launch,
+# profile}.test.sh, about two CI minutes) from the repo the tool lives in. That
+# family is already a separate script of the same CI lane, so re-running it on
+# every staging here measured ~14 minutes of pure repetition and timed the lane
+# out. Exactly ONE staging below ((vi)) keeps the real repo and asserts those
+# tests were run and passed; every other staging drives a byte-identical copy of
+# the tool from a scratch repo holding the real launcher and stub launcher tests,
+# the same repo-root seam case (viii) already uses, so each assertion is kept at
+# a few seconds per staging.
+#
 # Usage: bash tests/enter-firstmate-render.test.sh
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -61,13 +72,51 @@ SRC
   printf '%s' "$home"
 }
 
-# run the render tool; set globals OUT (combined output) and RC (exit code).
-run_render() {  # <home> <code-root> [extra args...]
-  local home=$1 code=$2; shift 2
+# a scratch repo holding a byte-identical copy of the render tool, stub launcher
+# tests that exit 0, and a launcher of the requested kind: `real` copies the real
+# source (its menu and shellcheck qualification then run for real), while
+# `menu:complete` / `menu:incomplete` write a stub whose --print-console-menu
+# renders all four profiles or omits one. Echoes the copied tool's path; the tool
+# resolves its repo root from its own location, so this is the seam that keeps a
+# staging from re-running the whole real launcher family.
+mk_repo() {  # <dir> <real|menu:complete|menu:incomplete>
+  local d=$1 kind=$2 t
+  mkdir -p "$d/bin" "$d/tests"
+  cp "$RENDER" "$d/bin/fm-render-launcher.sh"
+  for t in arm launch profile; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tests/enter-firstmate-$t.test.sh"
+  done
+  case "$kind" in
+    real) cp "$LAUNCHER" "$d/bin/enter-firstmate.sh" ;;
+    menu:complete|menu:incomplete)
+      # shellcheck disable=SC2016 # these are literal shell lines written to a stub, not expansions
+      {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'if [ "${1:-}" = --print-console-menu ]; then'
+        printf '%s\n' '  echo "-- primary console profile menu (stub)"'
+        printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"; echo "  codex-astra"'
+        [ "$kind" = menu:complete ] && printf '%s\n' '  echo "  codex-sol"'
+        printf '%s\n' '  exit 0'
+        printf '%s\n' 'fi'
+        printf '%s\n' 'exit 0'
+      } > "$d/bin/enter-firstmate.sh"
+      ;;
+    *) fail "mk_repo: unknown kind $kind" ;;
+  esac
+  chmod 0755 "$d/bin/enter-firstmate.sh"
+  printf '%s' "$d/bin/fm-render-launcher.sh"
+}
+FAST=$(mk_repo "$TMP/repo-fast" real)
+
+# run a render tool; set globals OUT (combined output) and RC (exit code).
+render_with() {  # <tool> <home> <code-root> [extra args...]
+  local tool=$1 home=$2 code=$3; shift 3
   RC=0
-  OUT=$(bash "$RENDER" --fm-home "$home" --code-root "$code" \
+  OUT=$(bash "$tool" --fm-home "$home" --code-root "$code" \
         --staging "$home/state/launcher-staging" "$@" 2>&1) || RC=$?
 }
+run_render() { render_with "$RENDER" "$@"; }   # the real tool from the real repo
+run_fast_render() { render_with "$FAST" "$@"; } # the copied tool from the stub-test repo
 
 REFUSE_RE='(equals the current live \(donor\) code root|could not resolve a real current live)'
 
@@ -108,7 +157,7 @@ pass "(iv) no resolvable donor root fails safe (refuses, never silently proceeds
 # (iv-b) the sanctioned bypass: --allow-same-code-root turns the fail-safe refusal
 #        into a warning so a genuine fresh install (nothing to move off) proceeds.
 home=$(mk_home failsafe-bypass source)
-run_render "$home" "$ROOT_A" --allow-same-code-root
+run_fast_render "$home" "$ROOT_A" --allow-same-code-root
 printf '%s' "$OUT" | grep -q 'proceeding only because --allow-same-code-root was given' || fail "(iv-b) bypass must warn-and-proceed, not refuse (got: $OUT)"
 [ -f "$home/state/launcher-staging/config/code-root" ] || fail "(iv-b) bypass must proceed past the guard into staging"
 pass "(iv-b) --allow-same-code-root bypasses the fail-safe for a genuine fresh install"
@@ -116,7 +165,7 @@ pass "(iv-b) --allow-same-code-root bypasses the fail-safe for a genuine fresh i
 # (v) a genuine move to a DIFFERENT code root: config records ROOT_A, --code-root
 #     adopts ROOT_B -> guard PASSES (no refusal) and staging proceeds past it.
 home=$(mk_home genuine-move shim "$ROOT_A")
-run_render "$home" "$ROOT_B"
+run_fast_render "$home" "$ROOT_B"
 printf '%s' "$OUT" | grep -Eq "$REFUSE_RE" && fail "(v) a genuine different code root must not be refused (got: $OUT)"
 [ -f "$home/state/launcher-staging/config/code-root" ] || fail "(v) a genuine move must proceed past the guard into staging"
 [ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/code-root")" = "$ROOT_B" ] || fail "(v) staging must record the adopted (different) code root"
@@ -134,13 +183,19 @@ ADOPTED="$TMP/adopted-release"; mkdir -p "$ADOPTED/bin"
 # (vi) a NON-DEFAULT --console-profile stages that profile and its menu
 #      qualification renders it as the active profile. Run the staged source's
 #      menu OFFLINE against the staged config, with the FM_* overrides cleared,
-#      so config/console-profile alone selects the active profile.
+#      so config/console-profile alone selects the active profile. This is the
+#      one staging that keeps the REAL repo, so it also proves the tool ran the
+#      real launcher test family and recorded every member PASS.
 home=$(mk_home altprofile shim "$ROOT_A")
 run_render "$home" "$ADOPTED" --console-profile codex-astra
 [ "$RC" -eq 0 ] || fail "(vi) alternate-profile staging must succeed (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
 [ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-astra ] || fail "(vi) staging must record the non-default console profile"
 grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vi) the menu qualification must PASS for a staged alternate profile"
+for t in arm launch profile; do   # the ONE real-repo staging: the real launcher family ran and passed
+  grep -q "^- PASS test: enter-firstmate-$t\$" "$stg/qualification-report.md" || fail "(vi) the real repo's enter-firstmate-$t test must be run and recorded PASS"
+done
+grep -q '^- FAIL ' "$stg/qualification-report.md" && fail "(vi) a clean real-repo staging must record no FAIL line"
 menu=$(unset FM_CONSOLE_PROFILE FM_HARNESS FM_CODE_ROOT FM_TOOLS_ROOT FM_RETIRED_HOME
        FM_HOME="$stg" FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || fail "(vi) offline staged menu must render"
 case "$menu" in *'active profile:    codex-astra'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
@@ -155,7 +210,7 @@ home=$(mk_home pollution shim "$ROOT_A")
 RC=0
 OUT=$(FM_CODE_ROOT=/polluted/donor FM_CONSOLE_PROFILE=opus-4-8 FM_HARNESS=bash \
       FM_RETIRED_HOME=/polluted/retired FM_TOOLS_ROOT=/polluted/tools \
-      bash "$RENDER" --fm-home "$home" --code-root "$ADOPTED" \
+      bash "$FAST" --fm-home "$home" --code-root "$ADOPTED" \
       --console-profile codex-sol --staging "$home/state/launcher-staging" 2>&1) || RC=$?
 [ "$RC" -eq 0 ] || fail "(vii) pollution must not break staging (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
@@ -171,38 +226,17 @@ pass "(vii) inherited FM_* pollution neither corrupts the staged artifacts nor l
 #        missing): the menu check must FAIL and the tool must exit nonzero, while
 #        an otherwise-identical COMPLETE menu passes. Proves the caller surfaces a
 #        missing capability rather than reporting a false clean.
-mk_scratch_repo() {  # <dir> <complete|incomplete> ; echoes the render-tool path
-  local d=$1 kind=$2 t
-  mkdir -p "$d/bin" "$d/tests"
-  cp "$RENDER" "$d/bin/fm-render-launcher.sh"
-  for t in arm launch profile; do
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tests/enter-firstmate-$t.test.sh"
-  done
-  # shellcheck disable=SC2016 # these are literal shell lines written to a stub, not expansions
-  {
-    printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'if [ "${1:-}" = --print-console-menu ]; then'
-    printf '%s\n' '  echo "-- primary console profile menu (stub)"'
-    printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"; echo "  codex-astra"'
-    [ "$kind" = complete ] && printf '%s\n' '  echo "  codex-sol"'
-    printf '%s\n' '  exit 0'
-    printf '%s\n' 'fi'
-    printf '%s\n' 'exit 0'
-  } > "$d/bin/enter-firstmate.sh"
-  chmod 0755 "$d/bin/enter-firstmate.sh"
-  printf '%s' "$d/bin/fm-render-launcher.sh"
-}
 run_scratch() {  # <render-tool> <home> ; sets RC and OUT (a genuine fresh install)
   local tool=$1 h=$2
   RC=0
   OUT=$(bash "$tool" --fm-home "$h" --code-root "$ADOPTED" --allow-same-code-root \
         --staging "$h/state/launcher-staging" 2>&1) || RC=$?
 }
-good=$(mk_scratch_repo "$TMP/repo-complete" complete)
+good=$(mk_repo "$TMP/repo-complete" menu:complete)
 run_scratch "$good" "$TMP/repo-complete/home"
 [ "$RC" -eq 0 ] || fail "(viii) a complete menu must qualify clean (rc=$RC, out: $OUT)"
 grep -q '^- PASS print-console-menu' "$TMP/repo-complete/home/state/launcher-staging/qualification-report.md" || fail "(viii) a complete menu must record PASS"
-bad=$(mk_scratch_repo "$TMP/repo-incomplete" incomplete)
+bad=$(mk_repo "$TMP/repo-incomplete" menu:incomplete)
 run_scratch "$bad" "$TMP/repo-incomplete/home"
 [ "$RC" -ne 0 ] || fail "(viii) an incomplete menu must exit nonzero, never a silent PASS (rc=$RC)"
 rpt="$TMP/repo-incomplete/home/state/launcher-staging/qualification-report.md"
@@ -224,7 +258,7 @@ printf '/prior/tools\n' > "$home/config/tools-root"   # a second captain-local s
 pre_launcher=$(sha256sum "$home/enter-firstmate.sh" | cut -d' ' -f1)
 pre_coderoot=$(sha256sum "$home/config/code-root" | cut -d' ' -f1)
 pre_tools=$(sha256sum "$home/config/tools-root" | cut -d' ' -f1)
-run_render "$home" "$ROOT_B"
+run_fast_render "$home" "$ROOT_B"
 [ "$RC" -eq 0 ] || fail "(ix) a genuine move must stage and snapshot (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
 rb=$(find "$stg/rollback" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -250,7 +284,7 @@ pass "(ix) the rollback snapshot restores the exact prior launcher and config by
 #     silently keep the donor and the adopted launcher would resolve FM_CODE_ROOT
 #     back to it (checkpoint gate 2: a fresh relaunch adopts the new release).
 home=$(mk_home cutover-adopt shim "$ROOT_A")   # config/code-root pre-exists = ROOT_A (donor)
-run_render "$home" "$ADOPTED"
+run_fast_render "$home" "$ADOPTED"
 [ "$RC" -eq 0 ] || fail "(x) a genuine move must stage (rc=$RC, out: $OUT)"
 rpt="$home/state/launcher-staging/qualification-report.md"
 live="$TMP/home-cutover-live"; mkdir -p "$live/config"
@@ -276,7 +310,7 @@ printf 'herdr\n' > "$home/config/backend"
 printf 'firstmate-cleanroom\n' > "$home/config/herdr-session"
 printf '%s\n' "$TMP/tools" > "$home/config/tools-root"
 mkdir -p "$TMP/tools/bin"
-run_render "$home" "$ROOT_B"
+run_fast_render "$home" "$ROOT_B"
 for key in backend herdr-session tools-root; do
   cmp -s "$home/config/$key" "$home/state/launcher-staging/config/$key" || fail "staging lost configured $key"
 done
@@ -295,7 +329,7 @@ terminal_release="$TMP/terminal-release"
 mkdir -p "$terminal_release/bin"
 cp "$LAUNCHER" "$terminal_release/bin/enter-firstmate.sh"
 chmod +x "$terminal_release/bin/enter-firstmate.sh"
-run_render "$terminal_home" "$terminal_release"
+run_fast_render "$terminal_home" "$terminal_release"
 [ "$RC" -eq 0 ] || fail "terminal consumer staging failed: $OUT"
 python3 "$HERE/test_launcher_terminal.py" \
   "$terminal_home/state/launcher-staging/enter-firstmate.sh" 'tools root is unset' \

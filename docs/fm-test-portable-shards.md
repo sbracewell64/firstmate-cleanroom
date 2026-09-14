@@ -64,9 +64,9 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints are the per-script mean of the `fm-test-timing-portable-serial-*` artifacts from the three green `main` CI runs [34036430465](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34036430465), [34064555580](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34064555580), and [34073321294](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34073321294) of 2026-09-06 and 2026-09-07, where the lane ran 144 scripts in about 3.8 million ms of serial work per run.
-Averaging three runs damps the per-run spread (the same script varied by up to 2x between runs, for example `tests/fm-control-relaunch.test.sh` at 46 s to 94 s) that a single-run refresh bakes into the partition.
-The previous hints, from the 2026-09-03 run plus locally measured guesses for scripts added since, had drifted enough that the shard they balanced to 1078 s each actually ran 833 s to 1177 s of script time, with `portable-serial-2of4` the critical path on all three runs.
+The hints are the per-script mean of the `fm-test-timing-portable-serial-*` artifacts from the four green CI runs [34813628086](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34813628086), [34823065861](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34823065861), [34826043556](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34826043556), and [34843572468](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34843572468) of 2026-09-14, where the lane ran 160 scripts in about 4.9 million ms of serial work per run.
+Averaging several runs damps the per-run spread (the same script varies by up to 2x between runs) that a single-run refresh bakes into the partition.
+One hint is not a CI mean: `tests/enter-firstmate-render.test.sh` was repaired in the same change that refreshed the table (see the 2026-09-14 refresh below), so its hint is its local post-repair wall scaled by the CI-to-local ratio the unchanged `tests/enter-firstmate-launch.test.sh` measured on the same machine, and the next refresh replaces it with the measured mean.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints affect balance and the shard budget guard below, never coverage: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard or a budget refusal rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured or grown scripts let one shard carry far more than another shard's real work and reach the job cap while another runner sits idle.
@@ -74,40 +74,38 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 36 | 917206 ms (~917.2 s) |
-| `portable-serial-2of4` | 36 | 917197 ms (~917.2 s) |
-| `portable-serial-3of4` | 36 | 917195 ms (~917.2 s) |
-| `portable-serial-4of4` | 36 | 917194 ms (~917.2 s) |
-| imbalance | | 12 ms |
+| `portable-serial-1of4` | 39 | 1054886 ms (~1054.9 s) |
+| `portable-serial-2of4` | 41 | 1054892 ms (~1054.9 s) |
+| `portable-serial-3of4` | 40 | 1054896 ms (~1054.9 s) |
+| `portable-serial-4of4` | 40 | 1054881 ms (~1054.9 s) |
+| imbalance | | 15 ms |
 
-The single longest script, `tests/fm-watch-triage.test.sh` at 247132 ms, is the floor for any shard count.
+The single longest script, `tests/fm-watch-triage.test.sh` at 265573 ms, is the floor for any shard count.
 
-### Measured lane times and the 2026-09-07 rebalance
+### Measured lane times and the 2026-09-14 refresh
 
-The per-lane script time (`summary.duration_ms` of each lane artifact) on the three runs above, before the rebalance, was:
+The per-lane script time (`summary.duration_ms` of each lane artifact) on the four runs above, before the refresh, was:
 
-| Lane | 34036430465 | 34064555580 | 34073321294 |
-|---|---:|---:|---:|
-| `portable-parallel-1` | 164.9 s | 213.2 s | 215.0 s |
-| `portable-parallel-2` | 158.1 s | 170.5 s | 166.3 s |
-| `portable-serial-1of4` | 883.4 s | 733.0 s | 855.1 s |
-| `portable-serial-2of4` | 1147.4 s | 1054.7 s | 1176.7 s |
-| `portable-serial-3of4` | 935.2 s | 699.5 s | 833.6 s |
-| `portable-serial-4of4` | 818.8 s | 939.3 s | 948.5 s |
-| `real-herdr-gated` | 532.6 s | 496.7 s | 537.9 s |
+| Lane | 34813628086 | 34823065861 | 34826043556 | 34843572468 |
+|---|---:|---:|---:|---:|
+| `portable-parallel-1` | 226.5 s | 225.4 s | 234.9 s | 204.5 s |
+| `portable-parallel-2` | 131.5 s | 115.9 s | 127.4 s | 160.6 s |
+| `portable-serial-1of4` | 1035.9 s | 1124.6 s | 1043.2 s | 1060.3 s |
+| `portable-serial-2of4` | 1566.5 s | 1750.4 s | 1700.1 s | 1488.9 s |
+| `portable-serial-3of4` | 982.4 s | 961.9 s | 852.9 s | 983.4 s |
+| `portable-serial-4of4` | 1267.7 s | 1182.3 s | 1320.5 s | 1203.5 s |
 
-`portable-serial-2of4` was the critical path each time; on run 34073321294 its job wall was 19m46s against 14m03s to 15m59s for the other three shards.
-Its two largest suites were `tests/fm-watch-triage.test.sh` (249 s) and `tests/fm-session-start.test.sh` (159 s), and after them `tests/fm-control-relaunch.test.sh` (94 s), `tests/fm-procevent.test.sh` (68 s), `tests/fm-sessionstart-nudge.test.sh` (65 s), and `tests/fm-pi-watch-extension.test.sh` (65 s).
-Profiling `tests/fm-watch-triage.test.sh` per case showed its cost spread over about 90 cases that each wait for at least one real watcher poll at the suite's tight one-second cadence, with the largest single case (five invalid pane-churn deadline variants at a three-second poll) at 13 s; the suite contained one fixed pause, now replaced by waiting for the observable poll cycle it stood in for.
-`tests/fm-session-start.test.sh` runs the real digest per case; its two fixed waits (a one-second network-wake poll granularity and a one-second settle before a hung-subprocess sweep) were replaced by tenth-second polls under the same deadlines.
-Neither suite's poll cadence was changed: those are the watcher and digest contracts under test, not guessed sleeps.
-Local before and after runs of both suites on one machine measured `tests/fm-watch-triage.test.sh` at 301 s before and 291 s after, and the first 34 cases of `tests/fm-session-start.test.sh` at 114 s in both, so those wait replacements are a correctness improvement inside run-to-run noise, and the rebalance below is what carries the expected critical-path reduction.
+`portable-serial-2of4` was the critical path each time, at 25 to 29 minutes of script time against the 30-minute cap, and on [run 34836750198](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34836750198) it was cancelled at the cap with 1800 s of script time recorded.
+The previous hints, from the 2026-09-07 refresh, had balanced the four shards to 985 s each, but thirteen scripts added since carried no hint and fell to the 20 s default.
+One of them, `tests/enter-firstmate-render.test.sh`, measured 765 to 858 s (a mean of 815 s, 40x its default) and landed in shard 2 beside the next-largest hinted scripts.
+Its cost was repetition, not work: every staging that passes the donor guard runs `bin/fm-render-launcher.sh`'s full qualification, which runs the whole `tests/enter-firstmate-{arm,launch,profile}.test.sh` family from the repo the tool lives in, and the suite drove eight such stagings against the real repo, so it re-ran `tests/enter-firstmate-launch.test.sh` (135 s mean, dominated by two 25 s delayed-startup contract cases in `tests/test_console_lifecycle.py`) eight times over.
+The repair keeps exactly one real-repo staging, which now also asserts the launcher family ran and every member passed, and drives every other staging through a byte-identical copy of the tool from a scratch repo holding the real launcher and stub launcher tests, the repo-root seam the suite's missing-capability case already used.
+No assertion was removed: the suite went from 48 to 50 guarded assertion lines, and the family it stopped repeating still runs as its own scripts of the same lane.
 
-The rebalance refreshed the hints only; no lane was added and no concurrency was raised.
-Replaying the same measured per-script durations from run 34073321294 through the refreshed partition predicts 986.9 s, 942.1 s, 948.3 s, and 928.7 s for shards 1 to 4, a critical shard of 986.9 s against the measured 1176.7 s (about 16 % less script time on the critical path), and by three-run means 917.2 s against 1087.8 s (about 16 %).
-That is the expected effect of the measured redistribution, not a measured result: record the first post-rebalance runs' per-lane times here at the next hint refresh, and expect the same +27 % run-to-run spread noted under Timeouts.
+With the refreshed hints the four shards project to the table above, a critical shard of about 17.6 minutes of script time against the 66 % budget's 19.8 minutes, and by the same run-to-run spread noted under Timeouts the slowest shard should finish in the low twenties of minutes of job wall.
+That is the expected effect of the redistribution plus the render repair, not a measured result: record the first post-refresh runs' per-lane times here at the next hint refresh.
 
-Refresh the hints by downloading the per-shard timing artifacts from the latest few green `main` CI runs whose shard artifacts together cover every serial script (three, as above, damps the per-run spread; one run works but bakes its spread into the partition), replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with each script's mean `duration_ms` over the runs that carried it, and updating the table above from `--serial-shard-loads`:
+Refresh the hints by downloading the per-shard timing artifacts from the latest few green CI runs whose shard artifacts together cover every serial script (three or four, as above, damps the per-run spread; one run works but bakes its spread into the partition), replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with each script's mean `duration_ms` over the runs that carried it, and updating the table above from `--serial-shard-loads`:
 
 ```sh
 for run in <run-id> <run-id> <run-id>; do gh run download "$run" -R <owner>/<repo> --pattern 'fm-test-timing-portable-serial-*' -D "/tmp/fm-serial/$run"; done
@@ -146,8 +144,8 @@ Before this check the Herdr lane's nested file was silently left out, so the agg
 
 | Lane | Bound | Rationale |
 |---|---|---|
-| portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 30` | Each balanced shard is about 15 minutes of hinted script time (the shard table above owns the exact figure), and the same scripts varied by about +27 % between two runs, so the former 20-minute cap sat inside normal spread and cancelled healthy shards; 30 minutes gives about 2x hang-tripwire margin for job setup and runner-speed spread, and the coverage guard's shard budget of 66 % of the cap keeps hinted work at or below 19.8 minutes, which at +27 % still finishes with several minutes to spare. |
+| portable parallel 1/2 | job `timeout-minutes: 10` | The measured lane script times are two to four minutes (the lane table above) and the timeout is a hang tripwire. |
+| portable serial 1-4 | job `timeout-minutes: 30` | Each balanced shard is under 18 minutes of hinted script time (the shard table above owns the exact figure), and the same scripts varied by about +27 % between two runs, so the former 20-minute cap sat inside normal spread and cancelled healthy shards; 30 minutes gives about 2x hang-tripwire margin for job setup and runner-speed spread, and the coverage guard's shard budget of 66 % of the cap keeps hinted work at or below 19.8 minutes, which at +27 % still finishes with several minutes to spare. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

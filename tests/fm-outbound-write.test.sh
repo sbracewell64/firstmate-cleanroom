@@ -173,6 +173,11 @@ test_readback_and_classify_verdicts() {
   [ "$(fm_outbound_get "$state" "$id" outcome)" = unknown ] || fail "a lost transport is unknown, never delivered"
   id=$(fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=fleet correlation=c9)
   [ "$(fm_outbound_classify "$state" "$id" exit 255)" = transport-lost ] || fail "exit 255 classifies transport-lost"
+  id=$(fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c10)
+  [ "$(fm_outbound_classify "$state" "$id" http 301)" = transient ] || fail "HTTP 301 classifies transient, not rejected"
+  [ "$(fm_outbound_get "$state" "$id" outcome)" = retryable ] || fail "a redirect is retryable, never undelivered"
+  fm_outbound_prepare "$state" "$payload" writer=t destination=d account=a authority=au disclosure=public correlation=c10 >/dev/null \
+    || fail "a 301 must never block a later write to the same destination and correlation"
   pass "readback records verified, mismatch, and unavailable verdicts and classify derives outcomes from returned evidence only"
 }
 

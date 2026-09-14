@@ -596,12 +596,21 @@ remote_deliver_outbox() { # <secondmate-id> <outbox-path>
   fi
   readback_rc=0
   fm_outbound_readback "$STATE" "$ledger" custom handoff_receipt_accounts_for "$receive_out" "$id" "$items" || readback_rc=$?
-  fm_outbound_classify "$STATE" "$ledger" exit 0 >/dev/null
-  if [ "$readback_rc" -ne 0 ]; then
-    [ -z "$receive_out" ] || printf '%s\n' "$receive_out" >&2
-    echo "error: handoff receipt from $id does not account for the $items item(s) sent (read-back mismatch, recorded undelivered as state/outbound-writes/$ledger.record); outbox preserved at $outbox" >&2
-    return 1
-  fi
+  case "$readback_rc" in
+    0) fm_outbound_classify "$STATE" "$ledger" exit 0 >/dev/null ;;
+    2)
+      fm_outbound_classify "$STATE" "$ledger" exit unknown >/dev/null
+      [ -z "$receive_out" ] || printf '%s\n' "$receive_out" >&2
+      echo "error: handoff receipt from $id carried no received: line, so delivery of the $items item(s) is unconfirmed (recorded unknown as state/outbound-writes/$ledger.record); outbox preserved at $outbox" >&2
+      return 1
+      ;;
+    *)
+      fm_outbound_classify "$STATE" "$ledger" exit 0 >/dev/null
+      [ -z "$receive_out" ] || printf '%s\n' "$receive_out" >&2
+      echo "error: handoff receipt from $id does not account for the $items item(s) sent (read-back mismatch, recorded undelivered as state/outbound-writes/$ledger.record); outbox preserved at $outbox" >&2
+      return 1
+      ;;
+  esac
   marker="$STATE/.backlog-handoff-$id.wake-pending"
   case "$(cat "$marker" 2>/dev/null || true)" in
     pending:*|confirmed|confirmed:*) ;;

@@ -22,6 +22,19 @@
 #                 becomes exactly one undelivered record; a read-back mismatch
 #                 is undelivered, never delivered.
 #
+# Classification table (status -> class -> outcome):
+#   http 2xx                    accepted       delivered only with a verified
+#                                              read-back, else accepted
+#   http 401, 403               rejected-auth  retryable (never blocks)
+#   http 409                    conflict       conflict
+#   http 408, 425, 429, 5xx     transient      retryable
+#   http other 4xx              rejected       undelivered (blocks a re-send)
+#   http 1xx, 3xx, other        transient      retryable (no content verdict)
+#   http empty or non-numeric   transport-lost unknown
+#   exit 0                      accepted       as http 2xx
+#   exit 124, 255, non-numeric  transport-lost unknown
+#   exit other                  failed         retryable
+#
 # Ledger layout, under <state>/outbound-writes (mode 0700, created lazily):
 #   <id>.record    key=value fields listed in fm_outbound_prepare, mode 0600
 #   <id>.payload   the exact bytes handed to the transport, mode 0600
@@ -389,7 +402,8 @@ fm_outbound_readback() {  # <state-dir> <id> <mode> [cmd...]
 # Prints the class: accepted, rejected, rejected-auth, conflict, transient,
 # transport-lost, or failed. Records class, evidence, outcome, and the response
 # body when given. Never retries and never infers anything the evidence did not
-# return: a generic 4xx is rejected on its status alone.
+# return: a generic 4xx is rejected on its status alone, and only a 4xx can
+# be, because a 1xx or 3xx is not a provider verdict on the content.
 # A real 401/403 is rejected-auth: classified from the returned status alone,
 # recorded retryable rather than undelivered, and never given the
 # safety-rejection block, because it is an authentication failure to repair
@@ -406,7 +420,7 @@ fm_outbound_classify() {  # <state-dir> <id> <kind> <value> [body-file]
         408|425|429|5[0-9][0-9]) class=transient ;;
         4[0-9][0-9]) class=rejected ;;
         ''|*[!0-9]*) class=transport-lost ;;
-        *) class=rejected ;;
+        *) class=transient ;;
       esac
       evidence="http ${value:-none}"
       ;;

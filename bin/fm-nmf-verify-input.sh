@@ -29,8 +29,9 @@
 #              for the verifier. A window that closes having never obtained a
 #              sound live read fails closed with no subject at all; otherwise it
 #              hands the most recent sound read to the verifier, which owns that
-#              verdict, and reports whether the later polls were readable so a
-#              stalled publisher is never confused with a forge outage. The
+#              verdict, and attributes the outcome only to what it decisively
+#              observed, so a stalled publisher is never confused with a forge
+#              outage in either direction. The
 #              workflow never re-spells the window, the poll cadence, the retry
 #              budget, or the deadline behavior.
 #   resolve    the pure classifier behind 'await': given the event's expected
@@ -414,7 +415,7 @@ await() {
   require_positive_int NMF_LIVE_READ_ATTEMPTS "$attempts"
   require_positive_int NMF_LIVE_READ_BACKOFF_SECONDS "$backoff"
 
-  local started elapsed polls=0 unread_polls=0 rc read_rc out sound_read= observed_head
+  local started elapsed polls=0 unread_polls=0 rc read_rc out sound_read= observed_head tail_gap
   # This command's own deadline is the only thing that ends the wait, so an
   # inherited finality flag can never shorten the window out from under it.
   NMF_PUBLICATION_FINAL=
@@ -439,13 +440,21 @@ await() {
     fi
     elapsed=$(( $(date +%s) - started ))
     if [ "$elapsed" -ge "$window" ]; then
-      # The deadline reports what was OBSERVED, not one coarse conclusion, so
-      # the operator and the CI-fix loop can tell a stalled publisher from a
-      # forge that stopped answering. Only a wait in which every poll read
-      # soundly may attribute the outcome to the publisher, which is why this
-      # branches on the counted unreadable polls rather than on the most recent
-      # read: an outage anywhere in the window means part of it observed
-      # nothing, and the publication may have landed unseen there.
+      # The deadline attributes the outcome to whatever it DECISIVELY observed,
+      # so the operator and the CI-fix loop are pointed at the real cause. An
+      # attestation for an exact head is monotonic - once published it stays in
+      # the body - so the LAST SOUND READ is what decides whether it existed,
+      # and the question is only whether that read is recent enough to speak
+      # for the deadline. That is the TAIL GAP: the time between the last sound
+      # read and the deadline.
+      #
+      # A tail gap of at most one poll interval is the loop's own sampling
+      # granularity, not an outage - even a wait in which every poll read
+      # soundly cannot see a publication landing inside its final interval - so
+      # the tolerance is INCLUSIVE and such a gap does not weaken the
+      # observation. A larger gap means the end of the window genuinely went
+      # unobserved, and only then is attribution withheld. The counted
+      # unreadable polls are context; they never hedge a decisive observation.
       #
       # The NMF_LIVE_* inputs still hold the most recent sound read, so the
       # hand-off carries that read's own body and head - the same bytes resolve
@@ -455,11 +464,16 @@ await() {
       if [ -z "$sound_read" ]; then
         die 1 "fm-nmf-verify-input.sh await: the ${window}s publication window closed with no sound live read of repos/${repo}/pulls/${event_number} ever obtained, across ${elapsed}s and ${polls} poll(s); every read failed transiently, the last with: ${LAST_LIVE_READ_FAILURE}. There is no live subject to hand to the verifier, so this fails closed."
       fi
-      if [ "$unread_polls" -gt 0 ]; then
-        observed_head=$(attested_head_of_body "$NMF_LIVE_BODY")
-        printf '::warning::fm-nmf-verify-input.sh await: the %ss publication window for PR #%s closed after %s poll(s), %s of which could not be read (the most recent such read failed with: %s), so part of the window observed nothing and a publication may have landed unseen. The last sound read, %ss into the window, saw the body attested to %s, not the live head %s. Handing that read to the verifier, which judges the head bind.\n' \
+      observed_head=$(attested_head_of_body "$NMF_LIVE_BODY")
+      tail_gap=$(( elapsed - sound_read ))
+      if [ "$tail_gap" -gt "$poll" ]; then
+        printf '::warning::fm-nmf-verify-input.sh await: the %ss publication window for PR #%s closed after %s poll(s), of which %s poll(s) could not be read (the most recent failing with: %s), and the final %ss exceed one %ss poll interval, so the end of the window went unobserved and a publication may have landed unseen. The last sound read, %ss into the window, saw the body attested to %s, not the live head %s. Handing that read to the verifier, which judges the head bind.\n' \
           "$window" "$event_number" "$polls" "$unread_polls" "$LAST_LIVE_READ_FAILURE" \
-          "$sound_read" "${observed_head:-no head}" "$event_head" >&2
+          "$tail_gap" "$poll" "$sound_read" "${observed_head:-no head}" "$event_head" >&2
+      elif [ "$unread_polls" -gt 0 ]; then
+        printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s poll(s); the last sound read, %ss into the window and within one %ss poll interval of the deadline, still saw the body attested to %s. The %ss publication window is closed, so the verifier now judges the live body as it stands. For context, %s poll(s) could not be read earlier in the window, the most recent failing with: %s.\n' \
+          "$event_number" "$event_head" "$elapsed" "$polls" "$sound_read" "$poll" \
+          "${observed_head:-no head}" "$window" "$unread_polls" "$LAST_LIVE_READ_FAILURE" >&2
       else
         printf '::warning::fm-nmf-verify-input.sh await: the no-mistakes attestation for PR #%s head %s was still unpublished after %ss and %s poll(s), every one of which read soundly; the %ss publication window is closed, so the verifier now judges the live body as it stands.\n' \
           "$event_number" "$event_head" "$elapsed" "$polls" "$window" >&2

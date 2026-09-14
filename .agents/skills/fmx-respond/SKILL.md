@@ -210,6 +210,7 @@ Treat `state/x-inbox/` as the source of truth and process **every** file you fin
       This is the local idempotency guard - a cleared file is never answered twice.
       For an acknowledged actionable request that spawned a task, this cleanup comes **after** the step 2c link, never before, so the link can copy the reply platform and budget directly from the inbox payload.
    g. **On failure** (a non-zero exit from `bin/fm-x-reply.sh` or `bin/fm-x-dismiss.sh`), leave that inbox file in place, move on to the next, and do not retry blindly.
+      Exit 10 from `bin/fm-x-reply.sh` or `bin/fm-x-dismiss.sh` means the write is recorded UNDELIVERED under `state/outbound-writes/` with its payload and digest retained, is never retried automatically, and needs an explicit `FM_OUTBOUND_WRITE_ACK=<record-id>` decision before any resend.
       If you had already acted on this mention in step 2c before the post failed, do **not** redo that work on a later drain - check whether it is already done (e.g. the backlog item exists, the crewmate is already running) and only retry the reply.
       If a reply or dismiss fails twice, surface it to the captain as a blocker with the stderr detail; for live post failures include the relay's HTTP status when available.
       The relay posts its own offline reply if no live answer lands in time, so a single miss is not a crisis.
@@ -288,6 +289,7 @@ So treat second-mate-routed Relay work as a promised final by construction: the 
      Establish whether that post landed, then either record its receipt with `record-posted <id> --attempt <n> --chunks <exact-count>` or escalate.
      Posting again would put a second reply in a public thread.
    - "the relay no longer accepts a follow-up" is a captain decision, not a retry.
+   - "the relay rejected the public reply" means the exact payload is retained undelivered under `state/outbound-writes/`, nothing was posted, and it is never retried automatically; this is a captain decision, not a retry.
 4. After a successful deliver (or when the digest lists an `open-loop` line), decide the disposition in that same turn:
    - Follow-on work authorized from the same public thread: `bin/fm-public-followup.sh rechain <new-id> --from <delivered-id> --work-home <main|secondmate:<id>> --work-id <task-id> --expected <pr-merged|report-ready|local-main>`, then put the printed `brief` into that follow-on's instructions (and into the routed item's own note when the work is routed).
      If rechain reports an interrupted bind or source-retirement failure, resume the same destination with the same command; the retained source claim forbids choosing another destination.

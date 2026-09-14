@@ -16,7 +16,9 @@
 # (state/x-context/<id>.json; a dismissed mention never gets a follow-up); on a
 # non-2xx (or transport failure) it exits non-zero so the caller knows the
 # dismiss did not land and can fall back to leaving the inbox file for a later
-# pass.
+# pass. A 4xx other than 401/403/409 is the relay rejecting THIS dismiss: exit
+# 10, the payload retained as an undelivered record under state/outbound-writes/,
+# and no automatic retry (bin/fm-outbound-write-lib.sh owns that rule).
 #
 # Live post config (home .env, FMX_ENV_FILE, or env): FMX_PAIRING_TOKEN
 # (required), FMX_RELAY_URL (default https://myfirstmate.io). Auth:
@@ -36,6 +38,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
+# shellcheck source=bin/fm-outbound-write-lib.sh
+. "$SCRIPT_DIR/fm-outbound-write-lib.sh"
 
 usage() {
   echo "usage: fm-x-dismiss.sh <request_id>" >&2
@@ -88,29 +92,57 @@ if [ -z "$FMX_TOKEN" ]; then
   echo "fm-x-dismiss: X mode not configured (no FMX_PAIRING_TOKEN)" >&2
   exit 1
 fi
-command -v curl >/dev/null 2>&1 || { echo "fm-x-dismiss: curl not found" >&2; exit 1; }
-AUTH_HEADER_FILE=$(fmx_auth_header_file) || {
-  echo "fm-x-dismiss: invalid FMX_PAIRING_TOKEN" >&2
-  exit 1
-}
-trap 'rm -f "$AUTH_HEADER_FILE"' EXIT
 
-code=$(curl -m 10 -s -o /dev/null -w '%{http_code}' \
-  -X POST \
-  -H "@$AUTH_HEADER_FILE" \
-  -H 'Content-Type: application/json' \
-  --data "$PAYLOAD" \
-  "$FMX_RELAY/connector/dismiss" 2>/dev/null) || {
-  echo "fm-x-dismiss: request to relay failed" >&2
-  exit 1
-}
+# Outbound-write discipline (bin/fm-outbound-write-lib.sh): the body is staged
+# to a file and retained with its digest before the POST, the transport reads it
+# from that file rather than from an argument, a request the relay already
+# rejected is not dismissed again automatically, and the outcome is classified
+# only from the returned HTTP status.
+PAYLOAD_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-x-dismiss.XXXXXX") || {
+  echo "fm-x-dismiss: cannot create request payload temp file" >&2; exit 1; }
+trap 'rm -f "$PAYLOAD_FILE"' EXIT
+printf '%s' "$PAYLOAD" > "$PAYLOAD_FILE" || { echo "fm-x-dismiss: cannot stage request payload" >&2; exit 1; }
+LEDGER=$(fm_outbound_prepare "$STATE" "$PAYLOAD_FILE" writer=fm-x-dismiss \
+  "destination=$FMX_RELAY/connector/dismiss" "account=relay-token:$(fmx_token_fingerprint)" \
+  "authority=relay-consent:${FMX_ENV_FILE:-$FM_HOME/.env}" disclosure=public \
+  "correlation=dismiss:$REQ")
+prepare_rc=$?
+case "$prepare_rc" in
+  0) ;;
+  3) echo "fm-x-dismiss: not dismissing $REQ: an earlier dismiss was rejected by the relay and is recorded undelivered; it is not retried automatically" >&2; exit 10 ;;
+  *) echo "fm-x-dismiss: could not retain the outgoing payload in state/outbound-writes; nothing was posted" >&2; exit 1 ;;
+esac
+fm_outbound_readback "$STATE" "$LEDGER" unavailable \
+  "the relay exposes no canonical fetch of a dismissed request; acceptance rests on the returned HTTP status" || true
+code=$(fm_outbound_send "$STATE" "$LEDGER" file \
+  fmx_post_json dismiss "$(fm_outbound_payload_path "$STATE" "$LEDGER")")
+post_rc=$?
+case "$post_rc" in
+  0) : ;;
+  127) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-dismiss: curl not found" >&2; exit 1 ;;
+  3) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-dismiss: invalid FMX_PAIRING_TOKEN" >&2; exit 1 ;;
+  2) echo "fm-x-dismiss: refused to hand the payload to the transport (see stderr above)" >&2; exit 1 ;;
+  *) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-dismiss: request to relay failed" >&2; exit 1 ;;
+esac
 
-case "$code" in
-  2[0-9][0-9])
+CLASS=$(fm_outbound_classify "$STATE" "$LEDGER" http "$code") || CLASS=
+case "$CLASS" in
+  accepted)
     # Dropped at the relay: no follow-up will come, so clear the durable
     # per-request reply context too (best-effort, no-op when none was recorded).
     fmx_context_registry_clear "$STATE" "$REQ"
     printf '%s\n' "$REQ"
+    ;;
+  rejected-auth)
+    # A real 401/403 is an authentication failure to repair and re-send, never a
+    # content rejection: the retained record is retryable and this stays the
+    # generic exit 1 path.
+    echo "fm-x-dismiss: relay returned HTTP $code (authentication rejected; repair the pairing token or consent and re-send)" >&2
+    exit 1
+    ;;
+  rejected)
+    echo "fm-x-dismiss: relay rejected the dismiss for $REQ (HTTP $code): undelivered, recorded as state/outbound-writes/$LEDGER.record, and not retried" >&2
+    exit 10
     ;;
   *) echo "fm-x-dismiss: relay returned HTTP $code" >&2; exit 1 ;;
 esac

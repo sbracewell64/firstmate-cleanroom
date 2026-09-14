@@ -48,6 +48,15 @@
 # call can instead see a benign no-op 200, so fm-x-followup.sh's local
 # window/cap pruning remains the primary guard.
 #
+# Any other 4xx except 401/403 is a rejection of THIS post by the relay and exits 10: the exact
+# payload stays retained as an undelivered record under state/outbound-writes/,
+# a later post to the same request and endpoint is refused (also exit 10) until
+# that record ages out or an operator passes FM_OUTBOUND_WRITE_ACK=<record-id>,
+# and no caller may retry it automatically (bin/fm-outbound-write-lib.sh).
+# A 401/403 is an authentication failure to repair and re-send, not a content
+# rejection, so it stays exit 1 with its record retained as retryable; 5xx, 408,
+# 425, 429, any non-4xx status, and transport failures also stay exit 1 (retryable).
+#
 # Reply platform + split budget are resolved per axis: an explicit
 # FMX_REPLY_PLATFORM / FMX_REPLY_MAX_CHARS env override wins (fm-x-followup passes
 # recorded task-link context this way); otherwise resolution runs the durable
@@ -93,6 +102,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
+# shellcheck source=bin/fm-outbound-write-lib.sh
+. "$SCRIPT_DIR/fm-outbound-write-lib.sh"
 
 TMP_FILES=()
 cleanup_tmp_files() {
@@ -113,10 +124,13 @@ reply_make_tmp_file() {
 # sent, for a caller that has to build a typed delivery receipt. Only ever called
 # on success. A write failure is reported but never changes the exit status: the
 # reply already landed, and claiming otherwise would invite a duplicate post.
+# A live post also carries the outbound-write ledger id and the sha256 of the
+# exact POSTed bytes (empty in dry-run, where nothing left the machine).
 write_reply_receipt() {
   [ -n "$RECEIPT_FILE" ] || return 0
   if ! (umask 077; jq -n --arg r "$REQ" --arg e "$ENDPOINT" --argjson c "$1" --argjson d "$2" \
-      '{request_id:$r, endpoint:$e, chunks:$c, dry_run:($d == 1)}' > "$RECEIPT_FILE"); then
+      --arg l "$LEDGER" --arg s "$LEDGER_SHA" \
+      '{request_id:$r, endpoint:$e, chunks:$c, dry_run:($d == 1), ledger:$l, payload_sha256:$s}' > "$RECEIPT_FILE"); then
     echo "fm-x-reply: warning: posted but could not write the receipt to $RECEIPT_FILE" >&2
   fi
 }
@@ -163,6 +177,8 @@ shift
 FOLLOWUP=0
 IMAGE_PATH=
 RECEIPT_FILE=
+LEDGER=
+LEDGER_SHA=
 ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -348,17 +364,40 @@ if [ -z "$FMX_TOKEN" ]; then
 fi
 reply_make_tmp_file RESPONSE_BODY_FILE || {
   echo "fm-x-reply: cannot create relay response temp file" >&2; exit 1; }
-code=$(fmx_post_json "$ENDPOINT" "$PAYLOAD_FILE" "$RESPONSE_BODY_FILE")
+
+# Outbound-write discipline (bin/fm-outbound-write-lib.sh): retain the exact
+# POST bytes with their digest before anything leaves the machine, refuse to
+# re-post to a request whose earlier post the relay rejected, convey the body as
+# a file, and classify the outcome only from the returned HTTP evidence. The
+# relay exposes no canonical fetch of a posted reply, so that limit is recorded
+# rather than a read-back being pretended.
+LEDGER=$(fm_outbound_prepare "$STATE" "$PAYLOAD_FILE" writer=fm-x-reply \
+  "destination=$FMX_RELAY/connector/$ENDPOINT" "account=relay-token:$(fmx_token_fingerprint)" \
+  "authority=relay-consent:${FMX_ENV_FILE:-$FM_HOME/.env}" disclosure=public \
+  "correlation=$ENDPOINT:$REQ")
+prepare_rc=$?
+case "$prepare_rc" in
+  0) ;;
+  3) echo "fm-x-reply: not posting the $ENDPOINT for $REQ: an earlier post was rejected by the relay and is recorded undelivered; it is not retried automatically" >&2; exit 10 ;;
+  *) echo "fm-x-reply: could not retain the outgoing payload in state/outbound-writes; nothing was posted" >&2; exit 1 ;;
+esac
+LEDGER_SHA=$(fm_outbound_get "$STATE" "$LEDGER" sha256)
+fm_outbound_readback "$STATE" "$LEDGER" unavailable \
+  "the relay exposes no canonical fetch of a posted reply; acceptance rests on the returned HTTP status" || true
+code=$(fm_outbound_send "$STATE" "$LEDGER" file \
+  fmx_post_json "$ENDPOINT" "$(fm_outbound_payload_path "$STATE" "$LEDGER")" "$RESPONSE_BODY_FILE")
 post_rc=$?
 case "$post_rc" in
   0) : ;;
-  127) echo "fm-x-reply: curl not found" >&2; exit 1 ;;
-  3) echo "fm-x-reply: invalid FMX_PAIRING_TOKEN" >&2; exit 1 ;;
-  *) echo "fm-x-reply: request to relay failed" >&2; exit 1 ;;
+  127) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-reply: curl not found" >&2; exit 1 ;;
+  3) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-reply: invalid FMX_PAIRING_TOKEN" >&2; exit 1 ;;
+  2) echo "fm-x-reply: refused to hand the payload to the transport (see stderr above)" >&2; exit 1 ;;
+  *) fm_outbound_classify "$STATE" "$LEDGER" http '' >/dev/null; echo "fm-x-reply: request to relay failed" >&2; exit 1 ;;
 esac
 
-case "$code" in
-  2[0-9][0-9])
+CLASS=$(fm_outbound_classify "$STATE" "$LEDGER" http "$code" "$RESPONSE_BODY_FILE") || CLASS=
+case "$CLASS" in
+  accepted)
     if [ "$FOLLOWUP" = 0 ]; then
       fmx_context_registry_set "$STATE" "$REQ" "$REQ_PLATFORM" "$REQ_EXPLICIT_MAX" 1 2>/dev/null \
         || echo "fm-x-reply: warning: could not retain reply context for $REQ" >&2
@@ -366,7 +405,7 @@ case "$code" in
     write_reply_receipt "$N" 0
     printf '%s\n' "$REQ"
     ;;
-  409)
+  conflict)
     if [ "$FOLLOWUP" = 1 ]; then
       if [ -s "$RESPONSE_BODY_FILE" ] && {
         jq -e '.error == "followup_unavailable"' "$RESPONSE_BODY_FILE" >/dev/null 2>&1 ||
@@ -380,6 +419,17 @@ case "$code" in
     fi
     echo "fm-x-reply: relay returned HTTP $code" >&2
     exit 1
+    ;;
+  rejected-auth)
+    # A real 401/403 is an authentication failure to repair and re-send, never a
+    # content rejection: the retained record is retryable and this stays the
+    # generic exit 1 path.
+    echo "fm-x-reply: relay returned HTTP $code (authentication rejected; repair the pairing token or consent and re-send)" >&2
+    exit 1
+    ;;
+  rejected)
+    echo "fm-x-reply: relay rejected the $ENDPOINT for $REQ (HTTP $code): undelivered, recorded as state/outbound-writes/$LEDGER.record, and not retried" >&2
+    exit 10
     ;;
   *) echo "fm-x-reply: relay returned HTTP $code" >&2; exit 1 ;;
 esac

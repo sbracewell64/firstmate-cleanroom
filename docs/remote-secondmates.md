@@ -175,6 +175,8 @@ FM_HOME=<primary-home> bin/fm-send.sh fm-<id> '<request>'
 
 The [`fm-send.sh` header](../bin/fm-send.sh) owns the exact delivery-status contract.
 A routed request is delivered as a durable record in the remote home's steering inbox plus a best-effort doorbell, never by typing the payload into the pane; exit 0 means the record durably exists.
+Exit 0 also means the remote leg read that record back with the same digest as the exact bytes this home retained in `state/outbound-writes/` before the transport ran (`bin/fm-outbound-write-lib.sh`).
+A read-back mismatch is reported undelivered and never retried automatically, and a remote home on an older firstmate that returns no digest leaves delivery unconfirmed until that home updates.
 Every remote transport attempt is bounded by `FM_SEND_REMOTE_BUDGET`; that header owns the setting's default and validation contract.
 An unconfirmed SSH transport (exit 255) is retried identically once, while a budget expiry is not retried because completion is unknown; either outcome preserves this ordinary reply-bearing request's pending-reply expectation for the record that may have landed.
 If delivery remains unconfirmed, only the exact `FM_PENDING_REPLY_EXISTING_CORR=<id>` resend command printed by `fm-send` is safe to run later because it preserves the request body and lets the remote enqueue deduplicate onto the same record; a plain rerun mints a different correlation and is not idempotent.
@@ -214,6 +216,8 @@ bin/fm-backlog-handoff.sh <id> <item-key>...
 
 For a remote route, `tasks-axi mv` first moves the dependency-closed set atomically from the primary backlog into `data/handoff/<id>.outbox.md`.
 The outbox is then copied to the remote handoff scratch directory and `fm-backlog-receive.sh` atomically ingests every destination-absent key under the remote backlog's own lock.
+The outbox bytes are retained with their digest in `state/outbound-writes/` and sent from that retained copy, and the receipt is read back against the item count of that payload before the handoff counts as delivered; a receipt that does not account for every item is recorded undelivered with the outbox preserved.
+A receipt that carries no `received:` line at all is no destination verdict, so that handoff is recorded unknown rather than delivered or undelivered, with the outbox preserved until the destination answers.
 After receipt, the helper sends a marked routed-work instruction through the recorded remote endpoint and removes the outbox only after that wake is confirmed.
 A failed wake leaves the remote backlog intact and the outbox available for `--resume-pending`; an unresolved send is reported without a blind resend.
 Bootstrap retries pending outboxes and emits `SECONDMATE_HANDOFF:` only when one remains.

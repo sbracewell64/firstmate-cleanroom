@@ -35,6 +35,10 @@
 #       locally-detected expiry, so an old relay (which only ever supported one
 #       follow-up) or an already-exhausted binding degrades gracefully instead
 #       of retrying forever.
+#       On the relay rejecting the post itself (fm-x-reply.sh exit 10, any
+#       4xx other than 401/403/409): clears the link, exits non-zero, and never
+#       retries; the exact payload stays as the one undelivered record under
+#       state/outbound-writes/ (bin/fm-outbound-write-lib.sh).
 #       On fm-x-reply's fail-safe refusal (exit 8: platform or explicit budget
 #       unresolved): KEEPS the link and exits non-zero. This is a
 #       retryable hold, not an exhausted binding - retry once both values are
@@ -264,6 +268,15 @@ case "$post_rc" in
     # the follow-up can post once both values are recoverable. Never clear the
     # link here.
     echo "fm-x-followup: follow-up for $ID held: reply context lacks an authoritative platform or explicit budget; left the link in place to retry once both values are recoverable" >&2
+    exit 1
+    ;;
+  10)
+    # fm-x-reply.sh recorded the relay's rejection of THIS post as undelivered
+    # (bin/fm-outbound-write-lib.sh) and refuses to re-post it automatically.
+    # Clear the link so no later milestone pass retries the same thread; the
+    # retained record is the one explicit undelivered item.
+    fmx_meta_link_clear "$META" || echo "fm-x-followup: warning: could not clear the rejected link in state/$ID.meta" >&2
+    echo "fm-x-followup: the relay rejected the follow-up for $ID; it is recorded undelivered under state/outbound-writes/ and is not retried; cleared the link" >&2
     exit 1
     ;;
   9)

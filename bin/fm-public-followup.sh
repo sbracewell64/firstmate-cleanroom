@@ -67,6 +67,12 @@
 #       platform and opaque context binding, so the destination is never guessed.
 #       Without --text-file the accepted terminal event's bounded public-safe
 #       outcome is reused exactly, which keeps the common path deterministic.
+#       A relay rejection of the post itself (bin/fm-x-reply.sh exit 10) is
+#       recorded expired-action-required with error_code
+#       relay_rejected_undelivered and is never retried automatically; the
+#       exact POSTed bytes and their digest stay in state/outbound-writes/
+#       (bin/fm-outbound-write-lib.sh), while --payload-hash below remains the
+#       hash of the composed TEXT that keys the tasks-axi attempt.
 #       The sequence is begin-delivery with the payload hash, post, then record
 #       the posted receipt or a typed error. A validated receipt also clears any
 #       bound legacy X link, then stamps the registration state=delivered. Delivery
@@ -955,6 +961,10 @@ EOF
           die "the public reply for '$id' was not posted, and its held state could not be recorded; the obligation remains mid-delivery and needs explicit reconciliation before retry" 1
         fi
         die "held '$id': the original thread's platform or size budget could not be resolved, so nothing was posted. Retry once the request context is recoverable." 1 ;;
+    10) if ! record_error "$id" "$attempt" expired-action-required relay_rejected_undelivered ""; then
+          die "the relay rejected the reply for '$id', and its undelivered state could not be recorded; the obligation remains mid-delivery and needs explicit reconciliation before any retry" 1
+        fi
+        die "the relay rejected the public reply for '$id'; the exact payload is retained as an undelivered record under state/outbound-writes/, nothing was delivered, it is not retried automatically, and this needs a captain decision" 1 ;;
     9)  if ! record_error "$id" "$attempt" expired-action-required followup_binding_exhausted ""; then
           die "the relay rejected '$id', and its expired state could not be recorded; the obligation remains mid-delivery and needs explicit reconciliation before retry" 1
         fi

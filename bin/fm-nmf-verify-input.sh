@@ -97,11 +97,6 @@
 #
 # NMF_PUBLICATION_WINDOW_SECONDS overrides that derived default, so the workflow
 # step that wires this helper must not pin a lower value.
-# The base workflow's "Resolve live PR subject" step currently pins '90' in its
-# env, which is below every failing observation recorded above.
-# Leaving that line in place when the step is wired to 'await' would silently
-# override the derived bound back to 90s, making this fix inert while all of its
-# machinery still runs, so the step that adopts 'await' must drop it.
 #
 # KNOWN, UNEXERCISED GAP: gating the wait on the signature covers a
 # re-publication race but not a FIRST-publication race - a PR a person opened by

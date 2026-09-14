@@ -281,20 +281,31 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
   echo "error: teardown refused after locking: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
-if fm_nm_effect_required "$META"; then
-  fm_nm_effect_current "$META" >/dev/null || {
-    echo 'REFUSED: exact qualification is invalidated or unavailable; task remains unresolved' >&2
-    exit 1
-  }
-fi
+# Current-evidence predicate shared by every qualification-obligated
+# retirement: the exact stage qualification and any durable completion handoff
+# must be current at each blocking boundary. --check confirms without writing;
+# --archive is the destructive authorization from the same evidence.
+teardown_completion_current() {  # <--check|--archive>
+  local -a retire=()
+  [ "$1" = --archive ] || retire=(--check)
+  if fm_nm_effect_required "$META"; then
+    fm_nm_effect_current "$META" >/dev/null || {
+      echo "REFUSED: exact qualification is invalidated or unavailable; task $ID remains unresolved" >&2
+      return 1
+    }
+  fi
+  if grep -q '^completion_handoff=' "$META"; then
+    fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" || {
+      echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
+      return 1
+    }
+  fi
+}
 if grep -q '^completion_handoff=' "$META"; then
   # shellcheck source=bin/fm-completion-lib.sh
   . "$SCRIPT_DIR/fm-completion-lib.sh"
-  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" --check || {
-    echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
-    exit 1
-  }
 fi
+teardown_completion_current --check || exit 1
 TEARDOWN_META_KIND=$(fm_meta_get "$META" kind)
 [ -n "$TEARDOWN_META_KIND" ] || TEARDOWN_META_KIND=ship
 TEARDOWN_CLEANUP_RECOVERY=$(fm_meta_get "$META" cleanup_recovery)
@@ -2746,12 +2757,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ] && [ "$ORCA_PATH_MATCH_VER
   require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
   ORCA_PATH_MATCH_VERIFIED=1
 fi
-if grep -q '^completion_handoff=' "$META"; then
-  fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" || {
-    echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
-    exit 1
-  }
-fi
+teardown_completion_current --check || exit 1
 if [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
@@ -2899,20 +2905,28 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # while the merge-notification marker (state/<id>.pr-poll-merge-notified) still
 # exists, since remove_pr_poll_artifacts below deletes it and the receipt binds
 # the late publication from it; the runtime obligation itself is retired with
-# the other per-task state further down. bin/fm-nm-observe.sh finalize is best
-# effort by contract: cleanup never blocks on the daemon, and the receipt
-# records what was not observed.
+# the other per-task state further down. bin/fm-nm-observe.sh refresh and
+# finalize are best effort by contract: cleanup never blocks on the daemon, and
+# the receipt records what was not observed. The refresh is the last blocking
+# canonical read, so it precedes the destructive authorization and finalize
+# then marks the already refreshed record without reading again.
 if [ -f "$STATE/$ID.nm-observe" ]; then
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    "$SCRIPT_DIR/fm-nm-observe.sh" finalize "$ID" >/dev/null 2>&1 \
+    "$SCRIPT_DIR/fm-nm-observe.sh" refresh "$ID" >/dev/null 2>&1 \
+    || echo "warning: final observation refresh for $ID did not complete" >&2
+fi
+teardown_completion_current --archive || {
+  echo "error: teardown of $ID stopped after its endpoint and local copy were cleaned up; the task record, observation obligation, PR-poll artifacts and evidence are retained unresolved and no clean state is reported" >&2
+  exit 1
+}
+if [ -f "$STATE/$ID.nm-observe" ]; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-nm-observe.sh" finalize "$ID" --no-refresh >/dev/null 2>&1 \
     || echo "warning: observation receipt for $ID could not be finalized" >&2
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
-if grep -q '^completion_handoff=' "$META"; then
-  fm_completion_report_current "$(fm_meta_get "$META" completion_handoff | jq -c .contract)" || exit 1
-fi
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.nm-observe" \
   "$STATE/$ID.nm-assessment" "$STATE/.nm-assess-$ID.lock" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \

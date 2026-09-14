@@ -911,7 +911,11 @@ test_report_changes_during_teardown_status() (
   done
   chmod +x "$TMP_ROOT/teardown-bin/"*
   export PATH="$TMP_ROOT/teardown-bin:$PATH"
-  for mutation in ${1:-changed deleted unchanged}; do
+  # changed/deleted: handoff report mutated during the conclude status read.
+  # revoked: directly qualified task (no handoff) whose exact qualification is
+  # revoked during that same read. late: handoff report mutated during the
+  # final observation refresh. unchanged/direct: positive controls.
+  for mutation in ${1:-changed deleted unchanged revoked direct late}; do
     WT="$TMP_ROOT/teardown-wt-$mutation"
     git clone -q --no-hardlinks "$original_wt" "$WT" || fail 'private teardown clone'
     git -C "$WT" remote remove origin
@@ -920,20 +924,42 @@ test_report_changes_during_teardown_status() (
     sed -e "s|^worktree=.*|worktree=$WT|" -e "s|^project=.*|project=$WT|" "$FM_STATE_OVERRIDE/source.meta" > "$TMP_ROOT/teardown.meta"
     mv "$TMP_ROOT/teardown.meta" "$FM_STATE_OVERRIDE/source.meta"
     printf 'window=isolated:fm-source\nendpoint_task_id=source\n' >> "$FM_STATE_OVERRIDE/source.meta"
-    stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'teardown handoff'
-    stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'teardown dispatch'
-    export FM_TEST_TEARDOWN_MUTATION=$mutation FM_TEST_TEARDOWN_REACHED="$TMP_ROOT/teardown-status-reached"
-    rm -f "$FM_TEST_TEARDOWN_REACHED" "$FM_DATA_OVERRIDE/source/completion-receipt.json"
+    case "$mutation" in
+      revoked|direct)
+        stage ci-ready --pr https://github.com/o/r/pull/7 >/dev/null || fail 'direct qualification'
+        [ -z "$(meta completion_handoff)" ] || fail 'direct case must carry no handoff'
+        ;;
+      *)
+        stage handoff --handoff-json "$TMP_ROOT/handoff.json" >/dev/null || fail 'teardown handoff'
+        stage handoff-release --identity "$(meta completion_handoff | jq -r .identity)" >/dev/null || fail 'teardown dispatch'
+        ;;
+    esac
+    [ -n "$(meta stage_ci_ready_effect)" ] || fail 'exact stage effect absent before teardown'
+    printf 'private poll artifact\n' > "$FM_STATE_OVERRIDE/source.pr-poll"
+    export FM_TEST_TEARDOWN_MUTATION=$mutation FM_TEST_TEARDOWN_REACHED="$TMP_ROOT/teardown-status-reached" \
+      FM_TEST_TEARDOWN_REFRESHED="$TMP_ROOT/teardown-refresh-reached" FM_TEST_TEARDOWN_REVOKED="$TMP_ROOT/teardown-revoked"
+    rm -f "$FM_TEST_TEARDOWN_REACHED" "$FM_TEST_TEARDOWN_REFRESHED" "$FM_TEST_TEARDOWN_REVOKED" \
+      "$FM_DATA_OVERRIDE/source/completion-receipt.json" "$FM_DATA_OVERRIDE/source/nm-observation-receipt.md"
     cp "$FAKEBIN/no-mistakes" "$TMP_ROOT/teardown-no-mistakes"
     cat > "$FAKEBIN/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  'axi qualification'*) exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:3}" ;;
+  'axi qualification'*)
+    [ ! -e "$FM_TEST_TEARDOWN_REVOKED" ] || exit 1
+    exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:3}" ;;
   'axi status')
     : > "$FM_TEST_TEARDOWN_REACHED"
     case "$FM_TEST_TEARDOWN_MUTATION" in
       changed) printf 'changed during conclude\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
       deleted) rm -f "$FM_DATA_OVERRIDE/source/report.md" ;;
+      revoked) : > "$FM_TEST_TEARDOWN_REVOKED" ;;
+    esac
+    cat "$FM_COMPLETION_TEST_CANONICAL"
+    ;;
+  'axi status --run '*)
+    : > "$FM_TEST_TEARDOWN_REFRESHED"
+    case "$FM_TEST_TEARDOWN_MUTATION" in
+      late) printf 'changed during final refresh\n' >> "$FM_DATA_OVERRIDE/source/report.md" ;;
     esac
     cat "$FM_COMPLETION_TEST_CANONICAL"
     ;;
@@ -945,21 +971,48 @@ SH
     rc=0; out=$("$ROOT/bin/fm-teardown.sh" source 2>&1) || rc=$?
     mv "$TMP_ROOT/teardown-no-mistakes" "$FAKEBIN/no-mistakes"
     assert_present "$FM_TEST_TEARDOWN_REACHED" "teardown did not reach conclude status: $out"
-    if [ "$mutation" = unchanged ]; then
-      expect_code 0 "$rc" "unchanged actual teardown: $out"
-      assert_absent "$FM_STATE_OVERRIDE/source.meta" 'unchanged teardown retained metadata'
-      assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing'
-    else
-      expect_code 1 "$rc" "$mutation report during teardown status"
-      assert_contains "$out" 'completion handoff remains unresolved' 'final retirement must refuse'
-      assert_present "$FM_STATE_OVERRIDE/source.meta" 'teardown erased unresolved metadata'
-      assert_present "$FM_STATE_OVERRIDE/source.nm-observe" 'teardown erased observation obligation'
-      if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
-      [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
-      assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'preflight archived invalidated handoff'
-    fi
+    case "$mutation" in
+      unchanged|direct)
+        expect_code 0 "$rc" "$mutation actual teardown: $out"
+        assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'final observation refresh must read canonical state'
+        assert_absent "$FM_STATE_OVERRIDE/source.meta" "$mutation teardown retained metadata"
+        assert_absent "$FM_STATE_OVERRIDE/source.nm-observe" "$mutation teardown retained observation obligation"
+        assert_absent "$FM_STATE_OVERRIDE/source.pr-poll" "$mutation teardown retained poll artifact"
+        assert_grep 'finalized at' "$FM_DATA_OVERRIDE/source/nm-observation-receipt.md" 'observation receipt not finalized'
+        if [ "$mutation" = unchanged ]; then
+          assert_present "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'final retirement archive missing'
+        fi
+        ;;
+      *)
+        expect_code 1 "$rc" "$mutation during teardown"
+        case "$mutation" in
+          revoked) assert_contains "$out" 'exact qualification is invalidated' 'direct qualification refusal' ;;
+          *) assert_contains "$out" 'completion handoff remains unresolved' 'final retirement must refuse' ;;
+        esac
+        assert_not_contains "$out" 'teardown source complete' 'stopped retirement must not report success'
+        assert_present "$FM_STATE_OVERRIDE/source.meta" 'teardown erased unresolved metadata'
+        assert_present "$FM_STATE_OVERRIDE/source.nm-observe" 'teardown erased observation obligation'
+        assert_present "$FM_STATE_OVERRIDE/source.pr-poll" 'teardown erased poll artifact on refusal'
+        if grep -qx 'stage=finalized' "$FM_STATE_OVERRIDE/source.nm-observe"; then fail 'refusal finalized an unresolved obligation'; fi
+        [ -n "$(meta stage_ci_ready_effect)" ] || fail 'refusal erased historical stage effect'
+        assert_absent "$FM_DATA_OVERRIDE/source/completion-receipt.json" 'refusal archived invalidated handoff'
+        case "$mutation" in
+          late)
+            assert_present "$FM_TEST_TEARDOWN_REFRESHED" 'late case must reach the final refresh'
+            assert_contains "$out" 'retained unresolved' 'late refusal must expose partial cleanup'
+            [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
+            ;;
+          revoked) assert_absent "$FM_TEST_TEARDOWN_REFRESHED" 'revoked qualification must refuse before the final refresh' ;;
+          *)
+            assert_absent "$FM_TEST_TEARDOWN_REFRESHED" 'status-read refusal must stop before the final refresh'
+            [ "$(meta completion_handoff | jq -r .status)" = dispatched ] || fail 'teardown erased historical handoff'
+            ;;
+        esac
+        ;;
+    esac
     pass "actual teardown status boundary: $mutation"
   done
+  printf 'complete private report\n' > "$FM_DATA_OVERRIDE/source/report.md"
 )
 
 test_report_changes_during_qualification() (
@@ -1102,7 +1155,7 @@ SH
 )
 
 if [ "${1:-}" = retirement-status ]; then
-  test_report_changes_during_teardown_status "${2:-changed deleted unchanged}" || exit 1
+  test_report_changes_during_teardown_status "${2:-changed deleted unchanged revoked direct late}" || exit 1
   exit 0
 fi
 if [ "${1:-}" = custody-order ]; then

@@ -12,7 +12,7 @@
 #   fm-nm-observe.sh bind     <task-id> [--run <run-id>] [--accept-daemon-reset]
 #   fm-nm-observe.sh refresh  <task-id> [--accept-daemon-reset]
 #   fm-nm-observe.sh receipt  <task-id>
-#   fm-nm-observe.sh finalize <task-id>
+#   fm-nm-observe.sh finalize <task-id> [--no-refresh]
 #   fm-nm-observe.sh reconcile [--startup | --now] [--peek]
 #   fm-nm-observe.sh --help
 #
@@ -124,6 +124,9 @@
 #             by bin/fm-teardown.sh before it removes the runtime record. Exit
 #             0 even when the daemon is unreachable, so cleanup never blocks on
 #             observation; the receipt then states what was not observed.
+#             --no-refresh marks and renders the record as already refreshed
+#             so a caller that revalidated after its own refresh performs no
+#             further canonical read before finalizing.
 #   reconcile Read-only comparison of the canonical inventory (`axi status`
 #             from each obligation's worktree, or its project checkout when the
 #             worktree is gone) against every obligation and every managed task
@@ -872,11 +875,11 @@ do_refresh() {  # <task-id> <accept-reset 0|1>
   printf 'NM_OBSERVE: REFRESHED task=%s run=%s status=%s class=%s\n' "$id" "$run" "$status" "$class"
 }
 
-do_finalize() {  # <task-id>
-  local id=$1 record
+do_finalize() {  # <task-id> <skip-refresh 0|1>
+  local id=$1 skip_refresh=$2 record
   record=$(record_path "$id")
   [ -f "$record" ] || return 0
-  do_refresh "$id" 0 || true
+  [ "$skip_refresh" -eq 1 ] || do_refresh "$id" 0 || true
   record_set "$record" "stage=finalized" "finalized_epoch=$(now_epoch)"
   render_receipt "$id"
   printf 'NM_OBSERVE: FINALIZED task=%s receipt=%s\n' "$id" "$(receipt_path "$id")"
@@ -1214,6 +1217,7 @@ ENTRY=firstmate
 RETRY=0
 RUN_WANT=
 ACCEPT=0
+NO_REFRESH=0
 PROFILE_FILE=
 EXPECT_HOME=
 EXPECT_PATH0=
@@ -1247,6 +1251,7 @@ for a in "$@"; do
     --expect-branch) want=expect-branch ;;
     --retry) RETRY=1 ;;
     --accept-daemon-reset) ACCEPT=1 ;;
+    --no-refresh) [ "$VERB" = finalize ] || die_usage "--no-refresh applies to finalize only"; NO_REFRESH=1 ;;
     *) die_usage "unknown flag $a for $VERB" ;;
   esac
 done
@@ -1265,6 +1270,6 @@ case "$VERB" in
   bind) with_lock "$ID" do_bind "$ID" "$RUN_WANT" "$ACCEPT" ;;
   refresh) with_lock "$ID" do_refresh "$ID" "$ACCEPT" ;;
   receipt) record_load_or_die "$ID"; render_receipt "$ID"; printf '%s\n' "$(receipt_path "$ID")" ;;
-  finalize) with_lock "$ID" do_finalize "$ID" ;;
+  finalize) with_lock "$ID" do_finalize "$ID" "$NO_REFRESH" ;;
   *) die_usage "unknown verb $VERB" ;;
 esac

@@ -96,6 +96,27 @@ extract_output_body() {
   '
 }
 
+# The helper's own header is its documented interface: docs/scripts.md names the
+# script header, surfaced by --help, as the authoritative description of this
+# helper's behavior, flags and contracts. That makes --help a generated public
+# output whose completeness is a contract, and the header has to be printed to
+# its end - a range that stops short drops documented usage without failing
+# anything. This drives the real executable interface and pins both edges: the
+# last usage line must survive, and the body of the script must not leak in.
+test_help_prints_the_whole_header_and_nothing_below_it() {
+  local out rc=0
+  out=$("$NMF_HELPER" --help) || rc=$?
+  expect_code 0 "$rc" "--help exited non-zero"
+  [ "$(printf '%s\n' "$out" | tail -1)" = "  fm-nmf-verify-input.sh --help" ] \
+    || fail "--help truncated its own last usage line, ending at: $(printf '%s\n' "$out" | tail -1)"
+  assert_contains "$out" "fm-nmf-verify-input.sh await" \
+    "--help did not document the await subcommand"
+  case "$out" in
+    *"set -eu"*) fail "--help printed script body past the end of the header" ;;
+  esac
+  pass "--help prints the header through its final usage line and stops there"
+}
+
 test_classify_opened_and_edited_are_historical() {
   local action out
   for action in opened edited; do
@@ -256,22 +277,80 @@ test_resolve_pending_notice_names_both_heads() {
   pass "resolve PENDING notice names the attested and live heads for diagnosis"
 }
 
-# A non-empty live body with no pipeline attestation yet published is also
-# PENDING, not a pass: mid-publication the body may carry the signature line
-# before the attestation comment lands. It never binds, so the caller's bounded
-# window fails closed at the deadline - a genuinely non-no-mistakes body can
-# never pass this way.
+# A signature-bearing live body with no pipeline attestation yet published is
+# also PENDING, not a pass: mid-publication the body may carry the signature line
+# before the attestation comment lands. It never binds, so it can only ever reach
+# the verifier through the deadline hand-off below, which refuses it.
 test_resolve_pending_when_no_attestation_published_yet() {
   local out rc
   rc=0
   out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
-    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="a body with no attestation comment" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$SIGNATURE" \
     "$NMF_HELPER" resolve 2>/dev/null) || rc=$?
   [ "$rc" -eq 3 ] || fail "resolve should report PENDING (exit 3) when no attestation is published yet, got rc=$rc"
   case "$out" in
     *"body<<"*) fail "PENDING resolve emitted a body block for an unattested body" ;;
   esac
-  pass "resolve holds an unattested body as PENDING within the publication window"
+  pass "resolve holds a signature-bearing unattested body as PENDING within the publication window"
+}
+
+# --- waiting only where a publication is in flight ---------------------------
+#
+# PENDING means "a no-mistakes publication owns this body and a rebind for the
+# live head is in flight". The signature line is that evidence. Without it
+# nothing is publishing, so waiting cannot change the outcome: resolve hands the
+# live subject straight to the verifier, which refuses it on its own authority
+# and with its own actionable message. This is what keeps the gate's primary
+# case - a PR that did not come through no-mistakes - failing immediately rather
+# than sitting out a publication window it can never satisfy.
+test_resolve_unsigned_body_hands_off_instead_of_waiting() {
+  local out err rc verifier_out
+  rc=0
+  err=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="a hand-written PR body" \
+    "$NMF_HELPER" resolve 2>&1 >/dev/null) || rc=$?
+  expect_code 0 "$rc" "resolve should hand off a body with no publication in flight, not wait for one"
+  assert_contains "$err" "no no-mistakes signature" "the hand-off did not say why it is not waiting"
+  rc=0
+  out=$(NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="a hand-written PR body" \
+    "$NMF_HELPER" resolve 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "resolve should emit a subject for an unsigned body"
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
+    || fail "the hand-off did not carry the live head, so the verifier could not judge the right commit"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the verifier accepted a PR body that was never raised through no-mistakes"
+  assert_contains "$verifier_out" "was not raised through no-mistakes" \
+    "the verifier did not produce its own refusal for the handed-off body"
+  pass "a body with no publication in flight is judged immediately and fails closed"
+}
+
+# At the caller's deadline the wait is over, but the verdict is still the
+# verifier's. resolve emits the live subject with a truthful warning and the
+# pinned verifier refuses the unbound attestation naming both SHAs, so the
+# fail-closed property is preserved by the component that owns it.
+test_resolve_final_hands_off_an_unbound_body_and_the_verifier_refuses_it() {
+  local out err rc verifier_out body
+  body=$(attested_body "$OLD_SHA")
+  rc=0
+  err=$(NMF_PUBLICATION_FINAL=1 NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$body" \
+    "$NMF_HELPER" resolve 2>&1 >/dev/null) || rc=$?
+  expect_code 0 "$rc" "a closed publication window must still produce a judged subject"
+  assert_contains "$err" "$OLD_SHA" "the closed-window warning did not name the attested head"
+  assert_contains "$err" "$NEW_SHA" "the closed-window warning did not name the live head"
+  rc=0
+  out=$(NMF_PUBLICATION_FINAL=1 NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    NMF_LIVE_NUMBER=3006 NMF_LIVE_HEAD_SHA="$NEW_SHA" NMF_LIVE_BODY="$body" \
+    "$NMF_HELPER" resolve 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "a closed publication window must emit the live subject"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the verifier accepted an attestation that never bound the live head"
+  assert_contains "$verifier_out" "$OLD_SHA" "the refusal did not name the attestation head"
+  assert_contains "$verifier_out" "$NEW_SHA" "the refusal did not name the live PR head"
+  pass "a publication that never lands is refused by the verifier, naming both heads"
 }
 
 # End to end: once the live body binds the live head (publication landed), resolve
@@ -307,10 +386,500 @@ test_historical_invalid_body_is_not_rescued_by_a_clean_live_body() {
   pass "a historically invalid opened/edited body stays invalid under the event snapshot"
 }
 
+# --- the publication wait, through the await command -------------------------
+#
+# 'await' is the whole live-subject step the workflow runs, so these cases drive
+# the real poll loop, deadline and hand-off through its executable interface with
+# a scripted provider. Each case lays out the PR reads the provider returns in
+# order (read-1.json, read-2.json, ... then read-default.json for every later
+# read), so a race is expressed as data rather than as a timing coincidence.
+# sleep and `date +%s` are replaced by a VIRTUAL CLOCK: sleep records its
+# argument and advances the clock by it, and date reads the clock. The loop's
+# real read/wait/deadline arithmetic runs unchanged against that clock, so a
+# 600s window costs no wall-clock time AND every poll count, retry backoff and
+# deadline offset is exact rather than a race against the machine's speed.
+
+AWAIT_ROOT="$TMP_ROOT/await"
+
+await_case() {
+  local name=$1
+  AWAIT_CASE="$AWAIT_ROOT/$name"
+  AWAIT_ENV=()
+  AWAIT_BIN="$AWAIT_CASE/bin"
+  rm -rf "$AWAIT_CASE"
+  mkdir -p "$AWAIT_BIN"
+  cat > "$AWAIT_BIN/gh" <<SH
+#!/usr/bin/env bash
+printf 'x' >> "$AWAIT_CASE/reads"
+reads=\$(wc -c < "$AWAIT_CASE/reads" | tr -d ' ')
+response="$AWAIT_CASE/read-\$reads.json"
+[ -f "\$response" ] || response="$AWAIT_CASE/read-default.json"
+[ -f "\$response" ] || exit 1
+cat "\$response"
+SH
+  cat > "$AWAIT_BIN/sleep" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$AWAIT_CASE/sleeps"
+printf '%s' "\$(( \$(cat "$AWAIT_CASE/clock") + \$1 ))" > "$AWAIT_CASE/clock"
+SH
+  cat > "$AWAIT_BIN/date" <<SH
+#!/usr/bin/env bash
+[ "\$1" = "+%s" ] || { printf 'the await fixture only stubs date +%%s, got: %s\n' "\$*" >&2; exit 64; }
+cat "$AWAIT_CASE/clock"
+SH
+  chmod +x "$AWAIT_BIN/gh" "$AWAIT_BIN/sleep" "$AWAIT_BIN/date"
+  : > "$AWAIT_CASE/reads"
+  : > "$AWAIT_CASE/sleeps"
+  printf '0' > "$AWAIT_CASE/clock"
+}
+
+# One scripted PR read. `which` is a read index (1, 2, ...) or "default".
+await_read() {
+  local which=$1 number=$2 head=$3 body=$4
+  python3 -c 'import json,sys; sys.stdout.write(json.dumps({"number": int(sys.argv[1]), "head": {"sha": sys.argv[2]}, "body": sys.argv[3]}))' \
+    "$number" "$head" "$body" > "$AWAIT_CASE/read-$which.json"
+}
+
+# A case sets AWAIT_ENV to the bound overrides it needs before calling this;
+# they reach await in the child's own environment, so no case exports anything
+# into this shell and none of them leak into the next case. `await_case` empties
+# the array, and the `+` guard keeps the empty expansion legal under `set -u`.
+AWAIT_ENV=()
+
+run_await() {
+  env PATH="$AWAIT_BIN:$PATH" GITHUB_REPOSITORY=regression/gate \
+    NMF_EVENT_NUMBER=3006 NMF_EVENT_HEAD_SHA="$NEW_SHA" \
+    ${AWAIT_ENV[@]+"${AWAIT_ENV[@]}"} "$NMF_HELPER" await
+}
+
+await_reads() { wc -c < "$AWAIT_CASE/reads" | tr -d ' '; }
+await_sleeps() { wc -l < "$AWAIT_CASE/sleeps" | tr -d ' '; }
+
+# The watched regression. A synchronize event whose push has landed but whose
+# attestation has not been re-published yet must resolve green on its own, with
+# no re-run: the loop keeps reading the same subject and binds the moment the
+# publication lands.
+test_await_binds_when_the_publication_lands_mid_wait() {
+  local out rc verifier_out
+  await_case race-resolves
+  await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  await_read 2 3006 "$NEW_SHA" "$SIGNATURE"
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  rc=0
+  out=$(run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "await failed a PR whose attestation did publish, the exact race this fix is for"
+  [ "$(await_reads)" -eq 3 ] || fail "await should bind on the first read that carries the published attestation, took $(await_reads)"
+  [ "$(await_sleeps)" -eq 2 ] || fail "await should wait once per not-yet-published read, waited $(await_sleeps) times"
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] || fail "await did not emit the live head as the judged subject"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  expect_code 0 "$rc" "the verifier rejected the attestation await waited for"
+  assert_contains "$verifier_out" "Found structurally compliant pipeline step attestation." \
+    "the published attestation was not accepted after the wait"
+  pass "a race-timed synchronize resolves green once the publication lands, with no re-run"
+}
+
+# The deadline is a real bound, not a longer guess: when the publication never
+# lands the wait ends and the verifier refuses the live body.
+test_await_stops_at_the_deadline_and_fails_closed() {
+  local out rc verifier_out err
+  await_case never-publishes
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  rc=0
+  err=$(NMF_PUBLICATION_WINDOW_SECONDS=2 NMF_PUBLICATION_POLL_SECONDS=1 run_await 2>&1 >/dev/null) || rc=$?
+  expect_code 0 "$rc" "await must still produce a judged subject when the window closes"
+  assert_contains "$err" "publication window is closed" "the timeout message did not say the window closed"
+  assert_contains "$err" "$NEW_SHA" "the timeout message did not name the head it waited for"
+  # Every poll read soundly here, so the publisher is the only honest cause to
+  # name; a read outage must not be implied when nothing failed to read.
+  assert_contains "$err" "still unpublished" \
+    "a wait whose every poll read soundly did not attribute the outcome to the publisher"
+  case "$err" in
+    *"could not be read"*) fail "a wait with no failed read reported unreadable polls" ;;
+  esac
+  await_case never-publishes-verdict
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  rc=0
+  out=$(NMF_PUBLICATION_WINDOW_SECONDS=2 NMF_PUBLICATION_POLL_SECONDS=1 run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "await must emit the live subject at the deadline"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never published was allowed to pass the gate"
+  pass "a publication that never lands ends the wait and still fails closed"
+}
+
+# A PR that did not come through no-mistakes is the gate's primary case and must
+# not pay the publication window at all.
+test_await_does_not_wait_when_no_publication_is_in_flight() {
+  local out rc verifier_out
+  await_case unsigned
+  await_read default 3006 "$NEW_SHA" "a hand-written PR body"
+  rc=0
+  out=$(run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "await should hand an unsigned body straight to the verifier"
+  [ "$(await_reads)" -eq 1 ] || fail "await read the PR $(await_reads) times for a body nothing is publishing"
+  [ "$(await_sleeps)" -eq 0 ] || fail "await waited for a publication that was never in flight"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the verifier accepted a PR that was not raised through no-mistakes"
+  pass "a PR with nothing publishing is judged on the first read, with no wait"
+}
+
+# Exact candidate/head association: if the head advances while we wait, this run
+# is about a head that no longer exists on the PR. It must refuse immediately
+# rather than keep waiting or judge the newer head, which fires its own run.
+test_await_refuses_a_superseded_head_immediately() {
+  local err rc
+  await_case superseded
+  await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  await_read default 3006 "$OLD_SHA" "$(attested_body "$OLD_SHA")"
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await let a run continue after its subject head was superseded"
+  assert_contains "$err" "superseded" "the refusal did not name the superseded subject"
+  [ "$(await_reads)" -eq 2 ] || fail "await kept waiting after the head advanced, read $(await_reads) times"
+  pass "await refuses a superseded head immediately instead of waiting or rebinding"
+}
+
+# No sound live read means no sound subject: the frozen event payload must never
+# become the fallback.
+test_await_fails_closed_when_the_live_pr_cannot_be_read() {
+  local out err rc
+  await_case unreadable
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1)
+  rc=0
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
+  err=$(cat "$AWAIT_CASE/err")
+  [ "$rc" -ne 0 ] || fail "await produced a subject without a sound live read"
+  assert_contains "$err" "no sound live read" "the read failure was not reported"
+  case "$out" in
+    *"body<<"*) fail "await emitted a body block without a live read" ;;
+  esac
+  pass "an unreadable live PR fails closed instead of falling back to the frozen event"
+}
+
+# A malformed bound must not silently become "judge immediately" or "wait
+# forever". The setting is handed to await through AWAIT_ENV rather than as an
+# `env NAME=v run_await` prefix: run_await is a shell function, so `env` would
+# fail to exec it (127) and the case would pass without ever reaching await.
+test_await_refuses_a_malformed_bound() {
+  local rc out setting value
+  for setting in NMF_PUBLICATION_WINDOW_SECONDS NMF_PUBLICATION_POLL_SECONDS \
+                 NMF_LIVE_READ_ATTEMPTS NMF_LIVE_READ_BACKOFF_SECONDS; do
+    for value in soon 0 -1; do
+      await_case "malformed-$setting"
+      await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+      rc=0
+      AWAIT_ENV=("$setting=$value")
+      out=$(run_await 2>&1 >/dev/null) || rc=$?
+      [ "$rc" -ne 0 ] || fail "await accepted $setting='$value'"
+      assert_contains "$out" "$setting" "the refusal did not name the malformed setting $setting"
+      [ "$(await_reads)" -eq 0 ] \
+        || fail "await read the live PR before refusing a malformed $setting"
+    done
+  done
+  pass "await refuses a non-numeric, zero or negative bound before reading anything"
+}
+
+# --- live-read retry: transient versus definitive -----------------------------
+#
+# The wait multiplies the live read, so one transient forge failure must not red
+# a PR whose attestation does publish. The retry is deliberately narrow: only a
+# failure that could answer differently next time is retried, and a definitive
+# answer propagates at once. `await_fail` scripts a failing read at a given
+# attempt index with the stderr gh would produce.
+
+# `status` defaults to gh's generic failure exit 1; pass 4 for "authentication
+# required" or 127 for a gh that is not on PATH, the two definitive failures
+# that carry no HTTP status in their message.
+await_fail() {
+  local which=$1 message=$2 status=${3:-1}
+  printf '%s' "$message" > "$AWAIT_CASE/fail-$which.txt"
+  printf '%s' "$status" > "$AWAIT_CASE/fail-$which.rc"
+}
+
+# Extend the scripted provider with per-read failures. An entry scripted for an
+# exact read index wins over the default entry, so a case can script a sound
+# first read followed by a failing rest (or the reverse).
+await_case_failing() {
+  await_case "$1"
+  cat > "$AWAIT_BIN/gh" <<SH
+#!/usr/bin/env bash
+printf 'x' >> "$AWAIT_CASE/reads"
+reads=\$(wc -c < "$AWAIT_CASE/reads" | tr -d ' ')
+for slot in "\$reads" default; do
+  failure="$AWAIT_CASE/fail-\$slot.txt"
+  if [ -f "\$failure" ]; then
+    cat "\$failure" >&2
+    exit "\$(cat "$AWAIT_CASE/fail-\$slot.rc")"
+  fi
+  response="$AWAIT_CASE/read-\$slot.json"
+  if [ -f "\$response" ]; then cat "\$response"; exit 0; fi
+done
+exit 1
+SH
+  chmod +x "$AWAIT_BIN/gh"
+}
+
+test_await_retries_a_transient_read_and_still_binds() {
+  local out rc verifier_out
+  await_case_failing transient
+  await_fail 1 "gh: Internal Server Error (HTTP 502)"
+  await_fail 2 "error connecting to api.github.com"
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  rc=0
+  out=$(run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "a transient forge failure reddened a PR whose attestation was published"
+  [ "$(await_reads)" -eq 3 ] || fail "await made $(await_reads) live reads, expected two retries then a good read"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  expect_code 0 "$rc" "the verifier rejected the attestation await retried for"
+  pass "a transient live-read failure is retried and the sound subject still binds"
+}
+
+test_await_does_not_retry_a_definitive_read_failure() {
+  local err rc
+  await_case_failing definitive
+  await_fail default "gh: Not Found (HTTP 404)"
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await produced a subject after a definitive read refusal"
+  assert_contains "$err" "404" "the refusal did not carry the forge's definitive answer"
+  [ "$(await_reads)" -eq 1 ] || fail "await retried a definitive 404 $(await_reads) times"
+  pass "a definitive live-read refusal propagates immediately without retrying"
+}
+
+# The regression behind this case: a transient blip that outlasts one read's
+# retry budget used to be fatal even with almost the whole window still open, so
+# a few seconds of forge trouble reddened a PR whose attestation does publish -
+# the very defect the wait exists to remove. The budget bounds ONE read, not the
+# wait: when it is spent transiently the loop polls and re-reads.
+test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget() {
+  local out rc verifier_out sleeps
+  await_case_failing blip-outlasts-budget
+  await_fail 1 "gh: Bad Gateway (HTTP 502)"
+  await_fail 2 "gh: Bad Gateway (HTTP 502)"
+  await_fail 3 "gh: Bad Gateway (HTTP 502)"
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$NEW_SHA")"
+  AWAIT_ENV=(NMF_PUBLICATION_POLL_SECONDS=9)
+  rc=0
+  out=$(run_await 2>/dev/null) || rc=$?
+  expect_code 0 "$rc" "a transient blip past one read's budget reddened a PR whose attestation did publish"
+  [ "$(await_reads)" -eq 4 ] \
+    || fail "await made $(await_reads) live reads, expected the 3-attempt budget then a re-read on the next poll"
+  # The budget still bounds a single read: the third failure is followed by the
+  # poll interval, not by a fourth doubled backoff inside the same read.
+  sleeps=$(tr '\n' ' ' < "$AWAIT_CASE/sleeps")
+  [ "$sleeps" = "2 4 9 " ] \
+    || fail "expected two bounded backoffs then one poll wait, recorded waits were: $sleeps"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  expect_code 0 "$rc" "the verifier rejected the attestation await polled through the blip for"
+  pass "a transient blip past one read's budget is absorbed and the publication still binds"
+}
+
+# The window boundary, not the first blip, is where fail-closed lives. A window
+# that closes with no sound read has no live body to hand over, so it must exit
+# non-zero with no subject and name that diagnosis rather than implying the
+# attestation was absent.
+test_await_fails_closed_when_the_window_closes_with_no_sound_read() {
+  local out err rc widest
+  await_case_failing no-sound-read
+  await_fail default "gh: Bad Gateway (HTTP 502)"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=1 NMF_PUBLICATION_POLL_SECONDS=1)
+  rc=0
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
+  err=$(cat "$AWAIT_CASE/err")
+  [ "$rc" -ne 0 ] || fail "await produced a subject with no sound live read at all"
+  case "$out" in
+    *"body<<"*) fail "await emitted a body block with no sound live read" ;;
+  esac
+  assert_contains "$err" "no sound live read" \
+    "the refusal did not name the no-sound-read-within-the-window condition"
+  assert_contains "$err" "publication window closed" \
+    "the refusal did not say the window is what closed"
+  # Every read still spent a bounded budget: 2s then 4s of backoff and never a
+  # further doubling, so no single read can spin the window away.
+  widest=$(sort -n "$AWAIT_CASE/sleeps" | tail -1)
+  [ "$widest" -le 4 ] \
+    || fail "a single read backed off for ${widest}s, past the bounded 2s/4s budget"
+  pass "a window that closes with no sound live read fails closed and says so"
+}
+
+# --- the deadline's attribution: what did the wait DECISIVELY observe? --------
+#
+# An attestation for an exact head is monotonic, so the LAST SOUND READ decides
+# whether it had published; the question is only whether that read is recent
+# enough to speak for the deadline. The TAIL GAP - last sound read to deadline -
+# is the input, compared against one poll interval, and the unreadable-poll
+# count is context that must never hedge a decisive observation.
+#
+# The virtual clock makes every offset below exact. A failing poll costs its
+# whole retry budget (2s + 4s of backoff at the defaults, and nothing at all at
+# one attempt), a sound poll costs nothing, and each surviving poll then costs
+# one poll interval, so each case's tail gap is arithmetic rather than a race.
+
+assert_publisher_attribution() {
+  local err=$1 why=$2
+  assert_contains "$err" "still unpublished" "$why"
+  case "$err" in
+    *"may have landed unseen"*)
+      fail "$why: the attribution was hedged by an outage the last sound read outlived" ;;
+    *"no sound live read"*)
+      fail "$why: a wait that did read soundly was reported as having read nothing" ;;
+  esac
+}
+
+assert_unreadable_poll_context() {
+  local err=$1 unread=$2 context
+  context=$(printf '%s\n' "$err" | grep 'could not be read') \
+    || fail "the deadline never reported that any poll could not be read"
+  assert_contains "$context" "$unread poll(s) could not be read" \
+    "the deadline did not report the real number of unreadable polls"
+  assert_contains "$context" "502" "the unreadable-poll report did not name the read failure"
+}
+
+# (c) The tail of the window went unobserved: the last sound read is older than
+# one poll interval, so it cannot speak for the deadline and a publication may
+# genuinely have landed unseen. Attribution is withheld and the wait reports
+# what it saw and when. Clock: poll 1 reads soundly at 0s, one 1s poll interval,
+# then poll 2 burns its 2s+4s budget on 502s and the 5s window closes at 7s -
+# a 7s tail gap against a 1s poll interval.
+test_await_withholds_attribution_when_the_window_tail_is_unobserved() {
+  local out err rc verifier_out
+  await_case_failing sound-then-outage
+  await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  await_fail default "gh: Bad Gateway (HTTP 502)"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=5 NMF_PUBLICATION_POLL_SECONDS=1)
+  rc=0
+  out=$(run_await 2>"$AWAIT_CASE/err") || rc=$?
+  err=$(cat "$AWAIT_CASE/err")
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  case "$err" in
+    *"no sound live read"*) fail "a wait that did read soundly was reported as having read nothing" ;;
+    *"still unpublished"*) fail "an unobserved window tail was attributed to the publisher" ;;
+  esac
+  assert_unreadable_poll_context "$err" 1
+  assert_contains "$err" "may have landed unseen" \
+    "the deadline did not say the unobserved tail could have hidden a publication"
+  assert_contains "$err" "0s into the window" \
+    "the deadline did not timestamp the last sound observation"
+  assert_contains "$err" "$OLD_SHA" "the deadline did not name what the last sound read observed"
+  # Exact-head association: the handed-over subject is the sound read's own head.
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
+    || fail "the deadline handed over a head other than the sound read's live head"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never bound the live head was allowed to pass the gate"
+  assert_contains "$verifier_out" "$OLD_SHA" \
+    "the verifier's authoritative refusal did not name the head the body was attested to"
+  pass "an unobserved window tail withholds attribution and reports what was last seen"
+}
+
+# (b) The outage recovered: sound reads run through to the deadline, and they
+# directly observed that the attestation had still not published. The publisher
+# attribution is the decisive fact and must not be hedged - the unreadable polls
+# are context. `failing_reads` sets how many polls go unread, since each failing
+# poll spends the whole 3-attempt budget.
+run_recovering_outage_case() {
+  local name=$1 failing_reads=$2 window=$3 read_index
+  await_case_failing "$name"
+  for read_index in $(seq 1 "$failing_reads"); do
+    await_fail "$read_index" "gh: Bad Gateway (HTTP 502)"
+  done
+  await_read default 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS="$window" NMF_PUBLICATION_POLL_SECONDS=10)
+  run_await 2>"$AWAIT_CASE/err" >"$AWAIT_CASE/out"
+}
+
+# Clock: poll 1 burns 6s on 502s, +10s poll, poll 2 reads soundly at 16s, +10s
+# poll, poll 3 reads soundly at 26s and closes the 20s window - tail gap 0s.
+test_await_attributes_a_recovered_outage_to_the_publisher_with_context() {
+  local rc=0 err
+  run_recovering_outage_case recovering-outage 3 20 || rc=$?
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  err=$(cat "$AWAIT_CASE/err")
+  assert_publisher_attribution "$err" "a recovered outage denied the publisher attribution its sound reads proved"
+  assert_unreadable_poll_context "$err" 1
+  pass "an outage the sound reads outlived is attributed to the publisher, with the count as context"
+}
+
+# The round-4 regression in its own right: an early outage used to be erased
+# because the marker it was read from is cleared by every sound read. Clock:
+# polls 1 and 2 burn 6s each with a 10s poll between, poll 3 reads soundly at
+# 32s and closes the 30s window - 2 unreadable polls, tail gap 0s.
+test_await_still_counts_an_early_outage_when_the_last_polls_read_soundly() {
+  local rc=0 out err verifier_out
+  run_recovering_outage_case early-outage 6 30 || rc=$?
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  err=$(cat "$AWAIT_CASE/err")
+  assert_publisher_attribution "$err" "an early outage denied the publisher attribution its sound reads proved"
+  case "$err" in
+    *"every one of which read soundly"*)
+      fail "a wait with 2 unreadable polls claimed every poll read soundly" ;;
+  esac
+  assert_unreadable_poll_context "$err" 2
+  out=$(cat "$AWAIT_CASE/out")
+  # Fail-closed and exact-head association are unchanged on this path.
+  [ "$(extract_output_head "$out")" = "$NEW_SHA" ] \
+    || fail "the deadline handed over a head other than the sound read's live head"
+  rc=0
+  verifier_out=$(run_verifier "$(extract_output_body "$out")" "$(extract_output_head "$out")") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a PR whose attestation never bound the live head passed the gate"
+  assert_contains "$verifier_out" "$OLD_SHA" \
+    "the verifier's refusal did not name the head the body was attested to"
+  pass "an early outage is counted as context while the sound reads still fix the cause"
+}
+
+# (d) The boundary. One poll interval of blindness at the end is the loop's own
+# sampling granularity - even a wait in which every poll read soundly cannot see
+# a publication landing inside its final interval - so the tolerance is
+# INCLUSIVE and a tail gap of exactly one interval still attributes. Clock: at
+# one read attempt a failing poll costs no backoff at all, so poll 1 reads
+# soundly at 0s, one 10s poll interval passes, and poll 2's single failing read
+# closes the 10s window at 10s - a tail gap of exactly the 10s poll interval.
+test_await_attributes_at_a_tail_gap_of_exactly_one_poll_interval() {
+  local rc=0 err
+  await_case_failing boundary-tail-gap
+  await_read 1 3006 "$NEW_SHA" "$(attested_body "$OLD_SHA")"
+  await_fail default "gh: Bad Gateway (HTTP 502)"
+  AWAIT_ENV=(NMF_PUBLICATION_WINDOW_SECONDS=10 NMF_PUBLICATION_POLL_SECONDS=10
+             NMF_LIVE_READ_ATTEMPTS=1)
+  run_await 2>"$AWAIT_CASE/err" >/dev/null || rc=$?
+  expect_code 0 "$rc" "the deadline refused the subject instead of letting the verifier judge it"
+  err=$(cat "$AWAIT_CASE/err")
+  assert_publisher_attribution "$err" "a tail gap of exactly one poll interval was treated as an unobserved tail"
+  assert_contains "$err" "within one 10s poll interval of the deadline" \
+    "the deadline did not report the tail gap it tolerated"
+  assert_unreadable_poll_context "$err" 1
+  pass "a tail gap of exactly one poll interval still attributes, the tolerance being inclusive"
+}
+
+# A definitive failure that carries no HTTP status - an absent or invalid
+# GH_TOKEN is the reachable one - must be told apart from a transport blip by
+# gh's exit status, not by its message text, and must never spend the window.
+test_await_does_not_retry_a_definitive_non_http_failure() {
+  local err rc
+  await_case_failing auth-failure
+  await_fail default \
+    "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable." 4
+  rc=0
+  err=$(run_await 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "await produced a subject after an authentication failure"
+  assert_contains "$err" "GH_TOKEN" "the refusal did not carry the authentication failure"
+  [ "$(await_reads)" -eq 1 ] \
+    || fail "await retried an authentication failure $(await_reads) times instead of failing at once"
+  [ "$(await_sleeps)" -eq 0 ] \
+    || fail "await spent $(await_sleeps) wait(s) of the publication window on a misconfiguration"
+  pass "an authentication failure propagates immediately without spending the window"
+}
+
+command -v jq >/dev/null 2>&1 || fail "jq is required to exercise the live-subject read the gate performs"
 fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
 test_missing_head_fails
+test_help_prints_the_whole_header_and_nothing_below_it
 test_classify_opened_and_edited_are_historical
 test_classify_synchronize_and_reopened_are_current
 test_classify_unknown_action_fails_closed
@@ -325,5 +894,22 @@ test_current_mode_sound_live_proof_passes
 test_resolve_pending_when_attestation_bound_to_other_head
 test_resolve_pending_notice_names_both_heads
 test_resolve_pending_when_no_attestation_published_yet
+test_resolve_unsigned_body_hands_off_instead_of_waiting
+test_resolve_final_hands_off_an_unbound_body_and_the_verifier_refuses_it
 test_current_mode_race_resolves_green_once_body_binds_live_head
 test_historical_invalid_body_is_not_rescued_by_a_clean_live_body
+test_await_binds_when_the_publication_lands_mid_wait
+test_await_stops_at_the_deadline_and_fails_closed
+test_await_does_not_wait_when_no_publication_is_in_flight
+test_await_refuses_a_superseded_head_immediately
+test_await_fails_closed_when_the_live_pr_cannot_be_read
+test_await_refuses_a_malformed_bound
+test_await_retries_a_transient_read_and_still_binds
+test_await_does_not_retry_a_definitive_read_failure
+test_await_absorbs_a_transient_blip_that_outlasts_one_reads_budget
+test_await_fails_closed_when_the_window_closes_with_no_sound_read
+test_await_withholds_attribution_when_the_window_tail_is_unobserved
+test_await_attributes_a_recovered_outage_to_the_publisher_with_context
+test_await_still_counts_an_early_outage_when_the_last_polls_read_soundly
+test_await_attributes_at_a_tail_gap_of_exactly_one_poll_interval
+test_await_does_not_retry_a_definitive_non_http_failure

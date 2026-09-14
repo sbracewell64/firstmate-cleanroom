@@ -31,9 +31,9 @@
 #              hands the most recent sound read to the verifier, which owns that
 #              verdict, and attributes the outcome only to what it decisively
 #              observed, so a stalled publisher is never confused with a forge
-#              outage in either direction. The
-#              workflow never re-spells the window, the poll cadence, the retry
-#              budget, or the deadline behavior.
+#              outage in either direction. The workflow never re-spells the
+#              window, the poll cadence, the retry budget, or the deadline
+#              behavior.
 #   resolve    the pure classifier behind 'await': given the event's expected
 #              subject (PR number and head SHA) and one live read (number, head,
 #              body), it binds PR identity, refuses a superseded subject (a live

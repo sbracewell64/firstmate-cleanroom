@@ -239,7 +239,13 @@ bool_json() {
 # the home summary stopped publishing. printf is a shell builtin, so no exec
 # boundary sees the payload; `-n` keeps `.` null exactly as before, and an
 # absent document makes `input` fail (exit 5) instead of shifting bindings.
-# Small scalars, paths, and per-task objects still travel as --arg/--argjson.
+# Every such filter ends with $JQ_INPUTS_EXHAUSTED, which refuses any
+# document still unread on stdin, so a variable that carries more than one
+# document fails the call loudly instead of shifting every later binding by
+# one. Small scalars, paths, and per-task objects still travel as
+# --arg/--argjson.
+
+JQ_INPUTS_EXHAUSTED=' | if ([limit(1; inputs)] | length) == 0 then . else error("fm-fleet-snapshot: stdin carried more JSON documents than the filter binds") end'
 
 path_present_json() {  # <path>
   local present=0
@@ -703,7 +709,7 @@ main_inventory_json() {  # <backlog-json> <tasks-json>
         reason:$reason,
         orphan_in_flight:$orphan_in_flight,
         unstructured_current_count:($unstructured_current | length)
-      }'
+      }'"$JQ_INPUTS_EXHAUSTED"
 }
 
 # Project one home's canonical structured inventory into the bounded shape a
@@ -881,7 +887,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           (if ($tasks | length) > $child_n then {surface:"endpoints",count:(($tasks | length) - $child_n)} else empty end),
           (if $landed_n > 0 and ($landed_all | length) > $landed_n then {surface:"landed",count:(($landed_all | length) - $landed_n)} else empty end)
         ]
-      }'
+      }'"$JQ_INPUTS_EXHAUSTED"
 }
 
 # Current registered-secondmate aggregation.
@@ -1211,7 +1217,7 @@ parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <dec
     | {provenance:"parent-status-keyed-fold",trust:"untrusted-supplement",
        activities:$activity_results,decisions:$decision_results,
        contradiction:any(($activity_results + $decision_results)[]; .verdict == "contradicts"),
-       inconclusive:any(($activity_results + $decision_results)[]; .verdict == "inconclusive")}'
+       inconclusive:any(($activity_results + $decision_results)[]; .verdict == "inconclusive")}'"$JQ_INPUTS_EXHAUSTED"
 }
 
 secondmate_current_json() {  # <parent-tasks-json>
@@ -1235,7 +1241,7 @@ secondmate_current_json() {  # <parent-tasks-json>
                               else "secondmate registration is unknown because the registry read is incomplete or unavailable" end),
               parent_task:$t} ])
     | sort_by(.id)
-    | {registry:$registry,records:.}') || return 1
+    | {registry:$registry,records:.}'"$JQ_INPUTS_EXHAUSTED") || return 1
   total_registered=$(printf '%s' "$union" | jq '[.records[] | select(.registered)] | length')
   total=$(printf '%s' "$union" | jq '.records | length')
   rows=$(printf '%s' "$union" | jq -c --argjson cap "$FM_SNAPSHOT_SECONDMATES" '(if $cap == 0 then .records else .records[:$cap] end)[]')
@@ -1321,6 +1327,7 @@ secondmate_current_json() {  # <parent-tasks-json>
       else
         summary_bytes=$(printf '%s' "$summary" | LC_ALL=C wc -c | tr -d ' ')
         if [ "$summary_bytes" -gt "$FM_SNAPSHOT_SECONDMATE_MAX_BYTES" ]; then
+          summary='{}'
           reason="structured home snapshot exceeded byte limit"
         elif ! printf '%s' "$summary" | jq -e --arg home "$home" --arg generated "$SNAPSHOT_NOW" --argjson remote "$remote" '
           .schema == "fm-secondmate-home-summary.v1" and .home == $home
@@ -1332,6 +1339,7 @@ secondmate_current_json() {  # <parent-tasks-json>
           and (.landed | type) == "array" and (.endpoints | type) == "array"
           and (.counts | type) == "object" and (.omitted | type) == "array"
         ' >/dev/null 2>&1; then
+          summary='{}'
           reason="structured home snapshot was malformed or stale"
         else
           summary_sampled=true
@@ -1383,7 +1391,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          eligible_queued:$summary.eligible_queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
-         terminal_evidence:$terminal,contradiction:$contradiction}')
+         terminal_evidence:$terminal,contradiction:$contradiction}'"$JQ_INPUTS_EXHAUSTED")
     else
       if [ -n "$event_raw" ]; then
         provenance='parent-event-fallback'
@@ -1412,9 +1420,9 @@ secondmate_current_json() {  # <parent-tasks-json>
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
          active_children:[],decisions_open:[],holds:[],queued:[],eligible_queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,eligible_queued:0,landed:0,endpoints:0},omitted:[],
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
-         terminal_evidence:$terminal,contradiction:false}')
+         terminal_evidence:$terminal,contradiction:false}'"$JQ_INPUTS_EXHAUSTED")
     fi
-    records=$(printf '%s\n' "$records" "$record" | jq -n 'input as $records | input as $record | $records + [$record]')
+    records=$(printf '%s\n' "$records" "$record" | jq -n 'input as $records | input as $record | $records + [$record]'"$JQ_INPUTS_EXHAUSTED")
   done <<EOF
 $rows
 EOF
@@ -1424,7 +1432,7 @@ EOF
     --argjson shown "$shown" \
     --argjson truncated "$truncated" \
     'input as $union | input as $records
-     | {registry:$union.registry,records:$records,total_registered:$total_registered,total:$total,shown:$shown,truncated:$truncated}'
+     | {registry:$union.registry,records:$records,total_registered:$total_registered,total:$total,shown:$shown,truncated:$truncated}'"$JQ_INPUTS_EXHAUSTED"
 }
 
 secondmate_landed_from_current_json() {  # <secondmate-current-json>
@@ -1443,7 +1451,7 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
      partial:[ $current.records[]
        | select(.provenance.selected == "structured-home" and .provenance.trust == "partial-structured")
        | .home // ("<" + .id + ": partial>")]}
-    | .records |= sort_by([(.completion.date // ""), .id]) | .records |= reverse'
+    | .records |= sort_by([(.completion.date // ""), .id]) | .records |= reverse'"$JQ_INPUTS_EXHAUSTED"
 }
 
 # The typed programme-continuation resolution (bin/fm-continuation-resolve.sh,
@@ -1531,4 +1539,4 @@ printf '%s\n' "$BACKLOG_JSON" "$TASKS_JSON" "$MAIN_INVENTORY_JSON" "$SCOUT_REPOR
      secondmate_guidance:{
        note:"For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
      }
-   }'
+   }'"$JQ_INPUTS_EXHAUSTED"

@@ -48,12 +48,14 @@
 # call can instead see a benign no-op 200, so fm-x-followup.sh's local
 # window/cap pruning remains the primary guard.
 #
-# Any other 4xx is a rejection of THIS post by the relay and exits 10: the exact
+# Any other 4xx except 401/403 is a rejection of THIS post by the relay and exits 10: the exact
 # payload stays retained as an undelivered record under state/outbound-writes/,
 # a later post to the same request and endpoint is refused (also exit 10) until
 # that record ages out or an operator passes FM_OUTBOUND_WRITE_ACK=<record-id>,
 # and no caller may retry it automatically (bin/fm-outbound-write-lib.sh).
-# 5xx, 408, 425, 429, and transport failures stay exit 1 (retryable).
+# A 401/403 is an authentication failure to repair and re-send, not a content
+# rejection, so it stays exit 1 with its record retained as retryable; 5xx, 408,
+# 425, 429, any non-4xx status, and transport failures also stay exit 1 (retryable).
 #
 # Reply platform + split budget are resolved per axis: an explicit
 # FMX_REPLY_PLATFORM / FMX_REPLY_MAX_CHARS env override wins (fm-x-followup passes

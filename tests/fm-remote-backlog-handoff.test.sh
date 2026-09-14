@@ -238,6 +238,12 @@ case "${FM_FAKE_SSH_MODE:-normal}:$command_name" in
     printf 'received: ios moved=0 already=0\n'
     exit 0
     ;;
+  silent-receipt:fm-backlog-receive.sh)
+    # An older destination runtime ingests for real and exits 0 but prints no
+    # receipt line at all: the parent has no destination verdict either way.
+    "$FM_FAKE_REMOTE_ENTRYPOINT" "$@" >/dev/null
+    exit 0
+    ;;
   *) exec "$FM_FAKE_REMOTE_ENTRYPOINT" "$@" ;;
 esac
 SH
@@ -549,6 +555,35 @@ handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending >/dev/null \
   || fail "a mismatched receipt did not recover through resume-pending once the destination answered honestly"
 assert_absent "$PARENT/data/handoff/ios.outbox.md" "recovery after a mismatched receipt left its outbox pending"
 pass "a remote handoff whose receipt does not account for the sent items is undelivered and preserved for retry"
+
+# A receipt with no received: line is no destination verdict at all: the leg is
+# recorded unknown (readback unavailable), never accepted, never undelivered,
+# and the outbox stays preserved until the destination answers.
+write_backlog '- [ ] silent-receipt - destination exits 0 without a receipt line (repo: alpha)'
+set +e
+FM_FAKE_SSH_MODE=silent-receipt handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios silent-receipt \
+  > "$TMP_ROOT/silent-receipt.out" 2>&1
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "remote handoff claimed success on a receipt with no received: line: $(cat "$TMP_ROOT/silent-receipt.out")"
+assert_contains "$(cat "$TMP_ROOT/silent-receipt.out")" 'carried no received: line' \
+  "a missing receipt line was not reported as missing"
+assert_contains "$(cat "$TMP_ROOT/silent-receipt.out")" 'recorded unknown' \
+  "a missing receipt line was not reported as an unknown delivery"
+assert_not_contains "$(cat "$TMP_ROOT/silent-receipt.out")" 'read-back mismatch' \
+  "a missing receipt line was mislabelled as a read-back mismatch"
+assert_present "$PARENT/data/handoff/ios.outbox.md" \
+  "a missing receipt line discarded the recoverable outbox"
+ledger_rec=$(grep -l 'correlation=handoff:ios:' "$PARENT/state/outbound-writes"/*.record | xargs grep -l '^readback=unavailable$' | head -1)
+[ -n "$ledger_rec" ] || fail "the silent handoff left no ledger record with readback=unavailable"
+grep -q '^outcome=unknown$' "$ledger_rec" || fail "the silent handoff record is not unknown: $(cat "$ledger_rec")"
+grep -q '^class=transport-lost$' "$ledger_rec" || fail "the silent handoff record is not transport-lost: $(cat "$ledger_rec")"
+handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending >/dev/null \
+  || fail "a silent receipt did not recover through resume-pending once the destination answered"
+assert_absent "$PARENT/data/handoff/ios.outbox.md" "recovery after a silent receipt left its outbox pending"
+[ "$(grep -cF silent-receipt "$REMOTE/data/backlog.md")" -eq 1 ] \
+  || fail "recovery after a silent receipt lost or duplicated the item"
+pass "a remote handoff whose receipt carries no received: line is recorded unknown, never delivered, and preserved for retry"
 
 write_backlog '- [ ] route-race - remains dispatchable through retirement (repo: alpha)'
 registry_lock="$PARENT/state/.secondmate-registry.lock"

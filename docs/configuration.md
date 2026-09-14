@@ -651,7 +651,7 @@ When an image is attached, the dry-run record uses compact `{media_type, bytes, 
 In dry-run, `fm-x-dismiss.sh` records `{request_id, endpoint:"dismiss"}` to the same outbox path, prints a `DRY RUN` summary, echoes the `request_id`, and exits 0.
 The live answer and follow-up bodies intentionally stay the same shape, including optional `image`; the relay distinguishes them by endpoint, and dismiss stays `{request_id}`.
 These paths need `jq` to build the JSON payload, but they run before token and network checks, so they need neither `FMX_PAIRING_TOKEN` nor `curl`.
-A live reply, follow-up, or dismiss first retains its exact POST body in `state/outbound-writes/` and then classifies the relay's answer from the returned status alone: any 4xx other than 401, 403, and 409 is a rejection that exits 10, stays recorded as undelivered, and is never re-posted automatically, while 5xx and transport failures remain the retryable exit 1 (`bin/fm-outbound-write-lib.sh`).
+A live reply, follow-up, or dismiss first retains its exact POST body in `state/outbound-writes/` and then classifies the relay's answer from the returned status alone: any 4xx other than 401, 403, and 409 is a rejection that exits 10, stays recorded as undelivered, and is never re-posted automatically, while a 401 or 403 authentication failure, every non-4xx status, and a transport failure remain the retryable exit 1 (`bin/fm-outbound-write-lib.sh`).
 
 ### Promised public replies (state/public-followup)
 

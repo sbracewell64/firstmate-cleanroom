@@ -2657,7 +2657,7 @@ qualified_ci_ready_meta() {  # <case-dir> <run-id>
   local case_dir=$1 run=$2 head effect
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
   effect=$(jq -cn --arg task task-x1 --arg gen teardown-test-task-x1 \
-    --arg attempt 'producer:0' --arg run "$run" --arg head "$head" \
+    --arg attempt 'producer-0' --arg run "$run" --arg head "$head" \
     --arg pr 'https://github.com/o/r/pull/7' \
     '{qualification:{schema:"no-mistakes/ci-qualification/v1",run:$run,repo:"portable-fixture",
       branch:"fm/task-x1",head:$head,status:"running",attempt:"producer:0",
@@ -2670,16 +2670,45 @@ qualified_ci_ready_meta() {  # <case-dir> <run-id>
   printf '%s\n' \
     'stage=ci-ready' \
     "stage_run=$run" \
-    'stage_attempt=producer:0' \
+    'stage_attempt=producer-0' \
     'stage_branch=fm/task-x1' \
     "stage_head=$head" \
     'stage_gen=teardown-test-task-x1' \
     'stage_pr=https://github.com/o/r/pull/7' \
     "stage_ci_ready_effect=$effect" \
     >> "$case_dir/state/task-x1.meta"
-  printf '%s\n' "run_id=$run" 'attempt_id=producer:0' "nm_home=$case_dir" \
+  printf '%s\n' "run_id=$run" 'attempt_id=producer-0' "nm_home=$case_dir" \
     > "$case_dir/state/task-x1.nm-observe"
   printf '%s' "$effect" | jq -c .qualification > "$case_dir/qualification.json"
+}
+
+# fm_completion_retire only writes the durable receipt for a DISPATCHED
+# ci-ready record, so a qualification-obligated fixture without one never
+# reaches the archive teardown must still write after its own abort.
+dispatched_ci_ready_handoff() {  # <case-dir> <run-id>
+  local case_dir=$1 run=$2 head report contract identity
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  report="$case_dir/data/task-x1/report.md"
+  mkdir -p "$case_dir/data/task-x1"
+  printf 'portable teardown archive fixture\n' > "$report"
+  contract=$(jq -cnS --arg head "$head" --arg run "$run" --arg report "$report" \
+    --arg sha "$(fm_pr_sha256 "$report")" \
+    '{schema:"fm-completion-handoff/v1",task:"task-x1",generation:"teardown-test-task-x1",
+      attempt:"producer-0",run:$run,candidate:$head,source_head:$head,
+      report:{path:$report,sha256:$sha},
+      action:{id:"ci",kind:"ci-ready",owner:"task-x1",generation:"teardown-test-task-x1",
+      pr:"https://github.com/o/r/pull/7"}}')
+  if command -v shasum >/dev/null 2>&1; then
+    identity=$(printf '%s' "$contract" | shasum -a 256 | cut -d' ' -f1)
+  else
+    identity=$(printf '%s' "$contract" | sha256sum | cut -d' ' -f1)
+  fi
+  printf 'completion_handoff=%s\n' "$(jq -cn --argjson contract "$contract" \
+    --arg identity "$identity" \
+    --arg receipt "stage:ci-ready:$run:https://github.com/o/r/pull/7" \
+    '{identity:$identity,contract:$contract,released:true,status:"dispatched",
+      next_owner:"merge-authority",reason:"effect-confirmed",receipt:$receipt}')" \
+    >> "$case_dir/state/task-x1.meta"
 }
 
 # Teardown's own abort cancels the run, and the producer then stops answering
@@ -2711,7 +2740,7 @@ test_parked_own_run_teardown_survives_its_own_abort() {
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
   qualified_ci_ready_meta "$case_dir" 01RUN
-
+  dispatched_ci_ready_handoff "$case_dir" 01RUN
   rc=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$(git -C "$case_dir/wt" rev-parse HEAD)")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
@@ -2719,6 +2748,11 @@ test_parked_own_run_teardown_survives_its_own_abort() {
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 0 "$rc" "parked-run-qualified: teardown should complete: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/data/task-x1/completion-receipt.json" \
+    'parked-run-qualified: the post-abort archive lost the dispatched CI-ready receipt'
+  [ "$(jq -r .receipt "$case_dir/data/task-x1/completion-receipt.json")" \
+    = 'stage:ci-ready:01RUN:https://github.com/o/r/pull/7' ] \
+    || fail 'parked-run-qualified: the archived receipt is not the dispatched one'
   assert_grep 'abort --run 01RUN' "$case_dir/nm-abort.log" \
     'parked-run-qualified: the parked own run was never aborted'
   ! grep -q 'exact qualification is invalidated' "$case_dir/stderr" \
@@ -2738,7 +2772,7 @@ test_qualification_revoked_by_another_cause_still_refuses() {
   qualified_ci_ready_meta "$case_dir" 01RUN
   # The recorded effect no longer matches the record's own identity, which no
   # abort can cause and which is checked before the producer is consulted.
-  sed -i 's/^stage_attempt=producer:0$/stage_attempt=producer:9/' "$case_dir/state/task-x1.meta"
+  sed -i 's/^stage_attempt=producer-0$/stage_attempt=producer-9/' "$case_dir/state/task-x1.meta"
 
   rc=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$(git -C "$case_dir/wt" rev-parse HEAD)")" \
@@ -2752,6 +2786,41 @@ test_qualification_revoked_by_another_cause_still_refuses() {
   assert_present "$case_dir/state/task-x1.meta" \
     'parked-run-other-cause: refused teardown erased the unresolved record'
   pass "a qualification invalidated by any other cause still refuses after the abort"
+}
+
+# The abort excuses the PRODUCER READ alone - a cancelled run cannot answer.
+# It never excuses the retained record itself, which no cancellation touches.
+# The authorized discard is the only path that runs the post-abort checks at
+# all here, because an unforced teardown refuses at the first one.
+test_invalid_retained_qualification_is_never_adopted_after_the_abort() {
+  local case_dir rc effect
+  case_dir=$(make_case parked-run-invalid-tuple)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  qualified_ci_ready_meta "$case_dir" 01RUN
+  dispatched_ci_ready_handoff "$case_dir" 01RUN
+  # A status outside running|completed is not a qualification the producer
+  # could ever have answered, and the producer is what the abort silenced.
+  effect=$(sed -n 's/^stage_ci_ready_effect=//p' "$case_dir/state/task-x1.meta" \
+    | jq -c '.qualification.status="failed"')
+  grep -v '^stage_ci_ready_effect=' "$case_dir/state/task-x1.meta" > "$case_dir/meta.tmp"
+  printf 'stage_ci_ready_effect=%s\n' "$effect" >> "$case_dir/meta.tmp"
+  mv "$case_dir/meta.tmp" "$case_dir/state/task-x1.meta"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$(git -C "$case_dir/wt" rev-parse HEAD)")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_FAKE_QUALIFICATION_JSON="$case_dir/qualification.json" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-invalid-tuple: the authorized discard should complete: $(cat "$case_dir/stderr")"
+  assert_grep 'abort --run 01RUN' "$case_dir/nm-abort.log" \
+    'parked-run-invalid-tuple: the post-abort checks were never reached'
+  assert_absent "$case_dir/data/task-x1/completion-receipt.json" \
+    'parked-run-invalid-tuple: an invalid retained tuple was archived as a qualified receipt'
+  grep -q 'warning: exact qualification is invalidated' "$case_dir/stderr" \
+    || fail "parked-run-invalid-tuple: the discard did not report what it could not qualify"
+  pass "an invalid retained tuple is never adopted by the self-cancel allowance"
 }
 
 test_bound_run_without_ci_ready_tears_down() {
@@ -2883,6 +2952,7 @@ test_recorded_ci_ready_effect_still_requires_qualification() {
 test_metadata_parse_refuses_a_duplicated_authority_field
 test_parked_own_run_teardown_survives_its_own_abort
 test_qualification_revoked_by_another_cause_still_refuses
+test_invalid_retained_qualification_is_never_adopted_after_the_abort
 test_bound_run_without_ci_ready_tears_down
 test_bound_run_without_ci_ready_force_discards
 test_unreleased_handoff_refuses_then_force_discards

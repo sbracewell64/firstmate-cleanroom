@@ -330,9 +330,20 @@ FM_NM_EFFECT_TUPLE=${FM_NM_EFFECT_TUPLE:-}
 # A run THIS process itself cancelled. The producer stops answering for a
 # cancelled run, so a caller that just cancelled one would otherwise be refused
 # by the consequence of its own action. Only the producer read is excused, and
-# only for this exact run id: the retained record's identity is not something a
-# cancellation can change, so every other cause still refuses unchanged.
-FM_NM_RUN_SELF_CANCELLED=${FM_NM_RUN_SELF_CANCELLED:-}
+# only for this exact run id: the retained record must still validate, so every
+# other cause still refuses unchanged.
+#
+# The allowance is this process's own in-memory fact, never an inherited one.
+# The load marker carries the pid that cleared it, so an exported value from a
+# parent is discarded on the first source here rather than believed - otherwise
+# any fm-stage.sh, fm-pr-check.sh or fm-pr-merge.sh that inherited the task's
+# run id would transition against a qualification the producer has revoked.
+# Clearing it only on that first source is what lets the abort's own record
+# survive fm-pr-lib.sh pulling this file in again mid-teardown.
+if [ "${FM_NM_RUN_LIB_LOADED:-}" != "$$" ]; then
+  FM_NM_RUN_LIB_LOADED=$$
+  FM_NM_RUN_SELF_CANCELLED=
+fi
 
 # One conditional consumer for the producer's revocable exact-head tuple.
 # A successful read is current only at the producer snapshot. Every later
@@ -440,6 +451,7 @@ fm_nm_effect_current() {
   if ! FM_NM_EFFECT_TUPLE=$(NM_HOME="$nm_home" NO_MISTAKES_HOME="$nm_home" \
       fm_nm_qualification_read "$dir" "$run" "$head" "$branch" "$pr" "$qualification"); then
     [ -n "$FM_NM_RUN_SELF_CANCELLED" ] && [ "$FM_NM_RUN_SELF_CANCELLED" = "$run" ] || return 1
+    fm_nm_qualification_valid "$qualification" "$run" "$head" "$branch" "$pr" || return 1
     FM_NM_EFFECT_TUPLE=$qualification
   fi
   FM_NM_EFFECT_REASON=

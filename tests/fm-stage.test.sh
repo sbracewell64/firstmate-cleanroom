@@ -350,6 +350,15 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
     || fail "the unchanged repeat did not track the producer tuple back"
   [ "$(stage_lines a1)" = "$before_lines" ] \
     || fail "tracking the producer tuple appended a receipt"
+  # The self-cancel allowance belongs to the process that aborted the run, not
+  # to whatever the environment happens to carry. An inherited value must not
+  # buy a transition against a qualification the producer has revoked.
+  out=$(FM_NM_RUN_SELF_CANCELLED=01RUNA FM_FAKE_AXI_STATUS=$(run_toon 01RUNA fm/a1 failed "$head") \
+    "$STAGE" a1 landing 2>&1); rc=$?
+  expect_code 1 "$rc" "an inherited self-cancel flag must not qualify a revoked transition (got: $out)"
+  assert_contains "$out" "reason=QUALIFICATION_REVOKED" "the revoked producer still refuses the transition"
+  [ "$(meta_get a1 stage)" = ci-ready ] || fail "the refused landing advanced the recorded stage"
+  [ "$(stage_lines a1)" = "$before_lines" ] || fail "the refused landing appended a receipt"
   ! grep -qE '^axi (run|respond|abort|sync)' "$NM_LOG" || fail "the stage owner must never start or answer a run"
   pass "fm-stage ci-ready: only the canonical run-step verdict certifies, never a hand-written line"
 }

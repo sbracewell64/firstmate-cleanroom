@@ -450,7 +450,7 @@ EOF
 # long-lived manager dependency: the same digest must not be re-typed into the
 # away pane every scan. Unchanged is silent; changed reports once.
 test_away_reconcile_escalation_reports_once_per_identity() {
-  local dir state fakebin
+  local dir state fakebin before
   dir=$(make_supercase away-reconcile-dedupe); state="$dir/state"; fakebin="$dir/daemon-bin"
   mkdir -p "$fakebin"
   ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$fakebin/fm-timeout-lib.sh"
@@ -502,6 +502,24 @@ EOF
     || fail "a changed per-task disposition did not report again exactly once"
   [ "$(grep -c 'reason=dependency-held' "$state/.subsuper-escalations")" = 1 ] \
     || fail "the changed result did not carry its new disposition"
+
+  # The ordinary lease-refused shape: neither the handoff error, its trailing
+  # next: line, nor the prepended CNO names a task. They must not share one
+  # marker - two lines in one bucket overwrite each other's identity and
+  # re-type the whole batch every scan, forever.
+  printf '%s\n' \
+    "error: completion-handoff refused - task 't1' is leased to the main supervision actor" \
+    'next: release the lease, then resume the handoff' \
+    > "$dir/reconcile-output"
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  before=$(grep -c . "$state/.subsuper-escalations")
+  grep -q 'completion-handoff refused' "$state/.subsuper-escalations" \
+    || fail "the lease-refused reconcile line never reached the away pane"
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c . "$state/.subsuper-escalations")" = "$before" ] \
+    || fail "unlabelled reconcile lines were re-typed into the away pane on an unchanged scan"
   pass "away reconcile escalations report once per identity, not once per scan"
 }
 

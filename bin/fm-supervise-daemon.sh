@@ -1180,7 +1180,7 @@ housekeeping() {  # <state>
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
       # Its own line, never fused onto whichever per-task line the resolver's
-      # rotation put first: fusing would make the sorted key below differ
+      # rotation put first: fusing would make that line's marker identity differ
       # between scans for identical state. A truncated output under the 10s
       # expiry is genuinely different content and is meant to report again.
       [ "$completion_rc" -eq 0 ] \
@@ -1195,9 +1195,15 @@ housekeeping() {  # <state>
       # would differ every scan for state that never changed.
       while IFS= read -r completion_line; do
         [ -n "$completion_line" ] || continue
-        completion_key=$(printf '%s' "$completion_line" | sed -n 's/^[A-Z_]*: task=\([^ ]*\).*/\1/p')
-        [ -n "$completion_key" ] || completion_key=away-reconcile
-        completion_marker=$(status_daemon_seen_marker_path "$state" "completion-$completion_key")
+        completion_key=$(printf '%s' "$completion_line" | tr ' \t' '\n\n' \
+          | sed -n 's/^task=\(..*\)$/\1/p' | head -n 1)
+        # A line that names no task - the CNO disposition above, a lease-refused
+        # handoff error, a refusal's trailing next: line - keys to its own
+        # content. One shared bucket would make two such lines overwrite each
+        # other's identity and re-type both every scan, forever.
+        [ -n "$completion_key" ] \
+          || completion_key="away-reconcile-$(printf '%s' "$completion_line" | cksum | tr ' ' '-')"
+        completion_marker=$(status_daemon_completion_marker_path "$state" "$completion_key")
         completion_ident=$(status_observed_signature "$state" "${#completion_line}" "$completion_line")
         status_presentation_marker_reported_matches "$completion_marker" "$completion_ident" && continue
         if escalate_add "$state" "$completion_line"; then

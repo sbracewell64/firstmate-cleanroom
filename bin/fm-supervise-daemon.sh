@@ -700,7 +700,7 @@ escalate_add() {  # <state> <distilled-item>
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
 programme_digest_token() {  # [<state>]
   local out rc=0 state=${1:-} token presented pending
-  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
+  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary) || rc=$?
   case "$rc" in
     0)
       if [ -n "$state" ]; then

@@ -92,6 +92,9 @@ The arm layer appends one tab-separated record per observed cycle to `state/.wat
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
 Every record also carries `restart_stop`, the disposition of the `--restart` stop the writing arm performed before it launched.
 It is `confirmed` when the recorded watcher was observed gone, `unconfirmed` when the stop was not confirmed within its bound, whether the bound elapsed with the watcher alive or the stop could not be delivered to a watcher that is still there, `no-live-watcher` when this home's lock recorded no live identity-matched watcher to stop, and `none` for an arm that was not a `--restart`.
+This outcome errs only toward caution: it can record `unconfirmed` for a watcher that was in fact provably gone, because a pid recycled inside the restart window is read as gone by the stop helper but still answers the liveness poll that gates `confirmed`.
+It never records `confirmed` for a watcher that was not observed gone.
+`exit_code` and `signal` are both the literal `unknown` when the arm could not confirm its child's stop within its bound, because an arm that never observed the child exit has no status to wait for, so a consumer must not assume `exit_code` is a number.
 `successor` stays the last field of the record because it is the one field rewritten in place, when a persistent adapter's successor arm resolves its predecessor's outcome; any further field is appended before it.
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.

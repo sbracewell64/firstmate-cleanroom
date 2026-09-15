@@ -1475,8 +1475,13 @@ programme_continuation_json() {
     rm -f -- "$errfile"
   else
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>/dev/null) || rc=$?
-    diag='resolver diagnostics unavailable: they could not be staged'
+    diag='resolver diagnostics: unavailable, they could not be staged'
   fi
+  # Separating the streams means ROUTING both, not discarding one, so the
+  # captured stderr is relayed here rather than dropped on a successful
+  # resolve; bin/fm-programme-projection.sh states that policy in full,
+  # including why exit 3 is the one deliberate exception.
+  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
   case "$rc" in
     0)
       identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')

@@ -107,6 +107,19 @@
       ]
     },
     {
+      "id": "bin/fm-codex-continuation-lib.sh:fm_codex_continuation_refuse",
+      "kind": "enforced",
+      "invariant": "A Codex primary turn may not finalize with unfinished work unless a verified post-final continuation owner is proven.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-turnend-guard.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Reached from the --codex branch of the shared turn-end guard, which the .codex/hooks.json Stop hook invokes. Refusal is bounded: it blocks with exit 2 while the session-scoped recovery budget remains, then records a durable CNO receipt and returns 0 rather than looping forever."
+    },
+    {
       "id": "bin/fm-commit-identity-verify.sh",
       "kind": "enforced",
       "invariant": "A no-mistakes ship task's PR head carries the obligated commit identity and no contaminated commit.",

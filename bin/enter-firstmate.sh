@@ -16,8 +16,8 @@
 # FM_HOME contract in <code-root>/docs/configuration.md ("FM_HOME").
 #
 # PRIMARY CONSOLE PROFILE MENU (runtime-pin-adoption-gap, slice 1). The console's
-# harness+model comes from a four-profile menu (console_profile_* below):
-# fable-5.1 (default), opus-4-8 (Opus 4.8 only), codex-astra, codex-sol. Select
+# harness+model comes from a three-profile menu (console_profile_* below):
+# fable-5.1, opus-4-8 (Opus 4.8 only), and codex-luna (default). Select
 # with FM_CONSOLE_PROFILE or config/console-profile. An unqualified profile is
 # PENDING with its exact gate and is never silently substituted; the console is
 # $0/subscription-only at the composed launch. Worker and pipeline model profiles
@@ -258,7 +258,7 @@
 #         FM_ENTRY_COMPOSER_WAIT=<s>                     bound the convergence waits for a just-restored harness's composer to read empty (default 60)
 #         FM_ENTRY_STARTUP_WAIT=<s>                      bound for observed matching startup; default includes arm, projection and native preflight budgets
 #         FM_ENTRY_LIB=1 . enter-firstmate.sh            load only the pure decision functions (tests)
-#         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default fable-5.1)
+#         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default codex-luna)
 #         FM_HARNESS=<harness>                           explicit harness override (e.g. bash evidence runs); bypasses the profile menu
 #   Host paths (env override, else $FM_HOME/config/<name>): FM_CODE_ROOT/config code-root,
 #   FM_TOOLS_ROOT/config tools-root, FM_CONTROL_RESOLVER/config control-resolver,
@@ -510,43 +510,47 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 
 # --- Primary console profile menu (runtime-pin-adoption-gap, slice 1) ----------
 # Tested by enter-firstmate-profile.test.sh (FM_ENTRY_LIB=1 loads this block).
-# The primary console's four-profile menu selects ONLY the primary console's
+# The primary console's three-profile menu selects ONLY the primary console's
 # harness + model + permission posture. Worker and pipeline model profiles are
 # SEPARATE owners (the code root's bin/fm-spawn.sh and config/crew-dispatch.json)
 # and are never switched from here. Invariants held at every profile:
-#   * fable-5.1 is the default and the only profile qualified out of the box.
+#   * codex-luna is the default and the only profile qualified out of the box.
 #   * An unqualified profile is PENDING with its exact gate and is NEVER
 #     silently substituted for another; console_run refuses rather than launch.
 #   * $0 / subscription-only is enforced at the composed-launch boundary
 #     (console_argv_subscription_only): no API/gateway/provider override, no paid
 #     overage, and no invented budget flag is ever composed or accepted.
-console_profile_default() { printf 'fable-5.1'; }
-console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-astra codex-sol'; }
+console_profile_default() { printf 'codex-luna'; }
+console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna'; }
 console_profile_harness() {  # <profile> -> claude | codex | ''
   case "${1:-}" in
     fable-5.1|opus-4-8)    printf claude ;;
-    codex-astra|codex-sol) printf codex ;;
+    codex-luna)            printf codex ;;
     *) printf '' ;;
   esac
 }
 # The exact model selector composed onto the harness. Pinned per profile and not
-# overridable, so the Opus-4.8 profile can never resolve to Opus 5.
+# overridable, so a profile name always describes the model it resolves to.
+# On this ChatGPT account, direct `codex exec -m gpt-6-astra --skip-git-repo-check`
+# and `codex exec -m gpt-5.6-sol --skip-git-repo-check` returned HTTP 400 because
+# those selectors are unsupported for Codex with a ChatGPT account.
+# `codex exec` succeeded with gpt-5.6-luna, which matches the run header and
+# ~/.codex/config.toml, so the two unsupported selectors are retired here.
 console_profile_model() {  # <profile> -> selector | ''
   case "${1:-}" in
     fable-5.1)   printf fable ;;
     opus-4-8)    printf claude-opus-4-8 ;;
-    codex-astra) printf gpt-6-astra ;;
-    codex-sol)   printf gpt-5.6-sol ;;
+    codex-luna)  printf gpt-5.6-luna ;;
     *) printf '' ;;
   esac
 }
-# Defensive invariant for the Opus-4.8-only profile: refuse if its selector ever
-# reads as anything but the pinned 4.8 id (an Opus 5 id is rejected outright).
+# Defensive invariant for every profile: refuse qualification unless the pinned
+# selector is the exact selector known to be valid for this profile and account.
 console_profile_model_ok() {  # <profile> <model> -> 0 ok / 1 refuse
-  case "${1:-}" in
-    opus-4-8) case "${2:-}" in claude-opus-4-8) return 0 ;; *) return 1 ;; esac ;;
+  case "${1:-}:${2:-}" in
+    fable-5.1:fable|opus-4-8:claude-opus-4-8|codex-luna:gpt-5.6-luna) return 0 ;;
   esac
-  return 0
+  return 1
 }
 # console_profile_qualify <profile> <harness-installed 0|1> <model-allowed 0|1>
 # -> QUALIFIED | PENDING: <exact gate>.  Pure: the caller gathers the two facts.
@@ -555,7 +559,7 @@ console_profile_qualify() {
   h=$(console_profile_harness "$p")
   m=$(console_profile_model "$p")
   [ -n "$h" ] || { printf 'PENDING: %s is not a known profile' "$p"; return 0; }
-  console_profile_model_ok "$p" "$m" || { printf 'PENDING: %s resolved model %s is not the pinned Opus 4.8 id; refusing' "$p" "$m"; return 0; }
+  console_profile_model_ok "$p" "$m" || { printf 'PENDING: profile %s pins selector %s that this account does not accept; refusing' "$p" "$m"; return 0; }
   [ "$installed" = 1 ] || { printf 'PENDING: harness %s is not installed' "$h"; return 0; }
   [ "$allowed" = 1 ]   || { printf 'PENDING: model %s (%s) is not yet qualified on the zero-dollar subscription plan; adoption pending' "$m" "$h"; return 0; }
   printf 'QUALIFIED'
@@ -583,7 +587,7 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
   case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
   console_profile_qualify "$p" "$installed" "$allowed"
 }
-# Sole owner of the four-profile primary console menu layout: heading, the active
+# Sole owner of the three-profile primary console menu layout: heading, the active
 # and default markers, the qualified set, the $0/subscription note, and every
 # profile's harness, pinned model, permission posture and gate verdict. Called by
 # both --doctor and --print-console-menu so the two never drift. Reads only
@@ -802,7 +806,7 @@ cold_arm_supersede_stale() {  # <gen> <owner-pid>
 if [ -n "${FM_ENTRY_LIB:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 # --- Internal: render the profile menu and exit -------------------------------
-# Renders ONLY the four-profile console menu and exits, before every mandatory
+# Renders ONLY the three-profile console menu and exits, before every mandatory
 # environment gate (code/tools root, backend, herdr session, tools surface,
 # no-mistakes). It resolves the active profile exactly as the launch path does,
 # then defers to the single menu owner. It starts, execs and installs nothing and
@@ -856,7 +860,7 @@ case "$PATH" in
 esac
 
 # --- Primary console profile resolution (runtime) ------------------------------
-# The four-profile menu (console_profile_* above) drives the primary console's
+# The three-profile menu (console_profile_* above) drives the primary console's
 # harness + model. A non-native FM_HARNESS override (evidence runs) skips it. The
 # selected profile is refused, never silently swapped, when it is not QUALIFIED;
 # --doctor shows every profile's gate and starts nothing.

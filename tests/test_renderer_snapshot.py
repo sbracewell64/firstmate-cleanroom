@@ -46,19 +46,19 @@ class SnapshotTests(unittest.TestCase):
 
     def test_rerender_removes_revoked_grants_and_stale_nested_files(self):
         grant = self.home/'config/console-qualified-profiles'
-        grant.write_text('codex-astra\n')
+        grant.write_text('codex-luna\n')
         nested = self.home/'config/nested'
         nested.mkdir()
         (nested/'setting').write_text('retired\n')
         self.staged()
-        self.assertEqual((self.stage/'config/console-qualified-profiles').read_text(), 'codex-astra\n')
+        self.assertEqual((self.stage/'config/console-qualified-profiles').read_text(), 'codex-luna\n')
         first = list((self.stage/'rollback').iterdir())[0]
         grant.unlink()
         (nested/'setting').unlink()
         self.staged()
         self.assertFalse((self.stage/'config/console-qualified-profiles').exists())
         self.assertFalse((self.stage/'config/nested/setting').exists())
-        self.assertEqual((first/'config/console-qualified-profiles').read_text(), 'codex-astra\n')
+        self.assertEqual((first/'config/console-qualified-profiles').read_text(), 'codex-luna\n')
         self.assertEqual(len(list((self.stage/'rollback').iterdir())), 2)
 
     @unittest.skipUnless(os.name == 'posix', 'requires symlink support')

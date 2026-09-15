@@ -923,6 +923,7 @@ FMX_FOLLOWUP_MAX_COUNT=3   # local cap on Relay completion follow-ups per linked
 FM_PF_RETRY_BACKOFF_SECS=900   # seconds before the next attempt after a retryable promised-public-reply delivery error
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_STOP_REDELIVER_POLLS=20   # tenths of a second between re-deliveries of a stop signal while confirming a process stopped; the gap keeps a second signal from aborting a close path already running
+FM_ARM_STOP_POLLS=100   # tenths of a second an fm-watch-arm close path spends confirming its watcher child stopped; default 300 on Git Bash/MSYS, and floored so it always covers one delivery plus one re-delivery
 FM_AUTOARM_RETIRE_POLLS=30   # tenths of a second the legacy auto-arm reclaim spends confirming a retired owner stopped; it holds .claude-autoarm.lock.steal for that whole window, up to 3s rather than the 1s it waited before
 FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and the primary turn-end guard treat a watcher beacon as stale
 FM_CLAUDE_AUTOARM_ATTEMPTS=2   # bounded Stop-owned arm attempts per Claude auto-arm cycle; accepted values are 1, 2, or 3

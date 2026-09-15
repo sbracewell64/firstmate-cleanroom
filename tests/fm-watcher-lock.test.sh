@@ -936,6 +936,54 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   pass "SIGSTOP distinguishes live PID from stale beacon and termination records the exit class"
 }
 
+test_a_zombie_reads_live_but_yields_no_identity() {
+  # The predicate pair the --restart disposition's free-pid poll rests on. A
+  # forked child that exited while its parent has not reaped it is still visible
+  # to kill -0, so fm_pid_alive reports it live, while /proc/<pid>/cmdline is
+  # empty so fm_pid_identity fails and fm_stop_process_confirmed reads the target
+  # as gone. That split is why the poll exists: without it a restart would record
+  # `confirmed` for a pid the relaunched watcher still stands down against. This
+  # pins both halves, so the case fails the moment the premise stops being true.
+  local dir zpid go i
+  dir=$(make_case zombie-predicates)
+  go="$dir/reap.go"
+  command -v python3 >/dev/null 2>&1 || { pass "zombie predicate pair skipped: python3 is unavailable"; return; }
+  [ -r /proc/$$/cmdline ] \
+    || { pass "zombie predicate pair skipped: this host exposes no /proc cmdline"; return; }
+
+  python3 - "$dir/zombie.pid" "$go" <<'PYZ' &
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(pid))
+while not os.path.exists(sys.argv[2]):
+    time.sleep(0.05)
+os.waitpid(pid, 0)
+PYZ
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/zombie.pid" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  zpid=$(cat "$dir/zombie.pid" 2>/dev/null || true)
+  case "$zpid" in
+    ''|*[!0-9]*) : > "$go"; wait; fail "the zombie fixture never published a pid" ;;
+  esac
+
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$zpid" \
+    || { : > "$go"; wait; fail "a zombie was not read as live, so the free-pid poll has nothing to wait for"; }
+  if FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_identity "$2" >/dev/null 2>&1' _ "$LIB" "$zpid"; then
+    : > "$go"; wait
+    fail "a zombie yielded a process identity, so a stop would no longer read it as gone"
+  fi
+
+  : > "$go"
+  wait
+  pass "a zombie reads as live while yielding no identity, which is what the restart free-pid poll waits out"
+}
+
 test_pid_identity_is_locale_invariant() {
   # The portable fallback records its process identity under one locale, then
   # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
@@ -1662,6 +1710,7 @@ test_normal_cycle_end_sends_the_owned_child_no_stop
 test_an_unconfirmed_child_stop_is_never_the_arms_last_word
 test_restart_records_whether_its_stop_was_confirmed
 test_singleton_start
+test_a_zombie_reads_live_but_yields_no_identity
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc

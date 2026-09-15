@@ -1483,6 +1483,48 @@ test_a_captured_landed_head_never_regresses() {
 # A guard that cannot read the bytes has not proven the record clean. Read
 # failure is its own answer and never a pass, at the stage preflight and at the
 # publication boundary alike.
+# A local-only landing never pushes: bin/fm-merge-local.sh fast-forwards
+# refs/heads/<default> in the project clone and nothing else, so
+# refs/remotes/origin/<default> stays behind it forever. Asking only the ref that
+# happens to EXIST would let that stale remote ref answer for the branch that
+# actually landed the work, and every local-only task would refuse NO_READBACK
+# with no way through.
+test_a_local_only_landing_is_confirmed_from_the_local_branch() {
+  local out rc wt project landed
+  wt="$TMP_ROOT/wt-localonly"
+  project="$TMP_ROOT/project-localonly"
+  make_worktree "$wt" fm/localonly
+  make_task localonly local-only "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" localonly committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  landed=$(git -C "$wt" rev-parse HEAD)
+  out=$("$STAGE" localonly landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the worktree head: $out"
+  [ "$(meta_get localonly stage_landed_head)" = "$landed" ] || fail "the landed head was not captured"
+
+  # The clone has an origin remote whose tracking ref is behind, which is
+  # exactly the state a local merge leaves: the work is on refs/heads/main and
+  # was never pushed.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  git -C "$project" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$project" update-ref refs/remotes/origin/main "$(git -C "$wt" rev-parse main)"
+  git -C "$project" update-ref refs/heads/main "$landed"
+  git -C "$project" merge-base --is-ancestor "$landed" "$(git -C "$project" rev-parse refs/remotes/origin/main)" \
+    && fail "the fixture must leave the remote-tracking ref behind the landed head"
+  sed "s|^project=.*|project=$project|" "$STATE/localonly.meta" > "$TMP_ROOT/lo.rw"
+  mv "$TMP_ROOT/lo.rw" "$STATE/localonly.meta"
+
+  out=$("$STAGE" localonly activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a local-only landing must be able to activate: $out"
+  assert_not_contains "$out" "NO_READBACK" "a stale remote ref must not refuse a local-only landing"
+  [ "$(meta_get localonly stage_landed_head_confirmed)" = confirmed ] \
+    || fail "the local integration branch proves the landed head (got '$(meta_get localonly stage_landed_head_confirmed)')"
+  [ "$(status_stage_field "$(last_line localonly)" reason)" = "ancestor-of:${landed:0:12}:landed-head:${landed:0:12}" ] \
+    || fail "the read-back must name the ref that proved it (got $(status_stage_field "$(last_line localonly)" reason))"
+  pass "fm-stage activated: a local-only landing is confirmed from the local integration branch a stale remote ref would have shadowed"
+}
+
 test_an_unreadable_record_is_refused_not_assumed_clean() {
   local out rc stub wt
   wt="$TMP_ROOT/wt-unreadable"
@@ -1572,5 +1614,6 @@ test_a_captured_landed_head_never_regresses
 test_an_unresolved_capture_is_a_decision_not_a_blank
 test_activation_names_an_unconfirmed_landed_head_instead_of_refusing
 test_a_confirmed_landed_head_is_never_downgraded
+test_a_local_only_landing_is_confirmed_from_the_local_branch
 test_an_unreadable_record_is_refused_not_assumed_clean
 test_meta_replace_preserves_the_record_mode_and_contract

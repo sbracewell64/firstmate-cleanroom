@@ -365,6 +365,15 @@ fm_backlog_record_remove() {
 # stages is indistinguishable from a manufactured one at the moment a later
 # reader, a recovery, or an audit needs to trust it.
 #
+# WHAT IS GUARANTEED, AND WHAT IS NOT. The guarantee is on the WRITER side: the
+# publication guard below refuses a duplicated key, so a record answering one
+# twice cannot be created. Readers are NOT uniformly converged and this is not
+# claimed - bin/fm-backend.sh's fm_meta_get is permissive by contract, so the
+# readers that go through it still take the last value on a record conflicted
+# BEFORE that guard existed, while the strict readers named at fm_meta_get
+# refuse it. That disagreement on already-conflicted records is a named residual
+# with a tracked follow-up, not a closure.
+#
 # Three answers, never two. Prints the first duplicated key and returns 0;
 # returns 1 when the record is clean or absent; returns 2 when the record is
 # there but its bytes could not be read. UNREADABLE IS ITS OWN ANSWER AND NEVER

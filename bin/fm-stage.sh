@@ -94,9 +94,10 @@
 #   activated  Firstmate runs this after landing to record the read-back:
 #              the merge-notification marker bin/fm-pr-lib.sh writes with the PR
 #              identity, or the LANDED head reachable from the project clone's
-#              checked-out head, falling back to the candidate head when the
-#              landed head is absent or cannot be proven. No read-back at all
-#              refuses as NO_READBACK; nothing here fetches, merges, or syncs.
+#              INTEGRATION branch (landed_integration_proof owns which refs
+#              answer that), falling back to the candidate head when the landed
+#              head is absent or cannot be proven. No read-back at all refuses
+#              as NO_READBACK; nothing here fetches, merges, or syncs.
 #              Whether the captured landed head was itself proven is recorded
 #              apart, in stage_landed_head_confirmed, so proceeding on the
 #              candidate head never reads as having confirmed the landed one.
@@ -947,41 +948,53 @@ do_landing() {
   next_for landing
 }
 
-# landed_integration_head: the commit the project clone's INTEGRATION branch
-# points at - what "landed" actually means - or nothing when this cannot be
-# determined. bin/fm-tangle-lib.sh's fm_default_branch owns which branch that
-# is; the remote-tracking ref is preferred over the local branch because a
-# pooled project clone does not keep its local default current. Nothing here
-# fetches, so both reads are local.
+# landed_integration_proof: print the INTEGRATION tip that contains <head> - the
+# proof that it landed - or return 1. bin/fm-tangle-lib.sh's fm_default_branch
+# owns which branch integrates; both the local branch and its remote-tracking
+# ref are that branch seen from a different distance, so either one containing
+# the head means the head is on the integration line.
+#
+# "THE REF EXISTS" IS NOT "THE REF ANSWERS" (see ONE ANSWER PER QUESTION above).
+# Stopping at the first ref that merely exists is how a stale value wins over a
+# correct one: a local-only landing advances refs/heads/<default> and pushes
+# nothing, so refs/remotes/origin/<default> stays behind forever, and preferring
+# it because it is present would refuse every local-only activation. So each
+# ref that resolves is asked the question, and neither ref's absence, nor its
+# failure to answer, is evidence against the other. The local branch goes first
+# because fleet sync keeps it current for pushed work too, which makes it the
+# ref that is right in both modes rather than one.
 #
 # It deliberately does NOT read the clone's checked-out HEAD. An operator who
 # parked the clone on the PR branch, or on a release branch that contains the
 # head for an unrelated reason, would otherwise establish a confirmation the
-# tool never actually proved.
+# tool never actually proved. Nothing here fetches; every read is local.
 #
 # RESIDUAL, NOT CLOSED. The clone's default branch is a PROXY for the pull
 # request's actual base, which this record does not carry. An unusual clone
 # whose default branch legitimately contains the head for some other reason can
 # still confirm wrongly. The proxy passing is not the same as the question being
 # answered, and this is not claimed as closed.
-landed_integration_head() {
-  local branch
+landed_integration_proof() {  # <head>
+  local head=$1 branch ref tip
+  [ -n "$head" ] || return 1
   [ -n "$PROJECT" ] && [ -d "$PROJECT" ] || return 1
   branch=$(fm_default_branch "$PROJECT") || return 1
-  git -C "$PROJECT" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" 2>/dev/null && return 0
-  git -C "$PROJECT" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null
+  for ref in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+    tip=$(git -C "$PROJECT" rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null) || continue
+    if git -C "$PROJECT" merge-base --is-ancestor "$head" "$tip" 2>/dev/null; then
+      printf '%s' "$tip"
+      return 0
+    fi
+  done
+  return 1
 }
 
-# landed_head_reachable: whether <head> is reachable from the project clone's
-# integration branch. An unreachable head, an unavailable clone, and an
-# integration branch that cannot be determined are three ways of not proving it,
-# and none of them proves the opposite (see ONE ANSWER PER QUESTION above).
+# landed_head_reachable: whether <head> is on the project clone's integration
+# line. An unreachable head, an unavailable clone, and an integration branch
+# that cannot be determined are three ways of not proving it, and none of them
+# proves the opposite (see ONE ANSWER PER QUESTION above).
 landed_head_reachable() {  # <head>
-  local head=$1 main
-  [ -n "$head" ] || return 1
-  main=$(landed_integration_head) || return 1
-  [ -n "$main" ] || return 1
-  git -C "$PROJECT" merge-base --is-ancestor "$head" "$main" 2>/dev/null
+  landed_integration_proof "$1" >/dev/null
 }
 
 # landed_head_confirmation: set STAGE_LANDED_HEAD_CONFIRMED to what activation
@@ -999,7 +1012,7 @@ landed_head_reachable() {  # <head>
 # WRONGLY, NOT EASIER TO RETRACT. Freezing a loose predicate locks in whatever it
 # happened to accept; loosening the retraction to compensate would just restore
 # the silent demotion. So the establishment is what is tight here:
-# landed_head_reachable asks the integration branch, and an integration branch
+# landed_head_reachable asks the integration line, and an integration branch
 # that cannot be determined leaves the head unconfirmed.
 landed_head_confirmation() {
   local landed
@@ -1049,8 +1062,7 @@ readback_evidence() {  # prints the evidence, or 1
     head=$(meta stage_head)
     which=candidate
   fi
-  if landed_head_reachable "$head"; then
-    main=$(landed_integration_head) || main=
+  if main=$(landed_integration_proof "$head"); then
     printf 'ancestor-of:%s:%s-head:%s' "$(short "$main")" "$which" "$(short "$head")"
     return 0
   fi

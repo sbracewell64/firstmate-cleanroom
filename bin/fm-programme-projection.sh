@@ -231,7 +231,7 @@ RESOLUTION=''
 # unstageable diagnostic degrades to "unavailable" and the resolve still runs,
 # with the resolver's stderr passing straight through to this script's stderr.
 read_resolution() {
-  local out diag='' diag_suffix='' rc=0
+  local out diag='' diag_note='' diag_suffix='' reason='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
   RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX" 2>/dev/null) \
@@ -241,9 +241,10 @@ read_resolution() {
     diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
   else
     out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}) || rc=$?
-    diag='resolver diagnostics: unavailable, they could not be staged'
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
-  [ -z "$diag" ] || diag_suffix=" ($(printf '%s' "$diag" | head -c 400))"
+  reason=${diag:-$diag_note}
+  [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"
   projection_cleanup
   case "$rc" in
     0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;

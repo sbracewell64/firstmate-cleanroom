@@ -482,6 +482,30 @@ test_invalid_entrypoints_have_zero_side_effects() {
   pass "PR and teardown entrypoints reject invalid arguments before every side effect"
 }
 
+# This writer rewrites the task record, so it crosses the same publication
+# boundary as every other writer of one. A record that already answers a
+# single-valued key twice has no single value for it, and re-publishing it here
+# would carry the conflict forward under this writer's name - so it refuses and
+# leaves the record exactly as it found it for reconciliation against evidence.
+test_conflicted_record_refuses_at_the_publication_boundary() {
+  local dir before rc
+  dir=$(make_case conflicted-record)
+  write_task_meta "$dir"
+  printf 'kind=secondmate\n' >> "$dir/home/state/task-a.meta"
+  before=$(cat "$dir/home/state/task-a.meta")
+  FM_TEST_GH_HEAD=0123456789abcdef0123456789abcdef01234567 \
+    run_check_entry "$dir" task-a https://github.com/my-org/repo/pull/7 \
+    > "$dir/stdout" 2> "$dir/stderr" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "arming accepted a task record that answers kind= twice"
+  [ "$(cat "$dir/home/state/task-a.meta")" = "$before" ] \
+    || fail "a refused publication must leave the record byte-for-byte unchanged"
+  assert_grep 'kind=' "$dir/stderr" "the refusal must name the key the record answers twice"
+  grep -q '^pr=' "$dir/home/state/task-a.meta" \
+    && fail "the refused arm must not have recorded a PR on a conflicted record"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] || fail "a refused arm must publish no check"
+  pass "fm-pr-check: a conflicted task record refuses at the shared publication boundary"
+}
+
 test_valid_recording_and_merge_derivation() {
   local dir expected sidecar count rc
   dir=$(make_case valid-recording)
@@ -2322,6 +2346,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_conflicted_record_refuses_at_the_publication_boundary
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

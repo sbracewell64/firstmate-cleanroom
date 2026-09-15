@@ -85,13 +85,12 @@
 #   landing    Firstmate runs this when the configured merge authority is
 #              landing the change (before bin/fm-pr-merge.sh or
 #              bin/fm-merge-local.sh). Records `landing`; never merges anything.
-#              It also resolves the landed head for its receipt: the head
-#              validation started from is not the head that lands whenever the
-#              pipeline advanced the candidate, so the landing receipt names
-#              both, and names neither by inference. stage_reason records
-#              landed-head:<source>, saying which recorded evidence supplied it
-#              (pr-head, worktree) or that none could (unresolved), rather than
-#              filling the gap with the candidate head.
+#              It is also the one transition that resolves the landed head, and
+#              it records what it found: the head validation started from is not
+#              the head that lands whenever the pipeline advanced the candidate,
+#              so the record and the receipt name both, and neither by
+#              inference. Field schema below; resolve_landed_head owns the
+#              evidence order and why an unproven head stays unresolved.
 #   activated  Firstmate runs this after landing to record the read-back:
 #              the merge-notification marker bin/fm-pr-lib.sh writes with the PR
 #              identity, or the LANDED head (the candidate head only when no
@@ -121,18 +120,26 @@
 #   stage=<stage>              stage_epoch=<epoch of the last transition>
 #   stage_branch=<branch>      stage_head=<full candidate head: where
 #                                          validation STARTED, never rewritten>
+#   stage_landed_head=<full head that actually LANDED, written once at landing
+#                      and carried forward unchanged; empty when landing could
+#                      not prove one>
 #   stage_tree=<full tree>     stage_gen=<spawn_gen at the last transition>
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
-#   stage_pr=<PR url>          stage_reason=<validation-pending reason, or the
+#   stage_pr=<PR url>          stage_reason=<validation-pending reason, the
+#                                            landing `landed-head:<source>`
+#                                            provenance naming which evidence
+#                                            supplied stage_landed_head, or the
 #                                            activated read-back evidence>
 #
-# The receipt carries head= and landed_head= apart for the same reason: a
-# landing line that showed only head= asserted the submitted candidate as the
-# landed one. landed_head is a LABEL over values the record already holds, not a
-# field of its own: the head that lands is already recorded (pr_head= from
-# bin/fm-pr-check.sh, or the task worktree head), and storing a second copy
-# would add one more place for the record to disagree with itself, which is the
-# defect this whole contract exists to prevent.
+# The record carries stage_head and stage_landed_head apart because both facts
+# are real and neither is derivable from the other: validation starts at one
+# head and, when the pipeline admits a successor, lands at another. A record
+# naming only the submitted head asserts a landing that did not happen. The
+# landed head is CAPTURED at landing, not recomputed on later reads: the values
+# it is resolved from (pr_head= from bin/fm-pr-check.sh, the task worktree head)
+# are live mutable state owned by other writers and may move or vanish after the
+# landing, so a record that re-derived the fact would be a lookup that happens
+# to agree today rather than a record of what happened.
 # Receipt fields, in this order on every stage line (`-` when not applicable;
 # values percent-encode space, percent, and tab, and the classifier decodes
 # them): task, gen (worker epoch: the record's spawn_gen), branch, head,
@@ -413,17 +420,26 @@ profile_identity() {
 # Naming only stage_head at landing left the record asserting a head that was
 # never the landed head, which is the same failure as naming one that never
 # existed: a later reader, a recovery, or an audit cannot tell an honest record
-# from a manufactured one. The head that landed was already IN the record, just
-# never labelled as such, so this is a labelling repair rather than a capture
-# one: stage_head keeps naming where validation began, the landing receipt's
-# landed_head names where it ended, and neither is inferred from the other.
+# from a manufactured one. stage_head keeps naming where validation began,
+# stage_landed_head names where it ended, and neither is inferred from the
+# other. resolve_landed_head runs at `landing` alone, because that is the
+# moment the evidence is still live; what it finds is then recorded, and every
+# later read takes the recorded value.
 #
-# landed_head_value: the landed head this transition resolved, or empty (`-` in
-# the receipt) when none is resolved. Nothing is stored: the value already lives
-# in the record under the field that captured it, and a second copy would be one
-# more place for the record to disagree with itself.
+# landed_head_value: the landed head in play for this transition, or empty (`-`
+# in the receipt) when none is known. `landing` fills it by resolving the
+# evidence once and then WRITES it to stage_landed_head; every later transition
+# and `show` fills it by reading that field back, never by resolving again.
 landed_head_value() {
   printf '%s' "$STAGE_LANDED_HEAD"
+}
+
+# recorded_landed_head: load the landed head the record already captured. This
+# is the only way anything after `landing` learns it, so the record is the
+# authority for the rest of the task's life rather than whatever the mutable
+# sources happen to say later.
+recorded_landed_head() {
+  STAGE_LANDED_HEAD=$(meta stage_landed_head)
 }
 
 # resolve_landed_head: set STAGE_LANDED_HEAD to the head that is landing, from
@@ -799,13 +815,19 @@ do_landing() {
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   resolve_landed_head
+  # The landed head itself is part of what makes a re-run unchanged. Comparing
+  # only the source label would report `unchanged` after the head moved and
+  # leave the record naming the superseded one, which is this contract's own
+  # defect wearing an idempotency check.
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ] \
+      && [ "$(meta stage_landed_head)" = "$STAGE_LANDED_HEAD" ] \
       && [ "$(meta stage_reason)" = "landed-head:$STAGE_LANDED_HEAD_SOURCE" ]; then
     unchanged landing
   else
     issue landing merge-authority "landed-head:$STAGE_LANDED_HEAD_SOURCE" \
       "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
+      "stage_landed_head=$STAGE_LANDED_HEAD" \
       "stage_reason=landed-head:$STAGE_LANDED_HEAD_SOURCE"
   fi
   next_for landing
@@ -864,14 +886,17 @@ do_activated() {
   engineering_context activated
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
-  resolve_landed_head
+  recorded_landed_head
   evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the landed head (the candidate head when none is recorded) reachable from the project clone's checked-out head"
   STAGE_PR_VALUE=$(meta stage_pr)
   if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ]; then
     unchanged activated
   else
+    # issue rewrites every stage_* field, so the landed head is restated here to
+    # carry the landing's captured fact forward rather than losing it.
     issue activated firstmate "$evidence" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
-      "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" "stage_reason=$evidence"
+      "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
+      "stage_landed_head=$STAGE_LANDED_HEAD" "stage_reason=$evidence"
   fi
   reconcile_currentness activated
   next_for activated
@@ -882,9 +907,7 @@ do_show() {
   fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   local current
   current=$(meta stage)
-  # The landed head is a label over what the record already holds, so it is
-  # resolved on read and only where landing has actually happened.
-  case "$current" in landing|activated) resolve_landed_head ;; esac
+  recorded_landed_head
   printf 'STAGE_RECORDED: %s task=%s gen=%s branch=%s head=%s landed_head=%s attempt=%s run=%s pr=%s reason=%s\n' \
     "${current:-none}" "$ID" "$(dash "$(meta stage_gen)")" "$(dash "$(meta stage_branch)")" \
     "$(dash "$(short "$(meta stage_head)")")" "$(dash "$(short "$(landed_head_value)")")" \

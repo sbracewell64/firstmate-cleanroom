@@ -976,7 +976,26 @@ test_a_record_cannot_hold_two_values_for_one_key() {
   assert_contains "$out" "STAGE_RECORDED: validation-running" "the surviving value is the one the record holds"
   line=$(last_line shadow)
   [ -n "$line" ] || fail "status log kept its receipts"
-  pass "fm-stage record: one value per key - a second write replaces it, an appended shadow cannot publish, and every reader refuses a conflicted record instead of picking one"
+
+  # Readers refuse PER KEY and agree per key. A record answering some unrelated
+  # cosmetic key twice must not cost a supervision reader the key it came for:
+  # a recovery path that refuses because other evidence is unavailable has
+  # turned one duplicated field into total loss of stage classification. The
+  # record-level condition stays detectable for the owners that need it.
+  printf 'window=firstmate:fm-shadow-2\n' >> "$STATE/shadow.meta"
+  [ "$(fm_classify_meta_value "$STATE/shadow.meta" stage)" = validation-running ] \
+    || fail "an unrelated duplicated key must not make the stage unreadable"
+  [ "$(fm_meta_get "$STATE/shadow.meta" stage)" = validation-running ] \
+    || fail "the two shared readers must agree that this key is readable"
+  fm_classify_meta_value "$STATE/shadow.meta" window >/dev/null \
+    && fail "the duplicated key itself must still refuse"
+  fm_meta_get "$STATE/shadow.meta" window 2>/dev/null \
+    && fail "both readers must refuse the same duplicated key"
+  [ "$(fm_meta_duplicate_key "$STATE/shadow.meta")" = window ] \
+    || fail "the record-level duplicate must stay detectable"
+  grep -v '^window=firstmate:fm-shadow-2$' "$STATE/shadow.meta" > "$TMP_ROOT/shadow.fixed2"
+  mv "$TMP_ROOT/shadow.fixed2" "$STATE/shadow.meta"
+  pass "fm-stage record: one value per key - a second write replaces it, an appended shadow cannot publish, the stage owner refuses a conflicted record, and every reader refuses the conflicted key instead of picking one"
 }
 
 test_landing_names_the_head_that_landed() {
@@ -1002,11 +1021,13 @@ test_landing_names_the_head_that_landed() {
   expect_code 0 "$rc" "landing records: $out"
   [ "$(meta_get landed stage_head)" = "$submitted" ] \
     || fail "the head validation started from must survive as recorded evidence"
-  # The landed head is a LABEL over a value the record already holds, so no
-  # second copy of it may appear: a duplicated fact is one more place for the
-  # record to disagree with itself.
-  [ "$(grep -c 'landed_head' "$STATE/landed.meta")" = 0 ] \
-    || fail "the landed head must be labelled, not stored a second time"
+  # The landed head is a DURABLE fact of the record, captured once at landing:
+  # the sources it was resolved from are other writers' live state and may move
+  # or vanish afterwards, so a record that re-derived it would not be a record.
+  [ "$(meta_get landed stage_landed_head)" = "$landed" ] \
+    || fail "the record must name the head that landed (got $(meta_get landed stage_landed_head))"
+  [ "$(grep -c '^stage_landed_head=' "$STATE/landed.meta")" = 1 ] \
+    || fail "the landed head must be recorded exactly once"
   line=$(last_line landed)
   [ "$(status_line_stage "$line")" = landing ] || fail "landing receipt issued"
   [ "$(status_stage_field "$line" head)" = "${submitted:0:12}" ] \
@@ -1020,6 +1041,27 @@ test_landing_names_the_head_that_landed() {
   out=$("$STAGE" landed show 2>&1)
   assert_contains "$out" "landed_head=${landed:0:12}" "show reports the landed head"
   assert_contains "$out" "head=${submitted:0:12}" "show still reports where validation started"
+
+  # The record keeps naming the head that landed once the evidence it was
+  # resolved from is gone. pr_head= belongs to bin/fm-pr-check.sh and is live
+  # mutable state; rewriting it after the landing must not change history.
+  grep -v '^pr_head=' "$STATE/landed.meta" > "$TMP_ROOT/landed.repr"
+  printf 'pr_head=%s\n' "$(printf '%040d' 7)" >> "$TMP_ROOT/landed.repr"
+  mv "$TMP_ROOT/landed.repr" "$STATE/landed.meta"
+  out=$("$STAGE" landed show 2>&1)
+  assert_contains "$out" "landed_head=${landed:0:12}" \
+    "a rewritten pr_head= must not change the head the record says landed"
+
+  # The landing fact survives the next transition rather than being dropped by
+  # the record rewrite, and the read-back proves the LANDED head reachable.
+  out=$("$STAGE" landed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activated reads back the landed head: $out"
+  [ "$(meta_get landed stage_landed_head)" = "$landed" ] \
+    || fail "the landed head must survive the activated transition"
+  [ "$(status_stage_field "$(last_line landed)" landed_head)" = "${landed:0:12}" ] \
+    || fail "the activated receipt must still name the head that landed"
+  [ "$(status_stage_field "$(last_line landed)" reason)" = "ancestor-of:${landed:0:12}:landed-head:${landed:0:12}" ] \
+    || fail "the read-back must name the landed head (got $(status_stage_field "$(last_line landed)" reason))"
   # Before landing there is no landed head to name, even though the forge head
   # the merge will consume is already recorded.
   make_task notyet no-mistakes "$wt"
@@ -1050,5 +1092,47 @@ test_landing_names_the_head_that_landed() {
   pass "fm-stage landing: the record names the head that landed and keeps the head validation started from, distinguishably"
 }
 
+# A landing re-run is `unchanged` only when the head it would record is the one
+# already recorded. Comparing the evidence LABEL alone reported `unchanged`
+# after the head moved and left the record naming the superseded head, which is
+# this whole contract's defect wearing an idempotency check.
+test_landing_rerun_rerecords_a_moved_landed_head() {
+  local out rc wt first second
+  wt="$TMP_ROOT/wt-moved"
+  make_worktree "$wt" fm/moved
+  make_task moved no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" moved committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records: $out"
+  first=$(meta_get moved stage_landed_head)
+  [ "$first" = "$(git -C "$wt" rev-parse HEAD)" ] \
+    || fail "landing must record the worktree head it proved (got $first)"
+
+  # A re-run with nothing moved stays unchanged: the recorded fact still holds.
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "an unmoved re-run: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a re-run recording the same head is unchanged"
+
+  # The head then advances, so the recorded landed head is now wrong and the
+  # re-run must correct it instead of reporting unchanged.
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): later fix'
+  second=$(git -C "$wt" rev-parse HEAD)
+  [ "$second" != "$first" ] || fail "the fixture must move the head"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run after the head moved: $out"
+  assert_not_contains "$out" "STAGE_UNCHANGED" \
+    "a re-run after the landed head moved must not report unchanged"
+  [ "$(meta_get moved stage_landed_head)" = "$second" ] \
+    || fail "the re-run must record the head that now lands (got $(meta_get moved stage_landed_head))"
+  [ "$(grep -c '^stage_landed_head=' "$STATE/moved.meta")" = 1 ] \
+    || fail "correcting the landed head must replace it, not shadow it"
+  [ "$(status_stage_field "$(last_line moved)" landed_head)" = "${second:0:12}" ] \
+    || fail "the corrected receipt must name the new landed head"
+  pass "fm-stage landing: a re-run after the landed head moved re-records it instead of reporting unchanged"
+}
+
 test_a_record_cannot_hold_two_values_for_one_key
 test_landing_names_the_head_that_landed
+test_landing_rerun_rerecords_a_moved_landed_head

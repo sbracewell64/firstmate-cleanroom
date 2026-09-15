@@ -368,11 +368,24 @@ fm_backlog_record_remove() {
 # Prints the first duplicated key and returns 0; returns 1 when the record is
 # clean, absent, or unreadable. Blank lines and lines carrying no `=` are not
 # keys, so a record's trailing newline is not a violation.
-fm_meta_duplicate_key() {  # <meta-file>
-  local meta=$1 dup
+#
+# The optional <key> narrows the same question to one key, which is what a
+# READER needs: a reader asks whether the key it is about to use has a single
+# value, and a record that answers some unrelated key twice must not cost it the
+# key it came for - a recovery path that refuses because some other evidence is
+# unavailable has turned a cosmetic conflict into total loss. Every reader
+# therefore refuses per key and agrees per key, while the record-level condition
+# stays observable by calling this with no key: that is what the publication
+# guard below and bin/fm-stage.sh's up-front refusal ask, so a duplicate
+# anywhere is still detected rather than silently tolerated.
+fm_meta_duplicate_key() {  # <meta-file> [key]
+  local meta=$1 key=${2:-} dup
   [ -f "$meta" ] || return 1
-  dup=$(LC_ALL=C awk -F= '
-    /^[^=]+=/ { if (++seen[$1] == 2 && found == "") { found = $1 } }
+  dup=$(LC_ALL=C awk -F= -v want="$key" '
+    /^[^=]+=/ {
+      if (want != "" && $1 != want) next
+      if (++seen[$1] == 2 && found == "") { found = $1 }
+    }
     END { if (found != "") print found }' "$meta" 2>/dev/null) || return 1
   [ -n "$dup" ] || return 1
   printf '%s' "$dup"
@@ -388,7 +401,7 @@ fm_meta_duplicate_key() {  # <meta-file>
 # instead of being quietly rewritten around.
 # Sets FM_BACKLOG_TRANSITION_ERROR and returns 1 on failure.
 fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
-  local meta=$1 root=$2 tmp rc=0 kv key
+  local meta=$1 root=$2 tmp rc=0 grc kv key
   shift 2
   FM_BACKLOG_TRANSITION_ERROR=
   fm_backlog_record_present "$meta" "task record" "$root" || return 1
@@ -407,9 +420,14 @@ fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
     case "$key" in
       ''|*[!A-Za-z0-9_]*) rm -f -- "$tmp"; FM_BACKLOG_TRANSITION_ERROR="'$key' is not a plain record key"; return 1 ;;
     esac
-    LC_ALL=C grep -v "^$key=" "$tmp" > "$tmp.next" 2>/dev/null || true
-    mv -f -- "$tmp.next" "$tmp" 2>/dev/null || rc=1
-    printf '%s\n' "$kv" >> "$tmp" || rc=1
+    # grep exit 1 is "the key held nothing to strip", which is legitimate; any
+    # other status is a read or write failure, and $tmp.next may already hold a
+    # truncated copy of the record. Fail closed rather than publishing it.
+    grc=0
+    LC_ALL=C grep -v "^$key=" "$tmp" > "$tmp.next" 2>/dev/null || grc=$?
+    [ "$grc" -le 1 ] || { rc=1; break; }
+    mv -f -- "$tmp.next" "$tmp" 2>/dev/null || { rc=1; break; }
+    printf '%s\n' "$kv" >> "$tmp" || { rc=1; break; }
   done
   if [ "$rc" -ne 0 ]; then
     rm -f -- "$tmp" "$tmp.next"

@@ -1256,6 +1256,94 @@ test_watcher_close_path_is_not_abandoned_by_a_later_stop() {
   pass "a later stop cannot abandon the watcher close path that publishes its stop"
 }
 
+test_close_path_wait_for_the_marker_lock_stays_killable() {
+  # arch-escape-hatch-ordering regression. The close path ignores stop signals so
+  # a later stop cannot tear its downtime publication, but the WAIT for the
+  # downtime marker lock has no deadline of its own, and a live holder that never
+  # releases would leave the exiting watcher spinning with every stop discarded -
+  # an UNKILLABLE watcher, which is worse in this fleet than a torn close because
+  # the broad kill that would be the only way out is forbidden here. So that wait
+  # runs with the ordinary stop disposition still in force, and this proves both
+  # halves: the watcher is still collectable by an ordinary stop while it waits,
+  # and what it leaves behind is the ordinary killed-watcher state the next
+  # watcher recovers rather than a half-written marker.
+  local dir state fakebin out watcher holder successor i
+  dir=$(make_case close-path-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>/dev/null &
+  watcher=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$watcher"; fail "watcher never reached its poll loop"; }
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher" ] \
+    || { reap "$watcher"; fail "watcher did not record itself as the singleton holder"; }
+
+  # A peer that takes the downtime marker lock through the real primitive and
+  # never gives it back, so the exiting watcher's acquire cannot return.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$3"
+    while :; do sleep 0.2; done
+  ' _ "$LIB" "$state/.watcher-down.lock" "$dir/holder.ready" >/dev/null 2>&1 &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/holder.ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$dir/holder.ready" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; reap "$watcher"; fail "the marker-lock holder never took the lock"; }
+
+  # Ordinary stops only, re-delivered the way a supervisor and a confirmed stop
+  # both do. No KILL: an uncatchable signal would collect the watcher whether or
+  # not the wait is interruptible, and would prove nothing.
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$watcher"; do
+    kill -TERM "$watcher" 2>/dev/null || true
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$watcher" \
+    && { kill -KILL "$holder" 2>/dev/null || true; reap "$watcher"; fail "a watcher waiting for the downtime marker lock discarded every stop: only an uncatchable KILL could collect it"; }
+  wait "$watcher" 2>/dev/null || true
+
+  # Nothing was half-done: the marker was never written, and the singleton lock
+  # still names the collected watcher, exactly as for a watcher killed outright.
+  [ ! -e "$state/.watcher-down" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "a stop taken during the marker-lock wait left a downtime marker behind"; }
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "a stop taken during the marker-lock wait tore the singleton lock"; }
+
+  kill -KILL "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  # And that state is recoverable rather than lost: the next watcher steals the
+  # stale singleton lock, publishes the downtime its predecessor never reached,
+  # and the drain can present and acknowledge that stopped cycle.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch-two.out" 2>/dev/null &
+  successor=$!
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$state/.watcher-down" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.watcher-down" ] \
+    || { reap "$successor"; fail "the next watcher did not publish the downtime the collected watcher never reached"; }
+  drain_and_ack "$state" \
+    || { reap "$successor"; fail "the state left by a stop during the marker-lock wait is not an acknowledgeable stopped cycle"; }
+  reap "$successor"
+  pass "a close path waiting for the marker lock is still collectable by a stop, and what it leaves is recoverable"
+}
+
 test_restart_records_whether_its_stop_was_confirmed() {
   # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
   # leaving the fleet with no watcher at all is worse than the duplicate a
@@ -1359,6 +1447,7 @@ test_restart_records_whether_its_stop_was_confirmed() {
 test_reap_bounds_a_signal_swallowing_watcher
 test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
 test_watcher_close_path_is_not_abandoned_by_a_later_stop
+test_close_path_wait_for_the_marker_lock_stays_killable
 test_restart_records_whether_its_stop_was_confirmed
 test_singleton_start
 test_pid_identity_is_locale_invariant

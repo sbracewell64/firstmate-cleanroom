@@ -937,20 +937,29 @@ else
   # The drain's stdout is the wake-queue section; its stderr carries the
   # WAKE_ACK_REQUIRED instruction and any diagnostic. Merging them let a single
   # stderr byte stand in for the queue section, so they are read apart: the
-  # queue verdict comes from stdout alone and the stderr is still shown.
+  # queue verdict comes from stdout and the drain's own status, and the stderr
+  # is still shown. Separating streams means routing BOTH wherever routing is
+  # possible - but when it is not, as on the unstageable path below, PROTECT THE
+  # TYPED VALUE RATHER THAN THE DIAGNOSTIC. A corrupted verdict makes a reader
+  # act wrongly and does it silently; a missing diagnostic only leaves someone
+  # uninformed when they go looking. So that path discards rather than merges,
+  # and carries no marker of its own: the success path stays quiet.
+  DRAIN_RC=0
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   if [ -n "$DRAIN_ERRFILE" ]; then
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE")
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
     DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
     rm -f -- "$DRAIN_ERRFILE"
   else
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>/dev/null) || DRAIN_RC=$?
     DRAIN_DIAG=
   fi
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
-  else
+  elif [ "$DRAIN_RC" -eq 0 ]; then
     printf '(no queued wakes)\n'
+  else
+    printf 'wake drain failed (exit %s); the queue was not read and its contents are unknown.\n' "$DRAIN_RC"
   fi
   [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG"
 fi

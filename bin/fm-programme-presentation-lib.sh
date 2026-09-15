@@ -31,8 +31,16 @@
 # CONTRACT (fm_programme_present <state> <mode>):
 #   1. Run the resolver's `render`; exit 3 (no programme) prints nothing and
 #      returns 3; a resolver failure is itself material state, keyed by a
-#      digest of its exit code and message, so a broken pin surfaces once and
-#      then stays quiet until it changes.
+#      digest of its exit code and the diagnostic it wrote, so a broken pin
+#      surfaces once and then stays quiet until it changes. When NO diagnostic
+#      was captured - whether because it could not be staged or because the
+#      resolver wrote none, which are the same thing here - that digest would be
+#      identical for every failure of that exit code, so this REFUSES TO DEDUPE
+#      and presents each occurrence instead. When the distinguishing input is
+#      unavailable the answer is to refuse to identify, never to fall back to a
+#      value everything shares: presenting the same failure twice is harmless,
+#      suppressing a genuinely different one is not. Do not narrow that guard to
+#      the unstageable case alone; it would re-create the collapse.
 #   2. Compare the identity with the acknowledged record AND the pending
 #      record: equal to either is unchanged -> print nothing, return 0. When
 #      it equals the pending record and the mode is `commit` (a no-ack turn

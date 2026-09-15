@@ -113,10 +113,18 @@ fm_programme_presentation_state() {  # <state> <identity>
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag=''
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  out=$("$resolver" render) || rc=$?
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$resolver" render 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    out=$("$resolver" render 2>/dev/null) || rc=$?
+    diag='resolver diagnostics unavailable: they could not be staged'
+  fi
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")
@@ -125,10 +133,10 @@ fm_programme_present() {  # <state> <mode: pending|commit>
       ;;
     3) return 3 ;;
     *)
-      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$out")
+      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$diag")
       summary="resolver failed (exit $rc)"
       out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
-$out"
+$diag"
       ;;
   esac
   verdict=$(fm_programme_presentation_state "$state" "$identity")

@@ -111,7 +111,8 @@ fm_pid_identity() {
 # process is gone" and is never signalled. With an empty identity the check is
 # liveness only, which is safe for a process the caller launched and still owns.
 # Returns 0 once the target is gone, 1 when the deadline elapses with it alive,
-# 2 for a pid that is not a number, and 3 when the FIRST delivery could not be
+# 2 when the pid or the deadline is not a number - neither is signalled, so
+# nothing was asked of the target - and 3 when the FIRST delivery could not be
 # sent at all - the shape a caller refuses on, rather than delivering its own
 # signal first and paying an immediate second delivery to learn the same thing.
 fm_stop_process_confirmed() {
@@ -1368,15 +1369,23 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # assumed: a queued TERM is not a stop, because the target's shell can consume
 # the signal without running its handler and carry on (fm_stop_process_confirmed
 # owns that fact), which would leave the retired owner running while its lock is
-# removed. A pid is never signalled without a verified matching identity; when
-# an identity that stops matching
-# mid-procedure (pid reuse) ends the retirement instead of signalling a
-# stranger, and a first delivery that cannot be sent at all refuses.
-# Missing identity evidence never blocks the reclaim of a
-# proven-abandoned claim - it only disables the TERM and the ledger graft below,
-# keeping the documented bounded upgrade-window residual instead of the
-# deadlock, and an unconfirmed retirement inside that bound stays that same
-# bounded residual rather than deadlocking the next claimant.
+# removed. A pid is never signalled without a verified matching identity, and
+# that identity is re-verified before every delivery, so an identity that stops
+# matching mid-procedure (pid reuse) ends the retirement instead of signalling a
+# stranger.
+#
+# Exactly one confirmation outcome refuses the reclaim: rc=3, a FIRST delivery
+# that could not be sent at all, so nothing was ever asked of the legacy owner -
+# it releases the steal mutex and returns 1. Every other outcome proceeds and
+# removes the lock. rc=0 because the recorded owner is provably gone, either
+# stopped or no longer answering to its identity. rc=1 (the bound elapsed with
+# the owner still alive) and rc=2 (a non-numeric pid or FM_AUTOARM_RETIRE_POLLS,
+# which is signalled no more than rc=3 is) because an owner that outlives a
+# bounded retirement is the documented upgrade-window residual, and refusing
+# there would deadlock the next claimant forever - strictly the worse failure.
+# Missing identity evidence never blocks the reclaim of a proven-abandoned claim
+# either - it only disables the TERM and the ledger graft below, leaving that
+# same bounded residual.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
   lock="$state/.claude-autoarm.lock"

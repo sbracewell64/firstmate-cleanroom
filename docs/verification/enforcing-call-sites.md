@@ -26,9 +26,11 @@ The production surface is what a running Firstmate or its automated gates execut
 `tests/`, `docs/`, and agent skills are not on it.
 A test that calls the capability is not evidence that the guarded path reaches it, and the check says so mechanically.
 The reference must be executable, because a capability named only in a comment or in emitted operator text is prose that no reviewer should read as a caller.
-Comments are stripped per language before the match: `#` line comments in `.sh`, `.yaml` and `.yml` callers, and `//` line comments and `/* */` blocks in `.mjs`, `.js` and `.ts` callers.
+Comments are stripped per language before the match: `#` comments in `.sh`, `.yaml` and `.yml` callers, and `//` line comments and `/* */` blocks in `.mjs`, `.js` and `.ts` callers.
+In a shell caller that includes a trailing comment, dropped from the first `#` that starts a word outside quotes, so a note at the end of a working line is prose while a `${VAR#pattern}` expansion is left alone.
 JSON has no comment syntax, so a hook registration is matched as written.
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
+A command is assembled across its backslash continuations first, joined only on an odd count of trailing backslashes, so the tail of a multi-line `printf` is dropped with its first line instead of surviving as a call.
 Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
 
 A subcommand token must appear near the script's name rather than merely somewhere in the same file: it has to fall within 200 characters after the basename.
@@ -72,8 +74,10 @@ A function defined inside a script that is only executed, never sourced, is disc
 That is deliberate, and the measurement is the reason: 78 tracked functions in `bin/` carry an enforce verb without that prefix, 4 of them live in sourced libraries and are now discovered, and the other 74 are defined inside scripts that are only executed.
 Those 74 are script-internal helpers: nothing outside the defining script can call them, so the script's own surface, which discovery already accounts for by name, subcommand and flag, is the entry point a caller can reach.
 Reporting all 74 separately would bury the entry points that matter and train a reader to mute the check, which conceals as effectively as no check at all.
-Discovery reads only `bin/*.sh` and `bin/backends/*.sh`, matched one path segment at a time so a new `bin/` subdirectory is neither discovered nor counted as production until it is declared here.
-That also means a `bin/*.mjs` decider such as `bin/fm-cd-command-policy.mjs`, `bin/fm-arm-command-policy.mjs` or `bin/fm-extension-launch-barrier.mjs` can be counted as a caller but can never be discovered as an entry point of its own.
+Discovery and the production surface are deliberately asymmetric about depth.
+Discovery reads every tracked `*.sh` under `bin/` at any depth, because erring wide costs only one more declaration while erring narrow would let an enforce-named script under a new subdirectory ship unaccounted, which is the guarantee this check exists to give.
+The production surface is matched one path segment at a time instead, because erring wide there would credit enforcement to a file nothing runs, so a new `bin/` subdirectory is not a production caller until it is declared as a surface in the script.
+The surface list also means a `bin/*.mjs` decider such as `bin/fm-cd-command-policy.mjs`, `bin/fm-arm-command-policy.mjs` or `bin/fm-extension-launch-barrier.mjs` can be counted as a caller but can never be discovered as an entry point of its own.
 Discovery is name-shaped, so a capability whose name carries none of the enforce words is found only when it is declared by hand; `bin/fm-outbound-write-lib.sh:fm_outbound_send` is declared that way.
 The same name shape is what makes a namespace prefix look like a verb: `bin/fm-guard.sh`'s `fm_guard_*` banner helpers are discovered and then declared as not enforcement points, which keeps the account explicit rather than special-casing the prefix in discovery.
 `data/` is captain-private and untracked, so a rule that lives only in `data/learnings.md` cannot be gated by a repository check at all.
@@ -180,7 +184,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057186
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057431
 ```
 
 ```sh
@@ -196,10 +200,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-14T23:59:18Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=9095 gate_skip=false
-FM_TEST_END 2026-09-14T23:59:18Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=9987
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=9919 failed=0
+FM_TEST_END 2026-09-15T00:18:29Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10142 gate_skip=false
+FM_TEST_END 2026-09-15T00:18:30Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=855 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11065
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=10997 failed=0
 ```
 
 ## Adding an entry point

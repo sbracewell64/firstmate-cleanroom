@@ -88,10 +88,15 @@ LINE_COMMENT_RE = re.compile(r"(?<![:\\])//.*$")
 HASH_COMMENT_SUFFIXES = (".sh", ".yaml", ".yml")
 SLASH_COMMENT_SUFFIXES = (".mjs", ".js", ".ts")
 
-# Directories whose *.sh files are discovered as candidate entry points. Matched
-# segment by segment, so a new bin/ subdirectory has to be declared deliberately
-# rather than being swept in by a glob that ignores the separator.
-DISCOVERY_SURFACES = ("bin/*.sh", "bin/backends/*.sh")
+# Discovery reads every tracked *.sh under bin/, at ANY depth. The breadth is
+# deliberate and the opposite of the production surface below, which is matched
+# one path segment at a time. Discovery erring wide is fail-safe: the only cost
+# is one more entry to declare. Discovery erring narrow would let an enforce-named
+# script under a new bin/ subdirectory ship unaccounted, which is exactly the
+# guarantee this check exists to give. A production caller is the reverse case,
+# where erring wide would credit enforcement to a file nothing runs, so a new
+# bin/ subdirectory is not a production surface until it is declared as one.
+DISCOVERY_ROOT = "bin/"
 
 # Surfaces a running firstmate or its automated gates actually execute.
 PRODUCTION_SURFACES = (
@@ -244,7 +249,7 @@ def discover(root: Path, tracked: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     sourced = sourced_libraries()
     for rel in tracked:
-        if not any(path_matches(rel, pattern) for pattern in DISCOVERY_SURFACES):
+        if not is_discoverable(rel):
             continue
         stem = Path(rel).stem
         lines = read_text(root, rel).splitlines()
@@ -286,6 +291,10 @@ def path_matches(rel: str, pattern: str) -> bool:
     if len(parts) != len(globs):
         return False
     return all(fnmatch.fnmatch(part, glob) for part, glob in zip(parts, globs))
+
+
+def is_discoverable(rel: str) -> bool:
+    return rel.startswith(DISCOVERY_ROOT) and rel.endswith(".sh")
 
 
 def is_production(rel: str) -> bool:
@@ -363,6 +372,39 @@ def shell_segments(line: str) -> list[str]:
     return segments
 
 
+def strip_trailing_comment(line: str) -> str:
+    """Drop a shell comment, leaving a quoted `#` and `${VAR#pattern}` alone.
+
+    A `#` opens a comment only at the start of a word and outside quotes, so a
+    trailing note naming a capability is prose rather than a call, while a
+    parameter expansion that merely contains `#` survives untouched.
+    """
+    quote: str | None = None
+    index = 0
+    size = len(line)
+    while index < size:
+        char = line[index]
+        if quote is not None:
+            if char == "\\" and quote == '"' and index + 1 < size:
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char == "\\" and index + 1 < size:
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index].rstrip()
+        index += 1
+    return line
+
+
 def strip_emitted_arguments(line: str) -> str:
     """Drop the argument text of printf/echo/cat, keeping the rest of the line.
 
@@ -433,25 +475,42 @@ def heredoc_opener(line: str) -> re.Match[str] | None:
 
 
 def shell_executable_text(text: str) -> str:
-    """Shell source with comments, heredoc bodies and emitted argument text gone."""
+    """Shell source with comments, heredoc bodies and emitted argument text gone.
+
+    Comments go first, because a `#` ends the physical line before any trailing
+    backslash can continue it. A command that does survive is assembled across
+    its continuations before the emitting-argument strip runs, so the tail of a
+    multi-line printf is dropped with its first line rather than read as a call.
+    Joining is scoped to that strip: a continuation is joined only on an ODD
+    count of trailing backslashes, because an even count is escaped backslashes
+    that end the command.
+    """
     kept: list[str] = []
     pending: tuple[str, bool, bool] | None = None
-    for line in text.splitlines():
+    buffered = ""
+    for raw in text.splitlines():
         if pending is not None:
             terminator, expands, dashed = pending
-            candidate = line.lstrip("\t") if dashed else line
+            candidate = raw.lstrip("\t") if dashed else raw
             if candidate.rstrip() == terminator:
                 pending = None
                 continue
-            kept.append(command_substitutions(line) if expands else "")
+            kept.append(command_substitutions(raw) if expands else "")
             continue
-        if line.lstrip().startswith("#"):
+        uncommented = strip_trailing_comment(raw)
+        trailing = len(uncommented) - len(uncommented.rstrip("\\"))
+        if trailing % 2 == 1:
+            buffered += uncommented[:-1] + " "
             continue
+        line = buffered + uncommented
+        buffered = ""
         opener = heredoc_opener(line)
         kept.append(strip_emitted_arguments(line))
         if opener:
             terminator = opener.group(2) or opener.group(3) or opener.group(4) or opener.group(5)
             pending = (terminator, opener.group(5) is not None, opener.group(1) == "-")
+    if buffered:
+        kept.append(strip_emitted_arguments(buffered))
     return "\n".join(kept)
 
 
@@ -706,8 +765,8 @@ def check_rejected_call_sites(root: Path, entry: dict, entry_id: str, axis: str)
         raw = read_text(root, site_path)
         if not names_it(raw, owner_base, token, axis):
             fail(
-                f"{entry_id}: rejected call site {site_path} does not name the capability at all, "
-                f"so it records no near miss"
+                f"{entry_id}: rejected call site {site_path} no longer names the capability at "
+                f"all, so the recorded near miss is stale; drop that rejectedCallSites entry"
             )
         if references(executable_source(root, site_path), owner_base, token, axis):
             fail(

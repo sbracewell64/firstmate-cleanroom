@@ -140,6 +140,12 @@ FIX
 
   # An undeclared bin/ subdirectory is not part of the production surface.
   mkdir -p "$repo/bin/extra"
+  cat > "$repo/bin/extra/fm-validate-thing.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+exit 0
+FIX
+
   cat > "$repo/bin/extra/fm-widget-runner.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -216,6 +222,12 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/extra/fm-validate-thing.sh",
+      "kind": "not-enforcement",
+      "invariant": "A thing is inspected before it is shipped.",
+      "reason": "A scratch helper kept beside the widget tools; it refuses nothing."
+    },
+    {
       "id": "bin/fm-idle-lib.sh:fm_idle_validate",
       "kind": "not-enforcement",
       "invariant": "An idle marker carries a name.",
@@ -271,6 +283,10 @@ elif mode == "drop-gadget":
 elif mode == "drop-shared-function":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
+    ]
+elif mode == "drop-nested-script":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/extra/fm-validate-thing.sh"
     ]
 elif mode == "library-defines-but-never-calls":
     entry = entries["bin/fm-idle-lib.sh:fm_idle_validate"]
@@ -413,6 +429,52 @@ FIX
   pass "a header comment naming the capability is not read as an enforcing call"
 }
 
+test_trailing_comment_is_not_a_call() {
+  local repo="$TMP_ROOT/trailing-comment"
+
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+mkdir -p "${TMPDIR:-/tmp}/widgets"   # widgets are gated by fm-widget.sh enforce upstream
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-binding-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-widget-shared.sh"
+printf 'bound\n'   # the binding is taken by validate_widget_binding elsewhere
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "no production call site" "$CHECK" --root "$repo"
+
+  # A parameter expansion that merely contains # is not a comment.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WIDGET=${1#--widget=}
+"$DIR/fm-widget.sh" enforce "$WIDGET"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a \${VAR#pattern} expansion was mistaken for a trailing comment"
+  pass "a trailing comment naming a capability is not read as an enforcing call"
+}
+
+test_nested_bin_script_is_still_discovered() {
+  local repo="$TMP_ROOT/nested-discovery"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-nested-script
+  run_expect_failure "bin/extra/fm-validate-thing.sh" "$CHECK" --root "$repo"
+  pass "an enforce-named script under a new bin/ subdirectory must still be declared"
+}
+
 test_emitted_operator_text_is_not_a_call() {
   local repo="$TMP_ROOT/emitted-prose"
   write_fixture "$repo"
@@ -425,6 +487,16 @@ printf 'next: firstmate runs bin/fm-widget.sh enforce before the widget lands\n'
 cat <<'NOTE'
 Handle with real tools: `bin/fm-widget.sh enforce <widget>` when a widget is reported.
 NOTE
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # The same prose split across a continuation is still the printf's argument.
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' \
+  "next: run bin/fm-widget.sh enforce before the widget lands"
 FIX
   git -C "$repo" add -A
   run_expect_failure "does not call it" "$CHECK" --root "$repo"
@@ -584,6 +656,8 @@ test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
 test_comment_mention_is_not_a_call
+test_trailing_comment_is_not_a_call
+test_nested_bin_script_is_still_discovered
 test_emitted_operator_text_is_not_a_call
 test_recorded_rejected_site_must_stay_rejected
 test_test_only_caller_is_not_evidence

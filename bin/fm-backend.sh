@@ -332,13 +332,23 @@ fm_backend_required_tool_available() {  # <backend> <tool>
   esac
 }
 
-# fm_meta_get: the LAST value of `key=` in <meta-file>, or empty (never
-# errors) if the file or key is absent. Mirrors the ad hoc `grep '^key=' |
-# tail -1 | cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
+# fm_meta_get: the value of `key=` in <meta-file>, or empty (never errors) if
+# the file or key is absent. bin/fm-backlog-transition-lib.sh's
+# fm_meta_duplicate_key owns why a task record holds one value per key; this is
+# that rule applied to the one key a caller asked for. A key recorded more than
+# once has no single value, so rather than resolving the conflict by position
+# this prints nothing, names the record and the key on stderr, and returns 1 -
+# a caller substituting empty then refuses on a missing value instead of acting
+# on a guessed one.
 fm_meta_get() {  # <meta-file> <key>
-  local meta=$1 key=$2
+  local meta=$1 key=$2 count
   [ -f "$meta" ] || return 0
-  grep "^$key=" "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true
+  count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
+  if [ "${count:-0}" -gt 1 ]; then
+    echo "fm-meta: $meta records $key= $count times; the record has no single $key value" >&2
+    return 1
+  fi
+  grep "^$key=" "$meta" 2>/dev/null | cut -d= -f2- || true
 }
 
 # fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to

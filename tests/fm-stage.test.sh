@@ -18,6 +18,12 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$ROOT/bin/fm-classify-lib.sh"
+# The task-record readers under test: the shared one every fm-*.sh script uses
+# (fm_meta_get) and the record-shape owner the writers publish through
+# (fm_meta_duplicate_key), so the cases below read the record the way production
+# does instead of asserting against a function that is not even loaded.
+# shellcheck source=bin/fm-backend.sh
+. "$ROOT/bin/fm-backend.sh"
 
 STAGE="$ROOT/bin/fm-stage.sh"
 TMP_ROOT=$(fm_test_tmproot fm-stage)
@@ -892,3 +898,157 @@ branch_sync: false" ;;
   pass 'completed same-run successor requires verified exact bindings and preserves original candidate'
 }
 test_completed_successor_stage
+
+# --- the record holds one value per key, and one of them is the landed head ---
+#
+# Regression origin (2026-09-15): a live task record carried BOTH
+# `stage=validation-running` and `stage=commissioned`; `show` rendered the
+# second, while a reader taking the first line, or every line, got something
+# else. The same family produced a landing record naming the head validation
+# started from rather than the head that landed. Both are provenance defects:
+# the record asserted a lifecycle fact that did not happen, and a later reader,
+# a recovery, or an audit cannot tell that apart from a manufactured record.
+
+test_a_record_cannot_hold_two_values_for_one_key() {
+  local out rc wt line
+  wt="$TMP_ROOT/wt-shadow"
+  make_worktree "$wt" fm/shadow
+  make_task shadow no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" shadow committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] || fail "the stage owner records one stage line"
+
+  # A second write of the same key must REPLACE, never append a shadow value.
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNS fm/shadow running "$(git -C "$wt" rev-parse HEAD)")
+  out=$("$STAGE" shadow running --run 01RUNS 2>&1); rc=$?
+  expect_code 0 "$rc" "running binds: $out"
+  [ "$(meta_get shadow stage)" = validation-running ] || fail "the second write changed the recorded stage"
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] \
+    || fail "a second transition appended a shadow stage value instead of replacing it"
+  FM_FAKE_AXI_STATUS=""
+
+  # A writer that does append one cannot publish it. The publication boundary
+  # every task-record writer crosses is what makes the shadow unrepresentable.
+  cp "$STATE/shadow.meta" "$STATE/.shadow.staged"
+  printf 'stage=commissioned\n' >> "$STATE/.shadow.staged"
+  FM_BACKLOG_TRANSITION_ERROR=
+  if fm_backlog_atomic_transition publish "$STATE/.shadow.staged" "$STATE/shadow.meta" "task record" "$STATE"; then
+    fail "publication accepted a record answering stage= twice"
+  fi
+  case "$FM_BACKLOG_TRANSITION_ERROR" in
+    *"stage="*"more than once"*) ;;
+    *) fail "the refusal must name the duplicated key (got: $FM_BACKLOG_TRANSITION_ERROR)" ;;
+  esac
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] || fail "the refused publication must not land"
+
+  # A record corrupted out of band is refused by every reader rather than
+  # resolved by position, so no two readers can report different stages.
+  printf 'stage=commissioned\n' >> "$STATE/shadow.meta"
+  out=$("$STAGE" shadow show 2>&1); rc=$?
+  expect_code 1 "$rc" "show refuses a record with two stage values"
+  assert_contains "$out" "reason=CONFLICTING_RECORD" "the refusal is typed"
+  assert_contains "$out" "stage=" "the refusal names the key the record answers twice"
+  assert_not_contains "$out" "commissioned" "the refusal must not report either answer as current"
+  out=$("$STAGE" shadow landing 2>&1); rc=$?
+  expect_code 1 "$rc" "a transition refuses the same conflicted record"
+  assert_contains "$out" "reason=CONFLICTING_RECORD" "the transition refusal is typed"
+  [ "$(status_line_stage "$(last_line shadow)")" != landing ] || fail "the refused transition recorded a receipt"
+  # The classifier reads the same record and agrees there is no stage to read.
+  crew_pipeline_wait_declared shadow "$STATE" \
+    && fail "the classifier resolved a conflicted record by position"
+  [ -z "$(fm_classify_meta_value "$STATE/shadow.meta" stage || true)" ] \
+    || fail "the shared record reader answered a question the record answers twice"
+  declare -F fm_meta_get >/dev/null || fail "the shared record reader is not loaded; this case would pass vacuously"
+  declare -F fm_meta_duplicate_key >/dev/null || fail "the record-shape owner is not loaded; this case would pass vacuously"
+  fm_meta_get "$STATE/shadow.meta" stage 2>/dev/null \
+    && fail "fm_meta_get answered a key the record answers twice"
+  [ -z "$(fm_meta_get "$STATE/shadow.meta" stage 2>/dev/null || true)" ] \
+    || fail "fm_meta_get resolved a conflicted key by position"
+  [ "$(fm_meta_duplicate_key "$STATE/shadow.meta")" = stage ] \
+    || fail "the record-shape owner must name the duplicated key"
+
+  # Reconciling the record restores every reader at once.
+  grep -v '^stage=commissioned$' "$STATE/shadow.meta" > "$TMP_ROOT/shadow.fixed"
+  mv "$TMP_ROOT/shadow.fixed" "$STATE/shadow.meta"
+  out=$("$STAGE" shadow show 2>&1); rc=$?
+  expect_code 0 "$rc" "the reconciled record reads again"
+  assert_contains "$out" "STAGE_RECORDED: validation-running" "the surviving value is the one the record holds"
+  line=$(last_line shadow)
+  [ -n "$line" ] || fail "status log kept its receipts"
+  pass "fm-stage record: one value per key - a second write replaces it, an appended shadow cannot publish, and every reader refuses a conflicted record instead of picking one"
+}
+
+test_landing_names_the_head_that_landed() {
+  local out rc wt submitted landed line
+  wt="$TMP_ROOT/wt-landed"
+  make_worktree "$wt" fm/landed
+  make_task landed no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" landed committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  submitted=$(meta_get landed stage_head)
+  [ -n "$submitted" ] || fail "the submitted candidate is recorded"
+
+  # The pipeline's own fix commits advance the candidate while validation runs,
+  # so the head that lands is a successor of the head that was submitted.
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  [ "$landed" != "$submitted" ] || fail "the fixture must move the head"
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/landed.meta"
+  printf 'stage_pr=%s\n' 'https://github.com/o/r/pull/9' >> "$STATE/landed.meta"
+
+  out=$("$STAGE" landed landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records: $out"
+  [ "$(meta_get landed stage_head)" = "$submitted" ] \
+    || fail "the head validation started from must survive as recorded evidence"
+  # The landed head is a LABEL over a value the record already holds, so no
+  # second copy of it may appear: a duplicated fact is one more place for the
+  # record to disagree with itself.
+  [ "$(grep -c 'landed_head' "$STATE/landed.meta")" = 0 ] \
+    || fail "the landed head must be labelled, not stored a second time"
+  line=$(last_line landed)
+  [ "$(status_line_stage "$line")" = landing ] || fail "landing receipt issued"
+  [ "$(status_stage_field "$line" head)" = "${submitted:0:12}" ] \
+    || fail "the receipt keeps the submitted head (got $(status_stage_field "$line" head))"
+  [ "$(status_stage_field "$line" landed_head)" = "${landed:0:12}" ] \
+    || fail "the receipt must carry the landed head apart from it (got $(status_stage_field "$line" landed_head))"
+  [ "$(status_stage_field "$line" landed_head)" != "$(status_stage_field "$line" head)" ] \
+    || fail "the two heads must stay distinguishable"
+  [ "$(status_stage_field "$line" reason)" = "landed-head:pr-head" ] \
+    || fail "the receipt must say which evidence supplied the landed head (got $(status_stage_field "$line" reason))"
+  out=$("$STAGE" landed show 2>&1)
+  assert_contains "$out" "landed_head=${landed:0:12}" "show reports the landed head"
+  assert_contains "$out" "head=${submitted:0:12}" "show still reports where validation started"
+  # Before landing there is no landed head to name, even though the forge head
+  # the merge will consume is already recorded.
+  make_task notyet no-mistakes "$wt"
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/notyet.meta"
+  out=$("$STAGE" notyet committed 2>&1); rc=$?
+  expect_code 0 "$rc" "third candidate admits: $out"
+  out=$("$STAGE" notyet show 2>&1)
+  assert_contains "$out" "landed_head=-" "nothing has landed yet, so no landed head is claimed"
+
+  # An unresolvable landed head is recorded as unknown, never filled in with the
+  # candidate: that substitution is the defect, not a safe default.
+  make_task unlanded no-mistakes "$wt"
+  out=$("$STAGE" unlanded committed 2>&1); rc=$?
+  expect_code 0 "$rc" "second candidate admits: $out"
+  # No forge head recorded and the local copy is gone: nothing proves what
+  # landed, which is a different answer from the candidate head.
+  sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-wt|" "$STATE/unlanded.meta" > "$STATE/.unlanded.rewrite"
+  mv "$STATE/.unlanded.rewrite" "$STATE/unlanded.meta"
+  out=$("$STAGE" unlanded landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records without provable head evidence: $out"
+  line=$(last_line unlanded)
+  [ "$(status_stage_field "$line" landed_head)" = "-" ] \
+    || fail "an unproven landed head must read as unknown (got $(status_stage_field "$line" landed_head))"
+  [ "$(status_stage_field "$line" reason)" = "landed-head:unresolved" ] \
+    || fail "the receipt must say the landed head could not be proven"
+  out=$("$STAGE" unlanded show 2>&1)
+  assert_contains "$out" "landed_head=-" "show reports an unproven landed head as unknown"
+  pass "fm-stage landing: the record names the head that landed and keeps the head validation started from, distinguishably"
+}
+
+test_a_record_cannot_hold_two_values_for_one_key
+test_landing_names_the_head_that_landed

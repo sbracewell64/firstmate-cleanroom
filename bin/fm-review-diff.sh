@@ -88,6 +88,10 @@ META="$STATE/$ID.meta"
 # meta_field <key> <presence-var>: the single value of key= in META. Refuses a
 # repeated key outright: every producer writes each of these fields once, so a
 # second line is a corrupt or contradictory record, never a legitimate update.
+# One task record, one value per key. The shared owner
+# (bin/fm-backlog-transition-lib.sh's fm_meta_duplicate_key) decides what
+# counts as duplicated; this refuses by name so the operator sees which field
+# the record answers twice.
 meta_field() {
   local key=$1 count
   count=$(grep -c "^$key=" "$META" || true)

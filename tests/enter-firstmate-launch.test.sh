@@ -21,7 +21,8 @@ pass() { printf 'ok - %s\n' "$1"; }
 [ -f "$LAUNCHER" ] || fail "launcher not found: $LAUNCHER"
 # shellcheck disable=SC1090 # the launcher path is resolved at run time
 FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
-for fn in permission_policy_state permission_policy_posture permission_policy_spawn_token console_harness_argv \
+for fn in permission_policy_state permission_policy_posture permission_policy_spawn_token \
+          permission_policy_owner console_harness_argv \
           console_resume_id_valid console_session_store_dir console_resume_candidate console_launch_outcome \
           console_pane_classify console_converge_action; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
@@ -48,6 +49,25 @@ for h in $(permission_policy_harnesses); do
   case "$(permission_policy_state "$h")" in QUALIFIED|NOT_APPLICABLE|CNO) ;; *) fail "$h state must be one of the three verdicts" ;; esac
 done
 pass "permission policy: claude exact flag, seven QUALIFIED equivalents, pi CNO, unknown CNO"
+
+# --- permission policy OWNER: who composes the posture that actually runs -------
+# The primary console's posture is composed here by console_harness_argv; every
+# other harness's posture is fm-spawn's alone. The reported owner must match that
+# composition for every harness, so the doctor line can never name the wrong one.
+for h in $(permission_policy_harnesses); do
+  composed=$(console_harness_argv "$h" '' '' '')
+  case "$(permission_policy_owner "$h")" in
+    *'this launcher (primary console argv)'*)
+      [ -n "$composed" ] || fail "$h is credited to this launcher but the launcher composes no primary console argv for it" ;;
+    *)
+      [ -z "$composed" ] || fail "this launcher composes $h's primary console argv but the reported owner omits it" ;;
+  esac
+done
+[ "$(permission_policy_owner codex)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "codex is a primary console harness: the launcher must be named as an owner"
+[ "$(permission_policy_owner claude)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "claude ownership is unchanged"
+[ "$(permission_policy_owner opencode)" = 'fm-spawn (workers and secondmates)' ] || fail "a worker-only harness stays fm-spawn's"
+[ "$(permission_policy_owner made-up)" = none ] || fail "an unknown harness has no owner"
+pass "permission policy owner: every harness the launcher composes a console argv for names it as owner"
 
 # --- console argv (launch-byte watched reds), new <harness> <model> signature ---
 # console_harness_argv <harness> <model|""> <settings|""> <resume|""> [passthrough...]

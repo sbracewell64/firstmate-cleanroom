@@ -487,10 +487,13 @@ permission_policy_posture() {  # <harness> -> the flag/config that removes inter
     *) echo 'none: not a verified harness' ;;
   esac
 }
+# A harness this launcher composes a primary-console posture for (see
+# console_harness_argv) is owned HERE as well as by fm-spawn; the rest are
+# fm-spawn's alone. claude and codex are both primary-console harnesses.
 permission_policy_owner() {  # <harness>
   case "${1:-}" in
-    claude) echo 'this launcher (primary console argv) + fm-spawn (workers)' ;;
-    codex|opencode|grok|kimi|cursor|muse) echo 'fm-spawn (workers and secondmates)' ;;
+    claude|codex) echo 'this launcher (primary console argv) + fm-spawn (workers)' ;;
+    opencode|grok|kimi|cursor|muse) echo 'fm-spawn (workers and secondmates)' ;;
     *) echo none ;;
   esac
 }
@@ -514,7 +517,9 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 # harness + model + permission posture. Worker and pipeline model profiles are
 # SEPARATE owners (the code root's bin/fm-spawn.sh and config/crew-dispatch.json)
 # and are never switched from here. Invariants held at every profile:
-#   * codex-luna is the default and the only profile qualified out of the box.
+#   * codex-luna is the default, but the built-in qualified set does NOT follow
+#     the default (console_profile_builtin_qualified_set): codex-luna's evidence
+#     is account-specific, so a home qualifies it in its own config.
 #   * An unqualified profile is PENDING with its exact gate and is NEVER
 #     silently substituted for another; console_run refuses rather than launch.
 #   * $0 / subscription-only is enforced at the composed-launch boundary
@@ -564,8 +569,18 @@ console_profile_qualify() {
   [ "$allowed" = 1 ]   || { printf 'PENDING: model %s (%s) is not yet qualified on the zero-dollar subscription plan; adoption pending' "$m" "$h"; return 0; }
   printf 'QUALIFIED'
 }
+# The profiles any home qualifies with no config of its own. Deliberately NOT
+# derived from console_profile_default: which profile is selected by default and
+# which profiles are qualified are separate facts, so changing the default never
+# qualifies or de-qualifies a profile. Only fable-5.1 is qualified here, on the
+# plan-generic subscription evidence that predates the Codex profiles.
+# codex-luna is NOT built in: gpt-5.6-luna was measured to work on THIS ChatGPT
+# account, and that evidence does not transfer to another home or account, so a
+# home grants it in its own config/console-qualified-profiles. opus-4-8 likewise
+# stays PENDING until a home qualifies it live.
+console_profile_builtin_qualified_set() { printf 'fable-5.1'; }
 # The set of profiles this home has qualified for the zero-dollar subscription
-# plan. Absent config leaves only the default profile qualified; the others stay
+# plan: its own config when present, else the built-in set above. The rest stay
 # PENDING until a later adoption slice qualifies them live. Reads config, so its
 # result depends on $FM_HOME.
 console_profile_qualified_set() {  # a space/newline-separated LIST (not a scalar)
@@ -574,7 +589,7 @@ console_profile_qualified_set() {  # a space/newline-separated LIST (not a scala
     s=$(tr '[:space:]' ' ' < "$f" | tr -s ' ')
     s=${s# }; s=${s% }
   fi
-  [ -n "$s" ] || s=$(console_profile_default)
+  [ -n "$s" ] || s=$(console_profile_builtin_qualified_set)
   printf '%s' "$s"
 }
 # The live gate for one profile: gathers the two facts console_profile_qualify

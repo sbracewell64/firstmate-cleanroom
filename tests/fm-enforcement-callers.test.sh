@@ -518,11 +518,12 @@ FIX
   git -C "$repo" add -A
   run_expect_failure "does not call it" "$CHECK" --root "$repo"
 
-  # A quoted # inside a YAML scalar is data, not a comment.
+  # A quoted # inside a YAML scalar is data, not a comment, and the capability
+  # sits after it, so a stripper that cuts at the first # destroys the reference.
   write_fixture "$repo"
   cat > "$repo/.no-mistakes.yaml" <<'FIX'
 steps:
-  lint: 'bin/fm-yaml-gate.sh --label "#1"'
+  lint: 'echo "#1" && bin/fm-yaml-gate.sh'
 FIX
   git -C "$repo" add -A
   "$CHECK" --root "$repo" >/dev/null \

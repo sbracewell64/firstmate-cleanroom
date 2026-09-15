@@ -55,7 +55,7 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
-A named reference is not an invocation, and these four residues are reproducible against the tree as it stands.
+A named reference is not an invocation, and these five residues are reproducible against the tree as it stands.
 A path assigned but never executed still counts: in `bin/fm-tool-update-check.sh`, delete the exec at line 873 and the assignment `REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"` at line 79 alone keeps `bin/fm-check-register.sh` reported as enforced.
 An existence test still counts: in `bin/fm-pr-check.sh`, delete the invocation at line 118 and the surviving `[ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]` at line 105 alone keeps `bin/fm-commit-identity-verify.sh` reported as enforced.
 A subcommand token within 200 characters after the basename counts even across a line break, so a caller that runs `fm-startup-memory-budget.sh report` with a bare `enforce` word in a neighbouring command reads as the `enforce` call.
@@ -64,6 +64,9 @@ Both declared sites for `bin/fm-tool-profile.sh:--require` rest on that co-occur
 `bin/enter-firstmate.sh` names the script at line 1001 and builds `--require` into a command string at line 1006 through the `TOOL_PROFILE_OWNER` variable, and `bin/fm-nm-observe.sh` assembles `--require` with `set --` at line 593 and runs the script with `"$@"` at line 596.
 Both were read and are genuine callers, so the entry's reading is right; what the check contributes there is co-occurrence, not the pairing.
 Word boundaries do separate a longer sibling on the function axis, so `fm_lease_guard_release` does not satisfy `fm_lease_guard`; the script axis has no such separator, because the basename is matched as a plain substring of the executable text.
+YAML comments are found with shell quoting rules, because the hash-comment rule is deliberately shared rather than duplicated, so an unbalanced apostrophe in a plain scalar hides the comment that follows it: `description: don't gate this # bin/fm-lint.sh runs in CI` keeps its trailing comment in the executable text, because the apostrophe in `don't` opens a single-quoted region that never closes.
+No tracked YAML hits that shape today, and the five lines across `.no-mistakes.yaml` and the three workflows that keep a `#` after stripping are all legitimately quoted shell or expression text.
+Closing it would need a YAML-aware parse, which is out of scope for the same reason invocation binding is: this check stops short of re-implementing a language grammar.
 
 Even where a declared call site really is an invocation, the check does not show that the caller consumes the callee's verdict.
 A caller that runs the capability and then discards its exit status still counts as a call site, so an advisory reporter can look identical to a refusal from where this check stands.
@@ -186,7 +189,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057528
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057581
 ```
 
 ```sh
@@ -202,10 +205,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T00:38:38Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10600 gate_skip=false
-FM_TEST_END 2026-09-15T00:38:39Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=829 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11495
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=11429 failed=0
+FM_TEST_END 2026-09-15T00:53:51Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10728 gate_skip=false
+FM_TEST_END 2026-09-15T00:53:52Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=846 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11640
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=11574 failed=0
 ```
 
 ## Adding an entry point

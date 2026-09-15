@@ -732,6 +732,12 @@
       "kind": "not-enforcement",
       "invariant": "A status presentation helper runs only after bin/fm-classify-lib.sh has been sourced.",
       "reason": "A lazy module loader, not a refusal: `require` here means import, and the function sources bin/fm-classify-lib.sh on demand rather than rejecting any input. One caller (bin/fm-wake-lib.sh's count helper) degrades to a zero count when the load fails instead of refusing, which is the opposite of a gate."
+    },
+    {
+      "id": "bin/enter-firstmate.sh:refuse-state-unwritable",
+      "kind": "not-enforcement",
+      "invariant": "A console is not started unsupervisable when the home state directory cannot be written.",
+      "reason": "Not an entry point: this is one branch label of an internal `case` on the computed cold-arm decision verb, not a subcommand any caller can name. The refusal it performs is real and belongs to bin/enter-firstmate.sh itself, which the launcher owns. Discovery reaches it because arm collection is deliberately blind to which case block an arm sits in, which is the fail-safe reading."
     }
   ]
 }

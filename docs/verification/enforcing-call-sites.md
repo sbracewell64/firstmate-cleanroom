@@ -12,7 +12,9 @@ This record is the dated sweep behind that reading, and [`docs/enforcement-point
 The check discovers candidate entry points from the tracked tree with rules it owns, so an inventory edit can narrow neither the discovery nor the accepted kinds.
 It discovers four shapes in `bin/`: a script whose name carries an enforce-style word, a dispatch subcommand named with an enforce verb, a long option named with an enforce verb, and a function whose name carries one.
 A dispatcher is a `case` on the script's own argument stream, which means `$1` itself or a variable the same file assigned directly from `$1`, wherever that `case` appears; an unrelated internal `case` is deliberately not harvested.
-Its arms are collected by counting `case` nesting depth, so a nested `case` inside one arm does not end the dispatcher and later arms are still accounted for.
+In such a file every enforce-verb arm label is collected wherever it appears, without tracking which `case` block it sits in.
+That reading is deliberately blind: deciding block membership needs a shell lexer, and two attempts at one each dropped later arms on an ordinary shape, first a nested `case` and then a `case` token inside a quoted message.
+Reading wide costs one more declaration to review, and an arm that is only an internal decision branch is declared as not an enforcement point with that reason.
 A long option is discovered on every long alternative of an alias group, so `--enforce|--enforce-all)` accounts for both and `-e|--enforce)` is discovered on `--enforce` while the short alternative is ignored.
 A function is discovered in any tracked `bin/` script or backend adapter, not only in a `*-lib.sh`.
 In a sourced library, which means a `bin/` script another tracked script brings in with `.` or `source`, every enforce-verb function is discovered whatever it is named, because a library's functions are its entry points.
@@ -68,6 +70,8 @@ Both declared sites for `bin/fm-tool-profile.sh:--require` rest on that co-occur
 `bin/enter-firstmate.sh` names the script at line 1001 and builds `--require` into a command string at line 1006 through the `TOOL_PROFILE_OWNER` variable, and `bin/fm-nm-observe.sh` assembles `--require` with `set --` at line 593 and runs the script with `"$@"` at line 596.
 Both were read and are genuine callers, so the entry's reading is right; what the check contributes there is co-occurrence, not the pairing.
 Word boundaries do separate a longer sibling on the function axis, so `fm_lease_guard_release` does not satisfy `fm_lease_guard`; the script axis has no such separator, because the basename is matched as a plain substring of the executable text.
+Discovery reads the same stripped executable text the caller matcher reads, not the raw source, so a capability named only in a comment, a heredoc body or emitted prose is not discovered at all.
+That is deliberate, because it is what stops a commented-out or merely documented arm from being counted as a capability, but it does mean discovery inherits the stripping bounds listed here rather than being unconditionally wide: a mis-read heredoc opener in a `bin/` script would hide the definitions and arms below it.
 YAML comments are found with shell quoting rules, because the hash-comment rule is deliberately shared rather than duplicated, so an unbalanced apostrophe in a plain scalar hides the comment that follows it: `description: don't gate this # bin/fm-lint.sh runs in CI` keeps its trailing comment in the executable text, because the apostrophe in `don't` opens a single-quoted region that never closes.
 No tracked YAML hits that shape today, and the five lines across `.no-mistakes.yaml` and the three workflows that keep a `#` after stripping are all legitimately quoted shell or expression text.
 Closing it would need a YAML-aware parse, which is out of scope for the same reason invocation binding is: this check stops short of re-implementing a language grammar.
@@ -175,7 +179,7 @@ bin/fm-enforcement-caller-check.sh
 ```
 
 ```text
-fm-enforcement-caller-check: ok entries=50 enforced=39 operator_invoked=4 not_enforcement=7 call_sites=75 rejected_call_sites=5
+fm-enforcement-caller-check: ok entries=51 enforced=39 operator_invoked=4 not_enforcement=8 call_sites=75 rejected_call_sites=5
 ```
 
 ```sh
@@ -194,7 +198,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058005
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057935
 ```
 
 ```sh
@@ -210,10 +214,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T01:31:41Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=12455 gate_skip=false
-FM_TEST_END 2026-09-15T01:31:42Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13355
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13279 failed=0
+FM_TEST_END 2026-09-15T01:49:24Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=12152 gate_skip=false
+FM_TEST_END 2026-09-15T01:49:25Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=839 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13056
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=12991 failed=0
 ```
 
 ## Adding an entry point

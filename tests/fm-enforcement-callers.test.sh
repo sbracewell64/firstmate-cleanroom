@@ -751,6 +751,43 @@ test_undeclared_entry_point_fails() {
   pass "a new enforce-style entry point cannot ship without being accounted for"
 }
 
+test_dispatch_arms_survive_lexical_case_shapes() {
+  local repo="$TMP_ROOT/dispatch-shapes"
+
+  # A `case` token inside a quoted message is not a nested block.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-gadget.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+CMD=${1:-}
+shift || true
+case "$CMD" in
+  status) printf 'no matching case for %s\n' "${1:-}" ;;
+  verify-gadget) [ -f "${1:-}" ] ;;
+  *) exit 2 ;;
+esac
+FIX
+  mutate_fixture_inventory "$repo" drop-gadget
+  run_expect_failure "bin/fm-gadget.sh:verify-gadget" "$CHECK" --root "$repo"
+
+  # Nor is an `esac` token inside one.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-gadget.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+CMD=${1:-}
+shift || true
+case "$CMD" in
+  status) printf 'unknown esac\n' ;;
+  verify-gadget) [ -f "${1:-}" ] ;;
+  *) exit 2 ;;
+esac
+FIX
+  mutate_fixture_inventory "$repo" drop-gadget
+  run_expect_failure "bin/fm-gadget.sh:verify-gadget" "$CHECK" --root "$repo"
+  pass "a case or esac token in a quoted message does not truncate arm discovery"
+}
+
 test_undeclared_variable_dispatch_subcommand_fails() {
   local repo="$TMP_ROOT/undeclared-dispatch"
   write_fixture "$repo"
@@ -871,6 +908,7 @@ test_test_only_caller_is_not_evidence
 test_unscheduled_repository_gate_fails
 test_undeclared_entry_point_fails
 test_undeclared_variable_dispatch_subcommand_fails
+test_dispatch_arms_survive_lexical_case_shapes
 test_undeclared_sourced_library_function_fails
 test_quoted_shift_does_not_start_a_heredoc
 test_homonym_without_the_library_is_not_a_caller

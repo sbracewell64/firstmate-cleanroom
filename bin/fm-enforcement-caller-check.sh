@@ -55,8 +55,6 @@ SUBCOMMAND_RE = re.compile(r"^\s{0,4}([a-z0-9|_-]+)\)")
 # a variable this file assigned directly from `$1`. Deliberately narrow, so an
 # unrelated internal `case` is not harvested as a subcommand table.
 CASE_SUBJECT_RE = re.compile(r'^\s*case\s+"?\$\{?([A-Za-z_0-9][A-Za-z0-9_]*)\b')
-CASE_OPEN_RE = re.compile(r"(?<![\w-])case(?![\w-])")
-ESAC_RE = re.compile(r"(?<![\w-])esac(?![\w-])")
 ARG_ASSIGN_RE = re.compile(
     r'^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\{?1\b)'
 )
@@ -97,6 +95,13 @@ SLASH_COMMENT_SUFFIXES = (".mjs", ".js", ".ts")
 # guarantee this check exists to give. A production caller is the reverse case,
 # where erring wide would credit enforcement to a file nothing runs, so a new
 # bin/ subdirectory is not a production surface until it is declared as one.
+#
+# Within a file, discovery reads the same stripped executable text the caller
+# matcher reads, not the raw source. That is what keeps a commented-out or
+# merely documented capability from being discovered, and it is the one place
+# discovery is not unconditionally wide: it inherits the stripping bounds that
+# docs/verification/enforcing-call-sites.md records, so a mis-read heredoc
+# opener in a bin/ script would hide the definitions below it.
 DISCOVERY_ROOT = "bin/"
 
 # Surfaces a running firstmate or its automated gates actually execute.
@@ -176,32 +181,31 @@ def discover_functions(rel: str, lines: list[str], found: dict[str, str], source
 
 
 def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str]) -> None:
-    """Collect the dispatcher's own arms, counting `case` nesting by depth.
+    """Collect every enforce-verb arm in a file that dispatches on its arguments.
 
-    A flag would close the region at the first `esac`, so a nested `case` in an
-    early arm would drop every later arm of the real dispatcher. Opens and closes
-    are counted per line rather than only at line start, because a one-line
-    `case X in ...; esac` body closes where no line-anchored pattern can see it.
-    An arm is collected before the line's own nesting is applied, so an arm that
-    opens a nested case on the same line still counts as an arm.
+    Deliberately blind to which `case` block an arm belongs to. Deciding that
+    needs a shell lexer, and two attempts at one each under-discovered on an
+    ordinary shape - first a nested `case`, then a `case` token inside a quoted
+    error message - which silently drops every later arm of the real dispatcher.
+    Reading wide costs one more declaration to review; reading narrow ships the
+    inert capability this check exists to catch, so wide is the fail-safe side.
+    An arm that is only documented or commented out is still not discovered,
+    because the input is the stripped executable text.
     """
     subjects = dispatch_subjects(lines)
-    depth = 0
+    dispatches = False
     for line in lines:
-        opens = len(CASE_OPEN_RE.findall(line))
-        closes = len(ESAC_RE.findall(line))
-        if depth == 0:
-            subject = CASE_SUBJECT_RE.match(line)
-            if subject and subject.group(1) in subjects:
-                depth = max(opens - closes, 0)
-        else:
-            if depth == 1:
-                match = SUBCOMMAND_RE.match(line)
-                if match:
-                    for label in match.group(1).split("|"):
-                        if verb_match(label, SUBCOMMAND_VERBS):
-                            found[f"{rel}:{label}"] = "subcommand"
-            depth = max(depth + opens - closes, 0)
+        subject = CASE_SUBJECT_RE.match(line)
+        if subject and subject.group(1) in subjects:
+            dispatches = True
+            break
+    for line in lines:
+        if dispatches:
+            match = SUBCOMMAND_RE.match(line)
+            if match:
+                for label in match.group(1).split("|"):
+                    if verb_match(label, SUBCOMMAND_VERBS):
+                        found[f"{rel}:{label}"] = "subcommand"
         flag = FLAG_RE.match(line)
         if flag:
             for alias in flag.group(1).split("|"):

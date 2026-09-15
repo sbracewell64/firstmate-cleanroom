@@ -59,6 +59,12 @@ set -eu
 CMD=${1:-}
 shift || true
 case "$CMD" in
+  status)
+    case "${1:-}" in
+      brief) printf 'brief\n' ;;
+      *) printf 'full\n' ;;
+    esac
+    ;;
   verify-gadget) [ -f "${1:-}" ] ;;
   *) exit 2 ;;
 esac
@@ -772,6 +778,7 @@ set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { printf '%s\n' "usage: fm-widget-consumer.sh <widget>, or feed a batch with <<EOF"; }
 lane_mask() { local n=$1; printf '%s\n' "$((1<<n))"; }
+bare_mask() { local n=$1; if (( 1 << n )); then printf 'wide\n'; fi; }
 "$DIR/fm-widget.sh" enforce "$1"
 FIX
   git -C "$repo" add -A

@@ -12,6 +12,7 @@ This record is the dated sweep behind that reading, and [`docs/enforcement-point
 The check discovers candidate entry points from the tracked tree with rules it owns, so an inventory edit can narrow neither the discovery nor the accepted kinds.
 It discovers four shapes in `bin/`: a script whose name carries an enforce-style word, a dispatch subcommand named with an enforce verb, a long option named with an enforce verb, and a function whose name carries one.
 A dispatcher is a `case` on the script's own argument stream, which means `$1` itself or a variable the same file assigned directly from `$1`, wherever that `case` appears; an unrelated internal `case` is deliberately not harvested.
+Its arms are collected by counting `case` nesting depth, so a nested `case` inside one arm does not end the dispatcher and later arms are still accounted for.
 A long option is discovered on every long alternative of an alias group, so `--enforce|--enforce-all)` accounts for both and `-e|--enforce)` is discovered on `--enforce` while the short alternative is ignored.
 A function is discovered in any tracked `bin/` script or backend adapter, not only in a `*-lib.sh`.
 In a sourced library, which means a `bin/` script another tracked script brings in with `.` or `source`, every enforce-verb function is discovered whatever it is named, because a library's functions are its entry points.
@@ -193,7 +194,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057844
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058005
 ```
 
 ```sh
@@ -209,10 +210,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T01:12:03Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=11960 gate_skip=false
-FM_TEST_END 2026-09-15T01:12:04Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=830 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=12857
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=12790 failed=0
+FM_TEST_END 2026-09-15T01:31:41Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=12455 gate_skip=false
+FM_TEST_END 2026-09-15T01:31:42Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13355
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13279 failed=0
 ```
 
 ## Adding an entry point

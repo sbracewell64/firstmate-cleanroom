@@ -55,7 +55,8 @@ SUBCOMMAND_RE = re.compile(r"^\s{0,4}([a-z0-9|_-]+)\)")
 # a variable this file assigned directly from `$1`. Deliberately narrow, so an
 # unrelated internal `case` is not harvested as a subcommand table.
 CASE_SUBJECT_RE = re.compile(r'^\s*case\s+"?\$\{?([A-Za-z_0-9][A-Za-z0-9_]*)\b')
-ESAC_RE = re.compile(r"^\s*esac\b")
+CASE_OPEN_RE = re.compile(r"(?<![\w-])case(?![\w-])")
+ESAC_RE = re.compile(r"(?<![\w-])esac(?![\w-])")
 ARG_ASSIGN_RE = re.compile(
     r'^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\{?1\b)'
 )
@@ -175,22 +176,32 @@ def discover_functions(rel: str, lines: list[str], found: dict[str, str], source
 
 
 def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str]) -> None:
+    """Collect the dispatcher's own arms, counting `case` nesting by depth.
+
+    A flag would close the region at the first `esac`, so a nested `case` in an
+    early arm would drop every later arm of the real dispatcher. Opens and closes
+    are counted per line rather than only at line start, because a one-line
+    `case X in ...; esac` body closes where no line-anchored pattern can see it.
+    An arm is collected before the line's own nesting is applied, so an arm that
+    opens a nested case on the same line still counts as an arm.
+    """
     subjects = dispatch_subjects(lines)
-    in_dispatch = False
+    depth = 0
     for line in lines:
-        if in_dispatch:
-            if ESAC_RE.match(line):
-                in_dispatch = False
-            else:
+        opens = len(CASE_OPEN_RE.findall(line))
+        closes = len(ESAC_RE.findall(line))
+        if depth == 0:
+            subject = CASE_SUBJECT_RE.match(line)
+            if subject and subject.group(1) in subjects:
+                depth = max(opens - closes, 0)
+        else:
+            if depth == 1:
                 match = SUBCOMMAND_RE.match(line)
                 if match:
                     for label in match.group(1).split("|"):
                         if verb_match(label, SUBCOMMAND_VERBS):
                             found[f"{rel}:{label}"] = "subcommand"
-        else:
-            subject = CASE_SUBJECT_RE.match(line)
-            if subject and subject.group(1) in subjects:
-                in_dispatch = True
+            depth = max(depth + opens - closes, 0)
         flag = FLAG_RE.match(line)
         if flag:
             for alias in flag.group(1).split("|"):
@@ -252,7 +263,7 @@ def discover(root: Path, tracked: list[str]) -> dict[str, str]:
         if not is_discoverable(rel):
             continue
         stem = Path(rel).stem
-        lines = read_text(root, rel).splitlines()
+        lines = executable_source(root, rel).splitlines()
         discover_functions(rel, lines, found, Path(rel).name in sourced)
         if stem.endswith("-lib"):
             # A sourced library has no argument stream and no name of its own on

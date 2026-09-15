@@ -407,10 +407,13 @@ fm_meta_duplicate_key() {  # <meta-file> [key]
 # below, so a record that was ALREADY conflicted before this call refuses
 # instead of being quietly rewritten around.
 #
-# The staged file is created by copying the record, so it carries the record's
-# own mode, and the strip pass truncates that same file rather than creating a
-# new one. A task record's permissions are part of what the record is - a
-# partial write must not publish it wider than the writer that established it.
+# The staged path is unique per invocation, so a copy abandoned by a signal
+# cannot be staged into by a later run that happened to reuse its pid, and the
+# staged file's mode is SET from the record by `cp -p` rather than inherited
+# from whatever created the path. The strip pass then truncates that same file
+# rather than creating a new one. A task record's permissions are part of what
+# the record is - a partial write must not publish it wider, or narrower, than
+# the writer that established it.
 # Sets FM_BACKLOG_TRANSITION_ERROR and returns 1 on failure.
 fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
   local meta=$1 root=$2 tmp grc=0 kv key
@@ -434,8 +437,11 @@ fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
     esac
     patterns+=(-e "^$key=")
   done
-  tmp="$meta.replace.${BASHPID:-$$}"
-  cp -- "$meta" "$tmp" 2>/dev/null || {
+  tmp=$(mktemp "$meta.replace.XXXXXX" 2>/dev/null) || {
+    FM_BACKLOG_TRANSITION_ERROR="task record could not be staged beside $meta"
+    return 1
+  }
+  cp -p -- "$meta" "$tmp" 2>/dev/null || {
     rm -f -- "$tmp"
     FM_BACKLOG_TRANSITION_ERROR="task record could not be staged at $tmp"
     return 1

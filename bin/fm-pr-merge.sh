@@ -74,8 +74,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # The shared task-record reader (fm_meta_get), so the recorded head this script
-# compares against the live one is resolved by the same rule the record's own
-# writers publish under rather than by line position.
+# compares against the live one is the same value bin/fm-stage.sh's landed-head
+# resolution reads from the same bytes.
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"

@@ -27,8 +27,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # The shared task-record reader (fm_meta_get), so the keys this script reads out
-# of the record are resolved by the same rule the record's own writers publish
-# under rather than by line position.
+# of the record resolve to the same value bin/fm-stage.sh's landed-head
+# resolution reads from the same bytes.
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"

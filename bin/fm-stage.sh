@@ -121,9 +121,12 @@
 #   stage_branch=<branch>      stage_head=<full candidate head: where
 #                                          validation STARTED, never rewritten>
 #   stage_landed_head=<full head that actually LANDED, captured at landing and
-#                      thereafter replaced only by a strictly-no-weaker
-#                      resolution on the same lineage; empty while landing has
-#                      proven none>
+#                      thereafter replaced only by a strictly stronger source on
+#                      the same lineage; empty while landing has proven none>
+#   stage_landed_head_source=<which evidence proved stage_landed_head: pr-head,
+#                      worktree, or unresolved. As durable as the head itself,
+#                      because it is what a later reader - and the replacement
+#                      rule - needs to judge how well that head is proven>
 #   stage_tree=<full tree>     stage_gen=<spawn_gen at the last transition>
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
 #   stage_pr=<PR url>          stage_reason=<validation-pending reason, the
@@ -133,7 +136,10 @@
 #                                            `:replaced:<short superseded head>`
 #                                            tail when it displaced an earlier
 #                                            capture), or the activated
-#                                            read-back evidence>
+#                                            read-back evidence. This is the
+#                                            human-readable rendering; the
+#                                            durable provenance lives in
+#                                            stage_landed_head_source>
 #
 # The record carries stage_head and stage_landed_head apart because both facts
 # are real and neither is derivable from the other: validation starts at one
@@ -455,6 +461,7 @@ landed_head_value() {
 # sources happen to say later.
 recorded_landed_head() {
   STAGE_LANDED_HEAD=$(meta stage_landed_head)
+  STAGE_LANDED_HEAD_SOURCE=$(meta stage_landed_head_source)
 }
 
 # resolve_landed_head: set STAGE_LANDED_HEAD to the head that is landing, from
@@ -463,14 +470,25 @@ recorded_landed_head() {
 #   pr-head   the forge's own head for the pull request being merged. Recorded
 #             by bin/fm-pr-check.sh, which bin/fm-pr-merge.sh re-runs live
 #             immediately before merging, so it is the head the merge consumes.
-#   worktree  the task worktree's current head, accepted only when it is the
-#             recorded candidate or a descendant of it. Local ancestry alone
-#             decides that here: landing must not depend on the pipeline
-#             service being reachable, and a head that is not a successor of
-#             the candidate is not evidence of what this task landed.
-# When neither is available the head that landed stays UNRESOLVED and the
-# receipt says so. An unproven landed head is recorded as unknown; it is never
-# filled in with the candidate head, because that assertion is the defect.
+#   worktree  the task worktree's current head.
+# BOTH must be the recorded candidate or a descendant of it, proven the same
+# mechanical way. Ranking a source above another states that it is the more
+# trustworthy evidence, so the higher-ranked source cannot also be the more
+# weakly checked one. Local ancestry alone decides that here: landing must not
+# depend on the pipeline service being reachable, and a head that is not a
+# successor of the candidate is not evidence of what this task landed.
+#
+# RESIDUAL, NOT CLOSED. Descendancy BOUNDS pr_head, it does not TIE it to the
+# pull request being landed. pr_head= is not a stage_* field, so issue() carries
+# it across every later transition including `committed --retry`, and a pr_head
+# left by an abandoned attempt that happens also to be a descendant of the
+# current candidate is still adoptable here. Tying the value to its PR needs
+# fm-pr-check to be re-run for the PR being landed, or the record to bind
+# pr_head to pr=; neither is in this contract yet.
+#
+# When neither source proves a head, the head that landed stays UNRESOLVED and
+# the receipt says so. An unproven landed head is recorded as unknown; it is
+# never filled in with the candidate head, because that assertion is the defect.
 #
 # CAPTURE ONCE, THEN NEVER REGRESS. `landing` is deliverable more than once, and
 # the evidence it resolves from is other writers' live state: bin/fm-pr-merge.sh
@@ -479,19 +497,24 @@ recorded_landed_head() {
 # re-resolved would therefore overwrite a captured head with a weaker answer, or
 # erase it outright - defect two of this contract, reintroduced through the
 # idempotency path. So once a head is captured the only thing that may replace
-# it is a strictly-no-weaker resolution proven to be on the same lineage:
+# it is a STRICTLY STRONGER source on the same lineage:
 #   rank    pr-head 2 (the forge's own head for the pull request),
 #           worktree 1 (the task worktree's current head), unresolved 0.
-#   replace only when the new rank is not 0, the new rank is >= the captured
-#           rank, the new head differs from the captured one, and
+#   replace only when the new rank is STRICTLY GREATER than the captured rank,
+#           which makes worktree -> pr-head the only promotion there is, the new
+#           head differs from the captured one, and
 #           `merge-base --is-ancestor <captured> <new>` SUCCEEDS in the task
 #           worktree, which makes the new head a strict descendant.
+# Equal rank never replaces, because a worktree head read AFTER the merge is
+# indistinguishable from one read before it and so proves nothing about what
+# landed. The intended consequence: a task with no pr_head at all - GitLab, or
+# GitHub with gh unavailable - captures once at landing and never replaces.
 # Anything else keeps what is captured, including every case where that ancestry
 # cannot be EVALUATED at all - worktree gone, object missing, git unavailable.
 # Unevaluable is its own answer here too and it is not a pass. A replacement is
 # recorded visibly as `landed-head:<source>:replaced:<short superseded head>`,
-# so a forward advance is adopted but never applied silently, and a delivery
-# that changes nothing stays a no-op (docs/architecture.md).
+# so a promotion is adopted but never applied silently, and a delivery that
+# changes nothing stays a no-op (docs/architecture.md).
 landed_head_rank() {  # <source>
   case "$1" in
     pr-head) printf '2' ;;
@@ -500,44 +523,47 @@ landed_head_rank() {  # <source>
   esac
 }
 
+# landed_head_on_candidate_lineage: whether <head> is the recorded candidate or
+# a descendant of it, the one lineage test both evidence sources pass.
+landed_head_on_candidate_lineage() {  # <candidate> <head>
+  local candidate=$1 head=$2
+  [ -n "$candidate" ] && [ -n "$head" ] || return 1
+  [ "$head" != "$candidate" ] || return 0
+  [ -n "$WT" ] && [ -d "$WT" ] || return 1
+  git -C "$WT" merge-base --is-ancestor "$candidate" "$head" 2>/dev/null
+}
+
 # landed_head_supersedes: whether the freshly resolved STAGE_LANDED_HEAD may
-# replace <captured-head>, which <captured-source> supplied.
+# replace <captured-head>, which <captured-source> supplied. A captured head
+# whose source the record does not name is never replaced: without the source
+# there is no rank to beat, and keeping the capture is the fail-closed answer.
 landed_head_supersedes() {  # <captured-head> <captured-source>
   local captured=$1 captured_source=$2 new_rank captured_rank
   [ -n "$STAGE_LANDED_HEAD" ] || return 1
-  new_rank=$(landed_head_rank "$STAGE_LANDED_HEAD_SOURCE")
   captured_rank=$(landed_head_rank "$captured_source")
-  [ "$new_rank" -ne 0 ] || return 1
-  [ "$new_rank" -ge "$captured_rank" ] || return 1
+  [ "$captured_rank" -ne 0 ] || return 1
+  new_rank=$(landed_head_rank "$STAGE_LANDED_HEAD_SOURCE")
+  [ "$new_rank" -gt "$captured_rank" ] || return 1
   [ "$STAGE_LANDED_HEAD" != "$captured" ] || return 1
   [ -n "$WT" ] && [ -d "$WT" ] || return 1
   git -C "$WT" merge-base --is-ancestor "$captured" "$STAGE_LANDED_HEAD" 2>/dev/null
 }
 
-# landed_head_source_of_reason: the source label a recorded landing reason
-# carries, or `unresolved` when it carries none.
-landed_head_source_of_reason() {  # <stage_reason>
-  local rest
-  case "$1" in
-    landed-head:*) rest=${1#landed-head:}; printf '%s' "${rest%%:*}" ;;
-    *) printf 'unresolved' ;;
-  esac
-}
-
 resolve_landed_head() {
-  local pr_head wt_head
+  local pr_head wt_head candidate
   STAGE_LANDED_HEAD=
   STAGE_LANDED_HEAD_SOURCE=unresolved
+  candidate=$(meta stage_head)
   pr_head=$(meta pr_head)
-  if [ -n "$pr_head" ] && fm_pr_head_valid "$pr_head"; then
+  if [ -n "$pr_head" ] && fm_pr_head_valid "$pr_head" \
+      && landed_head_on_candidate_lineage "$candidate" "$pr_head"; then
     STAGE_LANDED_HEAD=$pr_head
     STAGE_LANDED_HEAD_SOURCE=pr-head
     return 0
   fi
   if [ -n "$WT" ] && [ -d "$WT" ]; then
     wt_head=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
-    if [ -n "$wt_head" ] && { [ "$wt_head" = "$(meta stage_head)" ] \
-        || git -C "$WT" merge-base --is-ancestor "$(meta stage_head)" "$wt_head" 2>/dev/null; }; then
+    if landed_head_on_candidate_lineage "$candidate" "$wt_head"; then
       STAGE_LANDED_HEAD=$wt_head
       STAGE_LANDED_HEAD_SOURCE=worktree
       return 0
@@ -887,7 +913,7 @@ do_landing() {
   captured_reason=$(meta stage_reason)
   reason="landed-head:$STAGE_LANDED_HEAD_SOURCE"
   if [ -n "$captured" ]; then
-    captured_source=$(landed_head_source_of_reason "$captured_reason")
+    captured_source=$(meta stage_landed_head_source)
     if landed_head_supersedes "$captured" "$captured_source"; then
       reason="landed-head:$STAGE_LANDED_HEAD_SOURCE:replaced:$(short "$captured")"
     else
@@ -905,6 +931,7 @@ do_landing() {
       "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
       "stage_landed_head=$STAGE_LANDED_HEAD" \
+      "stage_landed_head_source=$STAGE_LANDED_HEAD_SOURCE" \
       "stage_reason=$reason"
   fi
   next_for landing
@@ -973,7 +1000,8 @@ do_activated() {
     # carry the landing's captured fact forward rather than losing it.
     issue activated firstmate "$evidence" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
-      "stage_landed_head=$STAGE_LANDED_HEAD" "stage_reason=$evidence"
+      "stage_landed_head=$STAGE_LANDED_HEAD" \
+      "stage_landed_head_source=$STAGE_LANDED_HEAD_SOURCE" "stage_reason=$evidence"
   fi
   reconcile_currentness activated
   next_for activated

@@ -768,8 +768,19 @@ ci_ready_effect_identity() {  # <effect JSON>
   printf '%s' "$1" | jq -Sc '{task,generation,attempt,run,candidate,source_head,pr}' 2>/dev/null
 }
 
+# The effect this transaction would record. One construction site, so the
+# identity a repeat is pinned against and the identity it finally publishes
+# cannot drift apart. Pass null for the qualification to project the identity
+# alone before the producer has been read.
+ci_ready_effect_of() {  # <qualified head> <qualification JSON>
+  jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
+    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$1" \
+    --arg pr "$PR_ARG" --argjson qualification "$2" \
+    '{qualification:$qualification,task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}'
+}
+
 do_ci_ready() (
-  local current effect saved contract qualified_head qualification CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification recorded repeat CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -807,9 +818,23 @@ do_ci_ready() (
     || refuse ci-ready STALE_CANDIDATE "recorded candidate $(short "$(meta stage_head)") is not an ancestor of head $(short "$HEAD")"
   qualified_head=$(canonical_run_head) \
     || refuse ci-ready STALE_BINDING 'run head is missing, unreadable, or not attributable to this candidate'
-  qualification=$(NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
-    "$WT" "$(meta stage_run)" "$qualified_head" "$(meta stage_branch)" "$PR_ARG") \
-    || refuse ci-ready NOT_CI_READY 'exact producer qualification unavailable or invalidated'
+  # A repeat of the SAME transaction is pinned against the tuple already
+  # recorded, exactly as show, landing and every other authority use are. An
+  # unpinned read here would let the producer answer with a moved repo, attempt
+  # or generation and have that answer published over the record with no
+  # receipt, while every sibling consumer went on refusing it.
+  recorded=$(meta stage_ci_ready_effect)
+  repeat=
+  if [ "$current" = ci-ready ] && [ -n "$recorded" ] \
+      && [ "$(ci_ready_effect_identity "$recorded")" = "$(ci_ready_effect_identity "$(ci_ready_effect_of "$qualified_head" null)")" ]; then
+    repeat=$(printf '%s' "$recorded" | jq -c 'if (.qualification | type) == "object" then .qualification else empty end' 2>/dev/null)
+  fi
+  if ! qualification=$(NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
+      "$WT" "$(meta stage_run)" "$qualified_head" "$(meta stage_branch)" "$PR_ARG" "$repeat"); then
+    [ -z "$repeat" ] \
+      || refuse ci-ready QUALIFICATION_REVOKED 'the producer no longer answers the retained qualification identity; historical record retained'
+    refuse ci-ready NOT_CI_READY 'exact producer qualification unavailable or invalidated'
+  fi
   if [ -n "$HANDOFF_IDENTITY" ]; then
     [ "$qualified_head" = "$(printf '%s' "$contract" | jq -r .source_head)" ] \
       || refuse ci-ready STALE_BINDING 'qualified head differs from admitted completion'
@@ -817,17 +842,23 @@ do_ci_ready() (
   observe refresh "$ID"
   engineering_result "$qualified_head"
   STAGE_PR_VALUE=$PR_ARG
-  effect=$(jq -cn --arg task "$ID" --arg generation "$GEN" --arg attempt "$(obs attempt_id)" \
-    --arg run "$(obs run_id)" --arg candidate "$(meta stage_head)" --arg source_head "$qualified_head" --arg pr "$PR_ARG" --argjson qualification "$qualification" \
-    '{qualification:$qualification,task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}') || exit 1
+  effect=$(ci_ready_effect_of "$qualified_head" "$qualification") || exit 1
   if [ -n "$HANDOFF_IDENTITY" ]; then
     fm_completion_report_current "$contract" || exit 1
   fi
-  if [ "$current" = ci-ready ] \
-      && [ "$(ci_ready_effect_identity "$(meta stage_ci_ready_effect)")" = "$(ci_ready_effect_identity "$effect")" ] \
+  if [ -n "$repeat" ] \
+      && [ "$(ci_ready_effect_identity "$recorded")" = "$(ci_ready_effect_identity "$effect")" ] \
       && [ "$(meta stage_pr)" = "$PR_ARG" ] \
       && [ "$(meta stage_evidence)" = "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}" ]; then
-    refresh_ci_ready_effect "$effect" || exit 2
+    # A producer that advanced under the SAME pinned identity is not the
+    # identity-equal repeat that must stay silent, so the adoption is reported.
+    # unchanged revalidates before the record is rewritten, so what it pins
+    # against is the prior recorded tuple rather than one it just wrote itself.
+    [ "$qualification" = "$repeat" ] \
+      || printf 'STAGE_QUALIFICATION_ADVANCED: task=%s run=%s push_generation=%s->%s\n' \
+           "$ID" "$(dash "$(meta stage_run)")" \
+           "$(printf '%s' "$repeat" | jq -r .push_generation)" \
+           "$(printf '%s' "$qualification" | jq -r .push_generation)"
     unchanged ci-ready
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \

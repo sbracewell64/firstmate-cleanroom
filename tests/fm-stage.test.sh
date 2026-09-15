@@ -295,7 +295,7 @@ test_running_binds_the_observer_run_and_descendant_fix_commits_stay_current() {
 }
 
 test_ci_ready_needs_the_canonical_verdict_never_narration() {
-  local out rc line head before_lines
+  local out rc line head before_lines before_effect
   head=$(git -C "$WT1" rev-parse HEAD)
   FM_FAKE_AXI_STATUS=$(run_toon 01RUNA fm/a1 running "$head")
   # A hand-written done: line must not certify CI readiness.
@@ -316,40 +316,61 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   [ "$(status_stage_field "$line" owner)" = merge-authority ] || fail "landing belongs to the merge authority"
   status_is_captain_relevant "$line" || fail "the ci-ready receipt wakes firstmate"
   [ "$(meta_get a1 stage)" = ci-ready ] || fail "record stage ci-ready"
-  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
-  assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "duplicate ci-ready is a no-op"
-  # The revocable producer snapshot rides along in the effect but advances on
-  # its own. One more passing check is not a new ci-ready transaction, so it
-  # must not append a second receipt the classifier reads as a fresh event.
-  # push_generation is pinned against the RECORDED tuple, so a re-push of the
-  # same qualified head must refresh what is recorded. Repeating the identical
-  # transaction must do that without appending a second receipt: leaving the
-  # old tuple wedges every later authority use on QUALIFICATION_REVOKED, and
-  # re-issuing gives the classifier a duplicate event.
   before_lines=$(stage_lines a1)
+  before_effect=$(meta_get a1 stage_ci_ready_effect)
   [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 1 ] \
     || fail "ci-ready did not record the producer push generation"
+  # (1) IDENTITY-EQUAL REPEAT. Nothing moved, so nothing is rewritten and no
+  # second receipt is appended for the classifier to read as a fresh event.
+  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 0 "$rc" "an identity-equal repeat must succeed (got: $out)"
+  assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "duplicate ci-ready is a no-op"
+  assert_not_contains "$out" "STAGE_QUALIFICATION_ADVANCED" "an unmoved producer reported an adoption"
+  [ "$(stage_lines a1)" = "$before_lines" ] || fail "a duplicate ci-ready appended a receipt"
+  [ "$(meta_get a1 stage_ci_ready_effect)" = "$before_effect" ] \
+    || fail "an identity-equal repeat rewrote the recorded effect"
+  # (2) LEGITIMATE FORWARD ADVANCE under the SAME pinned identity: adopted, and
+  # the adoption is reported rather than applied silently. Leaving the old tuple
+  # would wedge every later authority use on QUALIFICATION_REVOKED.
   FM_TEST_QUALIFICATION_FILE="$TMP_ROOT/a1-advanced-qualification.json"
+  export FM_TEST_QUALIFICATION_FILE
   meta_get a1 stage_ci_ready_effect \
     | jq -c '.qualification | .push_generation=2 | .evidence.checks += [{name:"later producer check",bucket:"pass"}]' \
     > "$FM_TEST_QUALIFICATION_FILE"
-  export FM_TEST_QUALIFICATION_FILE
   out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
   expect_code 0 "$rc" "an advanced producer must not refuse an unchanged repeat (got: $out)"
   assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "a producer advance is not a new ci-ready transaction"
+  assert_contains "$out" "STAGE_QUALIFICATION_ADVANCED: task=a1" "the adopted producer advance was not reported"
   [ "$(stage_lines a1)" = "$before_lines" ] \
     || fail "an advanced producer appended a duplicate ci-ready receipt"
   [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 2 ] \
     || fail "the unchanged repeat left the superseded producer tuple recorded"
   out=$("$STAGE" a1 show 2>&1); rc=$?
   expect_code 0 "$rc" "the refreshed tuple must keep later authority uses current (got: $out)"
-  unset FM_TEST_QUALIFICATION_FILE
+  # (3) EVERYTHING ELSE. A repeat is pinned against the RECORDED tuple exactly
+  # as show and landing are, so a producer answering with a moved identity is
+  # refused rather than published over the record without a receipt.
+  meta_get a1 stage_ci_ready_effect | jq -c '.qualification | .push_generation=1' \
+    > "$FM_TEST_QUALIFICATION_FILE"
   out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
-  expect_code 0 "$rc" "the repeat must track the producer back as well (got: $out)"
-  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 1 ] \
-    || fail "the unchanged repeat did not track the producer tuple back"
-  [ "$(stage_lines a1)" = "$before_lines" ] \
-    || fail "tracking the producer tuple appended a receipt"
+  expect_code 1 "$rc" "a backward push generation must refuse the repeat (got: $out)"
+  assert_contains "$out" "reason=QUALIFICATION_REVOKED" "the refusal names the moved qualification identity"
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 2 ] \
+    || fail "a backward producer tuple was published over the recorded one"
+  meta_get a1 stage_ci_ready_effect | jq -c '.qualification | .repo="foreign-producer"' \
+    > "$FM_TEST_QUALIFICATION_FILE"
+  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 1 "$rc" "a foreign producer repo must refuse the repeat (got: $out)"
+  assert_contains "$out" "reason=QUALIFICATION_REVOKED" "the foreign-repo refusal names the moved identity"
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.repo)" = portable-fixture ] \
+    || fail "a foreign producer tuple was laundered into the record"
+  [ "$(stage_lines a1)" = "$before_lines" ] || fail "a refused repeat appended a receipt"
+  unset FM_TEST_QUALIFICATION_FILE
+  # Fixture restore: the adopted advance left the record ahead of the default
+  # producer answer, and a backward move is now refused rather than tracked.
+  grep -v '^stage_ci_ready_effect=' "$STATE/a1.meta" > "$STATE/a1.meta.restore"
+  printf 'stage_ci_ready_effect=%s\n' "$before_effect" >> "$STATE/a1.meta.restore"
+  mv "$STATE/a1.meta.restore" "$STATE/a1.meta"
   # The self-cancel allowance belongs to the process that aborted the run, not
   # to whatever the environment happens to carry. An inherited value must not
   # buy a transition against a qualification the producer has revoked.

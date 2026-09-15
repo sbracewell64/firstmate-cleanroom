@@ -1175,7 +1175,7 @@ housekeeping() {  # <state>
     if afk_active "$state"; then
       # Reuse the existing bounded scan and escalation transport. An empty
       # wake queue or already-presented programme cannot hide an open handoff.
-      local completion completion_rc=0 completion_line completion_key completion_marker completion_ident
+      local completion completion_rc=0 completion_line completion_key completion_marker completion_ident completion_digest
       # shellcheck source=bin/fm-timeout-lib.sh
       . "$FM_DAEMON_DIR/fm-timeout-lib.sh"
       completion=$(fm_run_timed 10 "$FM_DAEMON_DIR/fm-continuation-resolve.sh" reconcile 2>&1) || completion_rc=$?
@@ -1195,15 +1195,19 @@ housekeeping() {  # <state>
       # would differ every scan for state that never changed.
       while IFS= read -r completion_line; do
         [ -n "$completion_line" ] || continue
+        # Every line gets its own marker: the line's digest always, under its
+        # task when it names one so the task's teardown retires it with the
+        # rest. Both shapes the reconcile output actually carries are read -
+        # `task=<id>` from the stage and completion refusals, and `task '<id>'`
+        # from the lease guard - so only the batch's own leading disposition,
+        # which names no task at all, is left keyed to the batch.
+        completion_digest=$(printf '%s' "$completion_line" | cksum | tr ' ' '-')
         completion_key=$(printf '%s' "$completion_line" | tr ' \t' '\n\n' \
           | sed -n 's/^task=\(..*\)$/\1/p' | head -n 1)
-        # A line that names no task - the CNO disposition above, a lease-refused
-        # handoff error, a refusal's trailing next: line - keys to its own
-        # content. One shared bucket would make two such lines overwrite each
-        # other's identity and re-type both every scan, forever.
-        [ -n "$completion_key" ] \
-          || completion_key="away-reconcile-$(printf '%s' "$completion_line" | cksum | tr ' ' '-')"
-        completion_marker=$(status_daemon_completion_marker_path "$state" "$completion_key")
+        [ -n "$completion_key" ] || completion_key=$(printf '%s' "$completion_line" \
+          | sed -n "s/.*[[:space:]]task '\([^']\{1,\}\)'.*/\1/p")
+        [ -n "$completion_key" ] || completion_key=away-reconcile
+        completion_marker=$(status_daemon_completion_marker_path "$state" "$completion_key" "$completion_digest")
         completion_ident=$(status_observed_signature "$state" "${#completion_line}" "$completion_line")
         status_presentation_marker_reported_matches "$completion_marker" "$completion_ident" && continue
         if escalate_add "$state" "$completion_line"; then

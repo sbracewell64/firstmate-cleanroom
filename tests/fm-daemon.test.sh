@@ -520,6 +520,23 @@ EOF
   FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
   [ "$(grep -c . "$state/.subsuper-escalations")" = "$before" ] \
     || fail "unlabelled reconcile lines were re-typed into the away pane on an unchanged scan"
+
+  # The ordinary refused ci-ready dispatch: the captured stage refusal AND the
+  # completion CNO that reports it, both naming the SAME task in one batch.
+  # Two lines under one key overwrite each other's identity every scan.
+  printf '%s\n' \
+    'STAGE_REFUSED: transition=ci-ready task=t9 reason=NOT_CI_READY exact producer qualification unavailable' \
+    'COMPLETION_CNO: task=t9 owner=fm-stage reason=STAGE_HELD' \
+    > "$dir/reconcile-output"
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c 'task=t9' "$state/.subsuper-escalations")" = 2 ] \
+    || fail "the refused dispatch did not report both of its lines once"
+  before=$(grep -c . "$state/.subsuper-escalations")
+  rm -f "$state/.subsuper-last-scan"
+  FM_DAEMON_DIR="$fakebin" FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -c . "$state/.subsuper-escalations")" = "$before" ] \
+    || fail "two lines for one task were re-typed into the away pane on an unchanged scan"
   pass "away reconcile escalations report once per identity, not once per scan"
 }
 

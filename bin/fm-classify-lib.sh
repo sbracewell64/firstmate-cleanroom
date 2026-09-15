@@ -1007,10 +1007,18 @@ status_daemon_seen_marker_path() {  # <state> <task-id>
 # daemon that writes it and status_retire_presentation_task below derive the
 # path here, so the writer and the retirement cannot drift apart and leave a
 # torn-down task's marker behind for a later task of the same id to inherit.
-# The key is the line's task id when it names one, and the line's own content
-# otherwise - never a shared bucket two different lines would overwrite.
-status_daemon_completion_marker_path() {  # <state> <key>
-  status_daemon_seen_marker_path "$1" "completion-$2"
+# The key names the line's task when it has one and the batch otherwise, and
+# the line's own digest always follows it: one batch routinely carries several
+# lines for the SAME task - a stage refusal and the CNO that reports it - and
+# two lines sharing one marker overwrite each other's identity and re-type the
+# pair every scan forever. `@` separates the two because a task id cannot
+# contain one, so a task's prefix can never match a different task's markers.
+status_daemon_completion_marker_path() {  # <state> <key> <line digest>
+  status_daemon_seen_marker_path "$1" "completion-$2@$3"
+}
+
+status_daemon_completion_marker_prefix() {  # <state> <key>
+  status_daemon_seen_marker_path "$1" "completion-$2@"
 }
 
 _status_presentation_signature_valid() {
@@ -1135,14 +1143,17 @@ status_presentation_marker_commit() {
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
-  local signal_marker heartbeat_marker daemon_marker completion_marker
+  local signal_marker heartbeat_marker daemon_marker completion_prefix
+  local -a completion_markers=()
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
   signal_marker=$(status_signal_seen_marker_path "$state" "$task")
   heartbeat_marker=$(status_heartbeat_seen_marker_path "$state" "$task")
   daemon_marker=$(status_daemon_seen_marker_path "$state" "$task")
-  completion_marker=$(status_daemon_completion_marker_path "$state" "$task")
+  completion_prefix=$(status_daemon_completion_marker_prefix "$state" "$task")
+  completion_markers=( "$completion_prefix"* )
+  [ -e "${completion_markers[0]}" ] || [ -L "${completion_markers[0]}" ] || completion_markers=()
 
   # A remote-home teardown can legitimately retire an endpoint ID that has no
   # status log in that home. Do not contend with that home's unrelated status
@@ -1155,7 +1166,7 @@ status_retire_presentation_task() {  # <state> <task-id>
     && [ ! -e "$signal_marker" ] && [ ! -L "$signal_marker" ] \
     && [ ! -e "$heartbeat_marker" ] && [ ! -L "$heartbeat_marker" ] \
     && [ ! -e "$daemon_marker" ] && [ ! -L "$daemon_marker" ] \
-    && [ ! -e "$completion_marker" ] && [ ! -L "$completion_marker" ]; then
+    && [ "${#completion_markers[@]}" -eq 0 ]; then
     if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
       return 0
     fi
@@ -1199,8 +1210,11 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
+    completion_markers=( "$completion_prefix"* )
+    [ -e "${completion_markers[0]}" ] || [ -L "${completion_markers[0]}" ] || completion_markers=()
     rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" \
-      "$signal_marker" "$heartbeat_marker" "$daemon_marker" "$completion_marker" || rc=1
+      "$signal_marker" "$heartbeat_marker" "$daemon_marker" \
+      ${completion_markers[@]+"${completion_markers[@]}"} || rc=1
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"

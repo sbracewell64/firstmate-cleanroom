@@ -60,7 +60,7 @@ ARG_ASSIGN_RE = re.compile(
     r'^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\{?1\b)'
 )
 # An alias group is discovered on every alternative: `--enforce|--enforce-all)`.
-FLAG_RE = re.compile(r"^\s{0,8}(--[a-z][a-z0-9-]*(?:\|--[a-z][a-z0-9-]*)*)\)")
+FLAG_RE = re.compile(r"^\s{0,8}(-{1,2}[a-z][a-z0-9-]*(?:\|-{1,2}[a-z][a-z0-9-]*)*)\)")
 FUNCTION_RE = re.compile(r"^(fm_[a-z0-9_]+)\(\)")
 # A sourced library's functions are its entry points, so they are discovered
 # whatever they are named. A script that is only executed keeps the `fm_` gate:
@@ -74,7 +74,7 @@ SHELL_NAME_RE = re.compile(r"([A-Za-z0-9._-]+\.sh)\b")
 # printf/echo/cat are dropped before matching, but a command substitution inside
 # them survives, so a genuine call that sits inside an emitted string counts.
 HEREDOC_RE = re.compile(
-    r"(?<!<)<<(?!<)(-?)(?:'([A-Za-z_][A-Za-z0-9_]*)'"
+    r"(?<!<)<<(?!<)(-?)\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'"
     r"|\"([A-Za-z_][A-Za-z0-9_]*)\""
     r"|\\([A-Za-z_][A-Za-z0-9_]*)"
     r"|([A-Za-z_][A-Za-z0-9_]*))"
@@ -194,7 +194,7 @@ def discover_dispatch_and_flags(rel: str, lines: list[str], found: dict[str, str
         flag = FLAG_RE.match(line)
         if flag:
             for alias in flag.group(1).split("|"):
-                if verb_match(alias[2:], FLAG_VERBS):
+                if alias.startswith("--") and verb_match(alias[2:], FLAG_VERBS):
                     found[f"{rel}:{alias}"] = "flag"
 
 
@@ -446,6 +446,10 @@ def heredoc_opener(line: str) -> re.Match[str] | None:
             arithmetic += 1
             index += 3
             continue
+        if quote != "'" and line.startswith("((", index):
+            arithmetic += 1
+            index += 2
+            continue
         if arithmetic:
             if line.startswith("))", index):
                 arithmetic -= 1
@@ -661,7 +665,7 @@ def entry_exists(root: Path, entry_id: str, axis: str) -> None:
         return
     text = read_text(root, path)
     if axis == "flag":
-        present = re.search(rf"^\s{{0,8}}(?:--[a-z0-9-]+\|)*{re.escape(token)}(?:\||\))", text, re.M)
+        present = re.search(rf"^\s{{0,8}}(?:-{{1,2}}[a-z0-9-]+\|)*{re.escape(token)}(?:\||\))", text, re.M)
     elif axis == "function":
         present = re.search(rf"^{re.escape(token)}\(\)", text, re.M)
     else:
@@ -747,6 +751,15 @@ def check_call_sites(
             fail(
                 f"{entry_id}: ci-suite call site {site_path} is not scheduled into any CI lane, "
                 f"so no automated gate reaches this capability"
+            )
+    if axis == "function" and all(
+        isinstance(site, dict) and site.get("path") == path for site in sites
+    ):
+        note = entry.get("note")
+        if not isinstance(note, str) or not note.strip():
+            fail(
+                f"{entry_id}: every declared call site is the defining library itself, so the "
+                f"entry must carry a note naming the executable that traverses it"
             )
     return len(sites)
 

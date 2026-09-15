@@ -12,7 +12,7 @@ This record is the dated sweep behind that reading, and [`docs/enforcement-point
 The check discovers candidate entry points from the tracked tree with rules it owns, so an inventory edit can narrow neither the discovery nor the accepted kinds.
 It discovers four shapes in `bin/`: a script whose name carries an enforce-style word, a dispatch subcommand named with an enforce verb, a long option named with an enforce verb, and a function whose name carries one.
 A dispatcher is a `case` on the script's own argument stream, which means `$1` itself or a variable the same file assigned directly from `$1`, wherever that `case` appears; an unrelated internal `case` is deliberately not harvested.
-A long option is discovered on every alternative of an alias group, so `--enforce|--enforce-all)` accounts for both.
+A long option is discovered on every long alternative of an alias group, so `--enforce|--enforce-all)` accounts for both and `-e|--enforce)` is discovered on `--enforce` while the short alternative is ignored.
 A function is discovered in any tracked `bin/` script or backend adapter, not only in a `*-lib.sh`.
 In a sourced library, which means a `bin/` script another tracked script brings in with `.` or `source`, every enforce-verb function is discovered whatever it is named, because a library's functions are its entry points.
 In a script that is only executed, discovery is limited to the `fm_`-prefixed functions; the bound below records why.
@@ -32,6 +32,7 @@ So a note at the end of a working line is prose, while a `${VAR#pattern}` expans
 A `.mjs`, `.js` or `.ts` caller has its own rule for `//` line comments and `/* */` blocks, and JSON has no comment syntax, so a hook registration is matched as written.
 
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
+A heredoc is recognised whether its delimiter follows `<<` directly or after whitespace, and an arithmetic shift inside `$(( ))` or `(( ))` is read as a shift rather than as an opener.
 A command is assembled across its backslash continuations first, joined only on an odd count of trailing backslashes, so the tail of a multi-line `printf` is dropped with its first line instead of surviving as a call.
 Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
 
@@ -50,6 +51,8 @@ The check asserts each one is still named by the file and still rejected by the 
 An entry declared `guards: runtime` guards a live Firstmate operation, and only a production-surface caller counts for it.
 An entry declared `guards: repository` guards a property of the repository itself, where the guarded path is a change landing and the CI suite walk is the production path.
 For those, and only those, a `ci-suite` call site is accepted, and the check proves the chain rather than assuming it: the named script must be a `tests/*.test.sh` that calls the capability, and `bin/fm-test-run.sh` must itself schedule that script into a CI lane.
+That carve-out reaches the script, subcommand and long-option axes; a function-axis entry always needs a production-surface reference whatever it guards.
+The narrower rule for functions is deliberate rather than an oversight, because a library function is reached through whatever executable sources it rather than by being named on a command line, and no declared entry has that shape today.
 A test that exists but no lane runs is refused with the same force as no caller at all.
 This is not a relaxation of the rule for runtime invariants: a `ci-suite` call site declared on a `guards: runtime` entry is refused outright.
 
@@ -75,6 +78,7 @@ Extending the check to detect a discarded verdict is a candidate follow-up, reco
 
 The check does not show full reachability from an executable entry point either.
 A function called only from another unreached function in the same file still counts, so the `note` field records which executable traverses it.
+That compensation is enforced rather than conventional: when every declared call site of a function entry is its own defining library, a non-empty `note` is required.
 A function defined inside a script that is only executed, never sourced, is discovered only when its name carries the `fm_` prefix.
 That is deliberate, and the measurement is the reason: 78 tracked functions in `bin/` carry an enforce verb without that prefix, 4 of them live in sourced libraries and are now discovered, and the other 74 are defined inside scripts that are only executed.
 Those 74 are script-internal helpers: nothing outside the defining script can call them, so the script's own surface, which discovery already accounts for by name, subcommand and flag, is the entry point a caller can reach.
@@ -189,7 +193,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057581
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057844
 ```
 
 ```sh
@@ -205,10 +209,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T00:53:51Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10728 gate_skip=false
-FM_TEST_END 2026-09-15T00:53:52Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=846 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11640
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=11574 failed=0
+FM_TEST_END 2026-09-15T01:12:03Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=11960 gate_skip=false
+FM_TEST_END 2026-09-15T01:12:04Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=830 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=12857
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=12790 failed=0
 ```
 
 ## Adding an entry point

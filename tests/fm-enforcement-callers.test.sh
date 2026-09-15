@@ -139,6 +139,54 @@ Run `bin/fm-manual.sh verify <file>` by hand when the record looks stale.
 FIX
 
   # An undeclared bin/ subdirectory is not part of the production surface.
+  # Long options in alias groups that mix a short option, both orderings.
+  cat > "$repo/bin/fm-lever.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -e|--enforce-lever) STRICT=1 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ "$STRICT" -eq 1 ]
+FIX
+
+  cat > "$repo/bin/fm-latch.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --verify-latch|-verify) STRICT=1 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ "$STRICT" -eq 1 ]
+FIX
+
+  # A capability reached only from inside its own library.
+  cat > "$repo/bin/fm-inner-lib.sh" <<'FIX'
+#!/usr/bin/env bash
+fm_inner_validate() {
+  [ -n "${1:-}" ]
+}
+fm_inner_apply() {
+  fm_inner_validate "$1" || return 1
+}
+FIX
+
+  cat > "$repo/bin/fm-inner.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-inner-lib.sh"
+fm_inner_apply "$1"
+FIX
+
   cat > "$repo/bin/fm-yaml-gate.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -241,6 +289,26 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-lever.sh:--enforce-lever",
+      "kind": "not-enforcement",
+      "invariant": "A lever is engaged only in strict mode.",
+      "reason": "A scratch strictness flag with no caller yet."
+    },
+    {
+      "id": "bin/fm-latch.sh:--verify-latch",
+      "kind": "not-enforcement",
+      "invariant": "A latch is closed only in strict mode.",
+      "reason": "A scratch strictness flag with no caller yet."
+    },
+    {
+      "id": "bin/fm-inner-lib.sh:fm_inner_validate",
+      "kind": "enforced",
+      "invariant": "An inner record is accepted only when it names something.",
+      "guards": "runtime",
+      "callSites": [{"path": "bin/fm-inner-lib.sh", "via": "production"}],
+      "note": "Called by fm_inner_apply in its own library, which bin/fm-inner.sh traverses."
+    },
+    {
       "id": "bin/fm-yaml-gate.sh",
       "kind": "enforced",
       "invariant": "The widget gate runs in CI and in the local landing gate.",
@@ -313,6 +381,16 @@ elif mode == "drop-shared-function":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
     ]
+elif mode == "drop-lever-flag":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/fm-lever.sh:--enforce-lever"
+    ]
+elif mode == "drop-latch-flag":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/fm-latch.sh:--verify-latch"
+    ]
+elif mode == "drop-self-call-note":
+    entries["bin/fm-inner-lib.sh:fm_inner_validate"].pop("note", None)
 elif mode == "drop-nested-script":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/extra/fm-validate-thing.sh"
@@ -531,6 +609,60 @@ FIX
   pass "a trailing # comment is prose on every hash-comment surface, not only in shell"
 }
 
+test_mixed_flag_alias_group_is_discovered() {
+  local repo="$TMP_ROOT/flag-alias"
+
+  # Only the long alternatives are capabilities, so `-verify` beside
+  # `--verify-latch` must not become an entry point of its own.
+  write_fixture "$repo"
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a short alternative in an alias group was discovered as a capability"
+
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-lever-flag
+  run_expect_failure "bin/fm-lever.sh:--enforce-lever" "$CHECK" --root "$repo"
+
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-latch-flag
+  run_expect_failure "bin/fm-latch.sh:--verify-latch" "$CHECK" --root "$repo"
+  pass "a long option stays discovered in an alias group that mixes a short option"
+}
+
+test_self_call_site_requires_a_traverser_note() {
+  local repo="$TMP_ROOT/self-call-note"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-self-call-note
+  run_expect_failure "must carry a note" "$CHECK" --root "$repo"
+  pass "a function reached only inside its own library must record what traverses it"
+}
+
+test_spaced_heredoc_body_is_stripped() {
+  local repo="$TMP_ROOT/spaced-heredoc"
+
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+cat << NOTE
+Handle with real tools: bin/fm-widget.sh enforce <widget> when a widget is reported.
+NOTE
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+cat <<- 'NOTE'
+Handle with real tools: bin/fm-widget.sh enforce <widget> when a widget is reported.
+NOTE
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  pass "a heredoc whose delimiter follows whitespace still has its body stripped"
+}
+
 test_nested_bin_script_is_still_discovered() {
   local repo="$TMP_ROOT/nested-discovery"
   write_fixture "$repo"
@@ -722,6 +854,9 @@ test_removing_the_enforcing_call_fails
 test_comment_mention_is_not_a_call
 test_trailing_comment_is_not_a_call
 test_hash_comment_surfaces_share_one_rule
+test_mixed_flag_alias_group_is_discovered
+test_self_call_site_requires_a_traverser_note
+test_spaced_heredoc_body_is_stripped
 test_nested_bin_script_is_still_discovered
 test_emitted_operator_text_is_not_a_call
 test_recorded_rejected_site_must_stay_rejected

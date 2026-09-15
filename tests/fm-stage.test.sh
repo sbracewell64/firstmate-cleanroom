@@ -1225,6 +1225,121 @@ test_recorded_forge_head_must_be_on_the_candidate_lineage() {
 # evidence has DEGRADED must keep what was captured rather than overwrite the
 # record with a weaker answer, which would be defect two reintroduced through
 # the idempotency path.
+# EMPTINESS IS NOT ABSENCE. A landing that looked and could prove nothing
+# records `unresolved` - a positive fact about a decision that WAS made. Reading
+# that empty head as "nothing was recorded" would let a later re-delivery fill
+# it from the worktree, and a worktree head read AFTER the merge is
+# indistinguishable from one read before it, so the record would end up naming a
+# head that never landed. Only the forge's own head may fill an unresolved
+# capture.
+test_an_unresolved_capture_is_a_decision_not_a_blank() {
+  local out rc wt landed gone
+  wt="$TMP_ROOT/wt-unresolved"
+  gone="$TMP_ROOT/gone-unresolved-wt"
+  make_worktree "$wt" fm/unresolved
+  make_task unresolvedcap no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" unresolvedcap committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+
+  # Landing runs while the worktree is unreachable and no forge head is
+  # recorded, so nothing proves a landed head.
+  sed "s|^worktree=.*|worktree=$gone|" "$STATE/unresolvedcap.meta" > "$TMP_ROOT/uc.rw"
+  mv "$TMP_ROOT/uc.rw" "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records an unresolved head: $out"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] || fail "nothing proved a head, so none may be named"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the record must say landing looked and proved nothing"
+
+  # The merge happens, the worker keeps committing, and the worktree comes back.
+  git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  sed "s|^worktree=.*|worktree=$wt|" "$STATE/unresolvedcap.meta" > "$TMP_ROOT/uc.rw2"
+  mv "$TMP_ROOT/uc.rw2" "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery once the worktree is back: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" \
+    "a post-merge worktree head must not fill an unresolved capture"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] \
+    || fail "the worktree filled an unresolved capture (got $(meta_get unresolvedcap stage_landed_head))"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the recorded decision must survive the re-delivery"
+
+  # The forge's own head is the one evidence that may fill it, and the fill is
+  # recorded visibly rather than passing as an ordinary first capture.
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery with forge evidence: $out"
+  assert_not_contains "$out" "STAGE_UNCHANGED" "the forge head must fill an unresolved capture"
+  [ "$(meta_get unresolvedcap stage_landed_head)" = "$landed" ] \
+    || fail "the fill must record the forge head (got $(meta_get unresolvedcap stage_landed_head))"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = pr-head ] \
+    || fail "the fill must record its provenance"
+  [ "$(status_stage_field "$(last_line unresolvedcap)" reason)" = "landed-head:pr-head:replaced:unresolved" ] \
+    || fail "the fill must say what it displaced (got $(status_stage_field "$(last_line unresolvedcap)" reason))"
+  pass "fm-stage landing: a recorded unresolved landed head is a decision, fillable only by the forge head and never by a post-merge worktree"
+}
+
+# Every strictness rule needs an escape, and the escape must be honest rather
+# than silent. A landed head captured from the worktree can be wrong - the
+# worker's local commit was never the one pushed - and equal rank never replaces
+# it, so refusing forever would leave hand-editing a live fleet record as the
+# only way out. Activation proceeds on what it CAN prove and records, in a field
+# a consumer can match on, that the captured head was not among it.
+test_activation_names_an_unconfirmed_landed_head_instead_of_refusing() {
+  local out rc wt project submitted unpushed
+  wt="$TMP_ROOT/wt-unconfirmed"
+  project="$TMP_ROOT/project-unconfirmed"
+  make_worktree "$wt" fm/unconfirmed
+  make_task unconfirmed no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" unconfirmed committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  submitted=$(meta_get unconfirmed stage_head)
+
+  # The worker commits something that is never pushed, and landing captures it
+  # from the worktree because no forge head is recorded.
+  git -C "$wt" commit -q --allow-empty -m 'local commit that never lands'
+  unpushed=$(git -C "$wt" rev-parse HEAD)
+  out=$("$STAGE" unconfirmed landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the worktree head: $out"
+  [ "$(meta_get unconfirmed stage_landed_head)" = "$unpushed" ] || fail "the worktree head was not captured"
+
+  # The project clone landed the SUBMITTED head instead, so the captured head is
+  # not reachable there. A separate clone keeps the two histories apart.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  git -C "$project" checkout -q "$submitted"
+  sed "s|^project=.*|project=$project|" "$STATE/unconfirmed.meta" > "$TMP_ROOT/unconf.rw"
+  mv "$TMP_ROOT/unconf.rw" "$STATE/unconfirmed.meta"
+
+  out=$("$STAGE" unconfirmed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activation must proceed on what it can prove: $out"
+  assert_not_contains "$out" "NO_READBACK" "activation must not refuse when the candidate head is provable"
+  # Two facts, both present, neither inferable from the other: what WAS proven,
+  # and that the captured landed head was not.
+  [ "$(meta_get unconfirmed stage_landed_head_confirmed)" = unconfirmed ] \
+    || fail "the record must say the captured landed head could not be confirmed (got '$(meta_get unconfirmed stage_landed_head_confirmed)')"
+  [ "$(status_stage_field "$(last_line unconfirmed)" reason)" = "ancestor-of:${submitted:0:12}:candidate-head:${submitted:0:12}" ] \
+    || fail "the record must say what it did prove (got $(status_stage_field "$(last_line unconfirmed)" reason))"
+  [ "$(status_stage_field "$(last_line unconfirmed)" landed_confirmed)" = unconfirmed ] \
+    || fail "the receipt must carry the disposition a consumer matches on"
+  # The mis-captured head and its provenance are NOT rewritten to make the
+  # record agree with itself.
+  [ "$(meta_get unconfirmed stage_landed_head)" = "$unpushed" ] \
+    || fail "activation rewrote the captured landed head"
+  [ "$(meta_get unconfirmed stage_landed_head_source)" = worktree ] \
+    || fail "activation rewrote the captured provenance"
+  [ "$(status_stage_field "$(last_line unconfirmed)" landed_head)" = "${unpushed:0:12}" ] \
+    || fail "the receipt must still name the captured head"
+  out=$("$STAGE" unconfirmed show 2>&1)
+  assert_contains "$out" "landed_confirmed=unconfirmed" "show reports the disposition"
+  out=$("$STAGE" unconfirmed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a repeat activation: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: activated" "a repeat activation stays a no-op"
+  pass "fm-stage activated: an unprovable captured landed head is named as unconfirmed rather than refusing forever"
+}
+
 test_a_captured_landed_head_never_regresses() {
   local out rc wt merged captured
   wt="$TMP_ROOT/wt-capture"
@@ -1376,5 +1491,7 @@ test_landing_names_the_head_that_landed
 test_only_stronger_evidence_displaces_a_captured_landed_head
 test_recorded_forge_head_must_be_on_the_candidate_lineage
 test_a_captured_landed_head_never_regresses
+test_an_unresolved_capture_is_a_decision_not_a_blank
+test_activation_names_an_unconfirmed_landed_head_instead_of_refusing
 test_an_unreadable_record_is_refused_not_assumed_clean
 test_meta_replace_preserves_the_record_mode_and_contract

@@ -93,10 +93,13 @@
 #              evidence order and why an unproven head stays unresolved.
 #   activated  Firstmate runs this after landing to record the read-back:
 #              the merge-notification marker bin/fm-pr-lib.sh writes with the PR
-#              identity, or the LANDED head (the candidate head only when no
-#              landed head can be resolved) reachable from the project clone's
-#              checked-out head. No read-back refuses as NO_READBACK;
-#              nothing here fetches, merges, or syncs.
+#              identity, or the LANDED head reachable from the project clone's
+#              checked-out head, falling back to the candidate head when the
+#              landed head is absent or cannot be proven. No read-back at all
+#              refuses as NO_READBACK; nothing here fetches, merges, or syncs.
+#              Whether the captured landed head was itself proven is recorded
+#              apart, in stage_landed_head_confirmed, so proceeding on the
+#              candidate head never reads as having confirmed the landed one.
 #   show       Prints the recorded stage and its `next:` line; changes nothing.
 #              A worker resuming after a restart runs this first and continues
 #              from the recorded stage.
@@ -127,6 +130,15 @@
 #                      worktree, or unresolved. As durable as the head itself,
 #                      because it is what a later reader - and the replacement
 #                      rule - needs to judge how well that head is proven>
+#   stage_landed_head_confirmed=<what activation could prove about the captured
+#                      landed head, written by `activated` alone: confirmed (it
+#                      is reachable from the project clone's checked-out head),
+#                      unconfirmed (a head is captured and activation could not
+#                      prove it, so the read-back below came from elsewhere), or
+#                      none (no landed head is captured, so there is nothing to
+#                      confirm). A typed value rather than prose, so a consumer
+#                      can find an activation with an unconfirmed landed head by
+#                      matching rather than by reading>
 #   stage_tree=<full tree>     stage_gen=<spawn_gen at the last transition>
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
 #   stage_pr=<PR url>          stage_reason=<validation-pending reason, the
@@ -154,7 +166,8 @@
 # Receipt fields, in this order on every stage line (`-` when not applicable;
 # values percent-encode space, percent, and tab, and the classifier decodes
 # them): task, gen (worker epoch: the record's spawn_gen), branch, head,
-# landed_head (the head that landed, `-` when this transition resolves none), tree
+# landed_head (the head that landed, `-` when this transition resolves none),
+# landed_confirmed (stage_landed_head_confirmed, `-` outside activation), tree
 # (12-character prefixes; the record holds the full ids), intent (12-character
 # SHA-256 of data/<id>/brief.md plus data/<id>/ship-instructions.md when
 # present: the accepted intent identity), decisions (comma-separated keys of
@@ -295,6 +308,7 @@ SELF_CMD="FM_HOME=$(printf '%q' "$FM_HOME") $(printf '%q' "$SCRIPT_DIR/fm-stage.
 STAGE_PR_VALUE=
 STAGE_LANDED_HEAD=
 STAGE_LANDED_HEAD_SOURCE=
+STAGE_LANDED_HEAD_CONFIRMED=
 BRANCH=
 HEAD=
 TREE=
@@ -462,6 +476,7 @@ landed_head_value() {
 recorded_landed_head() {
   STAGE_LANDED_HEAD=$(meta stage_landed_head)
   STAGE_LANDED_HEAD_SOURCE=$(meta stage_landed_head_source)
+  STAGE_LANDED_HEAD_CONFIRMED=$(meta stage_landed_head_confirmed)
 }
 
 # resolve_landed_head: set STAGE_LANDED_HEAD to the head that is landing, from
@@ -540,10 +555,19 @@ landed_head_on_candidate_lineage() {  # <candidate> <head>
 landed_head_supersedes() {  # <captured-head> <captured-source>
   local captured=$1 captured_source=$2 new_rank captured_rank
   [ -n "$STAGE_LANDED_HEAD" ] || return 1
+  [ -n "$captured_source" ] || return 1
   captured_rank=$(landed_head_rank "$captured_source")
-  [ "$captured_rank" -ne 0 ] || return 1
   new_rank=$(landed_head_rank "$STAGE_LANDED_HEAD_SOURCE")
   [ "$new_rank" -gt "$captured_rank" ] || return 1
+  if [ "$captured_rank" -eq 0 ]; then
+    # Rank alone does NOT close this case, which is why the source is named
+    # here rather than left to the ladder: worktree(1) outranks unresolved(0),
+    # so a rank test on its own would admit a worktree head read AFTER the
+    # landing - the same evidence the equal-rank case already rejects, for the
+    # same reason. Only the forge's own head fills an unresolved capture.
+    [ "$STAGE_LANDED_HEAD_SOURCE" = pr-head ] || return 1
+    return 0
+  fi
   [ "$STAGE_LANDED_HEAD" != "$captured" ] || return 1
   [ -n "$WT" ] && [ -d "$WT" ] || return 1
   git -C "$WT" merge-base --is-ancestor "$captured" "$STAGE_LANDED_HEAD" 2>/dev/null
@@ -579,8 +603,8 @@ receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
   if [ -n "$FM_WC_ENGINEERING" ]; then
     residuals=$(fm_work_context_engineering_residuals "$DATA/$ID/work-context.json" | jq -sr 'map(.id) | join(",")')
   fi
-  printf '%s: task=%s gen=%s branch=%s head=%s landed_head=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s engineering=%s residuals=%s\n' \
-    "$stage" "$ID" "$(enc "$GEN")" "$(enc "$branch")" "$(enc "$(short "$head")")" "$(enc "$(short "$(landed_head_value)")")" "$(enc "$(short "$tree")")" \
+  printf '%s: task=%s gen=%s branch=%s head=%s landed_head=%s landed_confirmed=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s engineering=%s residuals=%s\n' \
+    "$stage" "$ID" "$(enc "$GEN")" "$(enc "$branch")" "$(enc "$(short "$head")")" "$(enc "$(short "$(landed_head_value)")")" "$(enc "$STAGE_LANDED_HEAD_CONFIRMED")" "$(enc "$(short "$tree")")" \
     "$(intent_identity)" "$(enc "$(closed_decision_keys)")" "$(enc "$MODE")" "$(enc "$YOLO")" "$(enc "$(alloc_identity)")" \
     "$(enc "$(obs nm_home)")" "$(enc "$(profile_identity)")" "$(enc "$(obs attempt_id)")" "$(enc "$(obs run_id)")" \
     "$(enc "$(obs run_status)")" "$(enc "$(obs outcome_class)")" "$(enc "$STAGE_PR_VALUE")" "$owner" "$(enc "$reason")" "$(enc "${FM_WC_ENGINEERING_DIGEST:-}")" "$(enc "$residuals")"
@@ -910,12 +934,20 @@ do_landing() {
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   resolve_landed_head
   captured=$(meta stage_landed_head)
+  captured_source=$(meta stage_landed_head_source)
   captured_reason=$(meta stage_reason)
   reason="landed-head:$STAGE_LANDED_HEAD_SOURCE"
-  if [ -n "$captured" ]; then
-    captured_source=$(meta stage_landed_head_source)
+  # EMPTINESS IS NOT ABSENCE. A recorded `unresolved` is a positive fact - the
+  # tool looked at landing time and could not prove a head - so the capture rule
+  # is decided on the recorded SOURCE, never on whether the head string is
+  # empty. Reading that empty head as "nothing was recorded" would turn a
+  # decision that WAS made into one that was never made, the same collapse as
+  # treating an unreadable record as a clean one. Capture applies only when no
+  # source is recorded at all.
+  if [ -n "$captured_source" ]; then
     if landed_head_supersedes "$captured" "$captured_source"; then
-      reason="landed-head:$STAGE_LANDED_HEAD_SOURCE:replaced:$(short "$captured")"
+      reason="landed-head:$STAGE_LANDED_HEAD_SOURCE:replaced:${captured:+$(short "$captured")}"
+      [ -n "$captured" ] || reason="landed-head:$STAGE_LANDED_HEAD_SOURCE:replaced:unresolved"
     else
       STAGE_LANDED_HEAD=$captured
       STAGE_LANDED_HEAD_SOURCE=$captured_source
@@ -937,6 +969,46 @@ do_landing() {
   next_for landing
 }
 
+# landed_head_reachable: whether <head> is reachable from the project clone's
+# checked-out head. Nothing here fetches; an unreachable answer and an
+# unavailable clone are both simply "not proven".
+landed_head_reachable() {  # <head>
+  local head=$1 main
+  [ -n "$head" ] && [ -n "$PROJECT" ] && [ -d "$PROJECT" ] || return 1
+  main=$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)
+  [ -n "$main" ] || return 1
+  git -C "$PROJECT" merge-base --is-ancestor "$head" "$main" 2>/dev/null
+}
+
+# landed_head_confirmation: set STAGE_LANDED_HEAD_CONFIRMED to what activation
+# can prove about the captured landed head. Its caller runs this BEFORE taking
+# readback_evidence's output, because that output is read through a command
+# substitution and a subshell cannot hand a decision back.
+landed_head_confirmation() {
+  local landed
+  landed=$(landed_head_value)
+  if [ -z "$landed" ]; then
+    STAGE_LANDED_HEAD_CONFIRMED=none
+  elif landed_head_reachable "$landed"; then
+    STAGE_LANDED_HEAD_CONFIRMED=confirmed
+  else
+    STAGE_LANDED_HEAD_CONFIRMED=unconfirmed
+  fi
+}
+
+# readback_evidence: print what activation could actually PROVE, given the
+# confirmation landed_head_confirmation already decided.
+#
+# Two facts, recorded apart, neither inferable from the other: the evidence
+# obtained, and whether the captured landed head was confirmed by it. Capture
+# once plus equal-rank-never-replaces means a landed head captured from the
+# worktree can be wrong - the worker's local commit was never the one pushed -
+# and nothing in this tool could then correct it. Refusing forever would leave
+# a hand edit of a live fleet record as the only escape, which is not a worker's
+# to make. So activation PROCEEDS on the candidate head it can still prove and
+# says plainly, in a field a consumer can match on, that the captured landed
+# head was not confirmed. It never rewrites the landed head or its provenance to
+# make the record agree with itself.
 readback_evidence() {  # prints the evidence, or 1
   local marker="$STATE/$ID.pr-poll-merge-notified" version provider host path number extra head main
   if [ -f "$marker" ] && [ ! -L "$marker" ]; then
@@ -946,18 +1018,16 @@ readback_evidence() {  # prints the evidence, or 1
       return 0
     fi
   fi
-  # Read back the head that LANDED when one is recorded: proving the submitted
-  # candidate reachable proves only that validation started from something that
-  # landed, not that the successor the pipeline actually shipped did.
+  # Read back the head that LANDED when one is recorded and provable: proving
+  # the submitted candidate reachable proves only that validation started from
+  # something that landed, not that the successor the pipeline shipped did.
   local which=landed
   head=$(landed_head_value)
-  if [ -z "$head" ]; then head=$(meta stage_head); which=candidate; fi
-  if [ -n "$head" ] && [ -n "$PROJECT" ] && [ -d "$PROJECT" ]; then
+  if [ "$STAGE_LANDED_HEAD_CONFIRMED" != confirmed ]; then head=$(meta stage_head); which=candidate; fi
+  if landed_head_reachable "$head"; then
     main=$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)
-    if [ -n "$main" ] && git -C "$PROJECT" merge-base --is-ancestor "$head" "$main" 2>/dev/null; then
-      printf 'ancestor-of:%s:%s-head:%s' "$(short "$main")" "$which" "$(short "$head")"
-      return 0
-    fi
+    printf 'ancestor-of:%s:%s-head:%s' "$(short "$main")" "$which" "$(short "$head")"
+    return 0
   fi
   return 1
 }
@@ -991,9 +1061,11 @@ do_activated() {
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
   recorded_landed_head
-  evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the landed head (the candidate head when none is recorded) reachable from the project clone's checked-out head"
+  landed_head_confirmation
+  evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the landed head, nor the candidate head it falls back to, reachable from the project clone's checked-out head"
   STAGE_PR_VALUE=$(meta stage_pr)
-  if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ]; then
+  if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ] \
+      && [ "$(meta stage_landed_head_confirmed)" = "$STAGE_LANDED_HEAD_CONFIRMED" ]; then
     unchanged activated
   else
     # issue rewrites every stage_* field, so the landed head is restated here to
@@ -1001,7 +1073,8 @@ do_activated() {
     issue activated firstmate "$evidence" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
       "stage_landed_head=$STAGE_LANDED_HEAD" \
-      "stage_landed_head_source=$STAGE_LANDED_HEAD_SOURCE" "stage_reason=$evidence"
+      "stage_landed_head_source=$STAGE_LANDED_HEAD_SOURCE" \
+      "stage_landed_head_confirmed=$STAGE_LANDED_HEAD_CONFIRMED" "stage_reason=$evidence"
   fi
   reconcile_currentness activated
   next_for activated
@@ -1013,9 +1086,10 @@ do_show() {
   local current
   current=$(meta stage)
   recorded_landed_head
-  printf 'STAGE_RECORDED: %s task=%s gen=%s branch=%s head=%s landed_head=%s attempt=%s run=%s pr=%s reason=%s\n' \
+  printf 'STAGE_RECORDED: %s task=%s gen=%s branch=%s head=%s landed_head=%s landed_confirmed=%s attempt=%s run=%s pr=%s reason=%s\n' \
     "${current:-none}" "$ID" "$(dash "$(meta stage_gen)")" "$(dash "$(meta stage_branch)")" \
     "$(dash "$(short "$(meta stage_head)")")" "$(dash "$(short "$(landed_head_value)")")" \
+    "$(dash "$STAGE_LANDED_HEAD_CONFIRMED")" \
     "$(dash "$(meta stage_attempt)")" "$(dash "$(meta stage_run)")" \
     "$(dash "$(meta stage_pr)")" "$(dash "$(meta stage_reason)")"
   next_for "$current"

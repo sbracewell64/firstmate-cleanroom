@@ -91,7 +91,7 @@ Only a cycle with no matching delivery record emits `watcher: FAILED - cycle end
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
 Every record also carries `restart_stop`, the disposition of the `--restart` stop the writing arm performed before it launched.
-It is `confirmed` when the recorded watcher was observed gone, `unconfirmed` when the bounded confirmation elapsed without observing it gone, `no-live-watcher` when this home's lock recorded no live identity-matched watcher to stop, and `none` for an arm that was not a `--restart`.
+It is `confirmed` when the recorded watcher was observed gone, `unconfirmed` when the stop was not confirmed within its bound, whether the bound elapsed with the watcher alive or the stop could not be delivered to a watcher that is still there, `no-live-watcher` when this home's lock recorded no live identity-matched watcher to stop, and `none` for an arm that was not a `--restart`.
 `successor` stays the last field of the record because it is the one field rewritten in place, when a persistent adapter's successor arm resolves its predecessor's outcome; any further field is appended before it.
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.
@@ -103,6 +103,7 @@ Stopping a watcher is CONFIRMED by observing the process gone, never assumed fro
 The arm layer's `--restart` stop and the legacy auto-arm reclaim in that same library go through it, and so does the test suites' `reap`.
 That close path is also uninterruptible: it ignores stop signals for its own duration, because a later stop would otherwise re-enter the exit handler and abandon it part way through.
 The arm layer's own close paths ignore stop signals for the same reason and for the same duration, so a re-delivered stop cannot collect an arm between stopping its watcher child and writing that cycle's lifecycle record.
+Those close paths stop the watcher child through the same bounded confirmed stop rather than an unbounded wait, so ignoring stop signals can never wedge an arm: the bound elapses, the lifecycle record is still written, and the arm still exits.
 An unconfirmed `--restart` stop proceeds rather than refusing, because `--restart` is the recovery path and leaving the fleet with no watcher at all is worse than the duplicate a refusal would avoid; the outcome is named in `restart_stop` instead of being hidden.
 The singleton lock is what holds the unconfirmed case to one live watcher: the fresh child stands down against the still-live recorded holder rather than running beside it, and `tests/fm-watcher-lock.test.sh` proves that against a holder that cannot act on any stop.
 A watcher collected without running its close path publishes no downtime of its own, so the gap is not converted into a recovery episode until the next watcher steals its stale singleton lock.

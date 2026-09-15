@@ -1467,7 +1467,7 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # recap unchanged state as progress. The binding member is the resolver's own;
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
-  local out rc=0 identity verdict errfile diag=''
+  local out rc=0 identity verdict errfile diag='' diag_note=''
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-fleet-snapshot-resolve.XXXXXX" 2>/dev/null) || errfile=
   if [ -n "$errfile" ]; then
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>"$errfile") || rc=$?
@@ -1475,7 +1475,7 @@ programme_continuation_json() {
     rm -f -- "$errfile"
   else
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>/dev/null) || rc=$?
-    diag='resolver diagnostics: unavailable, they could not be staged'
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful
@@ -1489,7 +1489,7 @@ programme_continuation_json() {
       printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
         '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
     3) jq -n '{configured:false}' ;;
-    *) jq -n --arg err "$diag" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
+    *) jq -n --arg err "${diag:-$diag_note}" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
   esac
 }
 

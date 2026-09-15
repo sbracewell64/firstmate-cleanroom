@@ -78,6 +78,9 @@ case "${OSTYPE:-}" in
   *) ARM_CONFIRM_DEFAULT=10 ;;
 esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
+case "$CONFIRM_TIMEOUT" in ''|*[!0-9]*) CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT ;; esac
+CONFIRM_TIMEOUT=${CONFIRM_TIMEOUT#"${CONFIRM_TIMEOUT%%[!0]*}"}
+[ -n "$CONFIRM_TIMEOUT" ] || CONFIRM_TIMEOUT=0
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"

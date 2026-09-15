@@ -81,6 +81,19 @@ CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 case "$CONFIRM_TIMEOUT" in ''|*[!0-9]*) CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT ;; esac
 CONFIRM_TIMEOUT=${CONFIRM_TIMEOUT#"${CONFIRM_TIMEOUT%%[!0]*}"}
 [ -n "$CONFIRM_TIMEOUT" ] || CONFIRM_TIMEOUT=0
+# Tenths of a second the arm's close paths spend confirming their watcher child
+# stopped. It is its OWN budget rather than a multiple of the startup
+# confirmation above: those are unrelated questions, and deriving one from the
+# other let a fail-fast FM_ARM_CONFIRM_TIMEOUT of 0 silently deliver no stop at
+# all. The floor keeps the bound wide enough for one delivery and one
+# re-delivery, so a value below the re-delivery interval cannot reduce the
+# confirmed stop to the single unconfirmed signal it exists to replace.
+ARM_STOP_DEFAULT=$((ARM_CONFIRM_DEFAULT * 10))
+ARM_STOP_POLLS=${FM_ARM_STOP_POLLS:-$ARM_STOP_DEFAULT}
+case "$ARM_STOP_POLLS" in ''|*[!0-9]*) ARM_STOP_POLLS=$ARM_STOP_DEFAULT ;; esac
+ARM_STOP_POLLS=${ARM_STOP_POLLS#"${ARM_STOP_POLLS%%[!0]*}"}
+[ -n "$ARM_STOP_POLLS" ] || ARM_STOP_POLLS=$ARM_STOP_DEFAULT
+[ "$ARM_STOP_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || ARM_STOP_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -438,6 +451,25 @@ if [ "$mode" = restart ]; then
       # tell a restart after a confirmed stop from one that could not confirm it.
       cycle_restart_stop=unconfirmed
       if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50; then
+        # `confirmed` means the pid is FREE, which is stricter than the helper's
+        # rc=0, so this waits for that before upgrading the label. rc=0 arrives in
+        # three shapes. The pid is gone: the poll below exits on its first
+        # evaluation and contributes nothing. The pid is a ZOMBIE: the helper reads
+        # it as gone because /proc/<pid>/cmdline is empty so fm_pid_identity fails,
+        # while kill -0 still succeeds - measured directly as
+        # `state=Z kill0_succeeds=yes cmdline_len=0` for a forked child that exited
+        # while its parent had not yet reaped it, and pinned by the predicate-pair
+        # case in tests/fm-watcher-lock.test.sh. This is the shape the poll exists
+        # for: without it a restart records `confirmed` for a pid still visible
+        # enough that the relaunched watcher stands down against it. The pid was
+        # RECYCLED and a live stranger holds it: the poll spends its bound and the
+        # restart keeps the conservative `unconfirmed`, which is the accepted
+        # caveat docs/watcher-continuity.md records.
+        #
+        # The end-to-end restart against a real zombie watcher is deliberately not
+        # tested: the reap window is not controllable, so such a case would be
+        # flaky in the very lane this branch de-flakes. The test pins the two
+        # predicates the reasoning rests on instead.
         restart_free_polls=0
         while [ "$restart_free_polls" -lt 20 ] && fm_pid_alive "$lock_pid"; do
           sleep 0.1
@@ -486,7 +518,7 @@ handle_arm_signal() {
   local signal=$1 rc=$2
   trap '' HUP TERM INT
   if [ -n "$child" ]; then
-    fm_stop_process_confirmed "$child" "" "$((CONFIRM_TIMEOUT * 10))" || true
+    fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS" || true
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child
@@ -576,7 +608,7 @@ while :; do
       if ! handling_generation=$(handling_successor_generation); then
         trap '' HUP TERM INT
         if [ -n "$child" ]; then
-          fm_stop_process_confirmed "$child" "" "$((CONFIRM_TIMEOUT * 10))" || true
+          fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS" || true
         fi
         cycle_log_append 1 none handling-handoff-failed none
         cleanup_child
@@ -613,7 +645,7 @@ done
 
 trap '' HUP TERM INT
 print_watch_output "$child_out"
-if fm_stop_process_confirmed "$child" "" "$((CONFIRM_TIMEOUT * 10))"; then
+if fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS"; then
   wait "$child" 2>/dev/null
   rc=$?
   cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none

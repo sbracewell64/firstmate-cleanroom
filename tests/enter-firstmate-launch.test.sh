@@ -6,7 +6,7 @@
 # functions and runs no identity check, so this file touches no home, no Herdr
 # session, no watcher, and starts no harness.
 #
-# The four-profile primary menu is covered by enter-firstmate-profile.test.sh;
+# The three-profile primary menu is covered by enter-firstmate-profile.test.sh;
 # this file proves the single-profile console composition still holds (the
 # regression proof for the pre-existing launch/console/resume path).
 #

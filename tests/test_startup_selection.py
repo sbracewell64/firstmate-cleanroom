@@ -57,7 +57,7 @@ class StartupBoundaryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('firstmate native console refused', result.stderr)
         record = json.loads((self.f.home/'state/captain-console.json').read_text())
-        self.assertIn('--model gpt-6-astra', record['argv'])
+        self.assertIn('--model gpt-5.6-luna', record['argv'])
         self.assertEqual(record['exit_rc'], result.returncode)
         self.assertNotIn('UNGUARDED_LAUNCH', result.stderr)
     def test_nonlogin_primary_resolves_native_client_before_gate(self):

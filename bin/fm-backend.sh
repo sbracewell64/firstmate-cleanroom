@@ -339,16 +339,22 @@ fm_backend_required_tool_available() {  # <backend> <tool>
 # once has no single value, so rather than resolving the conflict by position
 # this prints nothing, names the record and the key on stderr, and returns 1 -
 # a caller substituting empty then refuses on a missing value instead of acting
-# on a guessed one.
+# on a guessed one. A record whose bytes cannot be read refuses the same way,
+# because unread is not the same answer as absent.
 fm_meta_get() {  # <meta-file> <key>
-  local meta=$1 key=$2 count
+  local meta=$1 key=$2 count rc=0 value
   [ -f "$meta" ] || return 0
-  count=$(grep -c "^$key=" "$meta" 2>/dev/null || true)
+  count=$(grep -c "^$key=" "$meta" 2>/dev/null) || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "fm-meta: $meta could not be read; whether it holds a single $key value is unproven" >&2
+    return 1
+  fi
   if [ "${count:-0}" -gt 1 ]; then
     echo "fm-meta: $meta records $key= $count times; the record has no single $key value" >&2
     return 1
   fi
-  grep "^$key=" "$meta" 2>/dev/null | cut -d= -f2- || true
+  value=$(grep "^$key=" "$meta" 2>/dev/null) || return 0
+  printf '%s\n' "${value#*=}"
 }
 
 # fm_backend_of_meta: the backend recorded in <meta-file>, defaulting to

@@ -120,16 +120,20 @@
 #   stage=<stage>              stage_epoch=<epoch of the last transition>
 #   stage_branch=<branch>      stage_head=<full candidate head: where
 #                                          validation STARTED, never rewritten>
-#   stage_landed_head=<full head that actually LANDED, written once at landing
-#                      and carried forward unchanged; empty when landing could
-#                      not prove one>
+#   stage_landed_head=<full head that actually LANDED, captured at landing and
+#                      thereafter replaced only by a strictly-no-weaker
+#                      resolution on the same lineage; empty while landing has
+#                      proven none>
 #   stage_tree=<full tree>     stage_gen=<spawn_gen at the last transition>
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
 #   stage_pr=<PR url>          stage_reason=<validation-pending reason, the
 #                                            landing `landed-head:<source>`
 #                                            provenance naming which evidence
-#                                            supplied stage_landed_head, or the
-#                                            activated read-back evidence>
+#                                            supplied stage_landed_head (with a
+#                                            `:replaced:<short superseded head>`
+#                                            tail when it displaced an earlier
+#                                            capture), or the activated
+#                                            read-back evidence>
 #
 # The record carries stage_head and stage_landed_head apart because both facts
 # are real and neither is derivable from the other: validation starts at one
@@ -139,7 +143,8 @@
 # it is resolved from (pr_head= from bin/fm-pr-check.sh, the task worktree head)
 # are live mutable state owned by other writers and may move or vanish after the
 # landing, so a record that re-derived the fact would be a lookup that happens
-# to agree today rather than a record of what happened.
+# to agree today rather than a record of what happened. resolve_landed_head
+# below owns when a capture may be replaced and why nothing weaker ever can.
 # Receipt fields, in this order on every stage line (`-` when not applicable;
 # values percent-encode space, percent, and tab, and the classifier decodes
 # them): task, gen (worker epoch: the record's spawn_gen), branch, head,
@@ -246,13 +251,23 @@ OBLIGATION="$STATE/$ID.nm-observe"
 # A record holding two values for one key answers the stage question twice, and
 # reading either answer here would publish a lifecycle fact this script cannot
 # prove. Refuse before any read, so `show` and every transition report the same
-# conflict instead of each resolving it by position.
+# conflict instead of each resolving it by position. A record whose bytes could
+# not be read is refused too and never treated as clean: unproven is its own
+# answer, and it is an unreadable record rather than a conflicted one.
 # (bin/fm-backlog-transition-lib.sh owns what counts as duplicated.)
-if META_DUP=$(fm_meta_duplicate_key "$META"); then
-  printf 'STAGE_REFUSED: transition=%s task=%s reason=CONFLICTING_RECORD the task record holds more than one %s= value; it has no single %s, and nothing may be read from or written to it until the record is reconciled against the evidence\n' \
-    "$TRANSITION" "$ID" "$META_DUP" "$META_DUP"
-  exit 1
-fi
+META_DUP_RC=0
+META_DUP=$(fm_meta_duplicate_key "$META") || META_DUP_RC=$?
+case "$META_DUP_RC" in
+  0)
+    printf 'STAGE_REFUSED: transition=%s task=%s reason=CONFLICTING_RECORD the task record holds more than one %s= value; it has no single %s, and nothing may be read from or written to it until the record is reconciled against the evidence\n' \
+      "$TRANSITION" "$ID" "$META_DUP" "$META_DUP"
+    exit 1
+    ;;
+  2)
+    echo "error: task record for $ID could not be read ($META); whether it holds one value per key is unproven" >&2
+    exit 2
+    ;;
+esac
 
 meta() { fm_meta_get "$META" "$1"; }
 obs() { [ -f "$OBLIGATION" ] || return 0; grep "^$1=" "$OBLIGATION" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
@@ -423,13 +438,13 @@ profile_identity() {
 # from a manufactured one. stage_head keeps naming where validation began,
 # stage_landed_head names where it ended, and neither is inferred from the
 # other. resolve_landed_head runs at `landing` alone, because that is the
-# moment the evidence is still live; what it finds is then recorded, and every
-# later read takes the recorded value.
+# moment the evidence is still live; what it finds is then recorded under the
+# capture rule below, and every later read takes the recorded value.
 #
 # landed_head_value: the landed head in play for this transition, or empty (`-`
-# in the receipt) when none is known. `landing` fills it by resolving the
-# evidence once and then WRITES it to stage_landed_head; every later transition
-# and `show` fills it by reading that field back, never by resolving again.
+# in the receipt) when none is known. `landing` fills it under the capture rule
+# below and WRITES the result to stage_landed_head; every later transition and
+# `show` fills it by reading that field back, never by resolving again.
 landed_head_value() {
   printf '%s' "$STAGE_LANDED_HEAD"
 }
@@ -456,6 +471,59 @@ recorded_landed_head() {
 # When neither is available the head that landed stays UNRESOLVED and the
 # receipt says so. An unproven landed head is recorded as unknown; it is never
 # filled in with the candidate head, because that assertion is the defect.
+#
+# CAPTURE ONCE, THEN NEVER REGRESS. `landing` is deliverable more than once, and
+# the evidence it resolves from is other writers' live state: bin/fm-pr-merge.sh
+# re-runs bin/fm-pr-check.sh, which DROPS a pr_head= it cannot resolve, and the
+# worker's worktree keeps moving after the merge. A second delivery that simply
+# re-resolved would therefore overwrite a captured head with a weaker answer, or
+# erase it outright - defect two of this contract, reintroduced through the
+# idempotency path. So once a head is captured the only thing that may replace
+# it is a strictly-no-weaker resolution proven to be on the same lineage:
+#   rank    pr-head 2 (the forge's own head for the pull request),
+#           worktree 1 (the task worktree's current head), unresolved 0.
+#   replace only when the new rank is not 0, the new rank is >= the captured
+#           rank, the new head differs from the captured one, and
+#           `merge-base --is-ancestor <captured> <new>` SUCCEEDS in the task
+#           worktree, which makes the new head a strict descendant.
+# Anything else keeps what is captured, including every case where that ancestry
+# cannot be EVALUATED at all - worktree gone, object missing, git unavailable.
+# Unevaluable is its own answer here too and it is not a pass. A replacement is
+# recorded visibly as `landed-head:<source>:replaced:<short superseded head>`,
+# so a forward advance is adopted but never applied silently, and a delivery
+# that changes nothing stays a no-op (docs/architecture.md).
+landed_head_rank() {  # <source>
+  case "$1" in
+    pr-head) printf '2' ;;
+    worktree) printf '1' ;;
+    *) printf '0' ;;
+  esac
+}
+
+# landed_head_supersedes: whether the freshly resolved STAGE_LANDED_HEAD may
+# replace <captured-head>, which <captured-source> supplied.
+landed_head_supersedes() {  # <captured-head> <captured-source>
+  local captured=$1 captured_source=$2 new_rank captured_rank
+  [ -n "$STAGE_LANDED_HEAD" ] || return 1
+  new_rank=$(landed_head_rank "$STAGE_LANDED_HEAD_SOURCE")
+  captured_rank=$(landed_head_rank "$captured_source")
+  [ "$new_rank" -ne 0 ] || return 1
+  [ "$new_rank" -ge "$captured_rank" ] || return 1
+  [ "$STAGE_LANDED_HEAD" != "$captured" ] || return 1
+  [ -n "$WT" ] && [ -d "$WT" ] || return 1
+  git -C "$WT" merge-base --is-ancestor "$captured" "$STAGE_LANDED_HEAD" 2>/dev/null
+}
+
+# landed_head_source_of_reason: the source label a recorded landing reason
+# carries, or `unresolved` when it carries none.
+landed_head_source_of_reason() {  # <stage_reason>
+  local rest
+  case "$1" in
+    landed-head:*) rest=${1#landed-head:}; printf '%s' "${rest%%:*}" ;;
+    *) printf 'unresolved' ;;
+  esac
+}
+
 resolve_landed_head() {
   local pr_head wt_head
   STAGE_LANDED_HEAD=
@@ -806,7 +874,7 @@ do_ci_ready() {
 }
 
 do_landing() {
-  local current
+  local current captured captured_reason captured_source reason
   require_ship landing
   engineering_context landing
   current=$(meta stage)
@@ -815,20 +883,29 @@ do_landing() {
   [ -z "$PR_ARG" ] || fm_pr_url_parse "$PR_ARG" >/dev/null 2>&1 || refuse landing BAD_PR "not a canonical PR URL: $PR_ARG"
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   resolve_landed_head
-  # The landed head itself is part of what makes a re-run unchanged. Comparing
-  # only the source label would report `unchanged` after the head moved and
-  # leave the record naming the superseded one, which is this contract's own
-  # defect wearing an idempotency check.
+  captured=$(meta stage_landed_head)
+  captured_reason=$(meta stage_reason)
+  reason="landed-head:$STAGE_LANDED_HEAD_SOURCE"
+  if [ -n "$captured" ]; then
+    captured_source=$(landed_head_source_of_reason "$captured_reason")
+    if landed_head_supersedes "$captured" "$captured_source"; then
+      reason="landed-head:$STAGE_LANDED_HEAD_SOURCE:replaced:$(short "$captured")"
+    else
+      STAGE_LANDED_HEAD=$captured
+      STAGE_LANDED_HEAD_SOURCE=$captured_source
+      reason=$captured_reason
+    fi
+  fi
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ] \
       && [ "$(meta stage_landed_head)" = "$STAGE_LANDED_HEAD" ] \
-      && [ "$(meta stage_reason)" = "landed-head:$STAGE_LANDED_HEAD_SOURCE" ]; then
+      && [ "$captured_reason" = "$reason" ]; then
     unchanged landing
   else
-    issue landing merge-authority "landed-head:$STAGE_LANDED_HEAD_SOURCE" \
+    issue landing merge-authority "$reason" \
       "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(meta stage_attempt)" "stage_run=$(meta stage_run)" "stage_pr=$STAGE_PR_VALUE" \
       "stage_landed_head=$STAGE_LANDED_HEAD" \
-      "stage_reason=landed-head:$STAGE_LANDED_HEAD_SOURCE"
+      "stage_reason=$reason"
   fi
   next_for landing
 }

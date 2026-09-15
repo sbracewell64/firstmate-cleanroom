@@ -73,6 +73,12 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# The shared task-record reader (fm_meta_get), so the recorded head this script
+# compares against the live one is resolved by the same rule the record's own
+# writers publish under rather than by line position.
+# shellcheck source=bin/fm-backend.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-merge-outcome-lib.sh
 . "$SCRIPT_DIR/fm-merge-outcome-lib.sh"
 # Role partition: merging is MAIN-owned; the Pi supervision branch reports the
@@ -214,7 +220,7 @@ fi
 # because that script re-records pr= and drops a pr_head= it cannot resolve.
 RECORDED_HEAD=
 if [ "$PROVIDER" = gitlab ]; then
-  RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+  RECORDED_HEAD=$(fm_meta_get "$META" pr_head || true)
 fi
 
 # Pre-merge conditions for a GitLab merge request, read from one live view of

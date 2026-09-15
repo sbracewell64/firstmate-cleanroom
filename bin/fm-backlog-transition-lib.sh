@@ -365,9 +365,14 @@ fm_backlog_record_remove() {
 # stages is indistinguishable from a manufactured one at the moment a later
 # reader, a recovery, or an audit needs to trust it.
 #
-# Prints the first duplicated key and returns 0; returns 1 when the record is
-# clean, absent, or unreadable. Blank lines and lines carrying no `=` are not
-# keys, so a record's trailing newline is not a violation.
+# Three answers, never two. Prints the first duplicated key and returns 0;
+# returns 1 when the record is clean or absent; returns 2 when the record is
+# there but its bytes could not be read. UNREADABLE IS ITS OWN ANSWER AND NEVER
+# A PASS: a guard that could not see the bytes has not established that the
+# record is clean, so folding 2 into 1 would make this predicate fail open
+# exactly where it is load-bearing. Every caller refuses on 2. Blank lines and
+# lines carrying no `=` are not keys, so a record's trailing newline is not a
+# violation.
 #
 # The optional <key> narrows the same question to one key, which is what a
 # READER needs: a reader asks whether the key it is about to use has a single
@@ -379,14 +384,16 @@ fm_backlog_record_remove() {
 # guard below and bin/fm-stage.sh's up-front refusal ask, so a duplicate
 # anywhere is still detected rather than silently tolerated.
 fm_meta_duplicate_key() {  # <meta-file> [key]
-  local meta=$1 key=${2:-} dup
+  local meta=$1 key=${2:-} dup rc=0
   [ -f "$meta" ] || return 1
+  [ -r "$meta" ] || return 2
   dup=$(LC_ALL=C awk -F= -v want="$key" '
     /^[^=]+=/ {
       if (want != "" && $1 != want) next
       if (++seen[$1] == 2 && found == "") { found = $1 }
     }
-    END { if (found != "") print found }' "$meta" 2>/dev/null) || return 1
+    END { if (found != "") print found }' "$meta" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || return 2
   [ -n "$dup" ] || return 1
   printf '%s' "$dup"
 }
@@ -399,41 +406,56 @@ fm_meta_duplicate_key() {  # <meta-file> [key]
 # (bin/fm-wake-lib.sh's fm_meta_lock_path); publication goes through the guard
 # below, so a record that was ALREADY conflicted before this call refuses
 # instead of being quietly rewritten around.
+#
+# The staged file is created by copying the record, so it carries the record's
+# own mode, and the strip pass truncates that same file rather than creating a
+# new one. A task record's permissions are part of what the record is - a
+# partial write must not publish it wider than the writer that established it.
 # Sets FM_BACKLOG_TRANSITION_ERROR and returns 1 on failure.
 fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
-  local meta=$1 root=$2 tmp rc=0 grc kv key
+  local meta=$1 root=$2 tmp grc=0 kv key
+  local -a patterns=()
   shift 2
   FM_BACKLOG_TRANSITION_ERROR=
   fm_backlog_record_present "$meta" "task record" "$root" || return 1
-  tmp="$meta.replace.${BASHPID:-$$}"
-  cp -- "$meta" "$tmp" 2>/dev/null || {
-    FM_BACKLOG_TRANSITION_ERROR="task record could not be staged at $tmp"
+  if [ "$#" -eq 0 ]; then
+    FM_BACKLOG_TRANSITION_ERROR="no key=value field was named for $meta"
     return 1
-  }
+  fi
   for kv in "$@"; do
     key=${kv%%=*}
     # The key becomes a grep pattern below, so it stays a plain record key.
     case "$kv" in
       *=*) ;;
-      *) rm -f -- "$tmp"; FM_BACKLOG_TRANSITION_ERROR="'$kv' is not a key=value field"; return 1 ;;
+      *) FM_BACKLOG_TRANSITION_ERROR="'$kv' is not a key=value field"; return 1 ;;
     esac
     case "$key" in
-      ''|*[!A-Za-z0-9_]*) rm -f -- "$tmp"; FM_BACKLOG_TRANSITION_ERROR="'$key' is not a plain record key"; return 1 ;;
+      ''|*[!A-Za-z0-9_]*) FM_BACKLOG_TRANSITION_ERROR="'$key' is not a plain record key"; return 1 ;;
     esac
-    # grep exit 1 is "the key held nothing to strip", which is legitimate; any
-    # other status is a read or write failure, and $tmp.next may already hold a
-    # truncated copy of the record. Fail closed rather than publishing it.
-    grc=0
-    LC_ALL=C grep -v "^$key=" "$tmp" > "$tmp.next" 2>/dev/null || grc=$?
-    [ "$grc" -le 1 ] || { rc=1; break; }
-    mv -f -- "$tmp.next" "$tmp" 2>/dev/null || { rc=1; break; }
-    printf '%s\n' "$kv" >> "$tmp" || { rc=1; break; }
+    patterns+=(-e "^$key=")
   done
-  if [ "$rc" -ne 0 ]; then
-    rm -f -- "$tmp" "$tmp.next"
+  tmp="$meta.replace.${BASHPID:-$$}"
+  cp -- "$meta" "$tmp" 2>/dev/null || {
+    rm -f -- "$tmp"
+    FM_BACKLOG_TRANSITION_ERROR="task record could not be staged at $tmp"
+    return 1
+  }
+  # grep exit 1 is "no line survived the strip", which is legitimate; any other
+  # status is a read or write failure that may have left a truncated record
+  # behind, so it fails closed rather than publishing it.
+  LC_ALL=C grep -v "${patterns[@]}" "$meta" > "$tmp" 2>/dev/null || grc=$?
+  if [ "$grc" -gt 1 ]; then
+    rm -f -- "$tmp"
     FM_BACKLOG_TRANSITION_ERROR="task record could not be rewritten at $meta"
     return 1
   fi
+  for kv in "$@"; do
+    printf '%s\n' "$kv" >> "$tmp" || {
+      rm -f -- "$tmp"
+      FM_BACKLOG_TRANSITION_ERROR="task record could not be rewritten at $meta"
+      return 1
+    }
+  done
   fm_backlog_record_publish "$tmp" "$meta" "task record" "$root" || {
     rm -f -- "$tmp"
     return 1
@@ -441,20 +463,28 @@ fm_meta_replace() {  # <meta-file> <state-root> <key=value>...
 }
 
 fm_backlog_record_publish() {
-  local source=$1 target=$2 label=$3 root=$4 dup
+  local source=$1 target=$2 label=$3 root=$4 dup dup_rc=0
   fm_backlog_record_present "$source" "$label staged record" "$root" || return 1
   fm_backlog_record_parent_authorized "$target" "$label target" "$root" || return 1
   # A task record is published whole, so this is the one boundary every writer
   # of one traverses. Refusing a duplicated key here is what makes the shadow
   # value unrepresentable: a writer that appends a second value for a
   # single-valued key cannot publish it, and no reader downstream is left to
-  # resolve a conflict this never allowed to exist.
+  # resolve a conflict this never allowed to exist. A record this cannot read
+  # is refused for the same reason: unproven is not clean.
   case "${target##*/}" in
     *.meta)
-      if dup=$(fm_meta_duplicate_key "$source"); then
-        FM_BACKLOG_TRANSITION_ERROR="$label records $dup= more than once; a task record holds one value per key"
-        return 1
-      fi
+      dup=$(fm_meta_duplicate_key "$source") || dup_rc=$?
+      case "$dup_rc" in
+        0)
+          FM_BACKLOG_TRANSITION_ERROR="$label records $dup= more than once; a task record holds one value per key"
+          return 1
+          ;;
+        2)
+          FM_BACKLOG_TRANSITION_ERROR="$label could not be read at $source to prove it holds one value per key"
+          return 1
+          ;;
+      esac
       ;;
   esac
   if [ -e "$target" ] || [ -L "$target" ]; then

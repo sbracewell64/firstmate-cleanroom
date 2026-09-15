@@ -24,6 +24,11 @@ set -u
 # does instead of asserting against a function that is not even loaded.
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
+# fm_pr_file_mode, the portable mode read the PR boundary itself validates a
+# task record with, so a mode assertion here checks the same thing production
+# checks rather than a second spelling of it.
+# shellcheck source=bin/fm-pr-lib.sh
+. "$ROOT/bin/fm-pr-lib.sh"
 
 STAGE="$ROOT/bin/fm-stage.sh"
 TMP_ROOT=$(fm_test_tmproot fm-stage)
@@ -1130,9 +1135,162 @@ test_landing_rerun_rerecords_a_moved_landed_head() {
     || fail "correcting the landed head must replace it, not shadow it"
   [ "$(status_stage_field "$(last_line moved)" landed_head)" = "${second:0:12}" ] \
     || fail "the corrected receipt must name the new landed head"
+  # A forward advance is adopted, never applied silently: the receipt names the
+  # head it displaced so the replacement is legible in the durable trail.
+  [ "$(status_stage_field "$(last_line moved)" reason)" = "landed-head:worktree:replaced:${first:0:12}" ] \
+    || fail "the replacement must name the superseded head (got $(status_stage_field "$(last_line moved)" reason))"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run after the replacement: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a re-run that changes nothing stays a no-op"
   pass "fm-stage landing: a re-run after the landed head moved re-records it instead of reporting unchanged"
+}
+
+# A captured landed head is a fact about the past, and `landing` is deliverable
+# more than once against evidence that keeps moving: bin/fm-pr-merge.sh re-runs
+# bin/fm-pr-check.sh, which drops a pr_head= it cannot resolve, while the
+# worker's worktree advances past the head that actually merged. A re-run whose
+# evidence has DEGRADED must keep what was captured rather than overwrite the
+# record with a weaker answer, which would be defect two reintroduced through
+# the idempotency path.
+test_a_captured_landed_head_never_regresses() {
+  local out rc wt merged captured
+  wt="$TMP_ROOT/wt-capture"
+  make_worktree "$wt" fm/capture
+  make_task capture no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" capture committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  merged=$(git -C "$wt" rev-parse HEAD)
+  printf 'pr_head=%s\n' "$merged" >> "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the forge head: $out"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] || fail "the forge head was not captured"
+  [ "$(status_stage_field "$(last_line capture)" reason)" = "landed-head:pr-head" ] \
+    || fail "the capture must name its source"
+
+  # The forge head is gone from the record and the worktree has moved on past
+  # the merge. The worktree answer is strictly weaker evidence than the forge
+  # answer that is already captured, so it must not displace it.
+  grep -v '^pr_head=' "$STATE/capture.meta" > "$TMP_ROOT/capture.norec"
+  mv "$TMP_ROOT/capture.norec" "$STATE/capture.meta"
+  git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
+  [ "$(git -C "$wt" rev-parse HEAD)" != "$merged" ] || fail "the fixture must move the worktree past the merge"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run on weaker evidence: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "weaker evidence must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] \
+    || fail "a lower-ranked source overwrote the captured head (got $(meta_get capture stage_landed_head))"
+
+  # Nothing resolves at all now. Unresolved must never erase a captured head.
+  sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-capture-wt|" "$STATE/capture.meta" > "$TMP_ROOT/capture.rw"
+  mv "$TMP_ROOT/capture.rw" "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run with no evidence at all: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "an unresolvable re-run must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] \
+    || fail "unresolved erased the captured head (got '$(meta_get capture stage_landed_head)')"
+  [ "$(status_stage_field "$(last_line capture)" reason)" = "landed-head:pr-head" ] \
+    || fail "the captured provenance must survive an unresolvable re-run"
+  out=$("$STAGE" capture show 2>&1)
+  assert_contains "$out" "landed_head=${merged:0:12}" "show still reports the captured head"
+
+  # Same-ranked evidence off the captured lineage is not an advance either: a
+  # head that is not a descendant of the captured one is a different history,
+  # not a later one.
+  captured=$(meta_get capture stage_landed_head)
+  git -C "$wt" checkout -q -b fm/capture-fork "$(git -C "$wt" rev-list --max-parents=0 HEAD | tail -1)"
+  git -C "$wt" commit -q --allow-empty -m 'unrelated lineage'
+  sed "s|^worktree=.*|worktree=$wt|" "$STATE/capture.meta" > "$TMP_ROOT/capture.rw2"
+  mv "$TMP_ROOT/capture.rw2" "$STATE/capture.meta"
+  printf 'pr_head=%s\n' "$(git -C "$wt" rev-parse HEAD)" >> "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run on an unrelated lineage: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "an off-lineage head must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$captured" ] \
+    || fail "an off-lineage head displaced the captured one (got $(meta_get capture stage_landed_head))"
+  pass "fm-stage landing: a captured landed head survives every weaker, unresolvable, or off-lineage re-run"
+}
+
+# A guard that cannot read the bytes has not proven the record clean. Read
+# failure is its own answer and never a pass, at the stage preflight and at the
+# publication boundary alike.
+test_an_unreadable_record_is_refused_not_assumed_clean() {
+  local out rc stub wt
+  wt="$TMP_ROOT/wt-unreadable"
+  make_worktree "$wt" fm/unreadable
+  make_task unreadable no-mistakes "$wt"
+  stub="$TMP_ROOT/blind-bin"
+  mkdir -p "$stub"
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$stub/awk"
+  chmod +x "$stub/awk"
+
+  out=$(PATH="$stub:$PATH" "$STAGE" unreadable show 2>&1); rc=$?
+  expect_code 2 "$rc" "show must refuse a record it cannot read: $out"
+  assert_contains "$out" "could not be read" "the refusal must say the record was unreadable"
+  assert_not_contains "$out" "STAGE_RECORDED" "an unreadable record must report no stage"
+  out=$(PATH="$stub:$PATH" "$STAGE" unreadable landing 2>&1); rc=$?
+  expect_code 2 "$rc" "a transition must refuse a record it cannot read: $out"
+  [ "$(status_line_stage "$(last_line unreadable)")" != landing ] \
+    || fail "the refused transition recorded a receipt"
+
+  # The publication boundary refuses for the same reason, so an unreadable
+  # staged record cannot become the published one.
+  cp "$STATE/unreadable.meta" "$STATE/.unreadable.staged"
+  out=$(
+    PATH="$stub:$PATH"
+    if fm_backlog_atomic_transition publish "$STATE/.unreadable.staged" "$STATE/unreadable.meta" "task record" "$STATE"; then
+      printf 'PUBLISHED'
+    else
+      printf 'REFUSED:%s' "$FM_BACKLOG_TRANSITION_ERROR"
+    fi
+  )
+  case "$out" in
+    REFUSED:*could\ not\ be\ read*) ;;
+    *) fail "publication treated an unreadable record as clean (got: $out)" ;;
+  esac
+  [ -f "$STATE/.unreadable.staged" ] || fail "the refused publication must not have moved the staged record"
+  rm -f "$STATE/.unreadable.staged"
+
+  # Readable again, everything reads again.
+  out=$("$STAGE" unreadable show 2>&1); rc=$?
+  expect_code 0 "$rc" "the readable record reads again: $out"
+  pass "fm-stage record: an unreadable record refuses at the stage preflight and at the publication boundary instead of passing as clean"
+}
+
+# The shared partial writer publishes the record it was handed, not a wider one.
+# bin/fm-pr-check.sh establishes and validates 0600 for this exact file, so a
+# partial write that relaxed the mode would quietly widen a private record.
+test_meta_replace_preserves_the_record_mode_and_contract() {
+  local meta out rc
+  meta="$STATE/modecheck.meta"
+  fm_write_meta "$meta" "window=fm-modecheck" "spawn_gen=s1.1.1" "decisions_reviewed=0"
+  chmod 600 "$meta"
+  FM_BACKLOG_TRANSITION_ERROR=
+  fm_meta_replace "$meta" "$STATE" "decisions_reviewed=1" "decision_keys=a,b" \
+    || fail "a partial write of a well-formed record failed ($FM_BACKLOG_TRANSITION_ERROR)"
+  [ "$(fm_pr_file_mode "$meta")" = 600 ] \
+    || fail "the partial write widened the record to $(fm_pr_file_mode "$meta")"
+  [ "$(fm_meta_get "$meta" decisions_reviewed)" = 1 ] || fail "the replaced value was not recorded"
+  [ "$(fm_meta_get "$meta" decision_keys)" = "a,b" ] || fail "the appended value was not recorded"
+  [ "$(fm_meta_get "$meta" window)" = "fm-modecheck" ] || fail "an unnamed field was dropped"
+  [ "$(grep -c '^decisions_reviewed=' "$meta")" = 1 ] || fail "the replaced key was shadowed"
+
+  # An absent key is absent, not present-and-empty: the reader's stated contract
+  # is what the next caller will use to tell those apart.
+  fm_classify_meta_value "$meta" nosuchkey >/dev/null \
+    && fail "the classifier reader reported a value for a key the record does not hold"
+  [ "$(fm_classify_meta_value "$meta" window)" = "fm-modecheck" ] \
+    || fail "the classifier reader must still read a key the record does hold"
+  out=$(fm_meta_replace "$meta" "$STATE" "not-a-field" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a malformed field was accepted: $out"
+  [ "$(fm_pr_file_mode "$meta")" = 600 ] || fail "a refused partial write disturbed the record mode"
+  pass "fm-backlog-transition: a partial task-record write keeps the record's own mode and its single-valued shape"
 }
 
 test_a_record_cannot_hold_two_values_for_one_key
 test_landing_names_the_head_that_landed
 test_landing_rerun_rerecords_a_moved_landed_head
+test_a_captured_landed_head_never_regresses
+test_an_unreadable_record_is_refused_not_assumed_clean
+test_meta_replace_preserves_the_record_mode_and_contract

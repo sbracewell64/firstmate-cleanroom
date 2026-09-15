@@ -95,11 +95,17 @@ META="$STATE/$ID.meta"
 # decides what counts as duplicated, scoped to the key being read; this adds
 # only the count the operator needs to see which field is answered twice.
 meta_field() {
-  local key=$1 count
-  if fm_meta_duplicate_key "$META" "$key" >/dev/null; then
-    count=$(grep -c "^$key=" "$META" || true)
-    refuse "meta for task $ID has $count $key= lines; exactly one is allowed"
-  fi
+  local key=$1 count dup_rc=0
+  fm_meta_duplicate_key "$META" "$key" >/dev/null || dup_rc=$?
+  case "$dup_rc" in
+    0)
+      count=$(grep -c "^$key=" "$META" || true)
+      refuse "meta for task $ID has $count $key= lines; exactly one is allowed"
+      ;;
+    2)
+      refuse "meta for task $ID could not be read; its $key= value is unproven"
+      ;;
+  esac
   grep "^$key=" "$META" | cut -d= -f2- || true
 }
 

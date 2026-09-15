@@ -61,16 +61,19 @@ if ! declare -F fm_meta_duplicate_key >/dev/null 2>&1; then
 fi
 
 # fm_classify_meta_value: the single value <meta-file> records for <key>.
-# Prints nothing and returns 1 when the record is absent, the key is absent, or
-# the record answers THAT key more than once, so a conflicted key classifies as
-# "no value recorded" instead of as whichever answer position selects. The
-# refusal is per key, the same scope bin/fm-backend.sh's fm_meta_get uses, so no
-# two readers of one record can disagree about whether a given key is readable.
+# Prints nothing and returns 1 when the record is absent, the record cannot be
+# read, the key is absent, or the record answers THAT key more than once, so a
+# conflicted key classifies as "no value recorded" instead of as whichever
+# answer position selects. The refusal is per key, the same scope
+# bin/fm-backend.sh's fm_meta_get uses, so no two readers of one record can
+# disagree about whether a given key is readable.
 fm_classify_meta_value() {  # <meta-file> <key>
-  local meta=$1 key=$2
+  local meta=$1 key=$2 value dup_rc=0
   [ -f "$meta" ] || return 1
-  ! fm_meta_duplicate_key "$meta" "$key" >/dev/null || return 1
-  grep "^$key=" "$meta" 2>/dev/null | cut -d= -f2- || return 1
+  fm_meta_duplicate_key "$meta" "$key" >/dev/null || dup_rc=$?
+  [ "$dup_rc" -eq 1 ] || return 1
+  value=$(grep "^$key=" "$meta" 2>/dev/null) || return 1
+  printf '%s\n' "${value#*=}"
 }
 
 # The crew current-state reader used for the "provably working" decision.

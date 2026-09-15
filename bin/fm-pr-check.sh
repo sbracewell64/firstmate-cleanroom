@@ -26,6 +26,12 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# The shared task-record reader (fm_meta_get), so the keys this script reads out
+# of the record are resolved by the same rule the record's own writers publish
+# under rather than by line position.
+# shellcheck source=bin/fm-backend.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backend.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -78,7 +84,7 @@ fi
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
-WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+WT=$(fm_meta_get "$META" worktree || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \

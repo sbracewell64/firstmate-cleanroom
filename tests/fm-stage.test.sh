@@ -442,21 +442,68 @@ test_post_receipt_producer_move_reports_without_refusing() {
   [ "$(status_line_stage "$(last_line q1)")" = ci-ready ] \
     || fail "the applied ci-ready receipt is missing from the status log"
 
-  # A producer that never answers refuses BEFORE anything is published: no
-  # receipt, no next line, and the record does not move.
+  # Re-running the documented no-op against a stage the record ALREADY carries:
+  # the producer moving does not unmake that lifecycle effect, so the report is
+  # not a refusal and the worker still gets its next line.
   lines=$(stage_lines q1)
   : > "$FM_TEST_QUALIFICATION_COUNT"
   export FM_TEST_QUALIFICATION_REVOKE_AFTER=0
   out=$("$STAGE" q1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 1 "$rc" "a moved producer must still exit non-zero (got: $out)"
+  assert_not_contains "$out" "STAGE_REFUSED" \
+    "a stage the record already carries was reported as never having applied"
+  assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
+    "the already-recorded revalidation was not reported"
+  assert_contains "$out" "next: worker stops" "the worker was left without its typed next line"
+  [ "$(meta_get q1 stage)" = ci-ready ] || fail "a report unmade the recorded stage"
+  [ "$(stage_lines q1)" = "$lines" ] || fail "a report appended to the status log"
+
+  # The same shape one branch over: the pinned read answers, so control reaches
+  # the unchanged no-op, and the producer moves before ITS revalidation. The
+  # record still carries ci-ready, so this is a report too.
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=1
+  out=$("$STAGE" q1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 1 "$rc" "a producer move at the unchanged revalidation must exit non-zero (got: $out)"
+  assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "the no-op disposition was lost"
+  assert_not_contains "$out" "STAGE_REFUSED" \
+    "the unchanged revalidation reported a stage the record carries as never applied"
+  assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
+    "the unchanged revalidation did not report the moved producer"
+  [ "$(grep -c 'STAGE_QUALIFICATION_CNO' <<< "$out")" = 1 ] \
+    || fail "one invocation reported the same moved producer more than once"
+  assert_contains "$out" "next: worker stops" "the worker was left without its typed next line"
+  [ "$(stage_lines q1)" = "$lines" ] || fail "a report appended to the status log"
+
+  # A transition that genuinely did NOT apply: the record is at
+  # validation-running, nothing is published, and there is no next line.
+  wt="$TMP_ROOT/wt-q2"
+  make_worktree "$wt" fm/q2
+  make_task q2 no-mistakes "$wt"
+  unset FM_TEST_QUALIFICATION_REVOKE_AFTER
+  FM_FAKE_AXI_STATUS=
+  out=$("$STAGE" q2 committed 2>&1); rc=$?
+  expect_code 0 "$rc" "q2 admission (got: $out)"
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNQ2 fm/q2 running "$(git -C "$wt" rev-parse HEAD)")
+  out=$("$STAGE" q2 running 2>&1); rc=$?
+  expect_code 0 "$rc" "q2 binds its run (got: $out)"
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNQ2 fm/q2 completed "$(git -C "$wt" rev-parse HEAD)" checks-passed https://github.com/o/r/pull/7)
+  lines=$(stage_lines q2)
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=0
+  out=$("$STAGE" q2 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
   unset FM_TEST_QUALIFICATION_REVOKE_AFTER FM_TEST_QUALIFICATION_COUNT
   expect_code 1 "$rc" "an unanswered producer must refuse (got: $out)"
-  assert_contains "$out" "STAGE_REFUSED: transition=ci-ready task=q1" \
+  assert_contains "$out" "STAGE_REFUSED: transition=ci-ready task=q2" \
     "a transition that did not apply must refuse"
   assert_not_contains "$out" "STAGE: ci-ready" "a refusal appended a receipt"
   assert_not_contains "$out" "next:" "a refusal printed a typed next line"
-  [ "$(stage_lines q1)" = "$lines" ] || fail "a refusal appended to the status log"
+  assert_not_contains "$out" "STAGE_QUALIFICATION_CNO" \
+    "a stage that never applied was reported as standing"
+  [ "$(meta_get q2 stage)" = validation-running ] || fail "a refusal advanced the record"
+  [ "$(stage_lines q2)" = "$lines" ] || fail "a refusal appended to the status log"
   FM_FAKE_AXI_STATUS=$saved_status
-  pass "fm-stage ci-ready: a post-receipt producer move reports without refusing; a pre-publication one refuses with nothing applied"
+  pass "fm-stage ci-ready: a producer move reports against a stage the record carries; a stage that never applied still refuses"
 }
 
 test_landing_and_activated_need_readback() {

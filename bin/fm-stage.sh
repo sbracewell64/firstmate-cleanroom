@@ -29,12 +29,13 @@
 # A following COMPLETION_CNO may return 1 after a successful STAGE receipt;
 # that preserves the already applied lifecycle effect and reports the separate
 # unresolved handoff. It is not a STAGE_REFUSED rollback of that effect.
-# STAGE_REFUSED is the ONE line that means the transition did NOT apply, and it
-# never accompanies a STAGE receipt or a next: line. Every other non-zero
-# disposition - COMPLETION_CNO, COMPLETION_PENDING, STAGE_QUALIFICATION_CNO -
-# follows a transition that DID apply: the receipt stands, next: still prints,
-# and the status only reports what is separately unresolved. A consumer tells
-# the two apart on that token, never on the exit status or the wording.
+# STAGE_REFUSED is the ONE line that means the named stage's lifecycle effect
+# does NOT exist, and it never accompanies a STAGE receipt or a next: line.
+# Every other non-zero disposition - COMPLETION_CNO, COMPLETION_PENDING,
+# STAGE_QUALIFICATION_CNO - leaves an effect that DOES exist: the record keeps
+# it, next: still prints, and the status only reports what is separately
+# unresolved. A consumer tells the two apart on that token, never on the exit
+# status or the wording.
 #
 # Stages, in order:
 #   candidate-committed -> validation-pending | validation-admitted
@@ -281,6 +282,7 @@ PROJECT=$(meta project)
 GEN=$(meta spawn_gen)
 SELF_CMD="FM_HOME=$(printf '%q' "$FM_HOME") $(printf '%q' "$SCRIPT_DIR/fm-stage.sh") $(printf '%q' "$ID")"
 STAGE_PR_VALUE=
+STAGE_CNO=0
 BRANCH=
 HEAD=
 TREE=
@@ -290,6 +292,24 @@ OBS_OUT=
 refuse() {  # <transition> <CODE> <detail>
   printf 'STAGE_REFUSED: transition=%s task=%s reason=%s %s\n' "$1" "$ID" "$2" "$3"
   exit 1
+}
+
+# The record ALREADY carries this stage, so a producer that is no longer
+# current does not unmake the lifecycle effect - it only stops being provable.
+# STAGE_REFUSED would tell a consumer that effect does not exist. Narrowing the
+# header rule to "this invocation applied nothing" instead would be technically
+# true and would leave a consumer unable to answer the question the token
+# exists to answer, which is whether the lifecycle EFFECT EXISTS, not whether
+# this particular invocation wrote it. Technically true while practically
+# misleading is not an acceptable resolution for a token a machine consumes.
+# So the already-recorded revalidation reports, keeps its next: line, and still
+# exits non-zero. One line per invocation whichever revalidation point reaches
+# it first, so a caller that revalidates twice never reports twice.
+stage_qualification_cno() {  # <transition> <what this invocation did>
+  [ "$STAGE_CNO" -eq 0 ] || return 0
+  STAGE_CNO=1
+  printf 'STAGE_QUALIFICATION_CNO: transition=%s task=%s reason=QUALIFICATION_REVOKED %s; the record is at %s and its lifecycle effect stands; the exact stage qualification is no longer current (%s); historical record retained\n' \
+    "$1" "$ID" "$2" "$(dash "$(meta stage)")" "$FM_NM_EFFECT_REASON"
 }
 
 # --- candidate facts ---------------------------------------------------------
@@ -512,7 +532,11 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
 }
 
 unchanged() {  # <stage>
-  case "$1" in ci-ready|landing|activated) require_current_qualification "$1" ;; esac
+  case "$1" in
+    ci-ready|landing|activated)
+      qualification_current "$1" \
+        || stage_qualification_cno "$1" 'this invocation published nothing' ;;
+  esac
   printf 'STAGE_UNCHANGED: %s task=%s gen=%s head=%s attempt=%s run=%s\n' \
     "$1" "$ID" "$(dash "$(meta stage_gen)")" "$(dash "$(short "$(meta stage_head)")")" "$(dash "$(meta stage_attempt)")" "$(dash "$(meta stage_run)")"
 }
@@ -808,7 +832,7 @@ qualification_delta() {  # <retained tuple> <fresh tuple>
 }
 
 do_ci_ready() (
-  local current effect saved contract qualified_head qualification recorded repeat advanced ci_ready_rc CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification recorded repeat advanced CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -859,8 +883,11 @@ do_ci_ready() (
   fi
   if ! qualification=$(NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
       "$WT" "$(meta stage_run)" "$qualified_head" "$(meta stage_branch)" "$PR_ARG" "$repeat"); then
-    [ -z "$repeat" ] \
-      || refuse ci-ready QUALIFICATION_REVOKED 'the producer no longer answers the retained qualification identity; historical record retained'
+    if [ -n "$repeat" ]; then
+      stage_qualification_cno ci-ready 'this invocation published nothing'
+      next_for ci-ready
+      exit 1
+    fi
     refuse ci-ready NOT_CI_READY 'exact producer qualification unavailable or invalidated'
   fi
   if [ -n "$HANDOFF_IDENTITY" ]; then
@@ -891,13 +918,10 @@ do_ci_ready() (
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
   fi
-  ci_ready_rc=0
-  qualification_current ci-ready || ci_ready_rc=1
-  [ "$ci_ready_rc" -eq 0 ] \
-    || printf 'STAGE_QUALIFICATION_CNO: transition=ci-ready task=%s reason=QUALIFICATION_REVOKED the receipt above stands and the record is at ci-ready; the producer qualification moved after publication (%s); historical record retained\n' \
-         "$ID" "$FM_NM_EFFECT_REASON"
+  qualification_current ci-ready \
+    || stage_qualification_cno ci-ready 'the ci-ready receipt this invocation published stands'
   next_for ci-ready
-  exit "$ci_ready_rc"
+  exit "$STAGE_CNO"
 )
 
 # A no-mistakes task may neither enter nor remain in a qualified stage without
@@ -951,7 +975,12 @@ do_landing() {
     refuse landing DESTINATION_MISMATCH "--pr $PR_ARG is not the qualified destination $(dash "$(meta stage_pr)"); landing carries the destination CI-ready qualified"
   fi
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
-  require_current_qualification landing
+  if [ "$current" = landing ]; then
+    qualification_current landing \
+      || stage_qualification_cno landing 'this invocation published nothing'
+  else
+    require_current_qualification landing
+  fi
   STAGE_PR_VALUE=${PR_ARG:-$(meta stage_pr)}
   if [ "$current" = landing ] && [ "$(meta stage_pr)" = "$STAGE_PR_VALUE" ]; then
     unchanged landing
@@ -1018,7 +1047,12 @@ do_activated() {
   engineering_context activated
   current=$(meta stage)
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
-  require_current_qualification activated
+  if [ "$current" = activated ]; then
+    qualification_current activated \
+      || stage_qualification_cno activated 'this invocation published nothing'
+  else
+    require_current_qualification activated
+  fi
   evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the candidate head reachable from the project clone's checked-out head"
   STAGE_PR_VALUE=$(meta stage_pr)
   if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ]; then
@@ -1032,7 +1066,10 @@ do_activated() {
 }
 
 do_show() {
-  case "$(meta stage)" in ci-ready|landing|activated) require_current_qualification show ;; esac
+  case "$(meta stage)" in
+    ci-ready|landing|activated)
+      qualification_current show || stage_qualification_cno show 'this read applied nothing' ;;
+  esac
   engineering_context show
   fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   local current
@@ -1070,3 +1107,4 @@ if [ "${FM_COMPLETION_RECONCILING:-0}" != 1 ] && {
   . "$SCRIPT_DIR/fm-completion-lib.sh"
   fm_completion_transition resume-handoff
 fi
+[ "$STAGE_CNO" -eq 0 ] || exit 1

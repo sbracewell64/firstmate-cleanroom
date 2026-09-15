@@ -22,31 +22,6 @@ ARM_FAIL_EXIT_POLLS=400
 
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
-# Stop a background watcher or arm and collect it, never blocking unboundedly on
-# a process that swallowed its stop signal. Send <signal> (default TERM) so the
-# target's own signal trap can release its lock and reap its child, then wait a
-# bounded grace; if it is still alive, KILL it and collect. This is the exact
-# hang this suite is fixing: on CI's bash 5.2 (ubuntu-latest) a trap that lands
-# while bash is expanding a command substitution can fail to run
-# ("fm-watch.sh: trap: unexpected EOF while looking for matching `)'"), so the
-# watcher swallows its TERM and loops until the job timeout - and a bare
-# `kill "$pid"; wait "$pid"` teardown then blocks forever, taking the whole
-# portable-serial lane to its 30-minute cap with no FM_TEST_END emitted. A KILL
-# is uncatchable, so the bounded path always collects; the lock library reclaims
-# a dead holder's lock, so any later watcher a case launches still starts. Local
-# bash 5.3 fixes the underlying trap bug and so cannot reproduce the swallow,
-# which is why this must be structural rather than reproduced here.
-reap() {  # <pid> [signal]
-  local pid=$1 sig=${2:-TERM} i=0 max=${FM_REAP_GRACE_POLLS:-100}
-  kill "-$sig" "$pid" 2>/dev/null || true
-  while [ "$i" -lt "$max" ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
-
 drain_and_ack() {  # <state>
   local state=$1 err sequence generation
   err="$state/.test-drain.err"
@@ -1169,7 +1144,109 @@ test_reap_bounds_a_signal_swallowing_watcher() {
   pass "reap collects a signal-swallowing watcher within a bounded deadline"
 }
 
+test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs() {
+  # The failure this pins is the one the bounded KILL above only CONTAINS: a
+  # watcher whose stop signal was dropped is collected, but by an uncatchable
+  # KILL, so its close path - singleton lock release, downtime publication,
+  # delivery ledger - never runs, and the next drain then has no stopped cycle to
+  # present or acknowledge. That is how a green branch arrived red on CI's
+  # bash 5.2, where a trapped signal landing while the shell expands a command
+  # substitution is consumed without its handler ever running.
+  #
+  # The stand-in reproduces that observable deterministically on every bash: it
+  # holds an IGNORE disposition for a fixed window - a delivered stop that runs
+  # no handler - and then arms the real close path. A stop protocol that delivers
+  # once cannot get past that window and leaves no close record; one that
+  # re-delivers until the target is observed gone does.
+  local dir ready closed dropper start elapsed i drop_window=1
+  dir=$(make_case reap-redelivery)
+  ready="$dir/dropper.ready"
+  closed="$dir/dropper.closed"
+  # Marked ready only after the ignore disposition is installed, so a stop sent
+  # in the startup window cannot kill it through the inherited default and mask
+  # the re-delivery this asserts.
+  bash -c '
+    trap "" TERM
+    : > "$1"
+    sleep "$3"
+    trap "printf closed > \"$2\"; exit 0" TERM
+    while :; do sleep 0.2; done
+  ' _ "$ready" "$closed" "$drop_window" &
+  dropper=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -e "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] || fail "stop-dropping stand-in did not install its ignore disposition"
+
+  # Negative control: the first stop really is dropped, so a passing case cannot
+  # come from a stand-in that stops on the first delivery anyway.
+  kill -TERM "$dropper" 2>/dev/null || true
+  sleep 0.3
+  is_live_non_zombie "$dropper" || fail "stop-dropping stand-in exited on its dropped stop"
+  [ ! -e "$closed" ] || fail "stop-dropping stand-in ran a close path during its drop window"
+
+  # A grace comfortably past both the drop window and the re-delivery interval,
+  # so the assertion is about re-delivery rather than about outlasting anything.
+  start=$(date +%s)
+  FM_REAP_GRACE_POLLS=80 reap "$dropper"
+  elapsed=$(( $(date +%s) - start ))
+  is_live_non_zombie "$dropper" && fail "reap did not collect a stop-dropping watcher"
+  [ -e "$closed" ] \
+    || fail "reap collected the watcher without its close path running: the dropped stop was never re-delivered"
+  [ "$elapsed" -le 8 ] \
+    || fail "reap did not re-deliver promptly after the drop window (took ${elapsed}s)"
+  pass "a dropped stop is re-delivered until the watcher is gone, so its close path still runs"
+}
+
+test_watcher_close_path_is_not_abandoned_by_a_later_stop() {
+  # A dying watcher receiving more than one stop is ordinary: a supervisor
+  # signals the process group AND the pid, and a confirmed stop re-delivers to a
+  # target that has shown no sign of stopping. Its close path is what makes the
+  # stop READABLE - it releases the singleton lock and publishes the downtime
+  # episode the next drain presents and retires - so a later stop must not
+  # re-enter the exit handler and abandon it half done. That leaves a watcher
+  # that is gone with no record that it ever stopped, and the next drain then has
+  # nothing to present: the exact shape of the CI failure this branch repairs.
+  local dir state fakebin out pid i
+  dir=$(make_case close-path-second-stop)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$pid"; fail "watcher never reached its poll loop"; }
+
+  # Keep stopping it until it is gone, paced so the burst cannot corrupt the
+  # target's own pending-trap bookkeeping. Because the close path takes longer
+  # than one interval, at least one of these lands INSIDE it - which is what
+  # makes this deterministic rather than a race the run might miss.
+  i=0
+  while [ "$i" -lt 250 ] && is_live_non_zombie "$pid"; do
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.02
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && { reap "$pid"; fail "watcher never stopped under repeated stops"; }
+  wait "$pid" 2>/dev/null || true
+
+  [ -e "$state/.watcher-down" ] \
+    || fail "the watcher's close path was abandoned by a later stop: no downtime episode was published"
+  drain_and_ack "$state" \
+    || fail "a watcher stopped under repeated stops left no acknowledgeable stopped cycle"
+  pass "a later stop cannot abandon the watcher close path that publishes its stop"
+}
+
 test_reap_bounds_a_signal_swallowing_watcher
+test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
+test_watcher_close_path_is_not_abandoned_by_a_later_stop
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse

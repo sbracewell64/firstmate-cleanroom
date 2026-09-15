@@ -412,15 +412,14 @@ if [ "$mode" = restart ]; then
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      # Wait for it to actually exit before relaunching, so the fresh watcher
+      # Stop it and CONFIRM it is gone before relaunching, so the fresh watcher
       # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping.
-      i=0
-      while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
-        sleep 0.1
-        i=$((i + 1))
-      done
+      # of seeing the dying one as a live holder and no-opping. One delivery is
+      # not a stop - fm_stop_process_confirmed owns why - and a restart that
+      # assumed it was would silently leave the old watcher running and start
+      # nothing. The matched lock identity keeps a recycled pid from being
+      # signalled.
+      fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50 || true
     else
       if ! clear_stale_recorded_watcher_lock; then
         echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2

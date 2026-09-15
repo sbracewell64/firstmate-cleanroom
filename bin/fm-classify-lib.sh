@@ -50,6 +50,32 @@
 # bin/ script (which sets its own SCRIPT_DIR) or directly by a test.
 _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_CLASSIFY_LIB_DIR="."
 
+# The task-record shape owner (bin/fm-backlog-transition-lib.sh's
+# fm_meta_duplicate_key). The classifier reads task records, so it has to
+# resolve a duplicated key the same way every other reader does rather than
+# taking whichever line it happens to reach first. That library defines
+# functions only, so sourcing it here costs nothing at load time.
+if ! declare -F fm_meta_duplicate_key >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-backlog-transition-lib.sh
+  . "$_FM_CLASSIFY_LIB_DIR/fm-backlog-transition-lib.sh"
+fi
+
+# fm_classify_meta_value: the single value <meta-file> records for <key>.
+# Prints nothing and returns 1 when the record is absent, the record cannot be
+# read, the key is absent, or the record answers THAT key more than once, so a
+# conflicted key classifies as "no value recorded" instead of as whichever
+# answer position selects. The refusal is per key, the same scope
+# bin/fm-backend.sh's fm_meta_get uses, so no two readers of one record can
+# disagree about whether a given key is readable.
+fm_classify_meta_value() {  # <meta-file> <key>
+  local meta=$1 key=$2 value dup_rc=0
+  [ -f "$meta" ] || return 1
+  fm_meta_duplicate_key "$meta" "$key" >/dev/null || dup_rc=$?
+  [ "$dup_rc" -eq 1 ] || return 1
+  value=$(grep "^$key=" "$meta" 2>/dev/null) || return 1
+  printf '%s\n' "${value#*=}"
+}
+
 # The crew current-state reader used for the "provably working" decision.
 # Overridable so tests can stub the run-step/pane verdict without a real worktree
 # or no-mistakes install; absent, it points at the real sibling script.
@@ -1516,8 +1542,8 @@ window_to_task() {
   if [ -n "$state" ]; then
     for meta in "$state"/*.meta; do
       [ -e "$meta" ] || continue
-      mw=$(grep '^window=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-      mt=$(grep '^terminal=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+      mw=$(fm_classify_meta_value "$meta" window || true)
+      mt=$(fm_classify_meta_value "$meta" terminal || true)
       [ "$mw" = "$w" ] || [ "$mt" = "$w" ] || continue
       t=$(basename "$meta")
       t=${t%.meta}
@@ -1755,7 +1781,7 @@ crew_is_paused() {  # <id>
 crew_pipeline_wait_declared() {  # <id> <state>
   local id=$1 state=$2 stage
   [ -n "$id" ] || return 1
-  stage=$(grep '^stage=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  stage=$(fm_classify_meta_value "$state/$id.meta" stage || true)
   [ "$stage" = validation-running ]
 }
 
@@ -1877,9 +1903,9 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
   local -a names=() prune=()
   [ -n "$id" ] || return 1
   [ -f "$anchor" ] || return 1
-  wt=$(grep '^worktree=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  wt=$(fm_classify_meta_value "$state/$id.meta" worktree || true)
   [ -n "$wt" ] && [ -d "$wt" ] || return 1
-  kind=$(grep '^kind=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  kind=$(fm_classify_meta_value "$state/$id.meta" kind || true)
   [ "$kind" != secondmate ] || return 1
   if [ -e "$wt/.fm-secondmate-home" ] || [ -L "$wt/.fm-secondmate-home" ]; then
     return 1
@@ -1927,7 +1953,7 @@ signal_crew_provably_working() {  # <file> ...
     [ -n "$task" ] || continue
     case "$base" in
       *.status)
-        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+        if [ "$(fm_classify_meta_value "$dir/$task.meta" kind || true)" = secondmate ]; then
           return 1
         fi
         ;;

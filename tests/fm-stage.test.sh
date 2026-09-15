@@ -18,6 +18,17 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$ROOT/bin/fm-classify-lib.sh"
+# The task-record readers under test: the shared one every fm-*.sh script uses
+# (fm_meta_get) and the record-shape owner the writers publish through
+# (fm_meta_duplicate_key), so the cases below read the record the way production
+# does instead of asserting against a function that is not even loaded.
+# shellcheck source=bin/fm-backend.sh
+. "$ROOT/bin/fm-backend.sh"
+# fm_pr_file_mode, the portable mode read the PR boundary itself validates a
+# task record with, so a mode assertion here checks the same thing production
+# checks rather than a second spelling of it.
+# shellcheck source=bin/fm-pr-lib.sh
+. "$ROOT/bin/fm-pr-lib.sh"
 
 STAGE="$ROOT/bin/fm-stage.sh"
 TMP_ROOT=$(fm_test_tmproot fm-stage)
@@ -72,6 +83,10 @@ make_worktree() {  # <dir> <branch>
   mkdir -p "$1"
   git -C "$1" init -q
   git -C "$1" commit -q --allow-empty -m init
+  # A deterministic integration branch, because `git init`'s default name varies
+  # and the stage owner asks the default branch - not the checked-out HEAD -
+  # whether a head landed.
+  git -C "$1" branch -M main
   git -C "$1" checkout -q -b "$2"
   printf 'commands:\n  lint: true\n' > "$1/.no-mistakes.yaml"
   git -C "$1" add .no-mistakes.yaml
@@ -85,6 +100,18 @@ make_task() {  # <id> <mode> <worktree> [gen]
   mkdir -p "$DATA/$1"
   printf '# Task\nbuild the thing\n' > "$DATA/$1/brief.md"
   : > "$STATE/$1.status"
+}
+
+# land_on_integration <repo> <commit>: move the integration branch of the repo at
+# <repo> to <commit>, the way a merge does, without disturbing HEAD. `landed`
+# means "reachable from the branch the project integrates onto", so a fixture
+# that wants a head to have landed has to actually put it there.
+land_on_integration() {  # <repo> <commit>
+  if git -C "$1" show-ref --verify --quiet refs/remotes/origin/main; then
+    git -C "$1" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+    git -C "$1" update-ref refs/remotes/origin/main "$2"
+  fi
+  git -C "$1" update-ref refs/heads/main "$2"
 }
 
 meta_get() { grep "^$2=" "$STATE/$1.meta" | tail -1 | cut -d= -f2-; }
@@ -438,7 +465,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?
@@ -892,3 +919,702 @@ branch_sync: false" ;;
   pass 'completed same-run successor requires verified exact bindings and preserves original candidate'
 }
 test_completed_successor_stage
+
+# --- the record holds one value per key, and one of them is the landed head ---
+#
+# Regression origin (2026-09-15): a live task record carried BOTH
+# `stage=validation-running` and `stage=commissioned`; `show` rendered the
+# second, while a reader taking the first line, or every line, got something
+# else. The same family produced a landing record naming the head validation
+# started from rather than the head that landed. Both are provenance defects:
+# the record asserted a lifecycle fact that did not happen, and a later reader,
+# a recovery, or an audit cannot tell that apart from a manufactured record.
+
+test_a_record_cannot_hold_two_values_for_one_key() {
+  local out rc wt line
+  wt="$TMP_ROOT/wt-shadow"
+  make_worktree "$wt" fm/shadow
+  make_task shadow no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" shadow committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] || fail "the stage owner records one stage line"
+
+  # A second write of the same key must REPLACE, never append a shadow value.
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNS fm/shadow running "$(git -C "$wt" rev-parse HEAD)")
+  out=$("$STAGE" shadow running --run 01RUNS 2>&1); rc=$?
+  expect_code 0 "$rc" "running binds: $out"
+  [ "$(meta_get shadow stage)" = validation-running ] || fail "the second write changed the recorded stage"
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] \
+    || fail "a second transition appended a shadow stage value instead of replacing it"
+  FM_FAKE_AXI_STATUS=""
+
+  # A writer that does append one cannot publish it. The publication boundary
+  # every task-record writer crosses is what makes the shadow unrepresentable.
+  cp "$STATE/shadow.meta" "$STATE/.shadow.staged"
+  printf 'stage=commissioned\n' >> "$STATE/.shadow.staged"
+  FM_BACKLOG_TRANSITION_ERROR=
+  if fm_backlog_atomic_transition publish "$STATE/.shadow.staged" "$STATE/shadow.meta" "task record" "$STATE"; then
+    fail "publication accepted a record answering stage= twice"
+  fi
+  case "$FM_BACKLOG_TRANSITION_ERROR" in
+    *"stage="*"more than once"*) ;;
+    *) fail "the refusal must name the duplicated key (got: $FM_BACKLOG_TRANSITION_ERROR)" ;;
+  esac
+  [ "$(grep -c '^stage=' "$STATE/shadow.meta")" = 1 ] || fail "the refused publication must not land"
+
+  # A record corrupted out of band is refused by every reader rather than
+  # resolved by position, so no two readers can report different stages.
+  printf 'stage=commissioned\n' >> "$STATE/shadow.meta"
+  out=$("$STAGE" shadow show 2>&1); rc=$?
+  expect_code 1 "$rc" "show refuses a record with two stage values"
+  assert_contains "$out" "reason=CONFLICTING_RECORD" "the refusal is typed"
+  assert_contains "$out" "stage=" "the refusal names the key the record answers twice"
+  assert_not_contains "$out" "commissioned" "the refusal must not report either answer as current"
+  out=$("$STAGE" shadow landing 2>&1); rc=$?
+  expect_code 1 "$rc" "a transition refuses the same conflicted record"
+  assert_contains "$out" "reason=CONFLICTING_RECORD" "the transition refusal is typed"
+  [ "$(status_line_stage "$(last_line shadow)")" != landing ] || fail "the refused transition recorded a receipt"
+  # The classifier reads the same record and agrees there is no stage to read.
+  crew_pipeline_wait_declared shadow "$STATE" \
+    && fail "the classifier resolved a conflicted record by position"
+  [ -z "$(fm_classify_meta_value "$STATE/shadow.meta" stage || true)" ] \
+    || fail "the shared record reader answered a question the record answers twice"
+  declare -F fm_meta_get >/dev/null || fail "the shared record reader is not loaded; this case would pass vacuously"
+  declare -F fm_meta_duplicate_key >/dev/null || fail "the record-shape owner is not loaded; this case would pass vacuously"
+  # fm_meta_get is deliberately PERMISSIVE and stays so: it is shared by
+  # hundreds of callers, including guards that discard its status and bare
+  # assignments under `set -e`, so refusing is opt-in at the strict readers
+  # rather than imposed here. What carries the guarantee is the publication
+  # guard and the strict readers above, not this one.
+  fm_meta_get "$STATE/shadow.meta" stage >/dev/null 2>&1 \
+    || fail "the permissive reader must not start refusing its hundred callers"
+  [ "$(fm_meta_get "$STATE/shadow.meta" stage)" = commissioned ] \
+    || fail "the permissive reader answers with the last value, as its contract says"
+  [ "$(fm_meta_duplicate_key "$STATE/shadow.meta")" = stage ] \
+    || fail "the record-shape owner must name the duplicated key"
+
+  # Reconciling the record restores every reader at once.
+  grep -v '^stage=commissioned$' "$STATE/shadow.meta" > "$TMP_ROOT/shadow.fixed"
+  mv "$TMP_ROOT/shadow.fixed" "$STATE/shadow.meta"
+  out=$("$STAGE" shadow show 2>&1); rc=$?
+  expect_code 0 "$rc" "the reconciled record reads again"
+  assert_contains "$out" "STAGE_RECORDED: validation-running" "the surviving value is the one the record holds"
+  line=$(last_line shadow)
+  [ -n "$line" ] || fail "status log kept its receipts"
+
+  # Readers refuse PER KEY and agree per key. A record answering some unrelated
+  # cosmetic key twice must not cost a supervision reader the key it came for:
+  # a recovery path that refuses because other evidence is unavailable has
+  # turned one duplicated field into total loss of stage classification. The
+  # record-level condition stays detectable for the owners that need it.
+  printf 'window=firstmate:fm-shadow-2\n' >> "$STATE/shadow.meta"
+  [ "$(fm_classify_meta_value "$STATE/shadow.meta" stage)" = validation-running ] \
+    || fail "an unrelated duplicated key must not make the stage unreadable"
+  [ "$(fm_meta_get "$STATE/shadow.meta" stage)" = validation-running ] \
+    || fail "the two shared readers must agree on the value of an unconflicted key"
+  fm_classify_meta_value "$STATE/shadow.meta" window >/dev/null \
+    && fail "the strict reader must refuse the duplicated key itself"
+  [ "$(fm_meta_duplicate_key "$STATE/shadow.meta")" = window ] \
+    || fail "the record-level duplicate must stay detectable"
+  grep -v '^window=firstmate:fm-shadow-2$' "$STATE/shadow.meta" > "$TMP_ROOT/shadow.fixed2"
+  mv "$TMP_ROOT/shadow.fixed2" "$STATE/shadow.meta"
+  pass "fm-stage record: one value per key - a second write replaces it, an appended shadow cannot publish, the stage owner refuses a conflicted record, and the strict readers refuse the conflicted key while the permissive shared reader keeps its contract"
+}
+
+test_landing_names_the_head_that_landed() {
+  local out rc wt submitted landed line
+  wt="$TMP_ROOT/wt-landed"
+  make_worktree "$wt" fm/landed
+  make_task landed no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" landed committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  submitted=$(meta_get landed stage_head)
+  [ -n "$submitted" ] || fail "the submitted candidate is recorded"
+
+  # The pipeline's own fix commits advance the candidate while validation runs,
+  # so the head that lands is a successor of the head that was submitted.
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  [ "$landed" != "$submitted" ] || fail "the fixture must move the head"
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/landed.meta"
+  printf 'stage_pr=%s\n' 'https://github.com/o/r/pull/9' >> "$STATE/landed.meta"
+
+  out=$("$STAGE" landed landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records: $out"
+  [ "$(meta_get landed stage_head)" = "$submitted" ] \
+    || fail "the head validation started from must survive as recorded evidence"
+  # The landed head is a DURABLE fact of the record, captured once at landing:
+  # the sources it was resolved from are other writers' live state and may move
+  # or vanish afterwards, so a record that re-derived it would not be a record.
+  [ "$(meta_get landed stage_landed_head)" = "$landed" ] \
+    || fail "the record must name the head that landed (got $(meta_get landed stage_landed_head))"
+  [ "$(grep -c '^stage_landed_head=' "$STATE/landed.meta")" = 1 ] \
+    || fail "the landed head must be recorded exactly once"
+  line=$(last_line landed)
+  [ "$(status_line_stage "$line")" = landing ] || fail "landing receipt issued"
+  [ "$(status_stage_field "$line" head)" = "${submitted:0:12}" ] \
+    || fail "the receipt keeps the submitted head (got $(status_stage_field "$line" head))"
+  [ "$(status_stage_field "$line" landed_head)" = "${landed:0:12}" ] \
+    || fail "the receipt must carry the landed head apart from it (got $(status_stage_field "$line" landed_head))"
+  [ "$(status_stage_field "$line" landed_head)" != "$(status_stage_field "$line" head)" ] \
+    || fail "the two heads must stay distinguishable"
+  [ "$(status_stage_field "$line" reason)" = "landed-head:pr-head" ] \
+    || fail "the receipt must say which evidence supplied the landed head (got $(status_stage_field "$line" reason))"
+  out=$("$STAGE" landed show 2>&1)
+  assert_contains "$out" "landed_head=${landed:0:12}" "show reports the landed head"
+  assert_contains "$out" "head=${submitted:0:12}" "show still reports where validation started"
+
+  # The record keeps naming the head that landed once the evidence it was
+  # resolved from is gone. pr_head= belongs to bin/fm-pr-check.sh and is live
+  # mutable state; rewriting it after the landing must not change history.
+  grep -v '^pr_head=' "$STATE/landed.meta" > "$TMP_ROOT/landed.repr"
+  printf 'pr_head=%s\n' "$(printf '%040d' 7)" >> "$TMP_ROOT/landed.repr"
+  mv "$TMP_ROOT/landed.repr" "$STATE/landed.meta"
+  out=$("$STAGE" landed show 2>&1)
+  assert_contains "$out" "landed_head=${landed:0:12}" \
+    "a rewritten pr_head= must not change the head the record says landed"
+
+  # The landing fact survives the next transition rather than being dropped by
+  # the record rewrite, and the read-back proves the LANDED head reachable.
+  land_on_integration "$wt" "$landed"
+  out=$("$STAGE" landed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activated reads back the landed head: $out"
+  [ "$(meta_get landed stage_landed_head)" = "$landed" ] \
+    || fail "the landed head must survive the activated transition"
+  # The head was made durable, so the evidence that proved it must be equally
+  # durable: a record naming a head without naming what proved it leaves the
+  # next reader unable to judge how well it is established.
+  [ "$(meta_get landed stage_landed_head_source)" = pr-head ] \
+    || fail "activated destroyed the landed-head provenance (got '$(meta_get landed stage_landed_head_source)')"
+  [ "$(grep -c '^stage_landed_head_source=' "$STATE/landed.meta")" = 1 ] \
+    || fail "the provenance must be carried forward once, not shadowed"
+  [ "$(status_stage_field "$(last_line landed)" landed_head)" = "${landed:0:12}" ] \
+    || fail "the activated receipt must still name the head that landed"
+  [ "$(status_stage_field "$(last_line landed)" reason)" = "ancestor-of:${landed:0:12}:landed-head:${landed:0:12}" ] \
+    || fail "the read-back must name the landed head (got $(status_stage_field "$(last_line landed)" reason))"
+  # Before landing there is no landed head to name, even though the forge head
+  # the merge will consume is already recorded.
+  make_task notyet no-mistakes "$wt"
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/notyet.meta"
+  out=$("$STAGE" notyet committed 2>&1); rc=$?
+  expect_code 0 "$rc" "third candidate admits: $out"
+  out=$("$STAGE" notyet show 2>&1)
+  assert_contains "$out" "landed_head=-" "nothing has landed yet, so no landed head is claimed"
+
+  # An unresolvable landed head is recorded as unknown, never filled in with the
+  # candidate: that substitution is the defect, not a safe default.
+  make_task unlanded no-mistakes "$wt"
+  out=$("$STAGE" unlanded committed 2>&1); rc=$?
+  expect_code 0 "$rc" "second candidate admits: $out"
+  # No forge head recorded and the local copy is gone: nothing proves what
+  # landed, which is a different answer from the candidate head.
+  sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-wt|" "$STATE/unlanded.meta" > "$STATE/.unlanded.rewrite"
+  mv "$STATE/.unlanded.rewrite" "$STATE/unlanded.meta"
+  out=$("$STAGE" unlanded landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records without provable head evidence: $out"
+  line=$(last_line unlanded)
+  [ "$(status_stage_field "$line" landed_head)" = "-" ] \
+    || fail "an unproven landed head must read as unknown (got $(status_stage_field "$line" landed_head))"
+  [ "$(status_stage_field "$line" reason)" = "landed-head:unresolved" ] \
+    || fail "the receipt must say the landed head could not be proven"
+  out=$("$STAGE" unlanded show 2>&1)
+  assert_contains "$out" "landed_head=-" "show reports an unproven landed head as unknown"
+  pass "fm-stage landing: the record names the head that landed and keeps the head validation started from, distinguishably"
+}
+
+# CAPTURE ONCE, FULL STOP. Nothing displaces a captured landed head - not a
+# later worktree head, not the forge's own head, however well it descends from
+# the capture. Every one of those is evidence read AFTER the landing, which is
+# not evidence of what landed, and re-recording it would name a commit that
+# never landed under a provenance label that says otherwise.
+test_nothing_displaces_a_captured_landed_head() {
+  local out rc wt first second
+  wt="$TMP_ROOT/wt-moved"
+  make_worktree "$wt" fm/moved
+  make_task moved no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" moved committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records: $out"
+  first=$(meta_get moved stage_landed_head)
+  [ "$first" = "$(git -C "$wt" rev-parse HEAD)" ] \
+    || fail "landing must record the worktree head it proved (got $first)"
+  [ "$(meta_get moved stage_landed_head_source)" = worktree ] \
+    || fail "the record must name the evidence that proved the head"
+
+  # A re-run with nothing moved stays unchanged: the recorded fact still holds.
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "an unmoved re-run: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a re-run recording the same head is unchanged"
+
+  # The merge lands the captured head, then the worker keeps working. That later
+  # worktree head is a descendant, and it still must not displace the capture.
+  git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
+  second=$(git -C "$wt" rev-parse HEAD)
+  [ "$second" != "$first" ] || fail "the fixture must move the head"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run after the worktree moved: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" \
+    "a post-merge worktree head must not displace a captured head"
+  [ "$(meta_get moved stage_landed_head)" = "$first" ] \
+    || fail "a later worktree head displaced the captured one (got $(meta_get moved stage_landed_head))"
+
+  # The forge's own head for the PR is no different. bin/fm-pr-check.sh resolves
+  # it live, so a re-run after the branch advanced records the POST-merge head;
+  # adopting it would name a commit that never landed, under the strongest
+  # provenance label there is.
+  printf 'pr_head=%s\n' "$second" >> "$STATE/moved.meta"
+  out=$("$STAGE" moved landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run with a later forge head: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" \
+    "a forge head read after the landing must not displace a captured head"
+  [ "$(meta_get moved stage_landed_head)" = "$first" ] \
+    || fail "the forge head displaced the captured one (got $(meta_get moved stage_landed_head))"
+  [ "$(meta_get moved stage_landed_head_source)" = worktree ] \
+    || fail "the captured provenance must stand too (got $(meta_get moved stage_landed_head_source))"
+  [ "$(grep -c '^stage_landed_head=' "$STATE/moved.meta")" = 1 ] \
+    || fail "the record must hold one landed head"
+  [ "$(status_stage_field "$(last_line moved)" landed_head)" = "${first:0:12}" ] \
+    || fail "the last receipt must still name the captured head"
+  pass "fm-stage landing: a captured landed head stands against every later resolution, forge head included"
+}
+
+# The source a capture came from is provenance, never a licence to check it
+# less. pr_head= is not a stage_* field, so it survives `committed --retry` onto
+# a new candidate; accepting it on its syntax alone let an abandoned attempt's
+# head be recorded as this task's landed head.
+test_recorded_forge_head_must_be_on_the_candidate_lineage() {
+  local out rc wt stale
+  wt="$TMP_ROOT/wt-lineage"
+  make_worktree "$wt" fm/lineage
+  make_task lineage no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  # A head from an unrelated history, syntactically a perfectly good SHA.
+  git -C "$wt" checkout -q --orphan fm/lineage-abandoned
+  git -C "$wt" commit -q --allow-empty -m 'abandoned attempt'
+  stale=$(git -C "$wt" rev-parse HEAD)
+  git -C "$wt" checkout -q fm/lineage
+  out=$("$STAGE" lineage committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  printf 'pr_head=%s\n' "$stale" >> "$STATE/lineage.meta"
+
+  out=$("$STAGE" lineage landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records: $out"
+  [ "$(meta_get lineage stage_landed_head)" != "$stale" ] \
+    || fail "a head off the candidate lineage was recorded as the landed head"
+  # It falls through to the worktree, which IS on the candidate lineage, rather
+  # than being pre-empted by the unusable one.
+  [ "$(meta_get lineage stage_landed_head)" = "$(git -C "$wt" rev-parse fm/lineage)" ] \
+    || fail "the usable evidence must still be reached"
+  [ "$(meta_get lineage stage_landed_head_source)" = worktree ] \
+    || fail "the recorded provenance must name the source that actually proved it"
+
+  # With no fallback either, nothing is claimed at all.
+  make_task lineage2 no-mistakes "$wt"
+  out=$("$STAGE" lineage2 committed 2>&1); rc=$?
+  expect_code 0 "$rc" "second candidate admits: $out"
+  printf 'pr_head=%s\n' "$stale" >> "$STATE/lineage2.meta"
+  sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-lineage-wt|" "$STATE/lineage2.meta" > "$TMP_ROOT/lineage2.rw"
+  mv "$TMP_ROOT/lineage2.rw" "$STATE/lineage2.meta"
+  out=$("$STAGE" lineage2 landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing without usable evidence: $out"
+  [ -z "$(meta_get lineage2 stage_landed_head)" ] \
+    || fail "an off-lineage forge head was claimed as the landed head"
+  [ "$(status_stage_field "$(last_line lineage2)" reason)" = "landed-head:unresolved" ] \
+    || fail "the receipt must say nothing proved the landed head"
+  pass "fm-stage landing: a recorded forge head is evidence only on the candidate lineage, never on its syntax alone"
+}
+
+# A captured landed head is a fact about the past, and `landing` is deliverable
+# more than once against evidence that keeps moving: bin/fm-pr-merge.sh re-runs
+# bin/fm-pr-check.sh, which drops a pr_head= it cannot resolve, while the
+# worker's worktree advances past the head that actually merged. Every one of
+# those later answers is evidence read AFTER the landing, so a re-delivery keeps
+# what was captured rather than recording any of them.
+# EMPTINESS IS NOT ABSENCE. A landing that looked and could prove nothing
+# records `unresolved` - a positive fact about a decision that WAS made. Reading
+# that empty head as "nothing was recorded" would let a later re-delivery fill
+# it in, and the record would end up naming a head that never landed. Nothing
+# fills an unresolved capture, the forge's own head included.
+test_an_unresolved_capture_is_a_decision_not_a_blank() {
+  local out rc wt landed gone
+  wt="$TMP_ROOT/wt-unresolved"
+  gone="$TMP_ROOT/gone-unresolved-wt"
+  make_worktree "$wt" fm/unresolved
+  make_task unresolvedcap no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" unresolvedcap committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+
+  # Landing runs while the worktree is unreachable and no forge head is
+  # recorded, so nothing proves a landed head.
+  sed "s|^worktree=.*|worktree=$gone|" "$STATE/unresolvedcap.meta" > "$TMP_ROOT/uc.rw"
+  mv "$TMP_ROOT/uc.rw" "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing records an unresolved head: $out"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] || fail "nothing proved a head, so none may be named"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the record must say landing looked and proved nothing"
+
+  # The merge happens, the worker keeps committing, and the worktree comes back.
+  git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  sed "s|^worktree=.*|worktree=$wt|" "$STATE/unresolvedcap.meta" > "$TMP_ROOT/uc.rw2"
+  mv "$TMP_ROOT/uc.rw2" "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery once the worktree is back: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" \
+    "a post-merge worktree head must not fill an unresolved capture"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] \
+    || fail "the worktree filled an unresolved capture (got $(meta_get unresolvedcap stage_landed_head))"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the recorded decision must survive the re-delivery"
+
+  # Nor by the forge's own head, which bin/fm-pr-check.sh resolves live and so
+  # may equally have been written after the merge. The recorded decision stands;
+  # what `activated` can prove about it is a separate fact it records separately.
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/unresolvedcap.meta"
+  out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery with forge evidence: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a later forge head must not fill an unresolved capture"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] \
+    || fail "the forge head filled an unresolved capture (got $(meta_get unresolvedcap stage_landed_head))"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the recorded decision must stand against every later resolution"
+  pass "fm-stage landing: a recorded unresolved landed head is a decision that stands, fillable by nothing"
+}
+
+# Every strictness rule needs an escape, and the escape must be honest rather
+# than silent. A landed head captured from the worktree can be wrong - the
+# worker's local commit was never the one pushed - and capture-once means
+# nothing replaces it, so refusing forever would leave hand-editing a live fleet
+# record as the only way out. Activation proceeds on what it CAN prove and
+# records, in a field a consumer can match on, that the captured head was not
+# among it.
+test_activation_names_an_unconfirmed_landed_head_instead_of_refusing() {
+  local out rc wt project submitted unpushed
+  wt="$TMP_ROOT/wt-unconfirmed"
+  project="$TMP_ROOT/project-unconfirmed"
+  make_worktree "$wt" fm/unconfirmed
+  make_task unconfirmed no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" unconfirmed committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  submitted=$(meta_get unconfirmed stage_head)
+
+  # The worker commits something that is never pushed, and landing captures it
+  # from the worktree because no forge head is recorded.
+  git -C "$wt" commit -q --allow-empty -m 'local commit that never lands'
+  unpushed=$(git -C "$wt" rev-parse HEAD)
+  out=$("$STAGE" unconfirmed landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the worktree head: $out"
+  [ "$(meta_get unconfirmed stage_landed_head)" = "$unpushed" ] || fail "the worktree head was not captured"
+
+  # The project integrated the SUBMITTED head instead, so the captured head is
+  # not reachable from the branch that decides what landed.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  land_on_integration "$project" "$submitted"
+  sed "s|^project=.*|project=$project|" "$STATE/unconfirmed.meta" > "$TMP_ROOT/unconf.rw"
+  mv "$TMP_ROOT/unconf.rw" "$STATE/unconfirmed.meta"
+
+  out=$("$STAGE" unconfirmed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activation must proceed on what it can prove: $out"
+  assert_not_contains "$out" "NO_READBACK" "activation must not refuse when the candidate head is provable"
+  # Two facts, both present, neither inferable from the other: what WAS proven,
+  # and that the captured landed head was not.
+  [ "$(meta_get unconfirmed stage_landed_head_confirmed)" = unconfirmed ] \
+    || fail "the record must say the captured landed head could not be confirmed (got '$(meta_get unconfirmed stage_landed_head_confirmed)')"
+  [ "$(status_stage_field "$(last_line unconfirmed)" reason)" = "ancestor-of:${submitted:0:12}:candidate-head:${submitted:0:12}" ] \
+    || fail "the record must say what it did prove (got $(status_stage_field "$(last_line unconfirmed)" reason))"
+  [ "$(status_stage_field "$(last_line unconfirmed)" landed_confirmed)" = unconfirmed ] \
+    || fail "the receipt must carry the disposition a consumer matches on"
+  # The mis-captured head and its provenance are NOT rewritten to make the
+  # record agree with itself.
+  [ "$(meta_get unconfirmed stage_landed_head)" = "$unpushed" ] \
+    || fail "activation rewrote the captured landed head"
+  [ "$(meta_get unconfirmed stage_landed_head_source)" = worktree ] \
+    || fail "activation rewrote the captured provenance"
+  [ "$(status_stage_field "$(last_line unconfirmed)" landed_head)" = "${unpushed:0:12}" ] \
+    || fail "the receipt must still name the captured head"
+  out=$("$STAGE" unconfirmed show 2>&1)
+  assert_contains "$out" "landed_confirmed=unconfirmed" "show reports the disposition"
+  out=$("$STAGE" unconfirmed activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a repeat activation: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: activated" "a repeat activation stays a no-op"
+  pass "fm-stage activated: an unprovable captured landed head is named as unconfirmed rather than refusing forever"
+}
+
+# THE PROOF MUST BE AS DURABLE AS THE THING PROVED. The landed head is captured
+# once and never regresses because its sources are live mutable state - and the
+# confirmation that establishes it is derived from state just as mutable, so it
+# gets the same protection. A later delivery failing to re-prove a fact is not
+# evidence against it: the project clone moving to another branch is ordinary
+# housekeeping, not a discovery that the head did not land.
+test_a_confirmed_landed_head_is_never_downgraded() {
+  local out rc wt project landed other
+  wt="$TMP_ROOT/wt-monotonic"
+  project="$TMP_ROOT/project-monotonic"
+  make_worktree "$wt" fm/monotonic
+  make_task monotonic no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" monotonic committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/monotonic.meta"
+  out=$("$STAGE" monotonic landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the forge head: $out"
+
+  # The project integrated the landed head, so activation proves it.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  land_on_integration "$project" "$landed"
+  sed "s|^project=.*|project=$project|" "$STATE/monotonic.meta" > "$TMP_ROOT/mono.rw"
+  mv "$TMP_ROOT/mono.rw" "$STATE/monotonic.meta"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activation proves the landed head: $out"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "the landed head was not confirmed (got '$(meta_get monotonic stage_landed_head_confirmed)')"
+
+  # The integration branch is then rewound to a history that does not contain
+  # the landed head - the shape of a clone reset, a mirror rebuild, or any other
+  # housekeeping - and the merge poll's marker is present. Re-delivering
+  # activation must not read that as evidence the head never landed.
+  git -C "$project" checkout -q --orphan other-branch
+  git -C "$project" commit -q --allow-empty -m 'unrelated branch tip'
+  other=$(git -C "$project" rev-parse HEAD)
+  [ "$other" != "$landed" ] || fail "the fixture must move the integration branch off the landed head"
+  land_on_integration "$project" "$other"
+  printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n9\n' \
+    > "$STATE/monotonic.pr-poll-merge-notified"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery once the integration branch moved: $out"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "a proven landed head was downgraded (got '$(meta_get monotonic stage_landed_head_confirmed)')"
+  [ "$(meta_get monotonic stage_landed_head)" = "$landed" ] \
+    || fail "the captured head must stand too"
+  out=$("$STAGE" monotonic show 2>&1)
+  assert_contains "$out" "landed_confirmed=confirmed" "show must keep reporting the proven disposition"
+
+  # Now WITHOUT the merge marker, which is the case that tells the read-back
+  # gate apart. The record still says confirmed, but the landed head is no
+  # longer reachable, so a gate keyed on the recorded disposition would keep
+  # reading back the unreachable head and refuse NO_READBACK forever. Reading
+  # back what is still PROVABLE - the candidate head, which the integration
+  # branch does contain - is what keeps the task movable, and the sticky
+  # confirmation is untouched by it.
+  rm -f "$STATE/monotonic.pr-poll-merge-notified"
+  land_on_integration "$project" "$(meta_get monotonic stage_head)"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a marker-free re-delivery must not refuse: $out"
+  assert_not_contains "$out" "NO_READBACK" "the read-back must fall back to what it can still prove"
+  [ "$(status_stage_field "$(last_line monotonic)" reason)" \
+      = "ancestor-of:$(meta_get monotonic stage_head | cut -c1-12):candidate-head:$(meta_get monotonic stage_head | cut -c1-12)" ] \
+    || fail "the read-back must name the candidate head it actually proved (got $(status_stage_field "$(last_line monotonic)" reason))"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "falling back to the candidate head must not disturb the recorded proof"
+  pass "fm-stage activated: a confirmed landed head is never downgraded, and a re-delivery that cannot re-prove it reads back what it can"
+}
+
+test_a_captured_landed_head_never_regresses() {
+  local out rc wt merged captured
+  wt="$TMP_ROOT/wt-capture"
+  make_worktree "$wt" fm/capture
+  make_task capture no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" capture committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  merged=$(git -C "$wt" rev-parse HEAD)
+  printf 'pr_head=%s\n' "$merged" >> "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the forge head: $out"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] || fail "the forge head was not captured"
+  [ "$(status_stage_field "$(last_line capture)" reason)" = "landed-head:pr-head" ] \
+    || fail "the capture must name its source"
+
+  # The forge head is gone from the record and the worktree has moved on past
+  # the merge. That later worktree head is evidence read after the landing, so
+  # it must not displace the capture.
+  grep -v '^pr_head=' "$STATE/capture.meta" > "$TMP_ROOT/capture.norec"
+  mv "$TMP_ROOT/capture.norec" "$STATE/capture.meta"
+  git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
+  [ "$(git -C "$wt" rev-parse HEAD)" != "$merged" ] || fail "the fixture must move the worktree past the merge"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run on later evidence: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a later resolution must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] \
+    || fail "a later resolution overwrote the captured head (got $(meta_get capture stage_landed_head))"
+
+  # Nothing resolves at all now. Unresolved must never erase a captured head.
+  sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-capture-wt|" "$STATE/capture.meta" > "$TMP_ROOT/capture.rw"
+  mv "$TMP_ROOT/capture.rw" "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run with no evidence at all: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "an unresolvable re-run must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$merged" ] \
+    || fail "unresolved erased the captured head (got '$(meta_get capture stage_landed_head)')"
+  [ "$(status_stage_field "$(last_line capture)" reason)" = "landed-head:pr-head" ] \
+    || fail "the captured provenance must survive an unresolvable re-run"
+  out=$("$STAGE" capture show 2>&1)
+  assert_contains "$out" "landed_head=${merged:0:12}" "show still reports the captured head"
+
+  # A forge head off the candidate lineage is not evidence at all: it is a
+  # different history, not a later one, and coming from the forge does not make
+  # it usable.
+  captured=$(meta_get capture stage_landed_head)
+  git -C "$wt" checkout -q -b fm/capture-fork "$(git -C "$wt" rev-list --max-parents=0 HEAD | tail -1)"
+  git -C "$wt" commit -q --allow-empty -m 'unrelated lineage'
+  sed "s|^worktree=.*|worktree=$wt|" "$STATE/capture.meta" > "$TMP_ROOT/capture.rw2"
+  mv "$TMP_ROOT/capture.rw2" "$STATE/capture.meta"
+  printf 'pr_head=%s\n' "$(git -C "$wt" rev-parse HEAD)" >> "$STATE/capture.meta"
+  out=$("$STAGE" capture landing 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-run on an unrelated lineage: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "an off-lineage head must leave the record alone"
+  [ "$(meta_get capture stage_landed_head)" = "$captured" ] \
+    || fail "an off-lineage head displaced the captured one (got $(meta_get capture stage_landed_head))"
+  [ "$(meta_get capture stage_landed_head_source)" = pr-head ] \
+    || fail "the captured provenance must survive every refused re-run"
+  pass "fm-stage landing: a captured landed head survives every weaker, unresolvable, or off-lineage re-run"
+}
+
+# A commit present ONLY on the local integration branch confirms. That is the
+# case a stale origin ref used to block: a local-only landing never pushes -
+# bin/fm-merge-local.sh fast-forwards refs/heads/<default> in the project clone
+# and nothing else - so refs/remotes/origin/<default> stays behind it forever.
+# Asking only the ref that happens to EXIST let that stale remote ref answer for
+# the branch that actually landed the work, and every local-only task refused
+# NO_READBACK with no way through.
+test_a_local_only_landing_is_confirmed_from_the_local_branch() {
+  local out rc wt project landed
+  wt="$TMP_ROOT/wt-localonly"
+  project="$TMP_ROOT/project-localonly"
+  make_worktree "$wt" fm/localonly
+  make_task localonly local-only "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" localonly committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  landed=$(git -C "$wt" rev-parse HEAD)
+  out=$("$STAGE" localonly landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the worktree head: $out"
+  [ "$(meta_get localonly stage_landed_head)" = "$landed" ] || fail "the landed head was not captured"
+
+  # The clone has an origin remote whose tracking ref is behind, which is
+  # exactly the state a local merge leaves: the work is on refs/heads/main and
+  # was never pushed.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  git -C "$project" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$project" update-ref refs/remotes/origin/main "$(git -C "$wt" rev-parse main)"
+  git -C "$project" update-ref refs/heads/main "$landed"
+  git -C "$project" merge-base --is-ancestor "$landed" "$(git -C "$project" rev-parse refs/remotes/origin/main)" \
+    && fail "the fixture must leave the remote-tracking ref behind the landed head"
+  sed "s|^project=.*|project=$project|" "$STATE/localonly.meta" > "$TMP_ROOT/lo.rw"
+  mv "$TMP_ROOT/lo.rw" "$STATE/localonly.meta"
+
+  out=$("$STAGE" localonly activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a local-only landing must be able to activate: $out"
+  assert_not_contains "$out" "NO_READBACK" "a stale remote ref must not refuse a local-only landing"
+  [ "$(meta_get localonly stage_landed_head_confirmed)" = confirmed ] \
+    || fail "the local integration branch proves the landed head (got '$(meta_get localonly stage_landed_head_confirmed)')"
+  [ "$(status_stage_field "$(last_line localonly)" reason)" = "ancestor-of:${landed:0:12}:landed-head:${landed:0:12}" ] \
+    || fail "the read-back must name the ref that proved it (got $(status_stage_field "$(last_line localonly)" reason))"
+  pass "fm-stage activated: a local-only landing is confirmed from the local integration branch a stale remote ref would have shadowed"
+}
+
+# A guard that cannot read the bytes has not proven the record clean. Read
+# failure is its own answer and never a pass, at the stage preflight and at the
+# publication boundary alike.
+test_an_unreadable_record_is_refused_not_assumed_clean() {
+  local out rc stub wt
+  wt="$TMP_ROOT/wt-unreadable"
+  make_worktree "$wt" fm/unreadable
+  make_task unreadable no-mistakes "$wt"
+  stub="$TMP_ROOT/blind-bin"
+  mkdir -p "$stub"
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$stub/awk"
+  chmod +x "$stub/awk"
+
+  out=$(PATH="$stub:$PATH" "$STAGE" unreadable show 2>&1); rc=$?
+  expect_code 2 "$rc" "show must refuse a record it cannot read: $out"
+  assert_contains "$out" "could not be read" "the refusal must say the record was unreadable"
+  assert_not_contains "$out" "STAGE_RECORDED" "an unreadable record must report no stage"
+  out=$(PATH="$stub:$PATH" "$STAGE" unreadable landing 2>&1); rc=$?
+  expect_code 2 "$rc" "a transition must refuse a record it cannot read: $out"
+  [ "$(status_line_stage "$(last_line unreadable)")" != landing ] \
+    || fail "the refused transition recorded a receipt"
+
+  # The publication boundary refuses for the same reason, so an unreadable
+  # staged record cannot become the published one.
+  cp "$STATE/unreadable.meta" "$STATE/.unreadable.staged"
+  out=$(
+    PATH="$stub:$PATH"
+    if fm_backlog_atomic_transition publish "$STATE/.unreadable.staged" "$STATE/unreadable.meta" "task record" "$STATE"; then
+      printf 'PUBLISHED'
+    else
+      printf 'REFUSED:%s' "$FM_BACKLOG_TRANSITION_ERROR"
+    fi
+  )
+  case "$out" in
+    REFUSED:*could\ not\ be\ read*) ;;
+    *) fail "publication treated an unreadable record as clean (got: $out)" ;;
+  esac
+  [ -f "$STATE/.unreadable.staged" ] || fail "the refused publication must not have moved the staged record"
+  rm -f "$STATE/.unreadable.staged"
+
+  # Readable again, everything reads again.
+  out=$("$STAGE" unreadable show 2>&1); rc=$?
+  expect_code 0 "$rc" "the readable record reads again: $out"
+  pass "fm-stage record: an unreadable record refuses at the stage preflight and at the publication boundary instead of passing as clean"
+}
+
+# The shared partial writer publishes the record it was handed, not a wider one.
+# bin/fm-pr-check.sh establishes and validates 0600 for this exact file, so a
+# partial write that relaxed the mode would quietly widen a private record.
+test_meta_replace_preserves_the_record_mode_and_contract() {
+  local meta out rc
+  meta="$STATE/modecheck.meta"
+  fm_write_meta "$meta" "window=fm-modecheck" "spawn_gen=s1.1.1" "decisions_reviewed=0"
+  chmod 600 "$meta"
+  FM_BACKLOG_TRANSITION_ERROR=
+  fm_meta_replace "$meta" "$STATE" "decisions_reviewed=1" "decision_keys=a,b" \
+    || fail "a partial write of a well-formed record failed ($FM_BACKLOG_TRANSITION_ERROR)"
+  [ "$(fm_pr_file_mode "$meta")" = 600 ] \
+    || fail "the partial write widened the record to $(fm_pr_file_mode "$meta")"
+  # The mode comes from the RECORD, not from a constant this writer prefers, so
+  # a record established wider stays exactly as wide.
+  chmod 640 "$meta"
+  fm_meta_replace "$meta" "$STATE" "decisions_reviewed=1" \
+    || fail "a second partial write failed ($FM_BACKLOG_TRANSITION_ERROR)"
+  [ "$(fm_pr_file_mode "$meta")" = 640 ] \
+    || fail "the partial write did not keep the record's own mode (got $(fm_pr_file_mode "$meta"))"
+  chmod 600 "$meta"
+  [ "$(fm_meta_get "$meta" decisions_reviewed)" = 1 ] || fail "the replaced value was not recorded"
+  [ "$(fm_meta_get "$meta" decision_keys)" = "a,b" ] || fail "the appended value was not recorded"
+  [ "$(fm_meta_get "$meta" window)" = "fm-modecheck" ] || fail "an unnamed field was dropped"
+  [ "$(grep -c '^decisions_reviewed=' "$meta")" = 1 ] || fail "the replaced key was shadowed"
+
+  # An absent key is absent, not present-and-empty: the reader's stated contract
+  # is what the next caller will use to tell those apart.
+  fm_classify_meta_value "$meta" nosuchkey >/dev/null \
+    && fail "the classifier reader reported a value for a key the record does not hold"
+  [ "$(fm_classify_meta_value "$meta" window)" = "fm-modecheck" ] \
+    || fail "the classifier reader must still read a key the record does hold"
+  out=$(fm_meta_replace "$meta" "$STATE" "not-a-field" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a malformed field was accepted: $out"
+  [ "$(fm_pr_file_mode "$meta")" = 600 ] || fail "a refused partial write disturbed the record mode"
+  pass "fm-backlog-transition: a partial task-record write keeps the record's own mode and its single-valued shape"
+}
+
+test_a_record_cannot_hold_two_values_for_one_key
+test_landing_names_the_head_that_landed
+test_nothing_displaces_a_captured_landed_head
+test_recorded_forge_head_must_be_on_the_candidate_lineage
+test_a_captured_landed_head_never_regresses
+test_an_unresolved_capture_is_a_decision_not_a_blank
+test_activation_names_an_unconfirmed_landed_head_instead_of_refusing
+test_a_confirmed_landed_head_is_never_downgraded
+test_a_local_only_landing_is_confirmed_from_the_local_branch
+test_an_unreadable_record_is_refused_not_assumed_clean
+test_meta_replace_preserves_the_record_mode_and_contract

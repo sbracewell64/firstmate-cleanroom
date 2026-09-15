@@ -20,6 +20,18 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# The task-record publication boundary, so this writer of pr= and pr_head=
+# installs its rewritten record through the same guard every other writer of one
+# crosses instead of a bare mv.
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+# The shared task-record reader (fm_meta_get), so the keys this script reads out
+# of the record resolve to the same value bin/fm-stage.sh's landed-head
+# resolution reads from the same bytes.
+# shellcheck source=bin/fm-backend.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backend.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -72,7 +84,7 @@ fi
 # bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
 # bin/fm-pr-merge.sh reads a GitLab head live at merge time for the same reason,
 # and treats a recorded value that disagrees as stale rather than authoritative.
-WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
+WT=$(fm_meta_get "$META" worktree || true)
 PR_HEAD=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
@@ -161,7 +173,10 @@ fm_pr_metadata_identity_parse "$META_TMP" || exit 1
   && [ "$FM_PR_META_HOST" = "$HOST" ] && [ "$FM_PR_META_PATH" = "$PROJECT_PATH" ] \
   && [ "$FM_PR_META_NUMBER" = "$NUMBER" ] || exit 1
 fm_pr_regular_destination_on_device_or_absent "$META" "$STATE_DEVICE" || exit 1
-mv -f -- "$META_TMP" "$META" || exit 1
+fm_backlog_atomic_transition publish "$META_TMP" "$META" "task record" "$STATE" || {
+  echo "error: task record could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+  exit 1
+}
 META_TMP=
 fm_pr_private_file_valid "$META" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META" || exit 1

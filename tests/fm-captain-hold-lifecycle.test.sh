@@ -199,6 +199,26 @@ EOF
     || fail "captain-held bookkeeping closes re-woke their own home"
   assert_grep "decisions_reviewed=1" "$home/state/$id.meta" "completion attestation missing"
   assert_grep "decision_keys=sample-route-call" "$home/state/$id.meta" "inventory was not recorded as task ids"
+
+  # A REVIEWED inventory that later changes must correct the record, not leave
+  # the old answer shadowed behind the new one. A task record is single-valued:
+  # two decision_keys= lines would make each reader report whichever the record
+  # happened to hand it, which is how a record starts asserting something that
+  # did not happen.
+  run_captain "$home" hold sample-access-call \
+    --title "Choose sample access: open, restricted" \
+    --reason "captain access choice pending" --repo sample >/dev/null \
+    || fail "could not hold the second captain call"
+  run_captain "$home" complete "$id" sample-route-call sample-access-call >/dev/null \
+    || fail "a second completion review with a changed inventory failed"
+  [ "$(grep -c '^decision_keys=' "$home/state/$id.meta")" = 1 ] \
+    || fail "the second review appended a shadow decision_keys value instead of replacing it"
+  [ "$(grep -c '^decisions_reviewed=' "$home/state/$id.meta")" = 1 ] \
+    || fail "the second review appended a shadow decisions_reviewed value"
+  assert_grep "decision_keys=sample-access-call,sample-route-call" "$home/state/$id.meta" \
+    "the record must hold the corrected inventory, not the superseded one"
+  run_captain "$home" verify "$id" >/dev/null \
+    || fail "the corrected inventory does not verify"
   open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
     "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
   [ -z "$open" ] || fail "captain-held transfer did not close the live status decisions: $open"

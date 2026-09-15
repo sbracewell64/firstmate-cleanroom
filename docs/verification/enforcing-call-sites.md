@@ -72,15 +72,15 @@ A function defined inside a script that is only executed, never sourced, is disc
 That is deliberate, and the measurement is the reason: 78 tracked functions in `bin/` carry an enforce verb without that prefix, 4 of them live in sourced libraries and are now discovered, and the other 74 are defined inside scripts that are only executed.
 Those 74 are script-internal helpers: nothing outside the defining script can call them, so the script's own surface, which discovery already accounts for by name, subcommand and flag, is the entry point a caller can reach.
 Reporting all 74 separately would bury the entry points that matter and train a reader to mute the check, which conceals as effectively as no check at all.
-Discovery also reads only `bin/*.sh` and `bin/backends/*.sh`, so a `bin/*.mjs` decider such as `bin/fm-cd-command-policy.mjs`, `bin/fm-arm-command-policy.mjs` or `bin/fm-extension-launch-barrier.mjs` can be counted as a caller but can never be discovered as an entry point of its own.
+Discovery reads only `bin/*.sh` and `bin/backends/*.sh`, matched one path segment at a time so a new `bin/` subdirectory is neither discovered nor counted as production until it is declared here.
+That also means a `bin/*.mjs` decider such as `bin/fm-cd-command-policy.mjs`, `bin/fm-arm-command-policy.mjs` or `bin/fm-extension-launch-barrier.mjs` can be counted as a caller but can never be discovered as an entry point of its own.
 Discovery is name-shaped, so a capability whose name carries none of the enforce words is found only when it is declared by hand; `bin/fm-outbound-write-lib.sh:fm_outbound_send` is declared that way.
 The same name shape is what makes a namespace prefix look like a verb: `bin/fm-guard.sh`'s `fm_guard_*` banner helpers are discovered and then declared as not enforcement points, which keeps the account explicit rather than special-casing the prefix in discovery.
 `data/` is captain-private and untracked, so a rule that lives only in `data/learnings.md` cannot be gated by a repository check at all.
 
 ## Sweep of 2026-09-14
 
-The check accounts for 50 entry points: 39 enforced, 4 operator-invoked, and 7 that are not enforcement points.
-It verifies 75 declared call sites and re-rejects 5 recorded near misses.
+The counts this sweep produced are the check's own output, captured verbatim under Evidence below.
 
 The most significant finding is `bin/fm-guard.sh`.
 It had been declared `enforced` over the invariant that a fleet mutation runs only from a session holding the verified per-home lock and an untangled checkout, and it cannot hold that.
@@ -111,6 +111,7 @@ That assertion is proven rather than trusted: the same predicate is run against 
 ### Entries that are not automatically called
 
 Four discovered capabilities have no automatic caller, and each is declared `operator-invoked` with the reason and the prose owner that invokes it.
+That owner has to name the capability, not merely the script: for a tokened entry the check requires the file to carry the script's basename followed by the token, so a document that lists the script in a command index does not qualify.
 Widening discovery added no new instance of this shape: every newly discovered capability has a production caller, and the ones that are not enforcement points are declared as such.
 None of them is the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
 
@@ -150,6 +151,56 @@ Reading it as ACTIVE because the rule is well known is exactly the softening the
 
 The one prose instance of this family that did exist, the outbound-write discipline, lived in the untracked private `data/learnings.md` rather than in tracked prose, which is why no repository check could have caught it.
 Its repair moved the rule into `bin/fm-outbound-write-lib.sh`, where this check now holds it.
+
+## Evidence, run 2026-09-14
+
+Every command below was run from a clean worktree at the branch tip, and the output is pasted verbatim.
+
+```sh
+bin/fm-enforcement-caller-check.sh
+```
+
+```text
+fm-enforcement-caller-check: ok entries=50 enforced=39 operator_invoked=4 not_enforcement=7 call_sites=75 rejected_call_sites=5
+```
+
+```sh
+bin/fm-lint.sh
+```
+
+```text
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-lint.sh: full ShellCheck extended analysis enabled
+fm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)
+fm-lint-workflows.sh: 3 workflow files valid
+```
+
+```sh
+bin/fm-test-run.sh --check-coverage
+```
+
+```text
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057186
+```
+
+```sh
+bin/fm-doc-audience-check.sh
+```
+
+```text
+fm-doc-audience-check: ok surfaces=93 local_links=333
+```
+
+```sh
+bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-audiences.test.sh
+```
+
+```text
+FM_TEST_END 2026-09-14T23:59:18Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=9095 gate_skip=false
+FM_TEST_END 2026-09-14T23:59:18Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=9987
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=9919 failed=0
+```
 
 ## Adding an entry point
 

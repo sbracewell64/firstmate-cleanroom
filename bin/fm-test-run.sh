@@ -614,7 +614,7 @@ tests/fm-cursor-primary-live-e2e.test.sh 20
 tests/fm-cursor-primary.test.sh 53650
 tests/fm-daemon.test.sh 25694
 tests/fm-documentation-audiences.test.sh 730
-tests/fm-enforcement-callers.test.sh 8561
+tests/fm-enforcement-callers.test.sh 9157
 tests/fm-extension-binding.test.sh 24449
 tests/fm-fleet-snapshot-view.test.sh 9074
 tests/fm-fleet-sync.test.sh 37305

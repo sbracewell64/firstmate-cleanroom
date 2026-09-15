@@ -448,7 +448,6 @@
       "invariant": "A pre-collapse decision identity still verifies against the surviving captain-hold owner.",
       "reason": "One-release compatibility shim for briefs written before the decision collapse; the surviving owner bin/fm-captain-hold.sh:verify carries the production call site, and this surface is invoked only by an in-flight brief.",
       "documentedAt": [
-        "docs/scripts.md",
         "docs/captain-hold-lifecycle.md"
       ]
     },
@@ -458,7 +457,7 @@
       "invariant": "The secondmate registry stays parseable, with absolute, unique, non-overlapping homes.",
       "reason": "A standalone re-check surface for an operator; the same validate_registry predicate already runs inside the transactional seed path, so the invariant is enforced at the write boundary rather than here.",
       "documentedAt": [
-        "docs/scripts.md",
+        "docs/remote-secondmates.md",
         ".agents/skills/secondmate-provisioning/SKILL.md"
       ]
     },
@@ -468,8 +467,7 @@
       "invariant": "Activation staging is refused when an isolation input is missing.",
       "reason": "An opt-in strictness flag on a captain-authorized launcher cutover procedure that no script schedules; the procedure itself is the invoker.",
       "documentedAt": [
-        "docs/configuration.md",
-        "CONTRIBUTING.md"
+        "docs/configuration.md"
       ]
     },
     {

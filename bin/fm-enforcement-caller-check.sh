@@ -88,6 +88,11 @@ LINE_COMMENT_RE = re.compile(r"(?<![:\\])//.*$")
 HASH_COMMENT_SUFFIXES = (".sh", ".yaml", ".yml")
 SLASH_COMMENT_SUFFIXES = (".mjs", ".js", ".ts")
 
+# Directories whose *.sh files are discovered as candidate entry points. Matched
+# segment by segment, so a new bin/ subdirectory has to be declared deliberately
+# rather than being swept in by a glob that ignores the separator.
+DISCOVERY_SURFACES = ("bin/*.sh", "bin/backends/*.sh")
+
 # Surfaces a running firstmate or its automated gates actually execute.
 PRODUCTION_SURFACES = (
     "bin/*.sh",
@@ -239,7 +244,7 @@ def discover(root: Path, tracked: list[str]) -> dict[str, str]:
     found: dict[str, str] = {}
     sourced = sourced_libraries()
     for rel in tracked:
-        if not (fnmatch.fnmatch(rel, "bin/*.sh") or fnmatch.fnmatch(rel, "bin/backends/*.sh")):
+        if not any(path_matches(rel, pattern) for pattern in DISCOVERY_SURFACES):
             continue
         stem = Path(rel).stem
         lines = read_text(root, rel).splitlines()
@@ -274,8 +279,17 @@ def axis_for(entry_id: str, discovered: dict[str, str]) -> str:
     return "subcommand"
 
 
+def path_matches(rel: str, pattern: str) -> bool:
+    """Glob a path one segment at a time, because fnmatch ignores the separator."""
+    parts = rel.split("/")
+    globs = pattern.split("/")
+    if len(parts) != len(globs):
+        return False
+    return all(fnmatch.fnmatch(part, glob) for part, glob in zip(parts, globs))
+
+
 def is_production(rel: str) -> bool:
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in PRODUCTION_SURFACES)
+    return any(path_matches(rel, pattern) for pattern in PRODUCTION_SURFACES)
 
 
 def command_substitutions(text: str) -> str:
@@ -778,8 +792,19 @@ def validate(root: Path, inventory_path: Path) -> dict[str, int]:
             for where in documented:
                 if not isinstance(where, str) or not (root / where).is_file():
                     fail(f"{entry_id}: documentedAt names a missing file: {where!r}")
-                if Path(entry_id.partition(':')[0]).name not in read_text(root, where):
-                    fail(f"{entry_id}: documentedAt file {where} does not name it")
+                owner_path, _, owner_token = entry_id.partition(":")
+                owner_base = Path(owner_path).name
+                prose = read_text(root, where)
+                if owner_token:
+                    named = re.search(
+                        rf"{re.escape(owner_base)}[\s:]+{re.escape(owner_token)}(?![\w-])", prose
+                    )
+                    wanted = f"{owner_base} {owner_token}"
+                else:
+                    named = owner_base in prose
+                    wanted = owner_base
+                if not named:
+                    fail(f"{entry_id}: documentedAt file {where} does not name `{wanted}`")
             counts["operator"] += 1
             continue
         guards = entry.get("guards")

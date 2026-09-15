@@ -99,6 +99,54 @@ validate_widget_binding() {
 validate_widget_binding "$1"
 FIX
 
+  # Defines an enforce-verb function and never calls it; neither does the script
+  # that sources it. Only the test calls it.
+  cat > "$repo/bin/fm-idle-lib.sh" <<'FIX'
+#!/usr/bin/env bash
+fm_idle_validate() {
+  [ -n "${1:-}" ]
+}
+FIX
+
+  cat > "$repo/bin/fm-idle.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DIR/fm-idle-lib.sh"
+printf 'idle\n'
+FIX
+
+  cat > "$repo/tests/fm-idle.test.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+. "$(dirname "$0")/../bin/fm-idle-lib.sh"
+fm_idle_validate yes
+FIX
+
+  # An operator-invoked capability whose prose owner names the subcommand.
+  cat > "$repo/bin/fm-manual.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+case "${1:-}" in
+  verify) [ -f "${2:-}" ] ;;
+  *) exit 2 ;;
+esac
+FIX
+
+  mkdir -p "$repo/docs"
+  cat > "$repo/docs/manual.md" <<'FIX'
+Run `bin/fm-manual.sh verify <file>` by hand when the record looks stale.
+FIX
+
+  # An undeclared bin/ subdirectory is not part of the production surface.
+  mkdir -p "$repo/bin/extra"
+  cat > "$repo/bin/extra/fm-widget-runner.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$DIR/fm-widget.sh" enforce "$1"
+FIX
+
   cat > "$repo/bin/fm-audit-check.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -168,6 +216,19 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-idle-lib.sh:fm_idle_validate",
+      "kind": "not-enforcement",
+      "invariant": "An idle marker carries a name.",
+      "reason": "A helper kept for a caller that does not exist yet."
+    },
+    {
+      "id": "bin/fm-manual.sh:verify",
+      "kind": "operator-invoked",
+      "invariant": "A stale record is re-checked before it is trusted.",
+      "reason": "A hand-run re-check with no automatic caller by design.",
+      "documentedAt": ["docs/manual.md"]
+    },
+    {
       "id": "bin/fm-audit-check.sh",
       "kind": "enforced",
       "invariant": "The tracked widget inventory stays well formed.",
@@ -182,7 +243,8 @@ JSON
 # mutate_fixture_inventory <repo> <mode>: rewrite one declaration in place.
 mutate_fixture_inventory() {
   local repo=$1 mode=$2
-  python3 - "$repo/docs/enforcement-points.json" "$mode" <<'PY' || fail "could not mutate the fixture inventory for mode $mode"
+  shift 2
+  python3 - "$repo/docs/enforcement-points.json" "$mode" "$@" <<'PY' || fail "could not mutate the fixture inventory for mode $mode"
 import json
 import sys
 from pathlib import Path
@@ -209,6 +271,20 @@ elif mode == "drop-gadget":
 elif mode == "drop-shared-function":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
+    ]
+elif mode == "library-defines-but-never-calls":
+    entry = entries["bin/fm-idle-lib.sh:fm_idle_validate"]
+    entry["kind"] = "enforced"
+    entry["guards"] = "runtime"
+    entry.pop("reason", None)
+    entry["callSites"] = [{"path": "bin/fm-idle-lib.sh", "via": "production"}]
+elif mode == "documented-at-names-only-the-script":
+    Path(sys.argv[3]).write_text(
+        "The `bin/fm-manual.sh` command owns the re-check.\n", encoding="utf-8"
+    )
+elif mode == "undeclared-bin-subdirectory-as-production":
+    entries["bin/fm-widget.sh:enforce"]["callSites"] = [
+        {"path": "bin/extra/fm-widget-runner.sh", "via": "production"}
     ]
 elif mode == "homonym-as-call-site":
     entries["bin/fm-widget-shared.sh:validate_widget_binding"]["callSites"] = [
@@ -279,7 +355,7 @@ test_repository_inventory_passes() {
   assert_contains "$out" "call_sites=" "check did not report verified call sites"
   assert_contains "$out" "rejected_call_sites=" \
     "check did not report the recorded near-miss call sites it re-rejected"
-  pass "every enforce-style entry point in bin/ names a verified enforcing call site"
+  pass "every enforce-style entry point in bin/ declares a call site that still names it"
 }
 
 test_known_good_repairs_still_have_production_callers() {
@@ -480,6 +556,30 @@ FIX
   pass "operator prose in a heredoc opened inside a command substitution is not read as a call"
 }
 
+test_defining_a_function_is_not_calling_it() {
+  local repo="$TMP_ROOT/definition-only"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" library-defines-but-never-calls
+  run_expect_failure "no production call site" "$CHECK" --root "$repo"
+  pass "a library that only defines its capability is not its own caller"
+}
+
+test_documented_at_must_name_the_capability() {
+  local repo="$TMP_ROOT/documented-at"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" documented-at-names-only-the-script "$repo/docs/manual.md"
+  run_expect_failure "does not name \`fm-manual.sh verify\`" "$CHECK" --root "$repo"
+  pass "an operator-invoked entry needs a prose owner that names the capability, not just the script"
+}
+
+test_undeclared_bin_subdirectory_is_not_production() {
+  local repo="$TMP_ROOT/bin-subdirectory"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" undeclared-bin-subdirectory-as-production
+  run_expect_failure "is not on the production surface" "$CHECK" --root "$repo"
+  pass "a script under an undeclared bin/ subdirectory is not silently production"
+}
+
 test_repository_inventory_passes
 test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
@@ -495,3 +595,6 @@ test_quoted_shift_does_not_start_a_heredoc
 test_homonym_without_the_library_is_not_a_caller
 test_one_line_definition_keeps_its_body
 test_heredoc_in_a_quoted_command_substitution_is_stripped
+test_defining_a_function_is_not_calling_it
+test_documented_at_must_name_the_capability
+test_undeclared_bin_subdirectory_is_not_production

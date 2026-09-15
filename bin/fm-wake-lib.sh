@@ -113,8 +113,11 @@ fm_pid_identity() {
 # Returns 0 once the target is gone, 1 when the deadline elapses with it alive,
 # 2 when the pid or the deadline is not a number - neither is signalled, so
 # nothing was asked of the target - and 3 when the FIRST delivery could not be
-# sent at all - the shape a caller refuses on, rather than delivering its own
-# signal first and paying an immediate second delivery to learn the same thing.
+# sent at all to a target that is STILL THERE - the shape a caller refuses on,
+# rather than delivering its own signal first and paying an immediate second
+# delivery to learn the same thing. A first delivery that fails because the
+# target disappeared between the liveness check and the kill is the outcome the
+# caller asked for, not a refusal, so that reads 0.
 fm_stop_process_confirmed() {
   local pid=$1 recorded=${2:-} limit=${3:-100} sig=${4:-TERM} i=0 current
   local every=${FM_STOP_REDELIVER_POLLS:-20}
@@ -135,7 +138,10 @@ fm_stop_process_confirmed() {
     fi
     [ "$i" -lt "$limit" ] || return 1
     if [ $(( i % every )) -eq 0 ] && ! kill "-$sig" "$pid" 2>/dev/null; then
-      [ "$i" -ne 0 ] || return 3
+      if [ "$i" -eq 0 ]; then
+        fm_pid_alive "$pid" || return 0
+        return 3
+      fi
     fi
     sleep 0.1
     i=$((i + 1))
@@ -1375,8 +1381,8 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # stranger.
 #
 # Exactly one confirmation outcome refuses the reclaim: rc=3, a FIRST delivery
-# that could not be sent at all, so nothing was ever asked of the legacy owner -
-# it releases the steal mutex and returns 1. Every other outcome proceeds and
+# that could not be sent at all to an owner that is still there, so nothing was
+# ever asked of it - that releases the steal mutex and returns 1. Every other outcome proceeds and
 # removes the lock. rc=0 because the recorded owner is provably gone, either
 # stopped or no longer answering to its identity. rc=1 (the bound elapsed with
 # the owner still alive) and rc=2 (a non-numeric pid or FM_AUTOARM_RETIRE_POLLS,

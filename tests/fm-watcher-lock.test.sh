@@ -1153,39 +1153,51 @@ test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs() {
   # bash 5.2, where a trapped signal landing while the shell expands a command
   # substitution is consumed without its handler ever running.
   #
-  # The stand-in reproduces that observable deterministically on every bash: it
-  # holds an IGNORE disposition for a fixed window - a delivered stop that runs
-  # no handler - and then arms the real close path. A stop protocol that delivers
-  # once cannot get past that window and leaves no close record; one that
-  # re-delivers until the target is observed gone does.
-  local dir ready closed dropper start elapsed i drop_window=1
+  # The stand-in reproduces that observable deterministically on every bash, with
+  # no wall-clock window to race: it counts deliveries whose close path does NOT
+  # run, and arms the real close path only after the SECOND such delivery. The
+  # first is spent by the negative control below, so the first delivery any stop
+  # protocol makes is provably dropped. One that delivers once then escalates to
+  # KILL leaves no close record; one that re-delivers until the target is
+  # observed gone does.
+  local dir ready closed drops armed dropper start elapsed i
   dir=$(make_case reap-redelivery)
   ready="$dir/dropper.ready"
   closed="$dir/dropper.closed"
-  # Marked ready only after the ignore disposition is installed, so a stop sent
+  drops="$dir/dropper.drops"
+  armed="$dir/dropper.armed"
+  # Marked ready only after the dropping disposition is installed, so a stop sent
   # in the startup window cannot kill it through the inherited default and mask
   # the re-delivery this asserts.
   bash -c '
-    trap "" TERM
+    count=0
+    trap "count=\$((count + 1)); printf %s \"\$count\" > \"\$3\"" TERM
     : > "$1"
-    sleep "$3"
-    trap "printf closed > \"$2\"; exit 0" TERM
+    while [ "$count" -lt 2 ]; do sleep 0.05; done
+    trap "printf closed > \"\$2\"; exit 0" TERM
+    : > "$4"
     while :; do sleep 0.2; done
-  ' _ "$ready" "$closed" "$drop_window" &
+  ' _ "$ready" "$closed" "$drops" "$armed" &
   dropper=$!
   i=0
   while [ "$i" -lt 50 ] && [ ! -e "$ready" ]; do
     sleep 0.1
     i=$((i + 1))
   done
-  [ -e "$ready" ] || fail "stop-dropping stand-in did not install its ignore disposition"
+  [ -e "$ready" ] || fail "stop-dropping stand-in did not install its dropping disposition"
 
   # Negative control: the first stop really is dropped, so a passing case cannot
   # come from a stand-in that stops on the first delivery anyway.
   kill -TERM "$dropper" 2>/dev/null || true
-  sleep 0.3
+  i=0
+  while [ "$i" -lt 50 ] && [ "$(cat "$drops" 2>/dev/null || true)" != 1 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$drops" 2>/dev/null || true)" = 1 ] || fail "stop-dropping stand-in never observed its first stop"
   is_live_non_zombie "$dropper" || fail "stop-dropping stand-in exited on its dropped stop"
-  [ ! -e "$closed" ] || fail "stop-dropping stand-in ran a close path during its drop window"
+  [ ! -e "$closed" ] || fail "stop-dropping stand-in ran a close path for a dropped stop"
+  [ ! -e "$armed" ] || fail "stop-dropping stand-in armed its close path before its drop window closed"
 
   # A grace comfortably past both the drop window and the re-delivery interval,
   # so the assertion is about re-delivery rather than about outlasting anything.

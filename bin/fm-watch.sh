@@ -1463,6 +1463,15 @@ home_summary_refresh_detached() {
 
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
+  # The close path below is what makes this watcher's stop READABLE: it releases
+  # the singleton lock and publishes the downtime episode the next drain presents
+  # and retires. A stop signal arriving while it runs would re-enter the `exit 1`
+  # handler and abandon the rest of it, leaving a watcher that is gone with no
+  # record that it ever stopped - so stop signals are ignored for its duration.
+  # More than one stop reaching a dying watcher is ordinary, not exotic: a
+  # supervisor signals the process group and the pid, and a confirmed stop
+  # re-delivers to a target that showed no sign of stopping.
+  trap '' HUP INT TERM
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
     owns_lock=1
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \

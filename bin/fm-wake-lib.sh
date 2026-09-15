@@ -9,6 +9,17 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
+# Tenths of a second fm_autoarm_release_abandoned spends confirming a retired
+# legacy auto-arm owner actually stopped. Three seconds: the one-second
+# unconfirmed wait this replaced, plus room for one re-delivery if the first
+# stop produced nothing. Still bounded, so a stop that never lands leaves the
+# documented upgrade-window residual rather than deadlocking the next claimant.
+FM_AUTOARM_RETIRE_POLLS="${FM_AUTOARM_RETIRE_POLLS:-30}"
+# Polls between successive stop-signal deliveries in fm_stop_process_confirmed.
+# Two seconds: long enough that a target already running its close path is not
+# interrupted by the next delivery, short enough that a dropped stop is
+# re-delivered promptly.
+FM_STOP_REDELIVER_POLLS="${FM_STOP_REDELIVER_POLLS:-20}"
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -71,6 +82,63 @@ fm_pid_identity() {
   out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+}
+
+# fm_stop_process_confirmed <pid> [recorded-identity] [deadline-tenths] [signal]
+# Stop <pid> and CONFIRM it stopped, instead of treating a queued signal as a
+# stop. A trapped signal is not self-evidently a stop: on bash 5.2 (the
+# ubuntu-24.04 CI image) a signal that lands while the shell is expanding a
+# command substitution is consumed WITHOUT running its handler - bash re-parses
+# the handler string with the command substitution's parser state still active
+# and refuses it ("<source>: trap: line 2: unexpected EOF while looking for
+# matching `)'") - and the target then resumes normal execution with its
+# cleanup unrun. So the signal is re-delivered until the target is observed
+# gone. Local bash 5.3 does not drop the handler, which is why this contract is
+# structural rather than reproducible from the shell a developer runs.
+#
+# Liveness is polled every tenth of a second, but the signal is RE-DELIVERED only
+# every FM_STOP_REDELIVER_POLLS-th poll. That gap is the whole point: a target
+# that did act on the first delivery is in the middle of its close path, and a
+# second signal landing there aborts that cleanup part way through - leaving
+# exactly the half-written state a dropped stop would have left. So a
+# re-delivery is spent only on a target that has shown no sign of stopping for
+# seconds, and never as a fast retry loop; an unpaced one also corrupts the
+# target's own pending-trap bookkeeping ("warning: run_pending_traps: bad value
+# in trap_list[...]", pinned by tests/fm-remote-job.test.sh).
+#
+# <recorded-identity>, when given, is re-verified through fm_pid_identity before
+# every delivery, so a pid recycled between polls is read as "the recorded
+# process is gone" and is never signalled. With an empty identity the check is
+# liveness only, which is safe for a process the caller launched and still owns.
+# Returns 0 once the target is gone, 1 when the deadline elapses with it alive,
+# 2 for a pid that is not a number, and 3 when the FIRST delivery could not be
+# sent at all - the shape a caller refuses on, rather than delivering its own
+# signal first and paying an immediate second delivery to learn the same thing.
+fm_stop_process_confirmed() {
+  local pid=$1 recorded=${2:-} limit=${3:-100} sig=${4:-TERM} i=0 current
+  local every=${FM_STOP_REDELIVER_POLLS:-20}
+  case "$pid" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  case "$limit" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  case "$every" in
+    ''|*[!0-9]*|0) every=20 ;;
+  esac
+  while :; do
+    fm_pid_alive "$pid" || return 0
+    if [ -n "$recorded" ]; then
+      current=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
+      [ "$current" = "$recorded" ] || return 0
+    fi
+    [ "$i" -lt "$limit" ] || return 1
+    if [ $(( i % every )) -eq 0 ] && ! kill "-$sig" "$pid" 2>/dev/null; then
+      [ "$i" -ne 0 ] || return 3
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
 }
 
 fm_path_mtime() {
@@ -1296,17 +1364,21 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 #
 # Old-build code cannot re-check generations, so a LIVE proven-abandoned
 # legacy owner whose recorded identity is verified to match its pid is retired
-# with TERM before the lock is removed: once the TERM is successfully queued
-# the process can never resume normal execution (delivery precedes any further
-# user code when it continues), so a short bounded wait for observed exit is a
-# courtesy, not a requirement. A pid is never signalled without a verified
-# matching identity; when the kill itself fails or the identity stops matching
-# mid-procedure (pid reuse), the reclaim refuses. Missing identity evidence
-# never blocks the reclaim of a proven-abandoned claim - it only disables the
-# TERM and the ledger graft below, keeping the documented bounded
-# upgrade-window residual instead of the deadlock.
+# with TERM before the lock is removed. Retirement is CONFIRMED rather than
+# assumed: a queued TERM is not a stop, because the target's shell can consume
+# the signal without running its handler and carry on (fm_stop_process_confirmed
+# owns that fact), which would leave the retired owner running while its lock is
+# removed. A pid is never signalled without a verified matching identity; when
+# an identity that stops matching
+# mid-procedure (pid reuse) ends the retirement instead of signalling a
+# stranger, and a first delivery that cannot be sent at all refuses.
+# Missing identity evidence never blocks the reclaim of a
+# proven-abandoned claim - it only disables the TERM and the ledger graft below,
+# keeping the documented bounded upgrade-window residual instead of the
+# deadlock, and an unconfirmed retirement inside that bound stays that same
+# bounded residual rather than deadlocking the next claimant.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp i
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"
@@ -1328,15 +1400,12 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     # unverifiable, or never recorded - is NEVER signalled; those shapes are
     # reclaimed as-is, which is safe exactly because the recorded owner is
     # gone or was never provably this process.
-    if ! kill -TERM "$lock_pid" 2>/dev/null; then
+    retire_rc=0
+    fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
+    if [ "$retire_rc" -eq 3 ]; then
       fm_lock_release "$steal"
       return 1
     fi
-    i=0
-    while [ "$i" -lt 20 ] && fm_pid_alive "$lock_pid"; do
-      sleep 0.05
-      i=$((i + 1))
-    done
   fi
   # Preserve the legacy lock's identity evidence in the ledger before the lock
   # disappears, keeping the ledger's original mtime so the stuck proof's age

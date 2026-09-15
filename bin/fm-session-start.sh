@@ -936,29 +936,48 @@ else
   fi
   # The drain's stdout is the wake-queue section; its stderr carries the
   # WAKE_ACK_REQUIRED instruction and any diagnostic. Merging them let a single
-  # stderr byte stand in for the queue section, so they are read apart: the
-  # queue verdict comes from stdout and the drain's own status, and the stderr
-  # is still shown. On the unstageable path below the redirection is omitted
-  # entirely rather than merged or discarded: command substitution captures
-  # stdout only, so leaving stderr alone keeps the captured value clean AND
-  # still delivers the diagnostic to the caller's stderr, which is where the
-  # staged path relays it too. That path carries no marker of its own; the
-  # success path stays quiet.
+  # stderr byte stand in for the queue section, so they are read apart. What this
+  # section then says is decided from all three of what the drain produced - its
+  # status, its stdout, and whether its stderr carries an acknowledgement
+  # instruction - rather than from whichever channel happened to be non-empty.
+  # Empty stdout alone does NOT mean nothing is queued: the drain presents no
+  # rows and still exits 0 when a downtime episode is pending, writing only the
+  # acknowledgement instruction to stderr, and a reader who believed a
+  # no-queued-wakes line there would leave that episode unacknowledged.
+  #
+  # On the unstageable path the redirection is omitted rather than merged or
+  # discarded: command substitution captures stdout only, so leaving stderr alone
+  # keeps the captured value clean and still delivers the diagnostic to the
+  # caller's stderr. The cost is that this script cannot then see whether an
+  # acknowledgement was emitted, so on that path it claims no queue verdict at
+  # all and says only what it knows: the diagnostics went somewhere the digest
+  # does not show. That line is conditional by construction - it never asserts an
+  # acknowledgement exists, only that one would not be visible here.
   DRAIN_RC=0
+  DRAIN_DIAG_STAGED=1
+  DRAIN_ACK_OUTSTANDING=0
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   if [ -n "$DRAIN_ERRFILE" ]; then
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
     DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
     rm -f -- "$DRAIN_ERRFILE"
+    case "$DRAIN_DIAG" in
+      *"WAKE_ACK_REQUIRED:"*) DRAIN_ACK_OUTSTANDING=1 ;;
+    esac
   else
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh") || DRAIN_RC=$?
     DRAIN_DIAG=
-    [ -z "$DRAIN_OUT" ] || DRAIN_DIAG='wake drain diagnostics could not be staged, so its WAKE_ACK_REQUIRED acknowledgement instruction went to this hook stderr rather than into the section above.'
+    DRAIN_DIAG_STAGED=0
   fi
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
-  elif [ "$DRAIN_RC" -eq 0 ]; then
+  elif [ "$DRAIN_RC" -eq 0 ] && [ "$DRAIN_DIAG_STAGED" -eq 1 ] && [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
+    printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
+  elif [ "$DRAIN_RC" -eq 0 ] && [ "$DRAIN_DIAG_STAGED" -eq 1 ]; then
     printf '(no queued wakes)\n'
+  fi
+  if [ "$DRAIN_DIAG_STAGED" -eq 0 ]; then
+    printf 'wake drain diagnostics could not be staged, so any diagnostic or acknowledgement instruction it emitted went to this hook stderr rather than into this section.\n'
   fi
   if [ "$DRAIN_RC" -ne 0 ]; then
     printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"

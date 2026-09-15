@@ -675,7 +675,7 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict errfile diag=''
+  local out rc=0 identity verdict errfile diag='' diag_note=''
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) || errfile=
   if [ -n "$errfile" ]; then
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$errfile") || rc=$?
@@ -683,7 +683,7 @@ print_programme_continuation() {
     rm -f -- "$errfile"
   else
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>/dev/null) || rc=$?
-    diag='resolver diagnostics: unavailable, they could not be staged'
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful
@@ -703,7 +703,7 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$diag"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "${diag:-$diag_note}"
   fi
 }
 
@@ -934,12 +934,25 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  # The drain's stdout is the wake-queue section; its stderr carries the
+  # WAKE_ACK_REQUIRED instruction and any diagnostic. Merging them let a single
+  # stderr byte stand in for the queue section, so they are read apart: the
+  # queue verdict comes from stdout alone and the stderr is still shown.
+  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  if [ -n "$DRAIN_ERRFILE" ]; then
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE")
+    DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
+    rm -f -- "$DRAIN_ERRFILE"
+  else
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+    DRAIN_DIAG=
+  fi
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else
     printf '(no queued wakes)\n'
   fi
+  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG"
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

@@ -1496,11 +1496,14 @@ watcher_cleanup() {
   # success the lock is kept, so no peer can take it between deciding and acting,
   # and an uncontended close never leaves the guard at all. Only the retry loop a
   # contended close falls into runs stoppable, and the disposition in force there
-  # releases the lock before exiting, so a stop landing at any point of the wait
-  # - including after it returns - leaves no lock held by a dead pid. Nothing is
-  # written before this point, so such a stop leaves an unpublished downtime and
-  # a singleton lock still recorded to this watcher, which the next watcher's
-  # stale-lock steal publishes on its behalf.
+  # releases the marker lock before exiting, so that lock is never left held by
+  # this dead pid. It covers that one path and nothing further: a stop landing
+  # inside the acquire itself can leave a residue it does not own - the steal
+  # mutex, or a lock link whose owner pid was never written - which the lock
+  # library's ordinary stale-owner steal reclaims rather than this trap. Nothing
+  # is written before this point, so such a stop leaves an unpublished downtime
+  # and a singleton lock still recorded to this watcher, which the next
+  # watcher's stale-lock steal publishes on its behalf.
   if [ "$owns_lock" -eq 1 ]; then
     downtime_lock="$WATCHER_DOWNTIME_MARKER.lock"
     if ! fm_lock_try_acquire "$downtime_lock"; then

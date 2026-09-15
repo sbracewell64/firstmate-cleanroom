@@ -128,13 +128,16 @@
 #                      when that landing could prove none>
 #   stage_landed_head_source=<which evidence proved stage_landed_head: pr-head,
 #                      worktree, or unresolved. As durable as the head itself,
-#                      because it is what a later reader - and the replacement
-#                      rule - needs to judge how well that head is proven>
+#                      because it is what a later reader needs to judge how well
+#                      that head is proven. Nothing consumes it as a ranking:
+#                      the capture is never replaced, whatever its source>
 #   stage_landed_head_confirmed=<what activation could prove about the captured
-#                      landed head, written by `activated` alone: confirmed (it
-#                      is reachable from the project clone's checked-out head),
-#                      unconfirmed (a head is captured and activation could not
-#                      prove it, so the read-back below came from elsewhere), or
+#                      landed head, written by `activated` alone: confirmed (an
+#                      activation proved it reachable from the project clone's
+#                      INTEGRATION branch - a fact about that moment, not a claim
+#                      that it is reachable now), unconfirmed (a head is captured
+#                      and activation could not prove it, so the read-back below
+#                      came from elsewhere), or
 #                      none (no landed head is captured, so there is nothing to
 #                      confirm). A typed value rather than prose, so a consumer
 #                      can find an activation with an unconfirmed landed head by
@@ -160,7 +163,15 @@
 # are live mutable state owned by other writers and may move or vanish after the
 # landing, so a record that re-derived the fact would be a lookup that happens
 # to agree today rather than a record of what happened. resolve_landed_head
-# below owns when a capture may be replaced and why nothing weaker ever can.
+# below owns how a capture is made and why nothing ever replaces it.
+#
+# ONE ANSWER PER QUESTION, AND NOT-KNOWN IS ONE OF THEM. Stated once here, at
+# the owner of these records, because every guard in this file depends on it: a
+# read failure, a missing input, a malformed input, a predicate that cannot be
+# evaluated, and a fact that cannot be re-proven right now are EACH THEIR OWN
+# ANSWER. None of them may collapse into a pass, into a miss, or into evidence
+# against a fact already proven. A guard that cannot see is not a guard that
+# saw nothing wrong.
 # Receipt fields, in this order on every stage line (`-` when not applicable;
 # values percent-encode space, percent, and tab, and the classifier decodes
 # them): task, gen (worker epoch: the record's spawn_gen), branch, head,
@@ -225,6 +236,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-work-context-lib.sh
 . "$SCRIPT_DIR/fm-work-context-lib.sh"
+# fm_default_branch, the owner of which branch a checkout integrates onto.
+# shellcheck source=bin/fm-tangle-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
@@ -485,11 +500,11 @@ recorded_landed_head() {
 #             immediately before merging, so it is the head the merge consumes.
 #   worktree  the task worktree's current head.
 # BOTH must be the recorded candidate or a descendant of it, proven the same
-# mechanical way. Ranking a source above another states that it is the more
-# trustworthy evidence, so the higher-ranked source cannot also be the more
-# weakly checked one. Local ancestry alone decides that here: landing must not
-# depend on the pipeline service being reachable, and a head that is not a
-# successor of the candidate is not evidence of what this task landed.
+# mechanical way: the source a capture came from is provenance for a later
+# reader, never a licence to check it less. Local ancestry alone decides that
+# here: landing must not depend on the pipeline service being reachable, and a
+# head that is not a successor of the candidate is not evidence of what this
+# task landed.
 #
 # RESIDUAL, NOT CLOSED. Descendancy BOUNDS pr_head, it does not TIE it to the
 # pull request being landed. pr_head= is not a stage_* field, so issue() carries
@@ -932,13 +947,39 @@ do_landing() {
   next_for landing
 }
 
+# landed_integration_head: the commit the project clone's INTEGRATION branch
+# points at - what "landed" actually means - or nothing when this cannot be
+# determined. bin/fm-tangle-lib.sh's fm_default_branch owns which branch that
+# is; the remote-tracking ref is preferred over the local branch because a
+# pooled project clone does not keep its local default current. Nothing here
+# fetches, so both reads are local.
+#
+# It deliberately does NOT read the clone's checked-out HEAD. An operator who
+# parked the clone on the PR branch, or on a release branch that contains the
+# head for an unrelated reason, would otherwise establish a confirmation the
+# tool never actually proved.
+#
+# RESIDUAL, NOT CLOSED. The clone's default branch is a PROXY for the pull
+# request's actual base, which this record does not carry. An unusual clone
+# whose default branch legitimately contains the head for some other reason can
+# still confirm wrongly. The proxy passing is not the same as the question being
+# answered, and this is not claimed as closed.
+landed_integration_head() {
+  local branch
+  [ -n "$PROJECT" ] && [ -d "$PROJECT" ] || return 1
+  branch=$(fm_default_branch "$PROJECT") || return 1
+  git -C "$PROJECT" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" 2>/dev/null && return 0
+  git -C "$PROJECT" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null
+}
+
 # landed_head_reachable: whether <head> is reachable from the project clone's
-# checked-out head. Nothing here fetches; an unreachable answer and an
-# unavailable clone are both simply "not proven".
+# integration branch. An unreachable head, an unavailable clone, and an
+# integration branch that cannot be determined are three ways of not proving it,
+# and none of them proves the opposite (see ONE ANSWER PER QUESTION above).
 landed_head_reachable() {  # <head>
   local head=$1 main
-  [ -n "$head" ] && [ -n "$PROJECT" ] && [ -d "$PROJECT" ] || return 1
-  main=$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)
+  [ -n "$head" ] || return 1
+  main=$(landed_integration_head) || return 1
   [ -n "$main" ] || return 1
   git -C "$PROJECT" merge-base --is-ancestor "$head" "$main" 2>/dev/null
 }
@@ -949,13 +990,17 @@ landed_head_reachable() {  # <head>
 # substitution and a subshell cannot hand a decision back.
 #
 # The disposition only ever moves upward: unconfirmed may become confirmed, and
-# a recorded `confirmed` is never taken back, because a later delivery failing to
-# re-prove a fact is not evidence against it. The project clone moving to another
-# branch or tag, or being unavailable for a moment, is not evidence that the head
-# did not land. That is the three-valued discipline applied ACROSS TIME - absence
-# of evidence now is not evidence of absence once the fact was proven - and
-# without it ordinary housekeeping in the clone would silently demote an
-# audit-grade fact, with no error and no trace of the earlier proof.
+# a recorded `confirmed` is never taken back. That is ONE ANSWER PER QUESTION
+# applied ACROSS TIME - a later delivery failing to re-prove a fact is not
+# evidence against it - and without it ordinary housekeeping in the clone would
+# silently demote an audit-grade fact.
+#
+# THE ESCAPE FROM A STRICTNESS RULE IS TO MAKE THE FACT HARDER TO ESTABLISH
+# WRONGLY, NOT EASIER TO RETRACT. Freezing a loose predicate locks in whatever it
+# happened to accept; loosening the retraction to compensate would just restore
+# the silent demotion. So the establishment is what is tight here:
+# landed_head_reachable asks the integration branch, and an integration branch
+# that cannot be determined leaves the head unconfirmed.
 landed_head_confirmation() {
   local landed
   [ "$STAGE_LANDED_HEAD_CONFIRMED" != confirmed ] || return 0
@@ -969,8 +1014,12 @@ landed_head_confirmation() {
   fi
 }
 
-# readback_evidence: print what activation could actually PROVE, given the
-# confirmation landed_head_confirmation already decided.
+# readback_evidence: print what activation could actually PROVE, independently of
+# the disposition landed_head_confirmation recorded. It re-tests reachability
+# here rather than reading that disposition, because the disposition is sticky
+# by design and a head proven once may be unreachable now; falling back to the
+# candidate head is what keeps a re-delivery from refusing NO_READBACK on a
+# record whose earlier proof still stands.
 #
 # Two facts, recorded apart, neither inferable from the other: the evidence
 # obtained, and whether the captured landed head was confirmed by it. Capture
@@ -1001,7 +1050,7 @@ readback_evidence() {  # prints the evidence, or 1
     which=candidate
   fi
   if landed_head_reachable "$head"; then
-    main=$(git -C "$PROJECT" rev-parse HEAD 2>/dev/null || true)
+    main=$(landed_integration_head) || main=
     printf 'ancestor-of:%s:%s-head:%s' "$(short "$main")" "$which" "$(short "$head")"
     return 0
   fi
@@ -1038,7 +1087,7 @@ do_activated() {
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
   recorded_landed_head
   landed_head_confirmation
-  evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the landed head, nor the candidate head it falls back to, reachable from the project clone's checked-out head"
+  evidence=$(readback_evidence) || refuse activated NO_READBACK "neither a merge-notification marker with PR identity nor the landed head, nor the candidate head it falls back to, reachable from the project clone's integration branch"
   STAGE_PR_VALUE=$(meta stage_pr)
   if [ "$current" = activated ] && [ "$(meta stage_reason)" = "$evidence" ] \
       && [ "$(meta stage_landed_head_confirmed)" = "$STAGE_LANDED_HEAD_CONFIRMED" ]; then

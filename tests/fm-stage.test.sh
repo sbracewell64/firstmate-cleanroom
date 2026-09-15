@@ -83,6 +83,10 @@ make_worktree() {  # <dir> <branch>
   mkdir -p "$1"
   git -C "$1" init -q
   git -C "$1" commit -q --allow-empty -m init
+  # A deterministic integration branch, because `git init`'s default name varies
+  # and the stage owner asks the default branch - not the checked-out HEAD -
+  # whether a head landed.
+  git -C "$1" branch -M main
   git -C "$1" checkout -q -b "$2"
   printf 'commands:\n  lint: true\n' > "$1/.no-mistakes.yaml"
   git -C "$1" add .no-mistakes.yaml
@@ -96,6 +100,18 @@ make_task() {  # <id> <mode> <worktree> [gen]
   mkdir -p "$DATA/$1"
   printf '# Task\nbuild the thing\n' > "$DATA/$1/brief.md"
   : > "$STATE/$1.status"
+}
+
+# land_on_integration <repo> <commit>: move the integration branch of the repo at
+# <repo> to <commit>, the way a merge does, without disturbing HEAD. `landed`
+# means "reachable from the branch the project integrates onto", so a fixture
+# that wants a head to have landed has to actually put it there.
+land_on_integration() {  # <repo> <commit>
+  if git -C "$1" show-ref --verify --quiet refs/remotes/origin/main; then
+    git -C "$1" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+    git -C "$1" update-ref refs/remotes/origin/main "$2"
+  fi
+  git -C "$1" update-ref refs/heads/main "$2"
 }
 
 meta_get() { grep "^$2=" "$STATE/$1.meta" | tail -1 | cut -d= -f2-; }
@@ -449,7 +465,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?
@@ -1062,6 +1078,7 @@ test_landing_names_the_head_that_landed() {
 
   # The landing fact survives the next transition rather than being dropped by
   # the record rewrite, and the read-back proves the LANDED head reachable.
+  land_on_integration "$wt" "$landed"
   out=$("$STAGE" landed activated 2>&1); rc=$?
   expect_code 0 "$rc" "activated reads back the landed head: $out"
   [ "$(meta_get landed stage_landed_head)" = "$landed" ] \
@@ -1165,11 +1182,10 @@ test_nothing_displaces_a_captured_landed_head() {
   pass "fm-stage landing: a captured landed head stands against every later resolution, forge head included"
 }
 
-# Rank states how well a source is trusted, so the higher-ranked source cannot
-# be the more weakly checked one. pr_head= is not a stage_* field, so it
-# survives `committed --retry` onto a new candidate; accepting it on its syntax
-# alone let an abandoned attempt's head be recorded as this task's landed head
-# under the strongest provenance label.
+# The source a capture came from is provenance, never a licence to check it
+# less. pr_head= is not a stage_* field, so it survives `committed --retry` onto
+# a new candidate; accepting it on its syntax alone let an abandoned attempt's
+# head be recorded as this task's landed head.
 test_recorded_forge_head_must_be_on_the_candidate_lineage() {
   local out rc wt stale
   wt="$TMP_ROOT/wt-lineage"
@@ -1190,9 +1206,9 @@ test_recorded_forge_head_must_be_on_the_candidate_lineage() {
   [ "$(meta_get lineage stage_landed_head)" != "$stale" ] \
     || fail "a head off the candidate lineage was recorded as the landed head"
   # It falls through to the worktree, which IS on the candidate lineage, rather
-  # than being pre-empted by the unusable stronger source.
+  # than being pre-empted by the unusable one.
   [ "$(meta_get lineage stage_landed_head)" = "$(git -C "$wt" rev-parse fm/lineage)" ] \
-    || fail "the usable lower-ranked evidence must still be reached"
+    || fail "the usable evidence must still be reached"
   [ "$(meta_get lineage stage_landed_head_source)" = worktree ] \
     || fail "the recorded provenance must name the source that actually proved it"
 
@@ -1215,17 +1231,14 @@ test_recorded_forge_head_must_be_on_the_candidate_lineage() {
 # A captured landed head is a fact about the past, and `landing` is deliverable
 # more than once against evidence that keeps moving: bin/fm-pr-merge.sh re-runs
 # bin/fm-pr-check.sh, which drops a pr_head= it cannot resolve, while the
-# worker's worktree advances past the head that actually merged. A re-run whose
-# evidence has DEGRADED must keep what was captured rather than overwrite the
-# record with a weaker answer, which would be defect two reintroduced through
-# the idempotency path.
+# worker's worktree advances past the head that actually merged. Every one of
+# those later answers is evidence read AFTER the landing, so a re-delivery keeps
+# what was captured rather than recording any of them.
 # EMPTINESS IS NOT ABSENCE. A landing that looked and could prove nothing
 # records `unresolved` - a positive fact about a decision that WAS made. Reading
 # that empty head as "nothing was recorded" would let a later re-delivery fill
-# it from the worktree, and a worktree head read AFTER the merge is
-# indistinguishable from one read before it, so the record would end up naming a
-# head that never landed. Only the forge's own head may fill an unresolved
-# capture.
+# it in, and the record would end up naming a head that never landed. Nothing
+# fills an unresolved capture, the forge's own head included.
 test_an_unresolved_capture_is_a_decision_not_a_blank() {
   local out rc wt landed gone
   wt="$TMP_ROOT/wt-unresolved"
@@ -1300,10 +1313,10 @@ test_activation_names_an_unconfirmed_landed_head_instead_of_refusing() {
   expect_code 0 "$rc" "landing captures the worktree head: $out"
   [ "$(meta_get unconfirmed stage_landed_head)" = "$unpushed" ] || fail "the worktree head was not captured"
 
-  # The project clone landed the SUBMITTED head instead, so the captured head is
-  # not reachable there. A separate clone keeps the two histories apart.
+  # The project integrated the SUBMITTED head instead, so the captured head is
+  # not reachable from the branch that decides what landed.
   git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
-  git -C "$project" checkout -q "$submitted"
+  land_on_integration "$project" "$submitted"
   sed "s|^project=.*|project=$project|" "$STATE/unconfirmed.meta" > "$TMP_ROOT/unconf.rw"
   mv "$TMP_ROOT/unconf.rw" "$STATE/unconfirmed.meta"
 
@@ -1355,8 +1368,9 @@ test_a_confirmed_landed_head_is_never_downgraded() {
   out=$("$STAGE" monotonic landing 2>&1); rc=$?
   expect_code 0 "$rc" "landing captures the forge head: $out"
 
-  # The project clone carries the landed head, so activation proves it.
+  # The project integrated the landed head, so activation proves it.
   git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  land_on_integration "$project" "$landed"
   sed "s|^project=.*|project=$project|" "$STATE/monotonic.meta" > "$TMP_ROOT/mono.rw"
   mv "$TMP_ROOT/mono.rw" "$STATE/monotonic.meta"
   out=$("$STAGE" monotonic activated 2>&1); rc=$?
@@ -1364,24 +1378,44 @@ test_a_confirmed_landed_head_is_never_downgraded() {
   [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
     || fail "the landed head was not confirmed (got '$(meta_get monotonic stage_landed_head_confirmed)')"
 
-  # The clone is then checked out to an unrelated branch that does not contain
-  # the landed head, and the merge poll's marker is present. Re-delivering
+  # The integration branch is then rewound to a history that does not contain
+  # the landed head - the shape of a clone reset, a mirror rebuild, or any other
+  # housekeeping - and the merge poll's marker is present. Re-delivering
   # activation must not read that as evidence the head never landed.
   git -C "$project" checkout -q --orphan other-branch
   git -C "$project" commit -q --allow-empty -m 'unrelated branch tip'
   other=$(git -C "$project" rev-parse HEAD)
-  [ "$other" != "$landed" ] || fail "the fixture must move the clone off the landed head"
+  [ "$other" != "$landed" ] || fail "the fixture must move the integration branch off the landed head"
+  land_on_integration "$project" "$other"
   printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n9\n' \
     > "$STATE/monotonic.pr-poll-merge-notified"
   out=$("$STAGE" monotonic activated 2>&1); rc=$?
-  expect_code 0 "$rc" "a re-delivery once the clone moved: $out"
+  expect_code 0 "$rc" "a re-delivery once the integration branch moved: $out"
   [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
     || fail "a proven landed head was downgraded (got '$(meta_get monotonic stage_landed_head_confirmed)')"
   [ "$(meta_get monotonic stage_landed_head)" = "$landed" ] \
     || fail "the captured head must stand too"
   out=$("$STAGE" monotonic show 2>&1)
   assert_contains "$out" "landed_confirmed=confirmed" "show must keep reporting the proven disposition"
-  pass "fm-stage activated: a confirmed landed head is never downgraded by a later delivery that cannot re-prove it"
+
+  # Now WITHOUT the merge marker, which is the case that tells the read-back
+  # gate apart. The record still says confirmed, but the landed head is no
+  # longer reachable, so a gate keyed on the recorded disposition would keep
+  # reading back the unreachable head and refuse NO_READBACK forever. Reading
+  # back what is still PROVABLE - the candidate head, which the integration
+  # branch does contain - is what keeps the task movable, and the sticky
+  # confirmation is untouched by it.
+  rm -f "$STATE/monotonic.pr-poll-merge-notified"
+  land_on_integration "$project" "$(meta_get monotonic stage_head)"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a marker-free re-delivery must not refuse: $out"
+  assert_not_contains "$out" "NO_READBACK" "the read-back must fall back to what it can still prove"
+  [ "$(status_stage_field "$(last_line monotonic)" reason)" \
+      = "ancestor-of:$(meta_get monotonic stage_head | cut -c1-12):candidate-head:$(meta_get monotonic stage_head | cut -c1-12)" ] \
+    || fail "the read-back must name the candidate head it actually proved (got $(status_stage_field "$(last_line monotonic)" reason))"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "falling back to the candidate head must not disturb the recorded proof"
+  pass "fm-stage activated: a confirmed landed head is never downgraded, and a re-delivery that cannot re-prove it reads back what it can"
 }
 
 test_a_captured_landed_head_never_regresses() {
@@ -1402,17 +1436,17 @@ test_a_captured_landed_head_never_regresses() {
     || fail "the capture must name its source"
 
   # The forge head is gone from the record and the worktree has moved on past
-  # the merge. The worktree answer is strictly weaker evidence than the forge
-  # answer that is already captured, so it must not displace it.
+  # the merge. That later worktree head is evidence read after the landing, so
+  # it must not displace the capture.
   grep -v '^pr_head=' "$STATE/capture.meta" > "$TMP_ROOT/capture.norec"
   mv "$TMP_ROOT/capture.norec" "$STATE/capture.meta"
   git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
   [ "$(git -C "$wt" rev-parse HEAD)" != "$merged" ] || fail "the fixture must move the worktree past the merge"
   out=$("$STAGE" capture landing 2>&1); rc=$?
-  expect_code 0 "$rc" "a re-run on weaker evidence: $out"
-  assert_contains "$out" "STAGE_UNCHANGED: landing" "weaker evidence must leave the record alone"
+  expect_code 0 "$rc" "a re-run on later evidence: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a later resolution must leave the record alone"
   [ "$(meta_get capture stage_landed_head)" = "$merged" ] \
-    || fail "a lower-ranked source overwrote the captured head (got $(meta_get capture stage_landed_head))"
+    || fail "a later resolution overwrote the captured head (got $(meta_get capture stage_landed_head))"
 
   # Nothing resolves at all now. Unresolved must never erase a captured head.
   sed "s|^worktree=.*|worktree=$TMP_ROOT/gone-capture-wt|" "$STATE/capture.meta" > "$TMP_ROOT/capture.rw"
@@ -1428,8 +1462,8 @@ test_a_captured_landed_head_never_regresses() {
   assert_contains "$out" "landed_head=${merged:0:12}" "show still reports the captured head"
 
   # A forge head off the candidate lineage is not evidence at all: it is a
-  # different history, not a later one, and outranking the captured source does
-  # not make it usable.
+  # different history, not a later one, and coming from the forge does not make
+  # it usable.
   captured=$(meta_get capture stage_landed_head)
   git -C "$wt" checkout -q -b fm/capture-fork "$(git -C "$wt" rev-list --max-parents=0 HEAD | tail -1)"
   git -C "$wt" commit -q --allow-empty -m 'unrelated lineage'

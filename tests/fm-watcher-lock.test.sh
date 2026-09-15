@@ -1344,6 +1344,80 @@ test_close_path_wait_for_the_marker_lock_stays_killable() {
   pass "a close path waiting for the marker lock is still collectable by a stop, and what it leaves is recoverable"
 }
 
+test_close_path_publishes_under_marker_lock_contention() {
+  # The sequence the case above cannot reach: the downtime marker lock is FREE
+  # when the close begins, and a peer only starts contending for it once the stop
+  # has landed. A close that asked "is the lock free?" and then separately took it
+  # would pass its probe, lose the lock to that peer in between, and then block on
+  # the real acquire with every stop ignored. Holding the probe-acquired lock
+  # across the transition removes the window rather than narrowing it, so this
+  # pins the property either interleaving must satisfy: the watcher is collected
+  # by ordinary stops alone, and its downtime is still recoverable afterwards.
+  local dir state fakebin out watcher peer successor i
+  dir=$(make_case marker-lock-contention)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>/dev/null &
+  watcher=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$watcher"; fail "watcher never reached its poll loop"; }
+  [ -e "$state/.watcher-down.lock" ] \
+    && { reap "$watcher"; fail "the marker lock must be free before this close begins"; }
+
+  # The stop first, then a peer that starts competing for the marker lock and
+  # keeps it once it wins. Whichever of them takes it first, the watcher must not
+  # end up spinning on it with its stops discarded.
+  kill -TERM "$watcher" 2>/dev/null || true
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$3"
+    while :; do sleep 0.2; done
+  ' _ "$LIB" "$state/.watcher-down.lock" "$dir/peer.held" >/dev/null 2>&1 &
+  peer=$!
+
+  # Ordinary stops only. A KILL would collect the watcher whether or not the
+  # publishing wait is interruptible, and would prove nothing.
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$watcher"; do
+    kill -TERM "$watcher" 2>/dev/null || true
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$watcher" \
+    && { kill -KILL "$peer" 2>/dev/null || true; reap "$watcher"; fail "a close path that lost the marker lock to a peer discarded every stop: only an uncatchable KILL could collect it"; }
+  wait "$watcher" 2>/dev/null || true
+
+  kill -KILL "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+
+  # Recoverable either way: the watcher published its downtime before the peer
+  # could take the lock, or it was collected without publishing and the next
+  # watcher's stale-lock steal publishes it. Both must reach an acknowledgeable
+  # stopped cycle.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch-two.out" 2>/dev/null &
+  successor=$!
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$state/.watcher-down" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.watcher-down" ] \
+    || { reap "$successor"; fail "no downtime episode survived a close that contended for the marker lock"; }
+  drain_and_ack "$state" \
+    || { reap "$successor"; fail "a close that contended for the marker lock left no acknowledgeable stopped cycle"; }
+  reap "$successor"
+  pass "a close path racing a peer for the marker lock is still collectable by a stop and still leaves a recoverable downtime"
+}
+
 test_restart_records_whether_its_stop_was_confirmed() {
   # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
   # leaving the fleet with no watcher at all is worse than the duplicate a
@@ -1448,6 +1522,7 @@ test_reap_bounds_a_signal_swallowing_watcher
 test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
 test_watcher_close_path_is_not_abandoned_by_a_later_stop
 test_close_path_wait_for_the_marker_lock_stays_killable
+test_close_path_publishes_under_marker_lock_contention
 test_restart_records_whether_its_stop_was_confirmed
 test_singleton_start
 test_pid_identity_is_locale_invariant

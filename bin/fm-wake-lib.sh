@@ -603,13 +603,15 @@ _fm_recovery_marker_write_locked() {
 # already-announced generation announced so it cannot be re-presented until a
 # new down stretch mints a new generation.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
-_fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime} lock saved_token generation='' status=pending
+# The marker mutation itself, for a frame that ALREADY HOLDS "${marker}.lock" and
+# releases it itself. Splitting it out lets a caller that must not be interrupted
+# take the lock while it can still be stopped, and then run only this bounded
+# mutation with stop signals ignored, instead of inheriting the acquire's
+# unbounded wait into its uninterruptible region.
+_fm_recovery_marker_publish_locked() {
+  local marker=$1 kind=${2:-downtime} saved_token generation='' status=pending
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
-  lock="${marker}.lock"
-  fm_lock_acquire_wait "$lock" || return 1
   if [ -d "$marker" ] && [ ! -L "$marker" ]; then
-    fm_lock_release "$lock"
     return 1
   fi
   if [ "$kind" = downtime ]; then
@@ -631,11 +633,17 @@ _fm_recovery_marker_publish() {
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
   fi
-  if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"; then
-    fm_lock_release "$lock"
-    return 1
-  fi
+  _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"
+}
+
+_fm_recovery_marker_publish() {
+  local marker=$1 kind=${2:-downtime} lock rc=0
+  case "$kind" in handling|downtime) ;; *) return 1 ;; esac
+  lock="${marker}.lock"
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_recovery_marker_publish_locked "$marker" "$kind" || rc=1
   fm_lock_release "$lock"
+  return "$rc"
 }
 
 _fm_recovery_marker_begin_handling() {
@@ -821,21 +829,20 @@ fm_recovery_transition() {
     reopen-announced)
       _fm_recovery_marker_reopen_announced "$marker"
       ;;
-    release-lock)
+    release-lock-held|release-lock-existing-held)
+      # Both require the caller to ALREADY HOLD "${marker}.lock" and to release it
+      # itself, so neither performs an acquire: a caller closing down can take the
+      # lock while it is still stoppable and hand this bounded mutation a lock it
+      # already owns. release-lock-held republishes the marker first;
+      # release-lock-existing-held keeps the marker already there and only
+      # verifies it is readable before the target lock goes.
       [ -n "$target" ] || return 1
-      _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
-      fm_lock_release "$target"
-      ;;
-    release-lock-existing)
-      [ -n "$target" ] || return 1
-      local lock="${marker}.lock"
-      fm_lock_acquire_wait "$lock" || return 1
-      if ! fm_recovery_marker_read "$marker"; then
-        fm_lock_release "$lock"
-        return 1
+      if [ "$action" = release-lock-held ]; then
+        _fm_recovery_marker_publish_locked "$marker" "${value:-downtime}" || return 1
+      else
+        fm_recovery_marker_read "$marker" || return 1
       fi
       fm_lock_release "$target"
-      fm_lock_release "$lock"
       ;;
     clear-stale-lock)
       [ -n "$target" ] || return 1

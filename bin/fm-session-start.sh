@@ -675,8 +675,16 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render) || rc=$?
+  local out rc=0 identity verdict errfile diag=''
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>/dev/null) || rc=$?
+    diag='resolver diagnostics unavailable: they could not be staged'
+  fi
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
@@ -690,7 +698,7 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$diag"
   fi
 }
 

@@ -1107,12 +1107,12 @@ test_landing_names_the_head_that_landed() {
   pass "fm-stage landing: the record names the head that landed and keeps the head validation started from, distinguishably"
 }
 
-# Only a STRICTLY STRONGER source may displace a captured landed head. Equal
-# rank never does: a worktree head read after the merge is indistinguishable
-# from one read before it, so re-recording it would name a commit that never
-# landed - this contract's own defect wearing an idempotency check. The one
-# promotion there is runs worktree -> pr-head, and it is recorded visibly.
-test_only_stronger_evidence_displaces_a_captured_landed_head() {
+# CAPTURE ONCE, FULL STOP. Nothing displaces a captured landed head - not a
+# later worktree head, not the forge's own head, however well it descends from
+# the capture. Every one of those is evidence read AFTER the landing, which is
+# not evidence of what landed, and re-recording it would name a commit that
+# never landed under a provenance label that says otherwise.
+test_nothing_displaces_a_captured_landed_head() {
   local out rc wt first second
   wt="$TMP_ROOT/wt-moved"
   make_worktree "$wt" fm/moved
@@ -1133,42 +1133,36 @@ test_only_stronger_evidence_displaces_a_captured_landed_head() {
   expect_code 0 "$rc" "an unmoved re-run: $out"
   assert_contains "$out" "STAGE_UNCHANGED: landing" "a re-run recording the same head is unchanged"
 
-  # The worker keeps working after the merge. That later worktree head is the
-  # SAME rank of evidence, so it must not displace the capture even though it
-  # is a descendant - it is not evidence of what landed.
+  # The merge lands the captured head, then the worker keeps working. That later
+  # worktree head is a descendant, and it still must not displace the capture.
   git -C "$wt" commit -q --allow-empty -m 'worker keeps working after the merge'
   second=$(git -C "$wt" rev-parse HEAD)
   [ "$second" != "$first" ] || fail "the fixture must move the head"
   out=$("$STAGE" moved landing 2>&1); rc=$?
   expect_code 0 "$rc" "a re-run after the worktree moved: $out"
   assert_contains "$out" "STAGE_UNCHANGED: landing" \
-    "equal-ranked evidence must not displace a captured head"
+    "a post-merge worktree head must not displace a captured head"
   [ "$(meta_get moved stage_landed_head)" = "$first" ] \
     || fail "a later worktree head displaced the captured one (got $(meta_get moved stage_landed_head))"
 
-  # The forge head is a strictly stronger source on the same lineage, so it is
-  # the one promotion that does replace - and it says so in the receipt.
+  # The forge's own head for the PR is no different. bin/fm-pr-check.sh resolves
+  # it live, so a re-run after the branch advanced records the POST-merge head;
+  # adopting it would name a commit that never landed, under the strongest
+  # provenance label there is.
   printf 'pr_head=%s\n' "$second" >> "$STATE/moved.meta"
   out=$("$STAGE" moved landing 2>&1); rc=$?
-  expect_code 0 "$rc" "a re-run with forge evidence: $out"
-  assert_not_contains "$out" "STAGE_UNCHANGED" \
-    "a strictly stronger source on the same lineage must be adopted"
-  [ "$(meta_get moved stage_landed_head)" = "$second" ] \
-    || fail "the promotion must record the forge head (got $(meta_get moved stage_landed_head))"
-  [ "$(meta_get moved stage_landed_head_source)" = pr-head ] \
-    || fail "the promotion must record its stronger provenance"
+  expect_code 0 "$rc" "a re-run with a later forge head: $out"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" \
+    "a forge head read after the landing must not displace a captured head"
+  [ "$(meta_get moved stage_landed_head)" = "$first" ] \
+    || fail "the forge head displaced the captured one (got $(meta_get moved stage_landed_head))"
+  [ "$(meta_get moved stage_landed_head_source)" = worktree ] \
+    || fail "the captured provenance must stand too (got $(meta_get moved stage_landed_head_source))"
   [ "$(grep -c '^stage_landed_head=' "$STATE/moved.meta")" = 1 ] \
-    || fail "the promotion must replace the head, not shadow it"
-  [ "$(grep -c '^stage_landed_head_source=' "$STATE/moved.meta")" = 1 ] \
-    || fail "the promotion must replace the provenance, not shadow it"
-  [ "$(status_stage_field "$(last_line moved)" landed_head)" = "${second:0:12}" ] \
-    || fail "the promoted receipt must name the new landed head"
-  [ "$(status_stage_field "$(last_line moved)" reason)" = "landed-head:pr-head:replaced:${first:0:12}" ] \
-    || fail "the promotion must name the superseded head (got $(status_stage_field "$(last_line moved)" reason))"
-  out=$("$STAGE" moved landing 2>&1); rc=$?
-  expect_code 0 "$rc" "a re-run after the promotion: $out"
-  assert_contains "$out" "STAGE_UNCHANGED: landing" "a re-run that changes nothing stays a no-op"
-  pass "fm-stage landing: only a strictly stronger source on the same lineage displaces a captured landed head, and it says so"
+    || fail "the record must hold one landed head"
+  [ "$(status_stage_field "$(last_line moved)" landed_head)" = "${first:0:12}" ] \
+    || fail "the last receipt must still name the captured head"
+  pass "fm-stage landing: a captured landed head stands against every later resolution, forge head included"
 }
 
 # Rank states how well a source is trusted, so the higher-ranked source cannot
@@ -1266,27 +1260,27 @@ test_an_unresolved_capture_is_a_decision_not_a_blank() {
   [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
     || fail "the recorded decision must survive the re-delivery"
 
-  # The forge's own head is the one evidence that may fill it, and the fill is
-  # recorded visibly rather than passing as an ordinary first capture.
+  # Nor by the forge's own head, which bin/fm-pr-check.sh resolves live and so
+  # may equally have been written after the merge. The recorded decision stands;
+  # what `activated` can prove about it is a separate fact it records separately.
   printf 'pr_head=%s\n' "$landed" >> "$STATE/unresolvedcap.meta"
   out=$("$STAGE" unresolvedcap landing 2>&1); rc=$?
   expect_code 0 "$rc" "a re-delivery with forge evidence: $out"
-  assert_not_contains "$out" "STAGE_UNCHANGED" "the forge head must fill an unresolved capture"
-  [ "$(meta_get unresolvedcap stage_landed_head)" = "$landed" ] \
-    || fail "the fill must record the forge head (got $(meta_get unresolvedcap stage_landed_head))"
-  [ "$(meta_get unresolvedcap stage_landed_head_source)" = pr-head ] \
-    || fail "the fill must record its provenance"
-  [ "$(status_stage_field "$(last_line unresolvedcap)" reason)" = "landed-head:pr-head:replaced:unresolved" ] \
-    || fail "the fill must say what it displaced (got $(status_stage_field "$(last_line unresolvedcap)" reason))"
-  pass "fm-stage landing: a recorded unresolved landed head is a decision, fillable only by the forge head and never by a post-merge worktree"
+  assert_contains "$out" "STAGE_UNCHANGED: landing" "a later forge head must not fill an unresolved capture"
+  [ -z "$(meta_get unresolvedcap stage_landed_head)" ] \
+    || fail "the forge head filled an unresolved capture (got $(meta_get unresolvedcap stage_landed_head))"
+  [ "$(meta_get unresolvedcap stage_landed_head_source)" = unresolved ] \
+    || fail "the recorded decision must stand against every later resolution"
+  pass "fm-stage landing: a recorded unresolved landed head is a decision that stands, fillable by nothing"
 }
 
 # Every strictness rule needs an escape, and the escape must be honest rather
 # than silent. A landed head captured from the worktree can be wrong - the
-# worker's local commit was never the one pushed - and equal rank never replaces
-# it, so refusing forever would leave hand-editing a live fleet record as the
-# only way out. Activation proceeds on what it CAN prove and records, in a field
-# a consumer can match on, that the captured head was not among it.
+# worker's local commit was never the one pushed - and capture-once means
+# nothing replaces it, so refusing forever would leave hand-editing a live fleet
+# record as the only way out. Activation proceeds on what it CAN prove and
+# records, in a field a consumer can match on, that the captured head was not
+# among it.
 test_activation_names_an_unconfirmed_landed_head_instead_of_refusing() {
   local out rc wt project submitted unpushed
   wt="$TMP_ROOT/wt-unconfirmed"
@@ -1338,6 +1332,56 @@ test_activation_names_an_unconfirmed_landed_head_instead_of_refusing() {
   expect_code 0 "$rc" "a repeat activation: $out"
   assert_contains "$out" "STAGE_UNCHANGED: activated" "a repeat activation stays a no-op"
   pass "fm-stage activated: an unprovable captured landed head is named as unconfirmed rather than refusing forever"
+}
+
+# THE PROOF MUST BE AS DURABLE AS THE THING PROVED. The landed head is captured
+# once and never regresses because its sources are live mutable state - and the
+# confirmation that establishes it is derived from state just as mutable, so it
+# gets the same protection. A later delivery failing to re-prove a fact is not
+# evidence against it: the project clone moving to another branch is ordinary
+# housekeeping, not a discovery that the head did not land.
+test_a_confirmed_landed_head_is_never_downgraded() {
+  local out rc wt project landed other
+  wt="$TMP_ROOT/wt-monotonic"
+  project="$TMP_ROOT/project-monotonic"
+  make_worktree "$wt" fm/monotonic
+  make_task monotonic no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" monotonic committed 2>&1); rc=$?
+  expect_code 0 "$rc" "candidate admits: $out"
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  landed=$(git -C "$wt" rev-parse HEAD)
+  printf 'pr_head=%s\n' "$landed" >> "$STATE/monotonic.meta"
+  out=$("$STAGE" monotonic landing 2>&1); rc=$?
+  expect_code 0 "$rc" "landing captures the forge head: $out"
+
+  # The project clone carries the landed head, so activation proves it.
+  git clone -q --no-local "$wt" "$project" 2>/dev/null || fail "could not build the project clone"
+  sed "s|^project=.*|project=$project|" "$STATE/monotonic.meta" > "$TMP_ROOT/mono.rw"
+  mv "$TMP_ROOT/mono.rw" "$STATE/monotonic.meta"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "activation proves the landed head: $out"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "the landed head was not confirmed (got '$(meta_get monotonic stage_landed_head_confirmed)')"
+
+  # The clone is then checked out to an unrelated branch that does not contain
+  # the landed head, and the merge poll's marker is present. Re-delivering
+  # activation must not read that as evidence the head never landed.
+  git -C "$project" checkout -q --orphan other-branch
+  git -C "$project" commit -q --allow-empty -m 'unrelated branch tip'
+  other=$(git -C "$project" rev-parse HEAD)
+  [ "$other" != "$landed" ] || fail "the fixture must move the clone off the landed head"
+  printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n9\n' \
+    > "$STATE/monotonic.pr-poll-merge-notified"
+  out=$("$STAGE" monotonic activated 2>&1); rc=$?
+  expect_code 0 "$rc" "a re-delivery once the clone moved: $out"
+  [ "$(meta_get monotonic stage_landed_head_confirmed)" = confirmed ] \
+    || fail "a proven landed head was downgraded (got '$(meta_get monotonic stage_landed_head_confirmed)')"
+  [ "$(meta_get monotonic stage_landed_head)" = "$landed" ] \
+    || fail "the captured head must stand too"
+  out=$("$STAGE" monotonic show 2>&1)
+  assert_contains "$out" "landed_confirmed=confirmed" "show must keep reporting the proven disposition"
+  pass "fm-stage activated: a confirmed landed head is never downgraded by a later delivery that cannot re-prove it"
 }
 
 test_a_captured_landed_head_never_regresses() {
@@ -1488,10 +1532,11 @@ test_meta_replace_preserves_the_record_mode_and_contract() {
 
 test_a_record_cannot_hold_two_values_for_one_key
 test_landing_names_the_head_that_landed
-test_only_stronger_evidence_displaces_a_captured_landed_head
+test_nothing_displaces_a_captured_landed_head
 test_recorded_forge_head_must_be_on_the_candidate_lineage
 test_a_captured_landed_head_never_regresses
 test_an_unresolved_capture_is_a_decision_not_a_blank
 test_activation_names_an_unconfirmed_landed_head_instead_of_refusing
+test_a_confirmed_landed_head_is_never_downgraded
 test_an_unreadable_record_is_refused_not_assumed_clean
 test_meta_replace_preserves_the_record_mode_and_contract

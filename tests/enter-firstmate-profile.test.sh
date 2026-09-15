@@ -29,7 +29,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-entry-profile-test.XXXXXX") || fail mktemp
 trap 'rm -rf "$TMP"' EXIT
 
 # --- the three-profile menu -----------------------------------------------------
-[ "$(console_profile_default)" = codex-luna ] || fail "the default profile is codex-luna"
+[ "$(console_profile_default)" = fable-5.1 ] || fail "the default profile is fable-5.1"
 [ "$(console_profile_menu)" = 'fable-5.1 opus-4-8 codex-luna' ] || fail "the menu is exactly the three profiles in order"
 [ "$(console_profile_harness fable-5.1)" = claude ] || fail "fable-5.1 -> claude"
 [ "$(console_profile_harness opus-4-8)" = claude ] || fail "opus-4-8 -> claude"
@@ -79,10 +79,17 @@ pass "qualify: QUALIFIED only when installed AND allowed; every PENDING states i
 # Which profile is selected by default and which profiles are qualified are
 # separate facts: the built-in set is plan-generic (fable-5.1), while codex-luna
 # rests on gpt-5.6-luna evidence measured on one ChatGPT account, so a home must
-# grant it in its own config rather than inherit it from being the default.
+# grant it in its own config rather than inherit it from any menu position.
 [ "$(console_profile_builtin_qualified_set)" = fable-5.1 ] || fail "the built-in qualified set is fable-5.1"
-[ "$(console_profile_builtin_qualified_set)" != "$(console_profile_default)" ] || fail "the built-in qualified set must not track the default profile"
-case " $(console_profile_builtin_qualified_set) " in *' codex-luna '*) fail "account-specific codex-luna must not be qualified out of the box" ;; esac
+for _p in opus-4-8 codex-luna; do
+  case " $(console_profile_builtin_qualified_set) " in *" $_p "*) fail "$_p must not be qualified out of the box" ;; esac
+done
+# independence is the contract, not the coincidence that both read fable-5.1
+# today: with a different default in force the built-in set must not move
+( console_profile_default() { printf 'opus-4-8'; }
+  [ "$(console_profile_builtin_qualified_set)" = fable-5.1 ] || exit 1
+  FM_HOME=$TMP/home-empty; mkdir -p "$FM_HOME/config"
+  [ "$(console_profile_qualified_set)" = fable-5.1 ] || exit 1 ) || fail "the qualified set must not follow whichever profile is the default"
 ( unset FM_HOME; FM_HOME=$TMP/home-empty; mkdir -p "$FM_HOME/config"
   [ "$(console_profile_qualified_set)" = "$(console_profile_builtin_qualified_set)" ] || exit 1 ) || fail "absent config falls back to the built-in qualified set"
 ( FM_HOME=$TMP/home-two; mkdir -p "$FM_HOME/config"; printf 'codex-luna fable-5.1\n' > "$FM_HOME/config/console-qualified-profiles"
@@ -122,13 +129,13 @@ for _h in claude codex; do printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$_h"; chmod 
 ( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate opus-4-8)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "opus-4-8 stays PENDING out of the box (not in the built-in qualified set)"
 pass "gate: the built-in set keeps fable-5.1 launchable and opus-4-8 PENDING"
 
-# codex-luna is the default but rests on account-specific evidence: it is PENDING
-# on a home that has not granted it, and QUALIFIED once that home's config does.
+# codex-luna rests on account-specific evidence: it is PENDING on a home that
+# has not granted it, and QUALIFIED once that home's config does.
 ( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty
-  case "$(console_profile_gate codex-luna)" in "PENDING: model gpt-5.6-luna (codex) is not yet qualified"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the default Codex profile PENDING, never auto-qualified"
+  case "$(console_profile_gate codex-luna)" in "PENDING: model gpt-5.6-luna (codex) is not yet qualified"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the Codex profile PENDING, never auto-qualified"
 home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > "$home_luna/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "a home granting codex-luna with codex installed -> QUALIFIED"
-pass "gate: codex-luna qualifies from the home's own grant, not from being the default"
+pass "gate: codex-luna qualifies only from the home's own grant"
 # with the harness off PATH the same default profile reports the install gate
 # shellcheck disable=SC2123 # emptying PATH is the point: the harness must be unfindable
 ( PATH=$TMP/emptybin; FM_HOME=$TMP/home-empty
@@ -190,28 +197,28 @@ case "$out" in *'primary console profile menu'*) ;; *) fail "--print-console-men
 for _prof in fable-5.1 opus-4-8 codex-luna; do
   case "$out" in *"$_prof"*) ;; *) fail "--print-console-menu must list profile $_prof (got: $out)" ;; esac
 done
-case "$out" in *'active profile:    codex-luna'*) ;; *) fail "no profile supplied must resolve to codex-luna (got: $out)" ;; esac
-case "$out" in *'default profile:   codex-luna'*) ;; *) fail "--print-console-menu must show codex-luna as the default (got: $out)" ;; esac
+case "$out" in *'active profile:    fable-5.1'*) ;; *) fail "no profile supplied must resolve to fable-5.1 (got: $out)" ;; esac
+case "$out" in *'default profile:   fable-5.1'*) ;; *) fail "--print-console-menu must show fable-5.1 as the default (got: $out)" ;; esac
 # opus-4-8 is not in the default qualified set, so it stays PENDING, never swapped
 case "$out" in *'opus-4-8'*'PENDING'*) ;; *) fail "an unqualified profile must render PENDING, never silently substituted (got: $out)" ;; esac
 # it renders ONLY the menu: no full doctor report, no launch/exec side effects
 case "$out" in *'effective identity'*) fail "--print-console-menu must render only the menu, not the full doctor report" ;; esac
-pass "print-console-menu: no profile supplied resolves to codex-luna and renders the three-profile menu"
+pass "print-console-menu: no profile supplied resolves to fable-5.1 and renders the three-profile menu"
 
 # --- --print-console-menu: a non-default config profile renders as active -------
 # Builds on the default-profile case above: a home whose config/console-profile
 # names a profile OTHER than the built-in default must render THAT profile as
 # active, with its row carrying the active marker, and still list all three
-# (never a silent swap). fable-5.1 differs from the built-in default, so this
+# (never a silent swap). codex-luna differs from the built-in default, so this
 # fails if the config layer of the precedence chain is ever skipped.
 home_alt=$TMP/home-altprofile; mkdir -p "$home_alt/config"
-printf 'fable-5.1\n' > "$home_alt/config/console-profile"
+printf 'codex-luna\n' > "$home_alt/config/console-profile"
 rc=0
 out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "an alternate config profile must still render and exit 0 (rc=$rc, out: $out)"
-case "$out" in *'active profile:    fable-5.1'*) ;; *) fail "config/console-profile must select the active profile (got: $out)" ;; esac
-case "$out" in *'fable-5.1'*'<- active'*) ;; *) fail "the active row must carry the active marker (got: $out)" ;; esac
-case "$out" in *'default profile:   codex-luna'*) ;; *) fail "the built-in default is still reported while config selects another (got: $out)" ;; esac
+case "$out" in *'active profile:    codex-luna'*) ;; *) fail "config/console-profile must select the active profile (got: $out)" ;; esac
+case "$out" in *'codex-luna'*'<- active'*) ;; *) fail "the active row must carry the active marker (got: $out)" ;; esac
+case "$out" in *'default profile:   fable-5.1'*) ;; *) fail "the built-in default is still reported while config selects another (got: $out)" ;; esac
 for _prof in fable-5.1 opus-4-8 codex-luna; do
   case "$out" in *"$_prof"*) ;; *) fail "an alternate profile menu must still list $_prof (got: $out)" ;; esac
 done
@@ -238,7 +245,7 @@ out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' \
       FM_CODE_ROOT=/polluted/donor FM_TOOLS_ROOT=/polluted/tools FM_RETIRED_HOME=/polluted/retired \
       bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "host-path pollution must not break the menu (rc=$rc, out: $out)"
-case "$out" in *'active profile:    fable-5.1'*) ;; *) fail "pollution must not change the config-selected active profile (got: $out)" ;; esac
+case "$out" in *'active profile:    codex-luna'*) ;; *) fail "pollution must not change the config-selected active profile (got: $out)" ;; esac
 case "$out" in *'/polluted/'*) fail "no inherited host path may leak into the menu output (got: $out)" ;; esac
 pass "print-console-menu: inherited host-path pollution neither corrupts the render nor leaks into output"
 # FM_CONSOLE_PROFILE is a DOCUMENTED override, not pollution: an ambient value

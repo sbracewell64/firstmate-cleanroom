@@ -128,8 +128,9 @@ fm_stop_process_confirmed() {
     ''|*[!0-9]*) return 2 ;;
   esac
   case "$every" in
-    ''|*[!0-9]*|0) every=20 ;;
+    ''|*[!0-9]*) every=20 ;;
   esac
+  [ "$every" -gt 0 ] 2>/dev/null || every=20
   while :; do
     fm_pid_alive "$pid" || return 0
     if [ -n "$recorded" ]; then

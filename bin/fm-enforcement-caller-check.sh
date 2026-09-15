@@ -88,8 +88,13 @@ OUTPUT_COMMAND_RE = re.compile(r"^\s*(?:printf|echo|cat)\b")
 # becoming another step towards a shell parser.
 KEYWORD_OPENER_RE = re.compile(r"^\s*(?:then|else|elif|do|\{)\s")
 CASE_LABEL_OPENER_RE = re.compile(r"^\s*[A-Za-z0-9_*?.|\[\]-]+\)\s")
-# What ends a shell word, so the next `#` starts one and opens a comment.
-COMMENT_WORD_BREAK = " \t;&|()"
+# What ends a shell word, so the next `#` starts one and opens a comment. Each
+# character was checked against bash rather than reasoned about. `)` is absent
+# because it depends on what it closes: `echo a$(true)#b` prints `a#b`, so a
+# command substitution's `)` does not end the word, while a subshell's does.
+# Treating it as a break would truncate a real command and hide whatever the
+# line defines below it, which is the worse direction to be wrong in.
+COMMENT_WORD_BREAK = " \t;&|("
 SPLIT_OPERATORS = ("&&", "||", ";;", ";", "|", "&")
 COMMAND_SUB_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>[^`]*)`")
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
@@ -610,6 +615,16 @@ def executable_source(root: Path, rel: str) -> str:
     return cached
 
 
+def token_pattern(token: str) -> re.Pattern[str]:
+    """One boundary rule for every capability token.
+
+    A hyphen does not end a token, so `verify` is not satisfied by `--verify-all`
+    or by `verify-later`. Every axis takes the rule from here: a boundary tighter
+    on one axis than its sibling is how several holes in this check survived.
+    """
+    return re.compile(rf"(?<![\w-]){re.escape(token)}(?![\w-])")
+
+
 def names_it(text: str, owner_base: str, token: str | None, axis: str) -> bool:
     """Does this raw file text mention the capability at all, call or prose?"""
     needle = token if axis == "function" and token is not None else owner_base
@@ -633,7 +648,7 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
             definition = LIBRARY_FUNCTION_RE.match(line)
             if definition is not None:
                 stripped = line[definition.end():].strip()
-            if re.search(rf"\b{re.escape(token)}\b", stripped):
+            if token_pattern(token).search(stripped):
                 return True
         return False
     if owner_base not in text:
@@ -641,8 +656,8 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
     if token is None:
         return True
     if axis == "flag":
-        return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text) is not None
-    pattern = re.compile(rf"\b{re.escape(token)}\b")
+        return token_pattern(token).search(text) is not None
+    pattern = token_pattern(token)
     start = 0
     while True:
         at = text.find(owner_base, start)

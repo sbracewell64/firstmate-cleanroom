@@ -234,6 +234,27 @@ main() {
 main "$@"
 FIX
 
+  cat > "$repo/bin/fm-strict.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+STRICT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --enforce-strict) STRICT=1 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ "$STRICT" -eq 1 ]
+FIX
+
+  cat > "$repo/bin/fm-strict-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-strict.sh" --enforce-strict "$@"
+FIX
+
   cat > "$repo/bin/fm-yaml-gate.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -334,6 +355,13 @@ write_fixture_inventory() {
       "invariant": "A widget binding is accepted only when it names something.",
       "guards": "runtime",
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
+    },
+    {
+      "id": "bin/fm-strict.sh:--enforce-strict",
+      "kind": "enforced",
+      "invariant": "A strict pass runs only when it was asked for.",
+      "guards": "runtime",
+      "callSites": [{"path": "bin/fm-strict-consumer.sh", "via": "production"}]
     },
     {
       "id": "bin/fm-nested-flag.sh:--enforce-nested-flag",
@@ -639,6 +667,48 @@ FIX
   "$CHECK" --root "$repo" >/dev/null \
     || fail "a \${VAR#pattern} expansion was mistaken for a trailing comment"
   pass "a trailing comment naming a capability is not read as an enforcing call"
+}
+
+test_axes_share_one_token_boundary() {
+  local repo="$TMP_ROOT/token-boundary"
+
+  # A hyphenated variant is a different capability, on the subcommand axis.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-widget.sh" enforce-later "$1"
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # And on the long-option axis, which takes the same boundary rule.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-strict-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$DIR/fm-strict.sh" --enforce-strict-all "$@"
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  pass "a hyphenated variant satisfies neither the subcommand nor the long-option token"
+}
+
+test_command_substitution_close_does_not_open_a_comment() {
+  local repo="$TMP_ROOT/substitution-hash"
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root=$(pwd)#tmp && "$DIR/fm-widget.sh" enforce "$1"
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a # closing a command substitution truncated a real call"
+  pass "a # after a command substitution close does not open a comment"
 }
 
 test_metacharacter_adjacent_comment_is_not_a_call() {
@@ -1027,6 +1097,8 @@ test_comment_mention_is_not_a_call
 test_trailing_comment_is_not_a_call
 test_hash_comment_surfaces_share_one_rule
 test_metacharacter_adjacent_comment_is_not_a_call
+test_axes_share_one_token_boundary
+test_command_substitution_close_does_not_open_a_comment
 test_mixed_flag_alias_group_is_discovered
 test_self_call_site_requires_a_traverser_note
 test_spaced_heredoc_body_is_stripped

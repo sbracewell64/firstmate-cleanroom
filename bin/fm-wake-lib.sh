@@ -15,11 +15,23 @@ FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 # stop produced nothing. Still bounded, so a stop that never lands leaves the
 # documented upgrade-window residual rather than deadlocking the next claimant.
 FM_AUTOARM_RETIRE_POLLS="${FM_AUTOARM_RETIRE_POLLS:-30}"
+case "$FM_AUTOARM_RETIRE_POLLS" in ''|*[!0-9]*) FM_AUTOARM_RETIRE_POLLS=30 ;; esac
+FM_AUTOARM_RETIRE_POLLS=${FM_AUTOARM_RETIRE_POLLS#"${FM_AUTOARM_RETIRE_POLLS%%[!0]*}"}
+[ -n "$FM_AUTOARM_RETIRE_POLLS" ] || FM_AUTOARM_RETIRE_POLLS=30
 # Polls between successive stop-signal deliveries in fm_stop_process_confirmed.
 # Two seconds: long enough that a target already running its close path is not
 # interrupted by the next delivery, short enough that a dropped stop is
 # re-delivered promptly.
+# Every operator-settable poll count here is normalised the same way before it
+# can reach arithmetic: a non-numeric value degrades to the default, and leading
+# zeros are stripped TEXTUALLY rather than range-tested, because $(( )) reads a
+# leading zero as octal while [ reads base 10 - so 08 would abort the arithmetic
+# and 010 would silently mean 8. An all-zero value strips to empty and takes the
+# default, which is how a zero interval is rejected.
 FM_STOP_REDELIVER_POLLS="${FM_STOP_REDELIVER_POLLS:-20}"
+case "$FM_STOP_REDELIVER_POLLS" in ''|*[!0-9]*) FM_STOP_REDELIVER_POLLS=20 ;; esac
+FM_STOP_REDELIVER_POLLS=${FM_STOP_REDELIVER_POLLS#"${FM_STOP_REDELIVER_POLLS%%[!0]*}"}
+[ -n "$FM_STOP_REDELIVER_POLLS" ] || FM_STOP_REDELIVER_POLLS=20
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -118,6 +130,18 @@ fm_pid_identity() {
 # delivery to learn the same thing. A first delivery that fails because the
 # target disappeared between the liveness check and the kill is the outcome the
 # caller asked for, not a refusal, so that reads 0.
+# True when fm_stop_process_confirmed actually delivered a stop to the target.
+# rc=0 and rc=1 were asked; rc=2 (a pid or deadline that is not a number) and
+# rc=3 (a first delivery that could not be sent at all) were not. A caller that
+# may only act on a live target once it has been asked to stop tests this rather
+# than listing codes, which is what let rc=2 be grouped with rc=1 before.
+fm_stop_was_delivered() {  # <fm_stop_process_confirmed return code>
+  case "$1" in
+    2|3) return 1 ;;
+  esac
+  return 0
+}
+
 fm_stop_process_confirmed() {
   local pid=$1 recorded=${2:-} limit=${3:-100} sig=${4:-TERM} i=0 current
   local every=${FM_STOP_REDELIVER_POLLS:-20}
@@ -130,7 +154,8 @@ fm_stop_process_confirmed() {
   case "$every" in
     ''|*[!0-9]*) every=20 ;;
   esac
-  [ "$every" -gt 0 ] 2>/dev/null || every=20
+  every=${every#"${every%%[!0]*}"}
+  [ -n "$every" ] || every=20
   while :; do
     fm_pid_alive "$pid" || return 0
     if [ -n "$recorded" ]; then
@@ -1388,18 +1413,18 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # matching mid-procedure (pid reuse) ends the retirement instead of signalling a
 # stranger.
 #
-# Exactly one confirmation outcome refuses the reclaim: rc=3, a FIRST delivery
-# that could not be sent at all to an owner that is still there, so nothing was
-# ever asked of it - that releases the steal mutex and returns 1. Every other outcome proceeds and
-# removes the lock. rc=0 because the recorded owner is provably gone, either
-# stopped or no longer answering to its identity. rc=1 (the bound elapsed with
-# the owner still alive) and rc=2 (a non-numeric pid or FM_AUTOARM_RETIRE_POLLS,
-# which is signalled no more than rc=3 is) because an owner that outlives a
-# bounded retirement is the documented upgrade-window residual, and refusing
-# there would deadlock the next claimant forever - strictly the worse failure.
-# Missing identity evidence never blocks the reclaim of a proven-abandoned claim
-# either - it only disables the TERM and the ledger graft below, leaving that
-# same bounded residual.
+# The rule this reclaim follows is about what was ASKED of the owner, not about
+# which code came back. A live identity-matched owner may only be reclaimed past
+# if a stop was actually delivered to it. So every confirmation outcome where
+# NOTHING WAS ASKED refuses: the steal mutex is released and this returns 1.
+# Every outcome where the owner was asked, and either stopped or outlived the
+# bound, proceeds and removes the lock - an owner that outlives a bounded
+# retirement is the documented upgrade-window residual, and refusing there would
+# deadlock the next claimant forever, which is the worse failure. An owner that
+# is provably gone, whether stopped or no longer answering to its identity, is
+# likewise reclaimed. Missing identity evidence never blocks the reclaim of a
+# proven-abandoned claim either - it only disables the TERM and the ledger graft
+# below, leaving that same bounded residual.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
   lock="$state/.claude-autoarm.lock"
@@ -1425,7 +1450,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     # gone or was never provably this process.
     retire_rc=0
     fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
-    if [ "$retire_rc" -eq 3 ]; then
+    if ! fm_stop_was_delivered "$retire_rc"; then
       fm_lock_release "$steal"
       return 1
     fi

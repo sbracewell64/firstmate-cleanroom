@@ -18,7 +18,7 @@ pass() { printf 'ok - %s\n' "$1"; }
 FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
 for fn in console_profile_default console_profile_menu console_profile_harness console_profile_model \
           console_profile_model_ok console_profile_qualify console_profile_qualified_set \
-          console_profile_gate console_argv_subscription_only console_harness_argv \
+          console_profile_gate console_profile_resolve console_argv_subscription_only console_harness_argv \
           read_scalar resolve_host_path; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
 done
@@ -81,22 +81,37 @@ pass "qualify: QUALIFIED only when installed AND allowed; every PENDING states i
   [ "$(console_profile_qualified_set)" = 'codex-luna fable-5.1' ] || exit 1 ) || fail "config/console-qualified-profiles extends the qualified set"
 pass "qualified set: default-only unless config/console-qualified-profiles widens it"
 
-# --- console_profile_gate composes the two live facts ---------------------------
-# claude is installed in CI images used for the launcher tests; guard on that.
-if command -v claude >/dev/null 2>&1; then
-  ( FM_HOME=$TMP/home-empty; case "$(console_profile_gate fable-5.1)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "non-default fable profile stays PENDING"
-  ( FM_HOME=$TMP/home-empty; case "$(console_profile_gate opus-4-8)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "opus-4-8 stays PENDING out of the box (not in the default qualified set)"
-  pass "gate: non-default Claude profiles stay PENDING"
-else
-  pass "skip: gate live-fact test (claude not installed here)"
-fi
+# --- the canonical precedence: env, then config, then the built-in default ------
+# console_profile_resolve is the single owner both the menu preview and the
+# launch path resolve through, so each layer is proven once here. The config
+# layer is proven with a profile that is NOT the built-in default.
+home_prec=$TMP/home-precedence; mkdir -p "$home_prec/config"
+printf 'opus-4-8\n' > "$home_prec/config/console-profile"
+( FM_HOME=$home_prec; export FM_CONSOLE_PROFILE=fable-5.1
+  [ "$(console_profile_resolve)" = fable-5.1 ] || exit 1 ) || fail "FM_CONSOLE_PROFILE wins over config"
+( FM_HOME=$home_prec; unset FM_CONSOLE_PROFILE
+  [ "$(console_profile_resolve)" = opus-4-8 ] || exit 1 ) || fail "with no env value config/console-profile selects the profile"
+( FM_HOME=$TMP/home-empty; unset FM_CONSOLE_PROFILE
+  [ "$(console_profile_resolve)" = "$(console_profile_default)" ] || exit 1 ) || fail "with neither env nor config the built-in default is selected"
+pass "precedence: FM_CONSOLE_PROFILE, then config/console-profile, then the built-in default"
 
-if command -v codex >/dev/null 2>&1; then
-  ( FM_HOME=$TMP/home-empty; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "default profile with an installed codex -> QUALIFIED"
-  pass "gate: default Codex profile qualifies with codex installed"
-else
-  pass "skip: gate live-fact test (codex not installed here)"
-fi
+# --- console_profile_gate composes the two live facts ---------------------------
+# The installed-fact the gate reads is only "is this harness name on PATH", so
+# both harnesses are stubbed here and PATH is prepended: the verdicts below are
+# then deterministic everywhere, including CI images carrying neither harness.
+mkdir -p "$TMP/bin" "$TMP/emptybin"
+for _h in claude codex; do printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$_h"; chmod +x "$TMP/bin/$_h"; done
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate fable-5.1)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "non-default fable profile stays PENDING"
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate opus-4-8)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "opus-4-8 stays PENDING out of the box (not in the default qualified set)"
+pass "gate: non-default Claude profiles stay PENDING even with the harness installed"
+
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "default profile with an installed codex -> QUALIFIED"
+pass "gate: the default Codex profile qualifies with codex installed"
+# with the harness off PATH the same default profile reports the install gate
+# shellcheck disable=SC2123 # emptying PATH is the point: the harness must be unfindable
+( PATH=$TMP/emptybin; FM_HOME=$TMP/home-empty
+  case "$(console_profile_gate codex-luna)" in "PENDING: harness codex is not installed"*) ;; *) exit 1 ;; esac ) || fail "an absent codex harness -> PENDING naming the harness"
+pass "gate: an absent harness is reported as the exact install gate, never QUALIFIED"
 
 # --- $0 / subscription-only: no paid/gateway/budget selector may be composed ----
 console_argv_subscription_only --dangerously-skip-permissions --model fable || fail "the qualified fable argv is clean"
@@ -163,19 +178,22 @@ pass "print-console-menu: no profile supplied resolves to codex-luna and renders
 
 # --- --print-console-menu: a non-default config profile renders as active -------
 # Builds on the default-profile case above: a home whose config/console-profile
-# names a non-default profile must render THAT profile as active, with its row
-# carrying the active marker, and still list all four (never a silent swap).
+# names a profile OTHER than the built-in default must render THAT profile as
+# active, with its row carrying the active marker, and still list all three
+# (never a silent swap). fable-5.1 differs from the built-in default, so this
+# fails if the config layer of the precedence chain is ever skipped.
 home_alt=$TMP/home-altprofile; mkdir -p "$home_alt/config"
-printf 'codex-luna\n' > "$home_alt/config/console-profile"
+printf 'fable-5.1\n' > "$home_alt/config/console-profile"
 rc=0
 out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "an alternate config profile must still render and exit 0 (rc=$rc, out: $out)"
-case "$out" in *'active profile:    codex-luna'*) ;; *) fail "config/console-profile must select the active profile (got: $out)" ;; esac
-case "$out" in *'codex-luna'*'<- active'*) ;; *) fail "the active row must carry the active marker (got: $out)" ;; esac
+case "$out" in *'active profile:    fable-5.1'*) ;; *) fail "config/console-profile must select the active profile (got: $out)" ;; esac
+case "$out" in *'fable-5.1'*'<- active'*) ;; *) fail "the active row must carry the active marker (got: $out)" ;; esac
+case "$out" in *'default profile:   codex-luna'*) ;; *) fail "the built-in default is still reported while config selects another (got: $out)" ;; esac
 for _prof in fable-5.1 opus-4-8 codex-luna; do
   case "$out" in *"$_prof"*) ;; *) fail "an alternate profile menu must still list $_prof (got: $out)" ;; esac
 done
-pass "print-console-menu: config/console-profile selects codex-luna without dropping profiles"
+pass "print-console-menu: config/console-profile selects a non-default profile without dropping profiles"
 
 # Explicit FM_CONSOLE_PROFILE overrides still resolve to the named profile.
 for _explicit in fable-5.1 opus-4-8 codex-luna; do
@@ -198,7 +216,7 @@ out=$(FM_HOME=$home_alt FM_CONSOLE_PROFILE='' \
       FM_CODE_ROOT=/polluted/donor FM_TOOLS_ROOT=/polluted/tools FM_RETIRED_HOME=/polluted/retired \
       bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "host-path pollution must not break the menu (rc=$rc, out: $out)"
-case "$out" in *'active profile:    codex-luna'*) ;; *) fail "pollution must not change the config-selected active profile (got: $out)" ;; esac
+case "$out" in *'active profile:    fable-5.1'*) ;; *) fail "pollution must not change the config-selected active profile (got: $out)" ;; esac
 case "$out" in *'/polluted/'*) fail "no inherited host path may leak into the menu output (got: $out)" ;; esac
 pass "print-console-menu: inherited host-path pollution neither corrupts the render nor leaks into output"
 # FM_CONSOLE_PROFILE is a DOCUMENTED override, not pollution: an ambient value

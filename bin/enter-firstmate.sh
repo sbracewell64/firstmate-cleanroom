@@ -587,6 +587,16 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
   case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
   console_profile_qualify "$p" "$installed" "$allowed"
 }
+# Sole owner of the canonical profile precedence: FM_CONSOLE_PROFILE, then
+# config/console-profile, then the built-in default. The menu preview and the
+# launch path both resolve through here, so the selection they report and the
+# selection they gate can never drift apart. Reads config, so it needs $FM_HOME.
+console_profile_resolve() {  # -> the selected profile name
+  local p=${FM_CONSOLE_PROFILE:-}
+  [ -n "$p" ] || p=$(read_scalar console-profile || true)
+  [ -n "$p" ] || p=$(console_profile_default)
+  printf '%s' "$p"
+}
 # Sole owner of the three-profile primary console menu layout: heading, the active
 # and default markers, the qualified set, the $0/subscription note, and every
 # profile's harness, pinned model, permission posture and gate verdict. Called by
@@ -812,8 +822,7 @@ if [ -n "${FM_ENTRY_LIB:-}" ]; then return 0 2>/dev/null || exit 0; fi
 # then defers to the single menu owner. It starts, execs and installs nothing and
 # needs no usable tools root, so staging can qualify the composed menu offline.
 if [ "$MODE" = print-console-menu ]; then
-  FM_CONSOLE_PROFILE=${FM_CONSOLE_PROFILE:-$(read_scalar console-profile || true)}
-  [ -n "$FM_CONSOLE_PROFILE" ] || FM_CONSOLE_PROFILE=$(console_profile_default)
+  FM_CONSOLE_PROFILE=$(console_profile_resolve)
   console_profile_menu_render
   exit 0
 fi
@@ -864,8 +873,7 @@ esac
 # harness + model. A non-native FM_HARNESS override (evidence runs) skips it. The
 # selected profile is refused, never silently swapped, when it is not QUALIFIED;
 # --doctor shows every profile's gate and starts nothing.
-FM_CONSOLE_PROFILE=${FM_CONSOLE_PROFILE:-$(read_scalar console-profile || true)}
-[ -n "$FM_CONSOLE_PROFILE" ] || FM_CONSOLE_PROFILE=$(console_profile_default)
+FM_CONSOLE_PROFILE=$(console_profile_resolve)
 # A Herdr pane inherits the selected native harness from the outer launcher.
 # Re-resolve its model and gate here; that inherited value is not an evidence override.
 if [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = codex ] || [ "$FM_HARNESS_ENV" = claude ]; then

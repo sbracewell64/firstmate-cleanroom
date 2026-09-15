@@ -187,10 +187,10 @@ ADOPTED="$TMP/adopted-release"; mkdir -p "$ADOPTED/bin"
 #      one staging that keeps the REAL repo, so it also proves the tool ran the
 #      real launcher test family and recorded every member PASS.
 home=$(mk_home altprofile shim "$ROOT_A")
-run_render "$home" "$ADOPTED" --console-profile codex-luna
+run_render "$home" "$ADOPTED" --console-profile fable-5.1
 [ "$RC" -eq 0 ] || fail "(vi) alternate-profile staging must succeed (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
-[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-luna ] || fail "(vi) staging must record the non-default console profile"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = fable-5.1 ] || fail "(vi) staging must record the non-default console profile"
 grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vi) the menu qualification must PASS for a staged alternate profile"
 for t in arm launch profile; do   # the ONE real-repo staging: the real launcher family ran and passed
   grep -q "^- PASS test: enter-firstmate-$t\$" "$stg/qualification-report.md" || fail "(vi) the real repo's enter-firstmate-$t test must be run and recorded PASS"
@@ -198,8 +198,8 @@ done
 grep -q '^- FAIL ' "$stg/qualification-report.md" && fail "(vi) a clean real-repo staging must record no FAIL line"
 menu=$(unset FM_CONSOLE_PROFILE FM_HARNESS FM_CODE_ROOT FM_TOOLS_ROOT FM_RETIRED_HOME
        FM_HOME="$stg" FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || fail "(vi) offline staged menu must render"
-case "$menu" in *'active profile:    codex-luna'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
-case "$menu" in *'codex-luna'*'<- active'*) ;; *) fail "(vi) the active row must carry the active marker (got: $menu)" ;; esac
+case "$menu" in *'active profile:    fable-5.1'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
+case "$menu" in *'fable-5.1'*'<- active'*) ;; *) fail "(vi) the active row must carry the active marker (got: $menu)" ;; esac
 pass "(vi) a non-default --console-profile stages and renders that profile as active"
 
 # (vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks
@@ -211,11 +211,11 @@ RC=0
 OUT=$(FM_CODE_ROOT=/polluted/donor FM_CONSOLE_PROFILE=opus-4-8 FM_HARNESS=bash \
       FM_RETIRED_HOME=/polluted/retired FM_TOOLS_ROOT=/polluted/tools \
       bash "$FAST" --fm-home "$home" --code-root "$ADOPTED" \
-      --console-profile codex-luna --staging "$home/state/launcher-staging" 2>&1) || RC=$?
+      --console-profile fable-5.1 --staging "$home/state/launcher-staging" 2>&1) || RC=$?
 [ "$RC" -eq 0 ] || fail "(vii) pollution must not break staging (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
 [ "$(tr -d '[:space:]' < "$stg/config/code-root")" = "$ADOPTED" ] || fail "(vii) the staged code root must come from --code-root, not ambient FM_CODE_ROOT"
-[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-luna ] || fail "(vii) the staged profile must come from --console-profile, not ambient FM_CONSOLE_PROFILE"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = fable-5.1 ] || fail "(vii) the staged profile must come from --console-profile, not ambient FM_CONSOLE_PROFILE"
 grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vii) the menu qualification must PASS despite ambient pollution"
 grep -Eq '/polluted/(donor|retired|tools)' "$stg/qualification-report.md" && fail "(vii) no ambient polluted path may leak into the qualification report"
 pass "(vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks into the report"

@@ -17,7 +17,7 @@
 #
 # PRIMARY CONSOLE PROFILE MENU (runtime-pin-adoption-gap, slice 1). The console's
 # harness+model comes from a three-profile menu (console_profile_* below):
-# fable-5.1, opus-4-8 (Opus 4.8 only), and codex-luna (default). Select
+# fable-5.1 (default), opus-4-8 (Opus 4.8 only), and codex-luna. Select
 # with FM_CONSOLE_PROFILE or config/console-profile. An unqualified profile is
 # PENDING with its exact gate and is never silently substituted; the console is
 # $0/subscription-only at the composed launch. Worker and pipeline model profiles
@@ -258,7 +258,7 @@
 #         FM_ENTRY_COMPOSER_WAIT=<s>                     bound the convergence waits for a just-restored harness's composer to read empty (default 60)
 #         FM_ENTRY_STARTUP_WAIT=<s>                      bound for observed matching startup; default includes arm, projection and native preflight budgets
 #         FM_ENTRY_LIB=1 . enter-firstmate.sh            load only the pure decision functions (tests)
-#         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default codex-luna)
+#         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default fable-5.1)
 #         FM_HARNESS=<harness>                           explicit harness override (e.g. bash evidence runs); bypasses the profile menu
 #   Host paths (env override, else $FM_HOME/config/<name>): FM_CODE_ROOT/config code-root,
 #   FM_TOOLS_ROOT/config tools-root, FM_CONTROL_RESOLVER/config control-resolver,
@@ -517,15 +517,17 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 # harness + model + permission posture. Worker and pipeline model profiles are
 # SEPARATE owners (the code root's bin/fm-spawn.sh and config/crew-dispatch.json)
 # and are never switched from here. Invariants held at every profile:
-#   * codex-luna is the default, but the built-in qualified set does NOT follow
-#     the default (console_profile_builtin_qualified_set): codex-luna's evidence
-#     is account-specific, so a home qualifies it in its own config.
+#   * fable-5.1 is the built-in default, and the built-in qualified set is a
+#     SEPARATE fact (console_profile_builtin_qualified_set), never derived from
+#     the default. codex-luna rests on account-specific gpt-5.6-luna evidence, so
+#     a home selects it in config/console-profile and qualifies it in
+#     config/console-qualified-profiles rather than inheriting either here.
 #   * An unqualified profile is PENDING with its exact gate and is NEVER
 #     silently substituted for another; console_run refuses rather than launch.
 #   * $0 / subscription-only is enforced at the composed-launch boundary
 #     (console_argv_subscription_only): no API/gateway/provider override, no paid
 #     overage, and no invented budget flag is ever composed or accepted.
-console_profile_default() { printf 'codex-luna'; }
+console_profile_default() { printf 'fable-5.1'; }
 console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna'; }
 console_profile_harness() {  # <profile> -> claude | codex | ''
   case "${1:-}" in
@@ -573,7 +575,8 @@ console_profile_qualify() {
 # derived from console_profile_default: which profile is selected by default and
 # which profiles are qualified are separate facts, so changing the default never
 # qualifies or de-qualifies a profile. Only fable-5.1 is qualified here, on the
-# plan-generic subscription evidence that predates the Codex profiles.
+# plan-generic subscription evidence that predates the Codex profiles; it is
+# listed literally, not read back from the default.
 # codex-luna is NOT built in: gpt-5.6-luna was measured to work on THIS ChatGPT
 # account, and that evidence does not transfer to another home or account, so a
 # home grants it in its own config/console-qualified-profiles. opus-4-8 likewise

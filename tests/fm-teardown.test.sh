@@ -2788,6 +2788,47 @@ test_qualification_revoked_by_another_cause_still_refuses() {
   pass "a qualification invalidated by any other cause still refuses after the abort"
 }
 
+# The archive is the only durable copy of the handoff once teardown removes
+# $STATE/<task>.meta, and $DATA/<task> survives the teardown. An authorized
+# discard must therefore preserve it even when the producer has since revoked
+# the tuple - stating the qualification as it was OBSERVED, never as qualified.
+test_authorized_discard_preserves_a_revoked_completion_record() {
+  local case_dir rc archive
+  case_dir=$(make_case revoked-handoff-archive)
+  archive="$case_dir/data/task-x1/completion-receipt.json"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  qualified_ci_ready_meta "$case_dir" 01RUN
+  dispatched_ci_ready_handoff "$case_dir" 01RUN
+
+  rc=0
+  FM_FAKE_QUALIFICATION_REVOKED=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'revoked-handoff-archive: an unforced teardown must still refuse'
+  grep -q 'exact qualification is invalidated' "$case_dir/stderr" \
+    || fail "revoked-handoff-archive: the unforced refusal did not name the revoked qualification: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    'revoked-handoff-archive: the refused teardown erased the unresolved record'
+  assert_absent "$archive" \
+    'revoked-handoff-archive: a refusal archived a record it also retained'
+
+  rc=0
+  FM_FAKE_QUALIFICATION_REVOKED=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" || rc=$?
+  expect_code 0 "$rc" "revoked-handoff-archive: the authorized discard should complete: $(cat "$case_dir/stderr2")"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    'revoked-handoff-archive: the discarded task record survived'
+  assert_present "$archive" \
+    'revoked-handoff-archive: the authorized discard destroyed the only durable copy of the handoff'
+  [ "$(jq -r .receipt "$archive")" = 'stage:ci-ready:01RUN:https://github.com/o/r/pull/7' ] \
+    || fail 'revoked-handoff-archive: the archive lost the dispatched receipt'
+  [ "$(jq -r .archived.qualification "$archive")" = unproven ] \
+    || fail "revoked-handoff-archive: the archive reads as qualified when it was not: $(jq -c .archived "$archive")"
+  [ "$(jq -r .archived.reason "$archive")" = PRODUCER ] \
+    || fail "revoked-handoff-archive: the archive did not name the observed cause: $(jq -c .archived "$archive")"
+  pass "an authorized discard preserves a revoked completion record and states it as observed"
+}
+
 # The abort excuses the PRODUCER READ alone - a cancelled run cannot answer.
 # It never excuses the retained record itself, which no cancellation touches.
 # The authorized discard is the only path that runs the post-abort checks at
@@ -2816,8 +2857,10 @@ test_invalid_retained_qualification_is_never_adopted_after_the_abort() {
   expect_code 0 "$rc" "parked-run-invalid-tuple: the authorized discard should complete: $(cat "$case_dir/stderr")"
   assert_grep 'abort --run 01RUN' "$case_dir/nm-abort.log" \
     'parked-run-invalid-tuple: the post-abort checks were never reached'
-  assert_absent "$case_dir/data/task-x1/completion-receipt.json" \
-    'parked-run-invalid-tuple: an invalid retained tuple was archived as a qualified receipt'
+  # The authorized discard preserves the record, but preservation is not
+  # adoption: the archive must state the qualification it could not prove.
+  [ "$(jq -r .archived.qualification "$case_dir/data/task-x1/completion-receipt.json")" = unproven ] \
+    || fail "parked-run-invalid-tuple: an invalid retained tuple was archived as a qualified receipt"
   grep -q 'warning: exact qualification is invalidated' "$case_dir/stderr" \
     || fail "parked-run-invalid-tuple: the discard did not report what it could not qualify"
   pass "an invalid retained tuple is never adopted by the self-cancel allowance"
@@ -2953,6 +2996,7 @@ test_metadata_parse_refuses_a_duplicated_authority_field
 test_parked_own_run_teardown_survives_its_own_abort
 test_qualification_revoked_by_another_cause_still_refuses
 test_invalid_retained_qualification_is_never_adopted_after_the_abort
+test_authorized_discard_preserves_a_revoked_completion_record
 test_bound_run_without_ci_ready_tears_down
 test_bound_run_without_ci_ready_force_discards
 test_unreleased_handoff_refuses_then_force_discards

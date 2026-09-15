@@ -779,8 +779,26 @@ ci_ready_effect_of() {  # <qualified head> <qualification JSON>
     '{qualification:$qualification,task:$task,generation:$generation,attempt:$attempt,run:$run,candidate:$candidate,source_head:$source_head,pr:$pr}'
 }
 
+# What actually moved between the retained producer tuple and the one just
+# read. status, accumulating green evidence and push_generation each advance on
+# their own under the same pinned identity, and the validator allows
+# push_generation to stay put, so the report names the fields that differ
+# instead of asserting a delta in one that may not have moved. Empty when the
+# two tuples carry the same values.
+qualification_delta() {  # <retained tuple> <fresh tuple>
+  jq -rn --argjson prior "$1" --argjson fresh "$2" '
+    [ (($prior + $fresh) | keys_unsorted[]) as $k
+      | select(($fresh[$k] | tojson) != ($prior[$k] | tojson))
+      | ($prior[$k]) as $o | ($fresh[$k]) as $n
+      | if ([$o, $n] | any(type == "object" or type == "array"))
+           or (($o | tostring | length) > 32) or (($n | tostring | length) > 32)
+        then "\($k)=changed"
+        else "\($k)=\($o)->\($n)" end ]
+    | join(" ")' 2>/dev/null
+}
+
 do_ci_ready() (
-  local current effect saved contract qualified_head qualification recorded repeat CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification recorded repeat advanced CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -854,11 +872,10 @@ do_ci_ready() (
     # identity-equal repeat that must stay silent, so the adoption is reported.
     # unchanged revalidates before the record is rewritten, so what it pins
     # against is the prior recorded tuple rather than one it just wrote itself.
-    [ "$qualification" = "$repeat" ] \
-      || printf 'STAGE_QUALIFICATION_ADVANCED: task=%s run=%s push_generation=%s->%s\n' \
-           "$ID" "$(dash "$(meta stage_run)")" \
-           "$(printf '%s' "$repeat" | jq -r .push_generation)" \
-           "$(printf '%s' "$qualification" | jq -r .push_generation)"
+    advanced=$(qualification_delta "$repeat" "$qualification")
+    [ -z "$advanced" ] \
+      || printf 'STAGE_QUALIFICATION_ADVANCED: task=%s run=%s %s\n' \
+           "$ID" "$(dash "$(meta stage_run)")" "$advanced"
     unchanged ci-ready
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \

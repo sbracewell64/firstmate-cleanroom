@@ -128,28 +128,46 @@ fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
 # under the existing durable task report directory before removing metadata.
 # The caller holds the task metadata lock. No archived receipt is input to
 # execution reconciliation or a replacement source of task authority.
-fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check]
-  local saved=$1 data_dir=$2 task=$3 contract identity receipt dir tmp
-  local ID=$3
+# Modes: --check proves without writing; no flag archives only what it proved;
+# --force archives a structurally valid record whatever the proof said, because
+# the caller has authorized the discard and $STATE/<task>.meta is the record's
+# only other copy while $DATA/<task> survives. Whether the CI-ready effect is
+# still provable is written into the archive as observed and decides the return
+# status; it never decides whether the evidence is kept. The archive is what
+# happened, never a claim that the thing is qualified now.
+fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check|--force]
+  local saved=$1 data_dir=$2 task=$3 mode=${4:-} contract identity receipt dir tmp
+  local ID=$3 qualification=current reason= rc=0
   [ -n "$saved" ] || return 0
   contract=$(printf '%s' "$saved" | jq -cS .contract 2>/dev/null) || return 1
   fm_completion_contract_valid "$contract" || return 1
   identity=$(fm_completion_hash "$contract") || return 1
   receipt="stage:ci-ready:$(printf '%s' "$contract" | jq -r .run):$(printf '%s' "$contract" | jq -r .action.pr)"
-  printf '%s' "$saved" | jq -e --arg identity "$identity" --arg task "$task" --arg receipt "$receipt" '
-    .identity == $identity and .contract.task == $task and
-    .contract.action.kind == "ci-ready" and .status == "dispatched" and .receipt == $receipt
+  printf '%s' "$saved" | jq -e --arg identity "$identity" --arg task "$task" '
+    .identity == $identity and .contract.task == $task
   ' >/dev/null 2>&1 || return 1
-  # shellcheck source=bin/fm-pr-lib.sh
-  . "$SCRIPT_DIR/fm-pr-lib.sh"
-  fm_completion_ci_ready_effect "$contract" "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta" || return 1
-  [ "${4:-}" != --check ] || return 0
+  if ! printf '%s' "$saved" | jq -e --arg receipt "$receipt" '
+      .contract.action.kind == "ci-ready" and .status == "dispatched" and .receipt == $receipt
+    ' >/dev/null 2>&1; then
+    qualification=unproven; reason=NOT_CLOSED_CI_READY; rc=1
+  else
+    # shellcheck source=bin/fm-pr-lib.sh
+    . "$SCRIPT_DIR/fm-pr-lib.sh"
+    if ! fm_completion_ci_ready_effect "$contract" "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta"; then
+      qualification=unproven; reason=${FM_NM_EFFECT_REASON:-EFFECT_UNCONFIRMED}; rc=1
+    fi
+  fi
+  [ "$mode" != --check ] || return "$rc"
+  [ "$rc" -eq 0 ] || [ "$mode" = --force ] || return "$rc"
   dir="$data_dir/$task"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1
-  if ! printf '%s\n' "$saved" > "$tmp" || ! mv "$tmp" "$dir/completion-receipt.json"; then
+  if ! printf '%s' "$saved" | jq -c --arg qualification "$qualification" --arg reason "$reason" \
+        '. + {archived:{qualification:$qualification,reason:(if $reason == "" then null else $reason end)}}' > "$tmp" \
+      || ! mv "$tmp" "$dir/completion-receipt.json"; then
     rm -f "$tmp"; return 1
   fi
+  return "$rc"
 }
 
 fm_completion_target_current() {

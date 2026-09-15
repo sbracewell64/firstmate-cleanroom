@@ -341,12 +341,24 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   expect_code 0 "$rc" "an advanced producer must not refuse an unchanged repeat (got: $out)"
   assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "a producer advance is not a new ci-ready transaction"
   assert_contains "$out" "STAGE_QUALIFICATION_ADVANCED: task=a1" "the adopted producer advance was not reported"
+  assert_contains "$out" "push_generation=1->2" "the report did not name the push generation that moved"
+  assert_contains "$out" "evidence=changed" "the report did not name the evidence that moved"
   [ "$(stage_lines a1)" = "$before_lines" ] \
     || fail "an advanced producer appended a duplicate ci-ready receipt"
   [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.push_generation)" = 2 ] \
     || fail "the unchanged repeat left the superseded producer tuple recorded"
   out=$("$STAGE" a1 show 2>&1); rc=$?
   expect_code 0 "$rc" "the refreshed tuple must keep later authority uses current (got: $out)"
+  # A run that finishes without a re-push moves .status alone. The report must
+  # name that, and must not assert a push-generation delta that never happened.
+  meta_get a1 stage_ci_ready_effect | jq -c '.qualification | .status="running"' \
+    > "$FM_TEST_QUALIFICATION_FILE"
+  out=$("$STAGE" a1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 0 "$rc" "a status-only producer move must not refuse the repeat (got: $out)"
+  assert_contains "$out" "status=completed->running" "the report did not name the status that moved"
+  assert_not_contains "$out" "push_generation=" "the report asserted a push-generation delta that did not happen"
+  [ "$(meta_get a1 stage_ci_ready_effect | jq -r .qualification.status)" = running ] \
+    || fail "the status-only advance was not adopted"
   # (3) EVERYTHING ELSE. A repeat is pinned against the RECORDED tuple exactly
   # as show and landing are, so a producer answering with a moved identity is
   # refused rather than published over the record without a receipt.

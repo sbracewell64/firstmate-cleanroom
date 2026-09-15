@@ -122,7 +122,10 @@ test_positive_receipt_retirement_archive() {
     fm_completion_retire "$2" "$3" source
   ' _ "$ROOT" "$(meta completion_handoff)" "$FM_DATA_OVERRIDE") || rc=$?
   expect_code 0 "$rc" "closed stage receipt archive: $out"
-  [ "$(cat "$FM_DATA_OVERRIDE/source/completion-receipt.json")" = "$(meta completion_handoff)" ] || fail 'retirement archive lost contract/receipt bytes'
+  [ "$(jq -c 'del(.archived)' "$FM_DATA_OVERRIDE/source/completion-receipt.json")" = "$(meta completion_handoff | jq -c .)" ] \
+    || fail 'retirement archive lost contract/receipt bytes'
+  [ "$(jq -r .archived.qualification "$FM_DATA_OVERRIDE/source/completion-receipt.json")" = current ] \
+    || fail 'a proven archive did not record the qualification it proved'
   pass 'positive stage-effect receipt retirement preserves the exact non-executable durable archive (portable owner-level call)'
 }
 

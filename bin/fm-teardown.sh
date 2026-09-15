@@ -293,7 +293,10 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
 # never qualify - must still leave its archive behind.
 teardown_completion_current() {  # <--check|--archive>
   local -a retire=()
-  [ "$1" = --archive ] || retire=(--check)
+  case "$1" in
+    --archive) [ "$FORCE" != --force ] || retire=(--force) ;;
+    *) retire=(--check) ;;
+  esac
   if fm_nm_recorded_qualification_obligated "$META"; then
     fm_nm_effect_current "$META" >/dev/null || {
       [ "$FORCE" = --force ] || {

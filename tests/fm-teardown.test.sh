@@ -2826,7 +2826,40 @@ test_authorized_discard_preserves_a_revoked_completion_record() {
     || fail "revoked-handoff-archive: the archive reads as qualified when it was not: $(jq -c .archived "$archive")"
   [ "$(jq -r .archived.reason "$archive")" = PRODUCER ] \
     || fail "revoked-handoff-archive: the archive did not name the observed cause: $(jq -c .archived "$archive")"
+  ! grep -q 'the completion archive could not be written' "$case_dir/stderr2" \
+    || fail "revoked-handoff-archive: a successful archive write reported the write-failure cause"
   pass "an authorized discard preserves a revoked completion record and states it as observed"
+}
+
+# Teardown is about to remove the only other copy of the record, so a failure
+# to WRITE the archive must never reach the operator as the same note that
+# means "the qualification could not be proven".
+test_unwritable_archive_is_reported_as_its_own_cause() {
+  local case_dir rc
+  case_dir=$(make_case unwritable-handoff-archive)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  qualified_ci_ready_meta "$case_dir" 01RUN
+  dispatched_ci_ready_handoff "$case_dir" 01RUN
+  chmod 500 "$case_dir/data/task-x1"
+  if : > "$case_dir/data/task-x1/.writable-probe" 2>/dev/null; then
+    rm -f "$case_dir/data/task-x1/.writable-probe"
+    chmod 700 "$case_dir/data/task-x1"
+    pass 'unwritable-archive case skipped because permissions cannot deny writes'
+    return
+  fi
+
+  rc=0
+  FM_FAKE_QUALIFICATION_REVOKED=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  chmod 700 "$case_dir/data/task-x1"
+
+  expect_code 0 "$rc" "unwritable-handoff-archive: the authorized discard should complete: $(cat "$case_dir/stderr")"
+  grep -q 'the completion archive could not be written' "$case_dir/stderr" \
+    || fail "unwritable-handoff-archive: the lost archive was not reported as its own cause: $(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/data/task-x1/completion-receipt.json" \
+    'unwritable-handoff-archive: the fixture did not actually prevent the write'
+  pass "an archive that could not be written is reported as its own cause, never as an unresolved handoff"
 }
 
 # The abort excuses the PRODUCER READ alone - a cancelled run cannot answer.
@@ -2997,6 +3030,7 @@ test_parked_own_run_teardown_survives_its_own_abort
 test_qualification_revoked_by_another_cause_still_refuses
 test_invalid_retained_qualification_is_never_adopted_after_the_abort
 test_authorized_discard_preserves_a_revoked_completion_record
+test_unwritable_archive_is_reported_as_its_own_cause
 test_bound_run_without_ci_ready_tears_down
 test_bound_run_without_ci_ready_force_discards
 test_unreleased_handoff_refuses_then_force_discards

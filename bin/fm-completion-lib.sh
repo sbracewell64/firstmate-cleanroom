@@ -135,6 +135,9 @@ fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
 # still provable is written into the archive as observed and decides the return
 # status; it never decides whether the evidence is kept. The archive is what
 # happened, never a claim that the thing is qualified now.
+# Exit 1 is an unresolved or unreadable record; exit 3 is a record this could
+# not PRESERVE. The caller is about to remove the only other copy, so those two
+# must never reach the operator as one message.
 fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check|--force]
   local saved=$1 data_dir=$2 task=$3 mode=${4:-} contract identity receipt dir tmp
   local ID=$3 qualification=current reason= rc=0
@@ -160,12 +163,12 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check|--force]
   [ "$mode" != --check ] || return "$rc"
   [ "$rc" -eq 0 ] || [ "$mode" = --force ] || return "$rc"
   dir="$data_dir/$task"
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 1
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 3
+  tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 3
   if ! printf '%s' "$saved" | jq -c --arg qualification "$qualification" --arg reason "$reason" \
         '. + {archived:{qualification:$qualification,reason:(if $reason == "" then null else $reason end)}}' > "$tmp" \
       || ! mv "$tmp" "$dir/completion-receipt.json"; then
-    rm -f "$tmp"; return 1
+    rm -f "$tmp"; return 3
   fi
   return "$rc"
 }

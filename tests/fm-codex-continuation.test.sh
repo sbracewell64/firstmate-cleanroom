@@ -38,6 +38,16 @@ stop '{"stop_hook_active":true,"session_id":"empty"}' > empty.out 2>&1
 printf 'kind=ship\nharness=echo\n' > state/demo.meta
 rc=0; stop '{"stop_hook_active":true,"session_id":"blind"}' > blind.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
+# No watcher is a watcher fault, not a continuation-owner fault: the durable
+# receipt and the operator line must both send the reader to the right owner.
+grep -q 'CONTINUATION_REQUIRED: watcher-unhealthy;' blind.out
+grep -qx 'reason=watcher-unhealthy' state/.turnend-codex-blocks
+# A malformed Stop payload is the harness's fault, and it is answered before
+# the watcher or the continuation owner is consulted at all.
+rc=0; stop '{"stop_hook_active":"true","session_id":"badpayload"}' > badpayload.out 2>&1 || rc=$?
+[ "$rc" = 2 ]
+grep -q 'CONTINUATION_REQUIRED: stop-payload-invalid;' badpayload.out
+grep -qx 'reason=stop-payload-invalid' state/.turnend-codex-blocks
 # Real Cursor discriminator excludes the compatibility copy only.
 stop '{"cursor_version":"2026.08.11","stop_hook_active":true}' > cursor.out 2>&1
 [ ! -s cursor.out ]
@@ -58,6 +68,10 @@ until [ -f state/.supervise-daemon.lock/continuation ] && [ -f state/.watch.lock
 rc=0; stop '{"stop_hook_active":true,"session_id":"shell-owner"}' > shell-owner.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
 grep -q CONTINUATION_REQUIRED shell-owner.out
+# Payload and watcher are both healthy here, so this is the one case that is
+# genuinely a continuation-owner fault.
+grep -q 'CONTINUATION_REQUIRED: continuation-owner-unverified;' shell-owner.out
+grep -qx 'reason=continuation-owner-unverified' state/.turnend-codex-blocks
 printf 'ok - configured Stop refuses a shell owner despite real private daemon/watcher custody\n'
 
 # Predicate-level units: double ONLY native session membership so later checks

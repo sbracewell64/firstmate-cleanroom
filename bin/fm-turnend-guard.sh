@@ -185,14 +185,23 @@ if [ "$CODEX_MODE" -eq 1 ]; then
     fm_run_timed 10 "$SCRIPT_DIR/fm-continuation-resolve.sh" reconcile >&2 || \
       printf 'CONTINUATION_CNO: bounded reconciliation incomplete; durable obligations retained\n' >&2
   fi
-  if [ "$STOP_HOOK_ACTIVE" != invalid ] \
-    && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" \
-    && fm_codex_continuation_owned "$STATE" "$FM_HOME" "$(cd "$SCRIPT_DIR/.." && pwd -P)"; then
+  # Three independently reachable causes, evaluated in the order the allow
+  # conjunction had them so the short-circuit is unchanged. Each names itself:
+  # the durable reason= and both operator lines carry the cause that actually
+  # failed, because a malformed harness payload and a dead watcher send the
+  # operator somewhere other than daemon custody.
+  if [ "$STOP_HOOK_ACTIVE" = invalid ]; then
+    CONTINUATION_CAUSE=stop-payload-invalid
+  elif ! fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+    CONTINUATION_CAUSE=watcher-unhealthy
+  elif ! fm_codex_continuation_owned "$STATE" "$FM_HOME" "$(cd "$SCRIPT_DIR/.." && pwd -P)"; then
+    CONTINUATION_CAUSE=continuation-owner-unverified
+  else
     exit 0
   fi
   # JSON encoding keeps an arbitrary vendor session value on one record line.
   SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -c '.session_id // "unknown"' 2>/dev/null || printf '"invalid"')
-  fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "continuation-owner-unverified"
+  fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "$CONTINUATION_CAUSE"
   exit $?
 fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then

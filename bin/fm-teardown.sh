@@ -293,6 +293,7 @@ fm_backlog_record_present "$META" "task record" "$STATE" || {
 # never qualify - must still leave its archive behind.
 teardown_completion_current() {  # <--check|--archive>
   local -a retire=()
+  local completion_rc=0
   case "$1" in
     --archive) [ "$FORCE" != --force ] || retire=(--force) ;;
     *) retire=(--check) ;;
@@ -307,13 +308,21 @@ teardown_completion_current() {  # <--check|--archive>
     }
   fi
   if grep -q '^completion_handoff=' "$META"; then
-    fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" || {
+    fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" \
+      || completion_rc=$?
+    if [ "$completion_rc" -eq 3 ]; then
+      [ "$FORCE" = --force ] || {
+        echo "REFUSED: the completion archive could not be written under $DATA/$ID; fm-stage retains task $ID" >&2
+        return 1
+      }
+      echo "warning: the completion archive could not be written under $DATA/$ID; the discarded handoff for task $ID is preserved nowhere" >&2
+    elif [ "$completion_rc" -ne 0 ]; then
       [ "$FORCE" = --force ] || {
         echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2
         return 1
       }
       echo "warning: completion handoff remains unresolved or unreadable; discarding task $ID under the authorized --force" >&2
-    }
+    fi
   fi
 }
 if grep -q '^completion_handoff=' "$META"; then

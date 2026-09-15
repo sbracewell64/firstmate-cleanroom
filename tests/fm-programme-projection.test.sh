@@ -464,7 +464,7 @@ test_not_configured_and_summary() {
 # The same separation is what lets an exit-3 refusal still reach the caller: it
 # is the resolver's stderr, mirrored, with stdout left empty.
 test_resolver_stderr_is_not_the_typed_result() {
-  local home fakebin out err rc noise
+  local home fakebin out err rc noise unstageable
   home=$(make_home noisy-stderr)
   disposition "$home" proof-a 1 PROVED
   noise="bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching \`)'"
@@ -496,6 +496,18 @@ SH
   err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null)
   assert_contains "$err" "unexpected EOF" "the noisy resolver stub must actually write to stderr"
 
+  # A diagnostic aid must never fail the operation it is diagnosing. With nowhere
+  # to stage the resolver's stderr, the read still succeeds and the diagnostics
+  # still reach the operator - they simply pass straight through instead of being
+  # quotable back inside a refusal.
+  unstageable="$TMP_ROOT/no-such-tmpdir"
+  [ ! -e "$unstageable" ] || fail "the unstageable-diagnostics fixture must not exist"
+  out=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null) \
+    || fail "diagnostics that could not be staged failed the read they were diagnosing"
+  [ "$(field "$out" '.next_action')" = proof-b ] || fail "next action with unstageable diagnostics: $(field "$out" '.next_action')"
+  err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null)
+  assert_contains "$err" "unexpected EOF" "unstageable diagnostics still reach the operator's stderr"
+
   # Corrupt STDOUT is still the defect it always was, and the refusal now names
   # the bytes it received instead of discarding them.
   cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'
@@ -507,6 +519,9 @@ SH
   expect_code 1 "$rc" "a resolver whose stdout is not the typed schema is refused"
   assert_contains "$err" "unrecognized result schema" "the refusal still names the schema failure"
   assert_contains "$err" "not a typed result" "the refusal names the bytes it actually received"
+  err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
+  assert_contains "$err" "not a typed result" "the refusal still names the bytes received when diagnostics cannot be staged"
+  assert_contains "$err" "diagnostics: unavailable" "the refusal names the diagnostics as unavailable rather than as absent"
 
   # An exit-3 refusal is the resolver's stderr, mirrored, with stdout empty.
   cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'

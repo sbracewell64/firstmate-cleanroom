@@ -41,7 +41,8 @@ An emitting command counts wherever a command can start, so one that follows `th
 That list is enumerated rather than derived, so an emitting command introduced by some other opener is a residue rather than a rule.
 A heredoc is recognised whether its delimiter follows `<<` directly or after whitespace, and an arithmetic shift inside `$(( ))` or `(( ))` is read as a shift rather than as an opener.
 A command is assembled across its backslash continuations first, joined only on an odd count of trailing backslashes, so the tail of a multi-line `printf` is dropped with its first line instead of surviving as a call.
-Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
+Command substitutions inside that text survive, so a genuine call spelled inside an emitted string is still a named reference.
+A segment ends at a control operator as well, so only the emitting command's own arguments go: `bin/fm-turnend-guard-cursor.sh` keeps its `printf '%s' "$PAYLOAD" | "$SCRIPT_DIR/fm-turnend-guard.sh" --cursor` call on the far side of the pipe.
 
 A subcommand token must appear near the script's name rather than merely somewhere in the same file: it has to fall within 200 characters after the basename.
 A long option is not held to that window; once the basename appears in the file, a word-bounded option token anywhere in the same file satisfies the reference, and the bound below records what that costs.
@@ -186,7 +187,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058408
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058513
 ```
 
 ```sh
@@ -202,10 +203,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T02:53:38Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=14177 gate_skip=false
-FM_TEST_END 2026-09-15T02:53:39Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=865 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=15110
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=15042 failed=0
+FM_TEST_END 2026-09-15T03:13:58Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=14591 gate_skip=false
+FM_TEST_END 2026-09-15T03:13:58Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=862 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=15518
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=15453 failed=0
 ```
 
 ## Adding an entry point

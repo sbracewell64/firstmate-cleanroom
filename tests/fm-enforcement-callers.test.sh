@@ -713,14 +713,23 @@ FIX
 
 test_metacharacter_adjacent_comment_is_not_a_call() {
   local repo="$TMP_ROOT/metachar-comment"
-  write_fixture "$repo"
-  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+  local prefix
+
+  # One arm per character the rule calls a word break, because a rule proven on
+  # one character says nothing about its siblings.
+  # Each was confirmed against real bash: `bash -c 'true;# echo REACHED'`,
+  # `bash -c 'true &# echo REACHED'`, `bash -c 'echo hi|#cat'` and
+  # `bash -c '(#echo REACHED'` all read the `#` as opening a comment.
+  for prefix in ';' '&' '|' '('; do
+    write_fixture "$repo"
+    cat > "$repo/bin/fm-widget-consumer.sh" <<FIX
 #!/usr/bin/env bash
 set -eu
-mkdir -p "${TMPDIR:-/tmp}/widgets";# bin/fm-widget.sh enforce runs upstream
+mkdir -p "\${TMPDIR:-/tmp}/widgets"${prefix}# bin/fm-widget.sh enforce runs upstream
 FIX
-  git -C "$repo" add -A
-  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+    git -C "$repo" add -A
+    run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  done
   pass "a comment opened right after a shell metacharacter is not read as a call"
 }
 

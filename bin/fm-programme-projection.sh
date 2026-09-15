@@ -224,6 +224,15 @@ RESOLUTION=''
 # a failure is read from stderr and never from stdout, and an unstageable
 # diagnostic degrades to the same "unavailable" text everywhere. Do not unify the
 # exit-3 difference away.
+#
+# Exit 3 is also why the UNSTAGEABLE path differs. This script leaves the
+# resolver's stderr unredirected there, so the diagnostic still reaches the
+# caller; the four embedding sites cannot, because an unredirected stream is
+# delivered before the exit code is known and so cannot be withheld on exit 3,
+# which would put "no programme configured" in front of an operator on every
+# ordinary call from a home that has none. They discard it instead and say so
+# through the "unavailable" text. That is a real trade between routing the
+# diagnostic and honouring the exit-3 silence, not an oversight.
 # Bash cannot separate the two streams in memory without a redirection trick, and
 # a trick in the very code whose output corruption is under investigation is not
 # worth the cleverness, so the diagnostics are staged through a file - but a

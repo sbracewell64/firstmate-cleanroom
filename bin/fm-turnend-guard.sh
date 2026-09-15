@@ -32,12 +32,14 @@
 # primary checkout - the main home or a genuinely marked secondmate home - and
 # stay a silent, fast no-op inside child task worktrees.
 #
-# Loop-guard, codex/Grok (default) mode: never block twice in the same turn.
+# Loop-guard, legacy cross-harness/Grok (default) mode: never block twice in the same turn.
 # Codex uses stop_hook_active and Grok uses stopHookActive; typed camel-case
 # takes precedence when both spellings are present. A true value means the
 # current stop attempt already follows a block, so this guard always allows it.
 # Passive harness adapters provide their own one-follow-up guard before calling
 # this script.
+# The configured Codex hook selects --codex instead; its post-final custody and
+# bounded CNO recovery are owned by bin/fm-codex-continuation-lib.sh.
 # That bounds those harnesses to at most one forced continuation per turn -
 # never a wedged, un-endable session - while still nagging again on a later turn
 # if the problem persists.
@@ -75,6 +77,7 @@ GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
 CURSOR_MODE=0
+CODEX_MODE=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -86,7 +89,8 @@ for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
     --cursor) CURSOR_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
+    --codex) CODEX_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--cursor|--codex]" >&2; exit 2 ;;
   esac
 done
 
@@ -124,8 +128,11 @@ STOP_HOOK_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '
     if ((.stop_hook_active | type) == "boolean") then .stop_hook_active else error("stop_hook_active") end
   else false
   end
-' 2>/dev/null) || exit 0
-if [ "$CLAUDE_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
+' 2>/dev/null) || {
+  [ "$CODEX_MODE" -eq 1 ] || exit 0
+  STOP_HOOK_ACTIVE=invalid
+}
+if [ "$CLAUDE_MODE" -eq 0 ] && [ "$CODEX_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
@@ -164,6 +171,30 @@ fm_supervision_status "$STATE" "$GRACE"
 if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
+fi
+if [ "$CODEX_MODE" -eq 1 ]; then
+  # shellcheck source=bin/fm-session-lock-lib.sh
+  . "$SCRIPT_DIR/fm-session-lock-lib.sh"
+  # shellcheck source=bin/fm-codex-continuation-lib.sh
+  . "$SCRIPT_DIR/fm-codex-continuation-lib.sh"
+  # Three independently reachable causes, evaluated in the order the allow
+  # conjunction had them so the short-circuit is unchanged. Each names itself:
+  # the durable reason= and both operator lines carry the cause that actually
+  # failed, because a malformed harness payload and a dead watcher send the
+  # operator somewhere other than daemon custody.
+  if [ "$STOP_HOOK_ACTIVE" = invalid ]; then
+    CONTINUATION_CAUSE=stop-payload-invalid
+  elif ! fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+    CONTINUATION_CAUSE=watcher-unhealthy
+  elif ! fm_codex_continuation_owned "$STATE" "$FM_HOME" "$(cd "$SCRIPT_DIR/.." && pwd -P)"; then
+    CONTINUATION_CAUSE=continuation-owner-unverified
+  else
+    exit 0
+  fi
+  # JSON encoding keeps an arbitrary vendor session value on one record line.
+  SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -c '.session_id // "unknown"' 2>/dev/null || printf '"invalid"')
+  fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "$CONTINUATION_CAUSE"
+  exit $?
 fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0

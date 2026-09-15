@@ -1630,6 +1630,13 @@ fm_super_main() {
     exit 1
   fi
 
+  # Publish only in this daemon's owned lock. Older daemons, different roots,
+  # and changed primary sessions cannot confer post-final Codex custody.
+  # shellcheck source=bin/fm-codex-continuation-lib.sh
+  . "$FM_DAEMON_DIR/fm-codex-continuation-lib.sh"
+  fm_codex_continuation_publish "$STATE" "$FM_HOME" "$(cd "$FM_DAEMON_DIR/.." && pwd -P)" "$BACKEND" "$TARGET" || \
+    log "Codex continuation custody unconfirmed; Stop must retain its bounded refusal"
+
   local afk_status="off"
   afk_active "$STATE" && afk_status="on"
   log "daemon starting (pid $$); target=$TARGET; target_source=$target_source; backend=$BACKEND; backend_source=$backend_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"
@@ -1648,6 +1655,7 @@ fm_super_main() {
     if [ -n "${CUR_TMP:-}" ]; then
       rm -f "$CUR_TMP" 2>/dev/null || true
     fi
+    rm -f "$LOCK/continuation" "$LOCK/continuation.tmp" 2>/dev/null || true
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
     log "daemon shutting down"

@@ -1281,6 +1281,10 @@ test_restart_records_whether_its_stop_was_confirmed() {
     PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" "$@"
   }
+  resume_stopped_holder() {
+    [ -n "${stopped_pid:-}" ] || return 0
+    kill -CONT "$stopped_pid" 2>/dev/null || true
+  }
 
   restart_case_arm > "$arm_out" 2>/dev/null &
   arm_pid=$!
@@ -1325,26 +1329,30 @@ test_restart_records_whether_its_stop_was_confirmed() {
   touch -t 200001010000 "$state/.last-watcher-beat"
   status=0
   restart_case_arm --restart > "$second_out.restart" 2> "$second_err" || status=$?
-  kill -CONT "$stopped_pid" 2>/dev/null || true
 
+  # Every assertion below that depends on the holder still existing runs while it
+  # is still SIGSTOPped, so none of them can race the close path the pending stops
+  # release. is_live_non_zombie already reads a stopped process as live.
   is_live_non_zombie "$stopped_pid" \
-    || { reap "$arm_pid"; fail "the stop-proof holder was collected, so this case proves nothing about an unconfirmed stop"; }
+    || { resume_stopped_holder; reap "$arm_pid"; fail "the stop-proof holder was collected, so this case proves nothing about an unconfirmed stop"; }
   grep -q 'restart_stop=unconfirmed' "$state/.watch-cycle-exits.log" \
-    || { reap "$arm_pid"; fail "a --restart that could not confirm its stop did not record the unconfirmed disposition"; }
+    || { resume_stopped_holder; reap "$arm_pid"; fail "a --restart that could not confirm its stop did not record the unconfirmed disposition"; }
   [ "$status" -ne 0 ] \
-    || { reap "$arm_pid"; fail "--restart reported success while the watcher it never confirmed stopped still held the lock"; }
+    || { resume_stopped_holder; reap "$arm_pid"; fail "--restart reported success while the watcher it never confirmed stopped still held the lock"; }
 
   # The exclusion the unconfirmed case rests on, proven rather than assumed: the
   # relaunched watcher stands down against the still-live recorded holder instead
   # of running beside it, so one live watcher remains and it is still that holder.
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   [ "$lock_pid" = "$stopped_pid" ] \
-    || { reap "$arm_pid"; fail "a second watcher took the singleton lock beside the one that was never confirmed stopped"; }
+    || { resume_stopped_holder; reap "$arm_pid"; fail "a second watcher took the singleton lock beside the one that was never confirmed stopped"; }
+
+  resume_stopped_holder
   grep -qF "lock held by live pid $stopped_pid" "$second_err" \
     || { reap "$arm_pid"; fail "the relaunched watcher did not stand down against the live recorded holder"; }
 
   reap "$arm_pid"
-  unset -f restart_case_arm
+  unset -f restart_case_arm resume_stopped_holder
   pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
 }
 

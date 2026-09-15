@@ -1418,6 +1418,14 @@ test_close_path_publishes_under_marker_lock_contention() {
     i=$((i + 1))
   done
   [ -e "$state/.last-watcher-beat" ] || { reap "$watcher"; fail "watcher never reached its poll loop"; }
+  # The watcher takes this lock briefly during its own startup, so the premise is
+  # that it has been GIVEN BACK, not that it was never held. Wait for that rather
+  # than sampling the instant the beacon appears.
+  i=0
+  while [ "$i" -lt 100 ] && [ -e "$state/.watcher-down.lock" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
   [ -e "$state/.watcher-down.lock" ] \
     && { reap "$watcher"; fail "the marker lock must be free before this close begins"; }
 

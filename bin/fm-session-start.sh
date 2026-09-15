@@ -683,8 +683,13 @@ print_programme_continuation() {
     rm -f -- "$errfile"
   else
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>/dev/null) || rc=$?
-    diag='resolver diagnostics unavailable: they could not be staged'
+    diag='resolver diagnostics: unavailable, they could not be staged'
   fi
+  # Separating the streams means ROUTING both, not discarding one, so the
+  # captured stderr is relayed here rather than dropped on a successful
+  # resolve; bin/fm-programme-projection.sh states that policy in full,
+  # including why exit 3 is the one deliberate exception.
+  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then

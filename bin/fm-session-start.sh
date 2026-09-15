@@ -953,6 +953,7 @@ else
   else
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh") || DRAIN_RC=$?
     DRAIN_DIAG=
+    [ -z "$DRAIN_OUT" ] || DRAIN_DIAG='wake drain diagnostics could not be staged, so its WAKE_ACK_REQUIRED acknowledgement instruction went to this hook stderr rather than into the section above.'
   fi
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"

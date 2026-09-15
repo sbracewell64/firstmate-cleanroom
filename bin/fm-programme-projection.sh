@@ -211,6 +211,19 @@ RESOLUTION=''
 # script's stderr on every path, so a real diagnostic still reaches an operator
 # while stdout stays exactly the typed document. An unparseable stdout names what
 # it actually received, and exit 3 is still mirrored with stdout left empty.
+#
+# THIS SCRIPT IS THE ONLY ONE OF THE FIVE RESOLVER CALL SITES THAT RELAYS ON EXIT
+# 3, and that difference is deliberate rather than an oversight: exit 3 is the
+# ordinary "no programme configured" state, which the four embedding sites
+# (bin/fm-fleet-snapshot.sh, bin/fm-session-start.sh, bin/fm-supervise-daemon.sh,
+# bin/fm-programme-presentation-lib.sh) report typed and silently, while this
+# script mirrors the refusal to its own caller and so must carry its reason.
+# Every other rule is identical at all five: stdout is the typed result, stderr is
+# captured separately, it is relayed on exit 0 as well as on any other failure -
+# separating the streams means routing both, not discarding one - the reason for
+# a failure is read from stderr and never from stdout, and an unstageable
+# diagnostic degrades to the same "unavailable" text everywhere. Do not unify the
+# exit-3 difference away.
 # Bash cannot separate the two streams in memory without a redirection trick, and
 # a trick in the very code whose output corruption is under investigation is not
 # worth the cleverness, so the diagnostics are staged through a file - but a
@@ -226,11 +239,11 @@ read_resolution() {
   if [ -n "$RESOLVER_ERRFILE" ]; then
     out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
     diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
-    [ -z "$diag" ] || diag_suffix=" (resolver diagnostics: $(printf '%s' "$diag" | head -c 400))"
   else
     out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}) || rc=$?
-    diag_suffix=' (resolver diagnostics: unavailable, they could not be staged and went straight to stderr)'
+    diag='resolver diagnostics: unavailable, they could not be staged'
   fi
+  [ -z "$diag" ] || diag_suffix=" ($(printf '%s' "$diag" | head -c 400))"
   projection_cleanup
   case "$rc" in
     0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;

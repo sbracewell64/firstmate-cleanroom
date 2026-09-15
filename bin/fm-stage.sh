@@ -32,7 +32,7 @@
 # STAGE_REFUSED is the ONE line that means the named stage's lifecycle effect
 # does NOT exist, and it never accompanies a STAGE receipt or a next: line.
 # Every other non-zero disposition - COMPLETION_CNO, COMPLETION_PENDING,
-# STAGE_QUALIFICATION_CNO - leaves an effect that DOES exist: the record keeps
+# STAGE_QUALIFICATION_CNO, STAGE_UNRESOLVED - leaves an effect that DOES exist: the record keeps
 # it, next: still prints, and the status only reports what is separately
 # unresolved. A consumer tells the two apart on that token, never on the exit
 # status or the wording.
@@ -59,8 +59,11 @@
 # accepts a mechanically verified completed successor through fm-nm-run-lib.sh),
 # NOT_ADMITTED, RUN_ACTIVE, HOLD_APPEARED, MISSING_BINDING, DAEMON_RESET,
 # RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK, ENGINEERING_CONTEXT,
-# ENGINEERING_EVIDENCE. Exit 2 is a usage error or an
-# unreadable record.
+# ENGINEERING_EVIDENCE, QUALIFICATION_REVOKED, DESTINATION_MISMATCH,
+# STALE_BINDING. The same reason codes appear on STAGE_UNRESOLVED, which
+# carries one of them when the record ALREADY holds the named stage, so the
+# condition is unresolved rather than the effect absent. Exit 2 is a usage
+# error or an unreadable record.
 #
 # Transitions:
 #   committed  The worker runs this after its implementation commit. It records
@@ -110,8 +113,11 @@
 #              identity, or the candidate head reachable from the project
 #              clone's checked-out head. No read-back refuses as NO_READBACK;
 #              nothing here fetches, merges, or syncs.
-#   show       Revalidates the recorded qualification first, so a revoked
-#              qualification refuses before anything is printed; otherwise
+#   show       Revalidates the recorded qualification first. show applies
+#              nothing, so a revoked qualification does not unmake the recorded
+#              stage: it REPORTS STAGE_QUALIFICATION_CNO and continues, still
+#              printing the recorded stage and its `next:` line, and exits
+#              non-zero. Otherwise it
 #              prints the recorded stage and its `next:` line, then reconciles
 #              canonical observations and admitted completion handoffs.
 #              NOT read-only: that revalidation is the shared qualification
@@ -290,6 +296,17 @@ OBS_RC=0
 OBS_OUT=
 
 refuse() {  # <transition> <CODE> <detail>
+  # The record already carries this stage, so the condition below is
+  # unresolved, not the effect absent. Neither line is suppressed: a
+  # STAGE_QUALIFICATION_CNO already printed for the same invocation states a
+  # true thing, and this condition is a real one; only the token moves, so a
+  # consumer never receives both answers for one transition.
+  if stage_effect_recorded "$1"; then
+    printf 'STAGE_UNRESOLVED: transition=%s task=%s reason=%s %s; the record is at %s and its lifecycle effect stands\n' \
+      "$1" "$ID" "$2" "$3" "$(dash "$(meta stage)")"
+    next_for "$(meta stage)"
+    exit 1
+  fi
   printf 'STAGE_REFUSED: transition=%s task=%s reason=%s %s\n' "$1" "$ID" "$2" "$3"
   exit 1
 }
@@ -305,11 +322,25 @@ refuse() {  # <transition> <CODE> <detail>
 # So the already-recorded revalidation reports, keeps its next: line, and still
 # exits non-zero. One line per invocation whichever revalidation point reaches
 # it first, so a caller that revalidates twice never reports twice.
-stage_qualification_cno() {  # <transition> <what this invocation did>
+stage_qualification_cno() {  # <transition> <what this invocation did> <cause>
   [ "$STAGE_CNO" -eq 0 ] || return 0
   STAGE_CNO=1
   printf 'STAGE_QUALIFICATION_CNO: transition=%s task=%s reason=QUALIFICATION_REVOKED %s; the record is at %s and its lifecycle effect stands; the exact stage qualification is no longer current (%s); historical record retained\n' \
-    "$1" "$ID" "$2" "$(dash "$(meta stage)")" "$FM_NM_EFFECT_REASON"
+    "$1" "$ID" "$2" "$(dash "$(meta stage)")" "$(dash "${3:-}")"
+}
+
+# Does the record ALREADY carry the outcome this disposition is about? A
+# transition answers yes when it is the recorded stage; `show` applies nothing
+# ever, so any recorded stage answers yes for it. This is a runtime predicate
+# on purpose, never a comment claiming some emitter "can never" be in that
+# state: an enumeration carrying unproven exclusions is a list of beliefs, and
+# this rule leaked one branch over three times on exactly such a claim.
+stage_effect_recorded() {  # <transition>
+  local recorded
+  recorded=$(meta stage)
+  [ -n "$recorded" ] || return 1
+  [ "$1" != show ] || return 0
+  [ "$1" = "$recorded" ]
 }
 
 # --- candidate facts ---------------------------------------------------------
@@ -535,7 +566,7 @@ unchanged() {  # <stage>
   case "$1" in
     ci-ready|landing|activated)
       qualification_current "$1" \
-        || stage_qualification_cno "$1" 'this invocation published nothing' ;;
+        || stage_qualification_cno "$1" 'this invocation published nothing' "$FM_NM_EFFECT_REASON" ;;
   esac
   printf 'STAGE_UNCHANGED: %s task=%s gen=%s head=%s attempt=%s run=%s\n' \
     "$1" "$ID" "$(dash "$(meta stage_gen)")" "$(dash "$(short "$(meta stage_head)")")" "$(dash "$(meta stage_attempt)")" "$(dash "$(meta stage_run)")"
@@ -832,7 +863,7 @@ qualification_delta() {  # <retained tuple> <fresh tuple>
 }
 
 do_ci_ready() (
-  local current effect saved contract qualified_head qualification recorded repeat advanced CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification recorded repeat advanced ci_ready_published CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -884,7 +915,7 @@ do_ci_ready() (
   if ! qualification=$(NM_HOME="$(obs nm_home)" NO_MISTAKES_HOME="$(obs nm_home)" fm_nm_qualification_read \
       "$WT" "$(meta stage_run)" "$qualified_head" "$(meta stage_branch)" "$PR_ARG" "$repeat"); then
     if [ -n "$repeat" ]; then
-      stage_qualification_cno ci-ready 'this invocation published nothing'
+      stage_qualification_cno ci-ready 'this invocation published nothing' PRODUCER
       next_for ci-ready
       exit 1
     fi
@@ -914,12 +945,14 @@ do_ci_ready() (
       || printf 'STAGE_QUALIFICATION_ADVANCED: task=%s run=%s %s\n' \
            "$ID" "$(dash "$(meta stage_run)")" "$advanced"
     unchanged ci-ready
+    ci_ready_published='this invocation published nothing'
   else
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
+    ci_ready_published='the ci-ready receipt this invocation published stands'
   fi
   qualification_current ci-ready \
-    || stage_qualification_cno ci-ready 'the ci-ready receipt this invocation published stands'
+    || stage_qualification_cno ci-ready "$ci_ready_published" "$FM_NM_EFFECT_REASON"
   next_for ci-ready
   exit "$STAGE_CNO"
 )
@@ -977,7 +1010,7 @@ do_landing() {
   [ "$current" != activated ] || { unchanged activated; next_for activated; return 0; }
   if [ "$current" = landing ]; then
     qualification_current landing \
-      || stage_qualification_cno landing 'this invocation published nothing'
+      || stage_qualification_cno landing 'this invocation published nothing' "$FM_NM_EFFECT_REASON"
   else
     require_current_qualification landing
   fi
@@ -1049,7 +1082,7 @@ do_activated() {
   [ -n "$current" ] || refuse activated NOT_ADMITTED "no candidate is recorded"
   if [ "$current" = activated ]; then
     qualification_current activated \
-      || stage_qualification_cno activated 'this invocation published nothing'
+      || stage_qualification_cno activated 'this invocation published nothing' "$FM_NM_EFFECT_REASON"
   else
     require_current_qualification activated
   fi
@@ -1068,7 +1101,8 @@ do_activated() {
 do_show() {
   case "$(meta stage)" in
     ci-ready|landing|activated)
-      qualification_current show || stage_qualification_cno show 'this read applied nothing' ;;
+      qualification_current show \
+        || stage_qualification_cno show 'this read applied nothing' "$FM_NM_EFFECT_REASON" ;;
   esac
   engineering_context show
   fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"

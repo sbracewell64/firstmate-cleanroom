@@ -454,6 +454,8 @@ test_post_receipt_producer_move_reports_without_refusing() {
     "a stage the record already carries was reported as never having applied"
   assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
     "the already-recorded revalidation was not reported"
+  assert_contains "$out" "(PRODUCER)" "the report did not name the cause of the read that failed"
+  assert_not_contains "$out" "()" "the named cause was rendered empty"
   assert_contains "$out" "next: worker stops" "the worker was left without its typed next line"
   [ "$(meta_get q1 stage)" = ci-ready ] || fail "a report unmade the recorded stage"
   [ "$(stage_lines q1)" = "$lines" ] || fail "a report appended to the status log"
@@ -470,9 +472,25 @@ test_post_receipt_producer_move_reports_without_refusing() {
     "the unchanged revalidation reported a stage the record carries as never applied"
   assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
     "the unchanged revalidation did not report the moved producer"
+  assert_contains "$out" "this invocation published nothing" \
+    "a no-op arm claimed it had published a receipt"
   [ "$(grep -c 'STAGE_QUALIFICATION_CNO' <<< "$out")" = 1 ] \
     || fail "one invocation reported the same moved producer more than once"
   assert_contains "$out" "next: worker stops" "the worker was left without its typed next line"
+  [ "$(stage_lines q1)" = "$lines" ] || fail "a report appended to the status log"
+
+  # Both earlier revalidations answer, so the report comes from the SHARED
+  # post-publication site - on the no-op arm, which published nothing.
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=2
+  out=$("$STAGE" q1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  expect_code 1 "$rc" "a producer move at the shared revalidation must exit non-zero (got: $out)"
+  assert_contains "$out" "STAGE_UNCHANGED: ci-ready" "the no-op arm lost its disposition"
+  assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
+    "the shared revalidation did not report the moved producer"
+  assert_not_contains "$out" "receipt this invocation published stands" \
+    "the no-op arm claimed a receipt it never published"
+  assert_not_contains "$out" "STAGE_REFUSED" "a stage the record carries was reported as never applied"
   [ "$(stage_lines q1)" = "$lines" ] || fail "a report appended to the status log"
 
   # A transition that genuinely did NOT apply: the record is at
@@ -547,6 +565,31 @@ test_landing_and_activated_need_readback() {
     rm -f "$DATA/a1/work-context.json"
   fi
   pass "fm-stage landing/activated: landing records, activated needs read-back evidence and refreshes declared currentness"
+}
+
+# Once the record carries the stage, a condition that cannot be resolved does
+# not unmake the lifecycle effect. Both the qualification report and the
+# unresolved condition are kept; only the second one's token moves, so a
+# consumer is never handed both answers for the same transition.
+test_already_recorded_stage_reports_both_conditions_without_refusing() {
+  local out rc
+  rm -f "$STATE/a1.pr-poll-merge-notified"
+  [ "$(meta_get a1 stage)" = activated ] || fail "fixture expects a1 recorded at activated"
+  export FM_TEST_QUALIFICATION_COUNT="$TMP_ROOT/a1-activated-count"
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=0
+  out=$("$STAGE" a1 activated 2>&1); rc=$?
+  unset FM_TEST_QUALIFICATION_REVOKE_AFTER FM_TEST_QUALIFICATION_COUNT
+  expect_code 1 "$rc" "an unresolved condition on a recorded stage must exit non-zero (got: $out)"
+  assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=activated task=a1" \
+    "the moved producer was not reported"
+  assert_contains "$out" "STAGE_UNRESOLVED: transition=activated task=a1 reason=NO_READBACK" \
+    "the unresolved read-back was not reported under its own token"
+  assert_not_contains "$out" "STAGE_REFUSED" \
+    "a stage the record carries was also reported as never having applied"
+  assert_contains "$out" "next:" "the worker was left without its typed next line"
+  [ "$(meta_get a1 stage)" = activated ] || fail "a report unmade the recorded stage"
+  pass "fm-stage: a recorded stage reports its moved producer and its unresolved condition, and refuses neither"
 }
 
 # --- validation-pending: a hold or missing capacity never starts validation ------
@@ -688,6 +731,7 @@ test_running_binds_the_observer_run_and_descendant_fix_commits_stay_current
 test_ci_ready_needs_the_canonical_verdict_never_narration
 test_post_receipt_producer_move_reports_without_refusing
 test_landing_and_activated_need_readback
+test_already_recorded_stage_reports_both_conditions_without_refusing
 test_open_hold_produces_pending_and_no_launch
 test_missing_capacity_produces_pending_and_no_launch
 test_hold_appearing_during_admission_refuses

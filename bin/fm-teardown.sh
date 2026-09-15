@@ -80,6 +80,17 @@
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
 #
+# Refusal vocabulary, so a consumer can tell the outcomes apart on the token
+# rather than the prose:
+#   REFUSED:                     the task is retained; some condition about the
+#                                world could not be established. --force is the
+#                                captain's authorization to override these.
+#   REFUSED_ARCHIVE_UNWRITABLE:  the task is retained because its completion
+#                                record could NOT be preserved. --force does not
+#                                override this one; see teardown_completion_current.
+#   (no refusal)                 the task was discarded and, when it carried a
+#                                completion handoff, its archive was written.
+#
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
 # non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
@@ -310,12 +321,20 @@ teardown_completion_current() {  # <--check|--archive>
   if grep -q '^completion_handoff=' "$META"; then
     fm_completion_retire "$(fm_meta_get "$META" completion_handoff)" "$DATA" "$ID" "${retire[@]+"${retire[@]}"}" \
       || completion_rc=$?
+    # --force authorizes overriding a condition about the WORLD - work whose
+    # landing cannot be proven - and there the archive still survives to record
+    # what was discarded. A failed archive WRITE is not a condition about the
+    # world; it is the failure of the preservation itself. Proceeding there
+    # destroys the only remaining copy AND leaves nothing recorded anywhere,
+    # the single outcome this evidence discipline exists to prevent. It is also
+    # the recoverable side of the trade: a full or read-only data directory is
+    # operator-fixable and retryable, while the discarded record is recoverable
+    # by nobody. So force keeps its guarantee that an authorized discard is
+    # never blocked by an unprovable fact, and gains this one exception for a
+    # discard that cannot be RECORDED. Different failures, different dispositions.
     if [ "$completion_rc" -eq 3 ]; then
-      [ "$FORCE" = --force ] || {
-        echo "REFUSED: the completion archive could not be written under $DATA/$ID; fm-stage retains task $ID" >&2
-        return 1
-      }
-      echo "warning: the completion archive could not be written under $DATA/$ID; the discarded handoff for task $ID is preserved nowhere" >&2
+      echo "REFUSED_ARCHIVE_UNWRITABLE: the completion archive for task $ID could not be written (${FM_COMPLETION_ARCHIVE_ERROR:-unknown write error}); the task record was NOT removed - fix that condition and retry, --force does not override a failure to preserve" >&2
+      return 1
     elif [ "$completion_rc" -ne 0 ]; then
       [ "$FORCE" = --force ] || {
         echo "REFUSED: completion handoff remains unresolved or unreadable; fm-stage retains task $ID" >&2

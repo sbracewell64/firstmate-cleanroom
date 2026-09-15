@@ -2854,12 +2854,26 @@ test_unwritable_archive_is_reported_as_its_own_cause() {
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   chmod 700 "$case_dir/data/task-x1"
 
-  expect_code 0 "$rc" "unwritable-handoff-archive: the authorized discard should complete: $(cat "$case_dir/stderr")"
-  grep -q 'the completion archive could not be written' "$case_dir/stderr" \
-    || fail "unwritable-handoff-archive: the lost archive was not reported as its own cause: $(cat "$case_dir/stderr")"
+  expect_code 1 "$rc" "unwritable-handoff-archive: a discard that cannot be recorded must refuse: $(cat "$case_dir/stderr")"
+  grep -q '^REFUSED_ARCHIVE_UNWRITABLE: ' "$case_dir/stderr" \
+    || fail "unwritable-handoff-archive: the unpreservable record did not get its own token: $(cat "$case_dir/stderr")"
+  grep -q "$case_dir/data/task-x1" "$case_dir/stderr" \
+    || fail "unwritable-handoff-archive: the refusal did not name the operator-fixable condition: $(cat "$case_dir/stderr")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    'unwritable-handoff-archive: the only surviving copy of the handoff was removed anyway'
   assert_absent "$case_dir/data/task-x1/completion-receipt.json" \
     'unwritable-handoff-archive: the fixture did not actually prevent the write'
-  pass "an archive that could not be written is reported as its own cause, never as an unresolved handoff"
+
+  # The same task retries cleanly once the operator fixes the condition.
+  rc=0
+  FM_FAKE_QUALIFICATION_REVOKED=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" || rc=$?
+  expect_code 0 "$rc" "unwritable-handoff-archive: the retry should complete: $(cat "$case_dir/stderr2")"
+  assert_present "$case_dir/data/task-x1/completion-receipt.json" \
+    'unwritable-handoff-archive: the retry did not preserve the record'
+  assert_absent "$case_dir/state/task-x1.meta" \
+    'unwritable-handoff-archive: the retry did not discard the task'
+  pass "a discard that cannot be recorded refuses under its own token and retries cleanly once fixed"
 }
 
 # The abort excuses the PRODUCER READ alone - a cancelled run cannot answer.

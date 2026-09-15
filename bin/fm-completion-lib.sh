@@ -139,7 +139,7 @@ fm_completion_saved_valid() { # <saved JSON>; no mutation on corrupt authority
 # not PRESERVE. The caller is about to remove the only other copy, so those two
 # must never reach the operator as one message.
 fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check|--force]
-  local saved=$1 data_dir=$2 task=$3 mode=${4:-} contract identity receipt dir tmp
+  local saved=$1 data_dir=$2 task=$3 mode=${4:-} contract identity receipt dir tmp err
   local ID=$3 qualification=current reason= rc=0
   [ -n "$saved" ] || return 0
   contract=$(printf '%s' "$saved" | jq -cS .contract 2>/dev/null) || return 1
@@ -163,11 +163,22 @@ fm_completion_retire() { # <saved JSON> <data-dir> <task-id> [--check|--force]
   [ "$mode" != --check ] || return "$rc"
   [ "$rc" -eq 0 ] || [ "$mode" = --force ] || return "$rc"
   dir="$data_dir/$task"
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 3
-  tmp=$(mktemp "$dir/.completion-receipt.XXXXXX") || return 3
-  if ! printf '%s' "$saved" | jq -c --arg qualification "$qualification" --arg reason "$reason" \
-        '. + {archived:{qualification:$qualification,reason:(if $reason == "" then null else $reason end)}}' > "$tmp" \
-      || ! mv "$tmp" "$dir/completion-receipt.json"; then
+  FM_COMPLETION_ARCHIVE_ERROR=
+  if [ ! -d "$dir" ] || [ -L "$dir" ]; then
+    FM_COMPLETION_ARCHIVE_ERROR="$dir is not a task report directory"
+    return 3
+  fi
+  if ! tmp=$(mktemp "$dir/.completion-receipt.XXXXXX" 2>&1); then
+    FM_COMPLETION_ARCHIVE_ERROR="mktemp in $dir: ${tmp:-failed}"
+    return 3
+  fi
+  if ! err=$({ printf '%s' "$saved" | jq -c --arg qualification "$qualification" --arg reason "$reason" \
+        '. + {archived:{qualification:$qualification,reason:(if $reason == "" then null else $reason end)}}' > "$tmp"; } 2>&1); then
+    FM_COMPLETION_ARCHIVE_ERROR="writing $dir/completion-receipt.json: ${err:-write failed}"
+    rm -f "$tmp"; return 3
+  fi
+  if ! err=$(mv "$tmp" "$dir/completion-receipt.json" 2>&1); then
+    FM_COMPLETION_ARCHIVE_ERROR="publishing $dir/completion-receipt.json: ${err:-move failed}"
     rm -f "$tmp"; return 3
   fi
   return "$rc"
@@ -425,7 +436,13 @@ fm_completion_resume() {
       FM_COMPLETION_SOURCE_LOCK=
       rc=0
       out=$(FM_COMPLETION_RECONCILING=1 "$SCRIPT_DIR/fm-stage.sh" "$ID" ci-ready --identity "$identity" --pr "$(printf '%s' "$contract" | jq -r .action.pr)" 2>&1) || rc=$?
-      [ "$rc" -eq 0 ] || { printf '%s\n' "$out"; fm_completion_refuse STAGE_HELD; return 1; }
+      # bin/fm-stage.sh's header rule: STAGE_REFUSED is the one token meaning
+      # the transition did not apply. It exits non-zero after a SUCCESSFUL
+      # publication too, so deciding on rc reports a published effect as held.
+      [ "$rc" -eq 0 ] || printf '%s\n' "$out"
+      case "$out" in
+        *STAGE_REFUSED:*) fm_completion_refuse STAGE_HELD; return 1 ;;
+      esac
       fm_completion_source_acquire "$saved" || return 1
       if ! { [ "$(meta stage)" = ci-ready ] && fm_completion_ci_ready_effect "$contract"; }; then
         fm_completion_refuse EFFECT_UNCONFIRMED; return 1

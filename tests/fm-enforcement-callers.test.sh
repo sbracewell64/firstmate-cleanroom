@@ -139,6 +139,25 @@ Run `bin/fm-manual.sh verify <file>` by hand when the record looks stale.
 FIX
 
   # An undeclared bin/ subdirectory is not part of the production surface.
+  cat > "$repo/bin/fm-yaml-gate.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+exit 0
+FIX
+
+  cat > "$repo/.no-mistakes.yaml" <<'FIX'
+steps:
+  lint: 'bin/fm-yaml-gate.sh'
+FIX
+
+  mkdir -p "$repo/.github/workflows"
+  cat > "$repo/.github/workflows/ci.yml" <<'FIX'
+jobs:
+  gate:
+    steps:
+      - run: bin/fm-yaml-gate.sh
+FIX
+
   mkdir -p "$repo/bin/extra"
   cat > "$repo/bin/extra/fm-validate-thing.sh" <<'FIX'
 #!/usr/bin/env bash
@@ -220,6 +239,16 @@ write_fixture_inventory() {
       "invariant": "A widget binding is accepted only when it names something.",
       "guards": "runtime",
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
+    },
+    {
+      "id": "bin/fm-yaml-gate.sh",
+      "kind": "enforced",
+      "invariant": "The widget gate runs in CI and in the local landing gate.",
+      "guards": "repository",
+      "callSites": [
+        {"path": ".no-mistakes.yaml", "via": "production"},
+        {"path": ".github/workflows/ci.yml", "via": "production"}
+      ]
     },
     {
       "id": "bin/extra/fm-validate-thing.sh",
@@ -447,24 +476,58 @@ FIX
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/fm-widget-shared.sh"
-printf 'bound\n'   # the binding is taken by validate_widget_binding elsewhere
+mkdir -p "$DIR/.bound"   # the binding is taken by validate_widget_binding elsewhere
 FIX
   git -C "$repo" add -A
   run_expect_failure "no production call site" "$CHECK" --root "$repo"
 
-  # A parameter expansion that merely contains # is not a comment.
+  # A quoted # is not a comment, and the capability sits on the same line, so a
+  # stripper that splits on the first # at all destroys a genuine call.
   write_fixture "$repo"
   cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WIDGET=${1#--widget=}
-"$DIR/fm-widget.sh" enforce "$WIDGET"
+[ "${1#--}" = enforce ] && "$DIR/fm-widget.sh" enforce "$1"
 FIX
   git -C "$repo" add -A
   "$CHECK" --root "$repo" >/dev/null \
     || fail "a \${VAR#pattern} expansion was mistaken for a trailing comment"
   pass "a trailing comment naming a capability is not read as an enforcing call"
+}
+
+test_hash_comment_surfaces_share_one_rule() {
+  local repo="$TMP_ROOT/hash-comments"
+
+  # The two hash-comment production surfaces, held to the shell caller's rule.
+  write_fixture "$repo"
+  cat > "$repo/.no-mistakes.yaml" <<'FIX'
+steps:
+  lint: 'true'   # bin/fm-yaml-gate.sh runs in the gate
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  write_fixture "$repo"
+  cat > "$repo/.github/workflows/ci.yml" <<'FIX'
+jobs:
+  gate:
+    steps:
+      - run: true   # bin/fm-yaml-gate.sh runs in the gate
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # A quoted # inside a YAML scalar is data, not a comment.
+  write_fixture "$repo"
+  cat > "$repo/.no-mistakes.yaml" <<'FIX'
+steps:
+  lint: 'bin/fm-yaml-gate.sh --label "#1"'
+FIX
+  git -C "$repo" add -A
+  "$CHECK" --root "$repo" >/dev/null \
+    || fail "a quoted # in a YAML scalar was mistaken for a comment"
+  pass "a trailing # comment is prose on every hash-comment surface, not only in shell"
 }
 
 test_nested_bin_script_is_still_discovered() {
@@ -657,6 +720,7 @@ test_known_good_repairs_still_have_production_callers
 test_removing_the_enforcing_call_fails
 test_comment_mention_is_not_a_call
 test_trailing_comment_is_not_a_call
+test_hash_comment_surfaces_share_one_rule
 test_nested_bin_script_is_still_discovered
 test_emitted_operator_text_is_not_a_call
 test_recorded_rejected_site_must_stay_rejected

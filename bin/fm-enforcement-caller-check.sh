@@ -405,6 +405,17 @@ def strip_trailing_comment(line: str) -> str:
     return line
 
 
+def hash_comment_text(text: str) -> str:
+    """Every `#` comment gone, whole-line and trailing.
+
+    Shared by every hash-comment language, so a surface cannot be added with the
+    check silently weaker on it. A `.sh` caller runs the same rule through
+    shell_executable_text, which layers heredoc and emitted-argument handling on
+    top of it rather than repeating the comment rule.
+    """
+    return "\n".join(strip_trailing_comment(line) for line in text.splitlines())
+
+
 def strip_emitted_arguments(line: str) -> str:
     """Drop the argument text of printf/echo/cat, keeping the rest of the line.
 
@@ -524,7 +535,7 @@ def executable_text(rel: str, text: str) -> str:
     if rel.endswith(".sh"):
         return shell_executable_text(text)
     if rel.endswith(HASH_COMMENT_SUFFIXES):
-        return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        return hash_comment_text(text)
     if rel.endswith(SLASH_COMMENT_SUFFIXES):
         body = BLOCK_COMMENT_RE.sub(" ", text)
         return "\n".join(LINE_COMMENT_RE.sub("", line) for line in body.splitlines())
@@ -564,8 +575,6 @@ def references(text: str, owner_base: str, token: str | None, axis: str) -> bool
             return False
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
             definition = LIBRARY_FUNCTION_RE.match(line)
             if definition is not None:
                 stripped = line[definition.end():].strip()

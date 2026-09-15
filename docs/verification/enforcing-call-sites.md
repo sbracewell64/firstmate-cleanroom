@@ -26,9 +26,11 @@ The production surface is what a running Firstmate or its automated gates execut
 `tests/`, `docs/`, and agent skills are not on it.
 A test that calls the capability is not evidence that the guarded path reaches it, and the check says so mechanically.
 The reference must be executable, because a capability named only in a comment or in emitted operator text is prose that no reviewer should read as a caller.
-Comments are stripped per language before the match: `#` comments in `.sh`, `.yaml` and `.yml` callers, and `//` line comments and `/* */` blocks in `.mjs`, `.js` and `.ts` callers.
-In a shell caller that includes a trailing comment, dropped from the first `#` that starts a word outside quotes, so a note at the end of a working line is prose while a `${VAR#pattern}` expansion is left alone.
-JSON has no comment syntax, so a hook registration is matched as written.
+Comments are stripped per language before the match.
+Every hash-comment caller, which means `.sh`, `.yaml` and `.yml`, shares one rule: a comment is dropped from the first `#` that starts a word outside quotes, whether it opens the line or trails working code.
+So a note at the end of a working line is prose, while a `${VAR#pattern}` expansion and a quoted `'#1'` are left alone.
+A `.mjs`, `.js` or `.ts` caller has its own rule for `//` line comments and `/* */` blocks, and JSON has no comment syntax, so a hook registration is matched as written.
+
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
 A command is assembled across its backslash continuations first, joined only on an odd count of trailing backslashes, so the tail of a multi-line `printf` is dropped with its first line instead of surviving as a call.
 Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
@@ -184,7 +186,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057431
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057528
 ```
 
 ```sh
@@ -200,10 +202,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T00:18:29Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10142 gate_skip=false
-FM_TEST_END 2026-09-15T00:18:30Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=855 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11065
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=10997 failed=0
+FM_TEST_END 2026-09-15T00:38:38Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=10600 gate_skip=false
+FM_TEST_END 2026-09-15T00:38:39Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=829 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=11495
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=11429 failed=0
 ```
 
 ## Adding an entry point

@@ -150,8 +150,10 @@ fail() {
 }
 
 # The only file this read-only script ever creates: a staging file for the
-# resolver's diagnostics, removed as soon as they are read. The trap covers the
-# window where this process dies between staging and reading.
+# resolver's diagnostics, removed as soon as they are read. It is staged under
+# TMPDIR, never under the home or its state directory, so the substrate this
+# script reads stays untouched. The trap covers the window where this process
+# dies between staging and reading.
 RESOLVER_ERRFILE=
 projection_cleanup() {
   [ -z "$RESOLVER_ERRFILE" ] || rm -f -- "$RESOLVER_ERRFILE"
@@ -209,22 +211,34 @@ RESOLUTION=''
 # script's stderr on every path, so a real diagnostic still reaches an operator
 # while stdout stays exactly the typed document. An unparseable stdout names what
 # it actually received, and exit 3 is still mirrored with stdout left empty.
+# Bash cannot separate the two streams in memory without a redirection trick, and
+# a trick in the very code whose output corruption is under investigation is not
+# worth the cleverness, so the diagnostics are staged through a file - but a
+# DIAGNOSTIC AID MUST NEVER FAIL THE OPERATION IT IS DIAGNOSING, so an
+# unstageable diagnostic degrades to "unavailable" and the resolve still runs,
+# with the resolver's stderr passing straight through to this script's stderr.
 read_resolution() {
-  local out diag rc=0
+  local out diag='' diag_suffix='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX") \
-    || fail "cannot stage the resolver's diagnostics"
-  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
-  diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
+  RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX" 2>/dev/null) \
+    || RESOLVER_ERRFILE=
+  if [ -n "$RESOLVER_ERRFILE" ]; then
+    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
+    diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
+    [ -z "$diag" ] || diag_suffix=" (resolver diagnostics: $(printf '%s' "$diag" | head -c 400))"
+  else
+    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}) || rc=$?
+    diag_suffix=' (resolver diagnostics: unavailable, they could not be staged and went straight to stderr)'
+  fi
   projection_cleanup
   case "$rc" in
     0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;
     3) [ -z "$diag" ] || printf '%s\n' "$diag" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc): $diag${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}" ;;
+    *) fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}" ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)${diag:+ (resolver diagnostics: $(printf '%s' "$diag" | head -c 400))}"
+    || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)$diag_suffix"
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

@@ -1462,7 +1462,7 @@ home_summary_refresh_detached() {
 }
 
 watcher_cleanup() {
-  local cleanup_status=0 owns_lock=0 transition=release-lock
+  local cleanup_status=0 owns_lock=0 transition=release-lock downtime_lock
   # The close path below is what makes this watcher's stop READABLE: it releases
   # the singleton lock and publishes the downtime episode the next drain presents
   # and retires. A stop signal arriving while it runs would re-enter the `exit 1`
@@ -1478,6 +1478,29 @@ watcher_cleanup() {
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
     fi
+  fi
+  # arch-escape-hatch-ordering: a guard drawn wider than the invariant it protects
+  # swallows the escape hatch with it. What must not be torn is the downtime
+  # marker mutation; the WAIT for the marker lock is not part of that invariant,
+  # and it has no deadline of its own, so a holder that never releases would spin
+  # here with every stop ignored - an UNKILLABLE watcher. Supervision that cannot
+  # be recovered is worse than a torn close, and the broad kill that would be the
+  # only way out is forbidden in this home. So the lock is proven obtainable here,
+  # before anything is written, and ONLY the blocking wait runs with the ordinary
+  # stop disposition back in force: an uncontended close never lifts the guard at
+  # all, so the ordinary stop burst still cannot tear it. A stop taken during that
+  # wait has mutated nothing, and leaves the same held singleton lock and
+  # unpublished downtime as a watcher killed outright, which the next watcher's
+  # stale-lock steal publishes on its behalf. Any wait left inside the transition
+  # below is then some peer's critical section, which holds no waits of its own.
+  if [ "$owns_lock" -eq 1 ]; then
+    downtime_lock="$WATCHER_DOWNTIME_MARKER.lock"
+    if ! fm_lock_try_acquire "$downtime_lock"; then
+      trap 'exit 1' HUP INT TERM
+      fm_lock_acquire_wait "$downtime_lock"
+      trap '' HUP INT TERM
+    fi
+    fm_lock_release "$downtime_lock"
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup

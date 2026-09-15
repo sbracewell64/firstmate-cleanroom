@@ -193,6 +193,22 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fm_inner_apply "$1"
 FIX
 
+  # An enforce-verb arm nested inside a function inside a loop.
+  cat > "$repo/bin/fm-nested-arm.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+main() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      enforce-nested) printf 'nested\n' ;;
+      *) break ;;
+    esac
+    shift
+  done
+}
+main "$@"
+FIX
+
   cat > "$repo/bin/fm-yaml-gate.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -295,6 +311,12 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-nested-arm.sh:enforce-nested",
+      "kind": "not-enforcement",
+      "invariant": "A nested widget pass reports itself.",
+      "reason": "A scratch arm that prints and refuses nothing."
+    },
+    {
       "id": "bin/fm-lever.sh:--enforce-lever",
       "kind": "not-enforcement",
       "invariant": "A lever is engaged only in strict mode.",
@@ -386,6 +408,10 @@ elif mode == "drop-gadget":
 elif mode == "drop-shared-function":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-widget-shared.sh:validate_widget_binding"
+    ]
+elif mode == "drop-nested-arm":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/fm-nested-arm.sh:enforce-nested"
     ]
 elif mode == "drop-lever-flag":
     data["entryPoints"] = [
@@ -751,6 +777,52 @@ test_undeclared_entry_point_fails() {
   pass "a new enforce-style entry point cannot ship without being accounted for"
 }
 
+test_deeply_indented_arm_is_discovered() {
+  local repo="$TMP_ROOT/indented-arm"
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-nested-arm
+  run_expect_failure "bin/fm-nested-arm.sh:enforce-nested" "$CHECK" --root "$repo"
+  pass "an arm nested inside a function and a loop is still discovered"
+}
+
+test_emitted_prose_after_an_opener_is_not_a_call() {
+  local repo="$TMP_ROOT/opener-prose"
+
+  # An emitting command after `then`.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+if [ -z "${1:-}" ]; then echo "run bin/fm-widget.sh enforce <widget>"; fi
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # An emitting command after a case-arm label.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+case "${1:-}" in
+  help) printf 'run bin/fm-widget.sh enforce <widget>\n' ;;
+  *) exit 2 ;;
+esac
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+
+  # An emitting command after a brace group.
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+[ "${rc:-0}" -le 1 ] || { echo "error: bin/fm-widget.sh enforce could not observe" >&2; exit 2; }
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  pass "emitted prose after then, a case-arm label or a brace group is not a call"
+}
+
 test_dispatch_arms_survive_lexical_case_shapes() {
   local repo="$TMP_ROOT/dispatch-shapes"
 
@@ -909,6 +981,8 @@ test_unscheduled_repository_gate_fails
 test_undeclared_entry_point_fails
 test_undeclared_variable_dispatch_subcommand_fails
 test_dispatch_arms_survive_lexical_case_shapes
+test_deeply_indented_arm_is_discovered
+test_emitted_prose_after_an_opener_is_not_a_call
 test_undeclared_sourced_library_function_fails
 test_quoted_shift_does_not_start_a_heredoc
 test_homonym_without_the_library_is_not_a_caller

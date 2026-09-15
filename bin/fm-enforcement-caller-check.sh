@@ -50,7 +50,7 @@ SUBCOMMAND_VERBS = ("admit", "assert", "enforce", "guard", "qualify", "refuse", 
 FLAG_VERBS = ("assert", "check", "enforce", "guard", "refuse", "require", "validate", "verify")
 FUNCTION_VERBS = ("assert", "enforce", "guard", "refuse", "require", "validate", "verify")
 
-SUBCOMMAND_RE = re.compile(r"^\s{0,4}([a-z0-9|_-]+)\)")
+SUBCOMMAND_RE = re.compile(r"^\s*([a-z0-9|_-]+)\)")
 # A dispatcher is a `case` on the script's own argument stream: `$1` itself, or
 # a variable this file assigned directly from `$1`. Deliberately narrow, so an
 # unrelated internal `case` is not harvested as a subcommand table.
@@ -79,6 +79,11 @@ HEREDOC_RE = re.compile(
     r"|([A-Za-z_][A-Za-z0-9_]*))"
 )
 OUTPUT_COMMAND_RE = re.compile(r"^\s*(?:printf|echo|cat)\b")
+# Openers that introduce a command without ending the segment. Enumerated on
+# purpose: a shape that is not on this list stays a recorded bound rather than
+# becoming another step towards a shell parser.
+KEYWORD_OPENER_RE = re.compile(r"^\s*(?:then|else|elif|do|\{)\s")
+CASE_LABEL_OPENER_RE = re.compile(r"^\s*[A-Za-z0-9_*?.|\[\]-]+\)\s")
 SPLIT_OPERATORS = ("&&", "||", ";;", ";", "|", "&")
 COMMAND_SUB_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>[^`]*)`")
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
@@ -431,16 +436,39 @@ def hash_comment_text(text: str) -> str:
     return "\n".join(strip_trailing_comment(line) for line in text.splitlines())
 
 
+def emitted_arguments_start(segment: str) -> int:
+    """Where an emitting command's own text begins in this segment, or -1.
+
+    A segment ends at a control operator, so an emitting command can still sit
+    after `then`, `else`, `elif`, `do`, `{` or a case-arm label. Those openers
+    are consumed first so the prose after them is recognised as emitted text.
+    """
+    index = 0
+    while True:
+        rest = segment[index:]
+        if OUTPUT_COMMAND_RE.match(rest):
+            return index
+        opener = KEYWORD_OPENER_RE.match(rest) or CASE_LABEL_OPENER_RE.match(rest)
+        if opener is None:
+            return -1
+        index += opener.end()
+
+
 def strip_emitted_arguments(line: str) -> str:
     """Drop the argument text of printf/echo/cat, keeping the rest of the line.
 
-    Only the emitting command's own segment is dropped, so a real command on the
-    other side of a pipe - `printf %s "$p" | bin/fm-x.sh --guard` - still counts.
+    Only the emitting command's own text is dropped, so a real command on the
+    other side of a pipe - `printf %s "$p" | bin/fm-x.sh --guard` - still counts,
+    and so does the opener that introduced the emitting command.
     """
-    return "".join(
-        command_substitutions(segment) if OUTPUT_COMMAND_RE.match(segment) else segment
-        for segment in shell_segments(line)
-    )
+    kept: list[str] = []
+    for segment in shell_segments(line):
+        at = emitted_arguments_start(segment)
+        if at < 0:
+            kept.append(segment)
+        else:
+            kept.append(segment[:at] + command_substitutions(segment[at:]))
+    return "".join(kept)
 
 
 def heredoc_opener(line: str) -> re.Match[str] | None:
@@ -684,7 +712,7 @@ def entry_exists(root: Path, entry_id: str, axis: str) -> None:
     elif axis == "function":
         present = re.search(rf"^{re.escape(token)}\(\)", text, re.M)
     else:
-        present = re.search(rf"^\s{{0,4}}(?:[a-z0-9|_-]*\|)?{re.escape(token)}(?:\||\))", text, re.M)
+        present = re.search(rf"^\s*(?:[a-z0-9|_-]*\|)?{re.escape(token)}(?:\||\))", text, re.M)
     if not present:
         fail(f"{entry_id}: declared capability is no longer defined in {path}")
 

@@ -35,6 +35,8 @@ So a note at the end of a working line is prose, while a `${VAR#pattern}` expans
 A `.mjs`, `.js` or `.ts` caller has its own rule for `//` line comments and `/* */` blocks, and JSON has no comment syntax, so a hook registration is matched as written.
 
 Emitted operator text is stripped too: in a shell caller, heredoc bodies and the argument text of `printf`, `echo` and `cat` are dropped.
+An emitting command counts wherever a command can start, so one that follows `then`, `else`, `elif`, `do`, `{` or a case-arm label is recognised as well.
+That list is enumerated rather than derived, so an emitting command introduced by some other opener is a residue rather than a rule.
 A heredoc is recognised whether its delimiter follows `<<` directly or after whitespace, and an arithmetic shift inside `$(( ))` or `(( ))` is read as a shift rather than as an opener.
 A command is assembled across its backslash continuations first, joined only on an odd count of trailing backslashes, so the tail of a multi-line `printf` is dropped with its first line instead of surviving as a call.
 Command substitutions inside that text survive, so a call on the other side of a pipe - `printf %s "$payload" | bin/fm-turnend-guard.sh --cursor` - is still a named reference.
@@ -61,7 +63,7 @@ This is not a relaxation of the rule for runtime invariants: a `ci-suite` call s
 
 ## Honest bounds
 
-A named reference is not an invocation, and these five residues are reproducible against the tree as it stands.
+A named reference is not an invocation, and every residue below is reproducible against the tree as it stands.
 A path assigned but never executed still counts: in `bin/fm-tool-update-check.sh`, delete the exec at line 873 and the assignment `REGISTER_BIN="$SCRIPT_DIR/fm-check-register.sh"` at line 79 alone keeps `bin/fm-check-register.sh` reported as enforced.
 An existence test still counts: in `bin/fm-pr-check.sh`, delete the invocation at line 118 and the surviving `[ ! -x "$SCRIPT_DIR/fm-commit-identity-verify.sh" ]` at line 105 alone keeps `bin/fm-commit-identity-verify.sh` reported as enforced.
 A subcommand token within 200 characters after the basename counts even across a line break, so a caller that runs `fm-startup-memory-budget.sh report` with a bare `enforce` word in a neighbouring command reads as the `enforce` call.
@@ -198,7 +200,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1057935
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058153
 ```
 
 ```sh
@@ -214,10 +216,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T01:49:24Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=12152 gate_skip=false
-FM_TEST_END 2026-09-15T01:49:25Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=839 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13056
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=12991 failed=0
+FM_TEST_END 2026-09-15T02:04:39Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=13089 gate_skip=false
+FM_TEST_END 2026-09-15T02:04:40Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=878 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=14033
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13967 failed=0
 ```
 
 ## Adding an entry point

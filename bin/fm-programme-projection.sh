@@ -18,11 +18,12 @@
 # script only reads:
 #   - bin/fm-continuation-resolve.sh (+ bin/fm-continuation-lib.sh) owns
 #     next_action, action_generation, classification, authority_state,
-#     reason_code, and basis_refs. Its `resolve` output is consumed verbatim;
-#     the classification tables and hold-effect law are never reimplemented
-#     here, and `--materialize` is refused because this layer has no authority
-#     to create a hold. Its exit 3 (no programme configured) is "not
-#     applicable" and is mirrored as exit 3 with nothing on stdout.
+#     reason_code, and basis_refs. Its `resolve` STDOUT is the typed result and
+#     is consumed verbatim; its stderr is diagnostics and is never folded into
+#     that document. The classification tables and hold-effect law are never
+#     reimplemented here, and `--materialize` is refused because this layer has
+#     no authority to create a hold. Its exit 3 (no programme configured) is
+#     "not applicable" and is mirrored as exit 3 with nothing on stdout.
 #   - bin/fm-captain-hold.sh owns hold durability and effect; the resolver
 #     already consumed them, so this script reads only the resolver's gating
 #     hold rows and answered-fact identities.
@@ -148,6 +149,16 @@ fail() {
   exit 1
 }
 
+# The only file this read-only script ever creates: a staging file for the
+# resolver's diagnostics, removed as soon as they are read. The trap covers the
+# window where this process dies between staging and reading.
+RESOLVER_ERRFILE=
+projection_cleanup() {
+  [ -z "$RESOLVER_ERRFILE" ] || rm -f -- "$RESOLVER_ERRFILE"
+  RESOLVER_ERRFILE=
+}
+trap projection_cleanup EXIT
+
 sha256_text() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
@@ -187,18 +198,33 @@ parse_common() {
 # --- the resolver's typed result -----------------------------------------------
 
 RESOLUTION=''
+# The resolver's TYPED RESULT is its stdout and nothing else; its stderr is the
+# diagnostic channel. The two are read separately and never merged, because
+# merging them makes any byte anyone in the resolver's process tree writes to
+# stderr - a git or node warning, or one of the shell's own runtime diagnostics
+# under load - part of the document this then requires to be the typed schema.
+# That turns a successful resolve into a hard refusal whose offending bytes are
+# thrown away, which is exactly how this failed intermittently in CI. Nothing is
+# swallowed in exchange: whatever the resolver wrote to stderr is relayed to this
+# script's stderr on every path, so a real diagnostic still reaches an operator
+# while stdout stays exactly the typed document. An unparseable stdout names what
+# it actually received, and exit 3 is still mirrored with stdout left empty.
 read_resolution() {
-  local out rc=0
+  local out diag rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>&1) || rc=$?
+  RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX") \
+    || fail "cannot stage the resolver's diagnostics"
+  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
+  diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
+  projection_cleanup
   case "$rc" in
-    0) ;;
-    3) printf '%s\n' "$out" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc): $out" ;;
+    0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;
+    3) [ -z "$diag" ] || printf '%s\n' "$diag" >&2; exit 3 ;;
+    *) fail "resolver failed (exit $rc): $diag" ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema"
+    || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)${diag:+ (resolver diagnostics: $(printf '%s' "$diag" | head -c 400))}"
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

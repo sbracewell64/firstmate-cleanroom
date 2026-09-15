@@ -1468,7 +1468,7 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
   local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>&1) || rc=$?
+  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve) || rc=$?
   case "$rc" in
     0)
       identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')

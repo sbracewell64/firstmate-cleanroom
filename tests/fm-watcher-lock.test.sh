@@ -1421,6 +1421,138 @@ test_close_path_publishes_under_marker_lock_contention() {
   pass "a close path racing a peer for the marker lock is still collectable by a stop and still leaves a recoverable downtime"
 }
 
+# A stand-in watcher that RECORDS every stop signal it receives, so a case can
+# assert on what the arm actually sent its owned child rather than on prose about
+# it. It is launched by the real arm, through a fixture bin/ whose fm-watch.sh is
+# this stand-in, and it claims this home's singleton lock the way a real watcher
+# does so the arm's healthy-watcher confirmation accepts it.
+make_recording_watcher_bin() {  # <dir>
+  local dir=$1 armbin
+  armbin="$dir/armbin"
+  mkdir -p "$armbin"
+  ln -sf "$ROOT/bin/fm-watch-arm.sh" "$armbin/fm-watch-arm.sh"
+  ln -sf "$ROOT/bin/fm-wake-lib.sh" "$armbin/fm-wake-lib.sh"
+  cat > "$armbin/fm-watch.sh" <<'STUB'
+#!/usr/bin/env bash
+set -u
+SIG_LOG=${FM_STUB_SIGLOG:?}
+STUB_MODE=${FM_STUB_MODE:?}
+STUB_GO=${FM_STUB_GO:-}
+STUB_LIB=${FM_STUB_LIB:?}
+STUB_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+: > "$SIG_LOG"
+stub_stops=0
+on_stop() {
+  printf '%s\n' "$1" >> "$SIG_LOG"
+  stub_stops=$((stub_stops + 1))
+  if [ "$STUB_MODE" = drop-first-stop ] && [ "$stub_stops" -ge 2 ]; then
+    exit 1
+  fi
+}
+trap 'on_stop TERM' TERM
+trap 'on_stop HUP' HUP
+trap 'on_stop INT' INT
+[ "$STUB_MODE" != exit-now ] || exit 0
+# shellcheck disable=SC1090,SC1091
+. "$STUB_LIB"
+mkdir -p "$STATE/.watch.lock"
+printf '%s\n' "$$" > "$STATE/.watch.lock/pid"
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$STUB_SELF" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "$$" > "$STATE/.watch.lock/pid-identity"
+touch "$STATE/.last-watcher-beat"
+stub_i=0
+while [ "$stub_i" -lt 300 ]; do
+  if [ -n "$STUB_GO" ] && [ -e "$STUB_GO" ]; then
+    break
+  fi
+  sleep 0.1
+  stub_i=$((stub_i + 1))
+done
+[ "$STUB_MODE" != wake ] || printf 'signal: stub-wake\n'
+exit 0
+STUB
+  chmod +x "$armbin/fm-watch.sh"
+  printf '%s\n' "$armbin"
+}
+
+test_normal_cycle_end_sends_the_owned_child_no_stop() {
+  # The arm's normal-completion waits are deliberately NOT routed through the
+  # confirmed stop: their unbounded wait IS the supervision cycle, and the child
+  # ends it by itself. That exclusion is only safe while those paths send the
+  # child nothing, so this asserts it from the child's side - a stand-in watcher
+  # that records every stop it receives must record none across a cycle that ends
+  # with its own wake.
+  local dir state armbin siglog go out arm status
+  dir=$(make_case normal-cycle-no-stop)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  go="$dir/child.go"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=wake \
+    FM_STUB_GO="$go" FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the recording stand-in watcher was never confirmed by the arm"; }
+
+  : > "$go"
+  status=0
+  wait_for_exit "$arm" 200 >/dev/null 2>&1 || status=$?
+  out=$(cat "$dir/arm.out" 2>/dev/null || true)
+  case "$out" in
+    *"signal: stub-wake"*) ;;
+    *) fail "the arm did not surface the wake its child ended on: $out" ;;
+  esac
+  [ ! -s "$siglog" ] \
+    || fail "a normal cycle end signalled the owned child: $(tr '\n' ' ' < "$siglog")"
+  pass "a cycle that ends on the child's own wake sends that child no stop signal"
+}
+
+test_an_unconfirmed_child_stop_is_never_the_arms_last_word() {
+  # The counterpart exclusion: cleanup_child delivers ONE unconfirmed TERM and is
+  # only safe because every path that reaches it has already run the confirmed
+  # stop. A stand-in that drops its first stop proves that ordering from outside:
+  # if a single delivery were the arm's whole stop, this child would outlive the
+  # arm that owned it.
+  local dir state armbin siglog arm child delivered i
+  dir=$(make_case arm-stop-is-confirmed)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=drop-first-stop \
+    FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the stop-dropping stand-in watcher was never confirmed by the arm"; }
+  child=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  case "$child" in
+    ''|*[!0-9]*) reap "$arm"; fail "the stand-in watcher recorded no lock pid" ;;
+  esac
+
+  reap "$arm" HUP
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$child" \
+    && { kill -KILL "$child" 2>/dev/null || true; fail "the arm left behind a child that ignored its single stop: the stop was never confirmed"; }
+  delivered=$(grep -c . "$siglog" 2>/dev/null || echo 0)
+  [ "$delivered" -ge 2 ] \
+    || fail "the arm stopped its child with $delivered delivery/deliveries, so a dropped stop would have been abandoned"
+  pass "an arm stopping its owned child re-delivers until it is gone rather than trusting one signal"
+}
+
 test_restart_records_whether_its_stop_was_confirmed() {
   # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
   # leaving the fleet with no watcher at all is worse than the duplicate a
@@ -1526,6 +1658,8 @@ test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
 test_watcher_close_path_is_not_abandoned_by_a_later_stop
 test_close_path_wait_for_the_marker_lock_stays_killable
 test_close_path_publishes_under_marker_lock_contention
+test_normal_cycle_end_sends_the_owned_child_no_stop
+test_an_unconfirmed_child_stop_is_never_the_arms_last_word
 test_restart_records_whether_its_stop_was_confirmed
 test_singleton_start
 test_pid_identity_is_locale_invariant

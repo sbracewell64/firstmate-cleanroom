@@ -1480,15 +1480,13 @@ test_a_captured_landed_head_never_regresses() {
   pass "fm-stage landing: a captured landed head survives every weaker, unresolvable, or off-lineage re-run"
 }
 
-# A guard that cannot read the bytes has not proven the record clean. Read
-# failure is its own answer and never a pass, at the stage preflight and at the
-# publication boundary alike.
-# A local-only landing never pushes: bin/fm-merge-local.sh fast-forwards
-# refs/heads/<default> in the project clone and nothing else, so
-# refs/remotes/origin/<default> stays behind it forever. Asking only the ref that
-# happens to EXIST would let that stale remote ref answer for the branch that
-# actually landed the work, and every local-only task would refuse NO_READBACK
-# with no way through.
+# A commit present ONLY on the local integration branch confirms. That is the
+# case a stale origin ref used to block: a local-only landing never pushes -
+# bin/fm-merge-local.sh fast-forwards refs/heads/<default> in the project clone
+# and nothing else - so refs/remotes/origin/<default> stays behind it forever.
+# Asking only the ref that happens to EXIST let that stale remote ref answer for
+# the branch that actually landed the work, and every local-only task refused
+# NO_READBACK with no way through.
 test_a_local_only_landing_is_confirmed_from_the_local_branch() {
   local out rc wt project landed
   wt="$TMP_ROOT/wt-localonly"
@@ -1525,6 +1523,9 @@ test_a_local_only_landing_is_confirmed_from_the_local_branch() {
   pass "fm-stage activated: a local-only landing is confirmed from the local integration branch a stale remote ref would have shadowed"
 }
 
+# A guard that cannot read the bytes has not proven the record clean. Read
+# failure is its own answer and never a pass, at the stage preflight and at the
+# publication boundary alike.
 test_an_unreadable_record_is_refused_not_assumed_clean() {
   local out rc stub wt
   wt="$TMP_ROOT/wt-unreadable"

@@ -29,6 +29,12 @@
 # A following COMPLETION_CNO may return 1 after a successful STAGE receipt;
 # that preserves the already applied lifecycle effect and reports the separate
 # unresolved handoff. It is not a STAGE_REFUSED rollback of that effect.
+# STAGE_REFUSED is the ONE line that means the transition did NOT apply, and it
+# never accompanies a STAGE receipt or a next: line. Every other non-zero
+# disposition - COMPLETION_CNO, COMPLETION_PENDING, STAGE_QUALIFICATION_CNO -
+# follows a transition that DID apply: the receipt stands, next: still prints,
+# and the status only reports what is separately unresolved. A consumer tells
+# the two apart on that token, never on the exit status or the wording.
 #
 # Stages, in order:
 #   candidate-committed -> validation-pending | validation-admitted
@@ -155,7 +161,11 @@
 # profile (<no-mistakes version>+<build> from the observer's qualified-profile
 # read), attempt, run, step (the run's canonical status), outcome (the
 # observer's outcome class), pr, owner (who acts next: worker, firstmate, or
-# merge-authority), reason, engineering, residuals.
+# merge-authority), reason, engineering, residuals. Two more fields follow on a
+# qualification-obligated stage line only - a ci-ready, landing or activated
+# receipt that carries a recorded CI-ready effect: qualification (always
+# `revocable`: the producer snapshot is current only at the read that took it)
+# and qualified_head (the exact head that snapshot qualified).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -487,7 +497,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
       printf 'stage_evidence=%s\n' "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-$(meta stage_evidence)}"
     fi
     case "$stage" in
-      landing|activated) printf 'stage_ci_ready_effect=%s\n' "$(meta stage_ci_ready_effect)" ;;
+      landing|activated) [ -z "$ci_effect" ] || printf 'stage_ci_ready_effect=%s\n' "$ci_effect" ;;
     esac
     for kv in "$@"; do printf '%s\n' "$kv"; done
   } >> "$tmp"
@@ -798,7 +808,7 @@ qualification_delta() {  # <retained tuple> <fresh tuple>
 }
 
 do_ci_ready() (
-  local current effect saved contract qualified_head qualification recorded repeat advanced CI_READY_META_LOCK=
+  local current effect saved contract qualified_head qualification recorded repeat advanced ci_ready_rc CI_READY_META_LOCK=
   CI_READY_META_LOCK=$(fm_meta_lock_path "$META") || exit 1
   fm_lock_acquire_wait "$CI_READY_META_LOCK"
   trap 'fm_lock_release "$CI_READY_META_LOCK"' EXIT
@@ -881,8 +891,13 @@ do_ci_ready() (
     issue ci-ready merge-authority "" "$(meta stage_branch)" "$(meta stage_head)" "$(meta stage_tree)" \
       "stage_attempt=$(obs attempt_id)" "stage_run=$(obs run_id)" "stage_pr=$PR_ARG" "stage_ci_ready_effect=$effect"
   fi
-  require_current_qualification ci-ready
+  ci_ready_rc=0
+  qualification_current ci-ready || ci_ready_rc=1
+  [ "$ci_ready_rc" -eq 0 ] \
+    || printf 'STAGE_QUALIFICATION_CNO: transition=ci-ready task=%s reason=QUALIFICATION_REVOKED the receipt above stands and the record is at ci-ready; the producer qualification moved after publication (%s); historical record retained\n' \
+         "$ID" "$FM_NM_EFFECT_REASON"
   next_for ci-ready
+  exit "$ci_ready_rc"
 )
 
 # A no-mistakes task may neither enter nor remain in a qualified stage without
@@ -896,12 +911,17 @@ qualification_applies() {  # <transition>
 }
 
 # Historical stage labels never substitute for current producer qualification.
-require_current_qualification() {  # <transition> [expected PR] [lock to release before refusing]
+# The predicate is separate from what a negative answer MEANS, because that
+# depends on whether anything has been published yet. Before publication a
+# negative answer is a refusal: nothing happened. After the receipt is on the
+# status log the transition HAS happened, and calling that STAGE_REFUSED would
+# tell a consumer the lifecycle effect was rolled back when it was not.
+qualification_current() {  # <transition> [expected PR] [lock to release on a negative answer]
   local expected_pr=${2:-$(meta stage_pr)} held_lock=${3:-} fresh recorded
   if qualification_applies "$1"; then
     if ! fm_nm_effect_current "$META" "$expected_pr" >/dev/null; then
       [ -z "$held_lock" ] || fm_lock_release "$held_lock"
-      refuse "$1" QUALIFICATION_REVOKED "exact stage qualification is missing or no longer current ($FM_NM_EFFECT_REASON); historical record retained"
+      return 1
     fi
     fresh=$FM_NM_EFFECT_TUPLE
     # The producer answered yes under the same pinned identity, so whatever it
@@ -913,6 +933,11 @@ require_current_qualification() {  # <transition> [expected PR] [lock to release
       refresh_ci_ready_effect "$(printf '%s' "$recorded" | jq -c --argjson q "$fresh" '.qualification=$q')" "$held_lock" || true
     fi
   fi
+}
+
+require_current_qualification() {  # <transition> [expected PR] [lock to release before refusing]
+  qualification_current "$@" \
+    || refuse "$1" QUALIFICATION_REVOKED "exact stage qualification is missing or no longer current ($FM_NM_EFFECT_REASON); historical record retained"
 }
 
 do_landing() {

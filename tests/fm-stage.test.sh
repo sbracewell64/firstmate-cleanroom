@@ -53,7 +53,18 @@ case "${1:-}" in
   axi)
     shift
     case "${1:-}" in
-      qualification) exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:2}" ;;
+      qualification)
+        # Declared boundary double: the producer answers the first N reads of a
+        # single invocation and then stops, which is how a producer that moves
+        # AFTER publication is reproduced deterministically.
+        if [ -n "${FM_TEST_QUALIFICATION_REVOKE_AFTER:-}" ]; then
+          nm_q=$(cat "${FM_TEST_QUALIFICATION_COUNT:?}" 2>/dev/null || true)
+          case "$nm_q" in ''|*[!0-9]*) nm_q=0 ;; esac
+          nm_q=$((nm_q + 1))
+          printf '%s\n' "$nm_q" > "$FM_TEST_QUALIFICATION_COUNT"
+          [ "$nm_q" -le "$FM_TEST_QUALIFICATION_REVOKE_AFTER" ] || exit 1
+        fi
+        exec python3 "$FM_TEST_QUALIFICATION_FIXTURE" "${@:2}" ;;
       status) printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; exit "${FM_FAKE_STATUS_EXIT:-0}" ;;
       sync) printf '%s\n' "${FM_FAKE_SYNC:-}"; exit "${FM_FAKE_SYNC_RC:-0}" ;;
       logs) printf '%s\n' "${FM_FAKE_CI_LOGS:-}"; exit 0 ;;
@@ -396,6 +407,58 @@ test_ci_ready_needs_the_canonical_verdict_never_narration() {
   pass "fm-stage ci-ready: only the canonical run-step verdict certifies, never a hand-written line"
 }
 
+# The ci-ready receipt is appended and the record published BEFORE the last
+# producer read runs. A producer that moves in between has rolled nothing back,
+# so the report must not be STAGE_REFUSED - a consumer reads that token as "the
+# transition did not happen" - and the worker still needs its typed next line.
+test_post_receipt_producer_move_reports_without_refusing() {
+  local out rc wt saved_status lines
+  saved_status=$FM_FAKE_AXI_STATUS
+  wt="$TMP_ROOT/wt-q1"
+  make_worktree "$wt" fm/q1
+  make_task q1 no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=
+  out=$("$STAGE" q1 committed 2>&1); rc=$?
+  expect_code 0 "$rc" "q1 admission (got: $out)"
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNQ fm/q1 running "$(git -C "$wt" rev-parse HEAD)")
+  out=$("$STAGE" q1 running 2>&1); rc=$?
+  expect_code 0 "$rc" "q1 binds its run (got: $out)"
+  FM_FAKE_AXI_STATUS=$(run_toon 01RUNQ fm/q1 completed "$(git -C "$wt" rev-parse HEAD)" checks-passed https://github.com/o/r/pull/7)
+
+  # The producer answers the read that qualifies and the read that publishes,
+  # then stops before the post-publication revalidation.
+  export FM_TEST_QUALIFICATION_COUNT="$TMP_ROOT/q1-qualification-count"
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=2
+  out=$("$STAGE" q1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  unset FM_TEST_QUALIFICATION_REVOKE_AFTER
+  expect_code 1 "$rc" "a post-receipt producer move must still exit non-zero (got: $out)"
+  assert_contains "$out" "STAGE: ci-ready: task=q1" "the applied transition lost its receipt"
+  assert_not_contains "$out" "STAGE_REFUSED" "an applied transition reported a refusal"
+  assert_contains "$out" "STAGE_QUALIFICATION_CNO: transition=ci-ready task=q1" \
+    "the post-receipt producer move was not reported"
+  assert_contains "$out" "next: worker stops" "the worker was left without its typed next line"
+  [ "$(meta_get q1 stage)" = ci-ready ] || fail "the record is not at the stage its receipt reported"
+  [ "$(status_line_stage "$(last_line q1)")" = ci-ready ] \
+    || fail "the applied ci-ready receipt is missing from the status log"
+
+  # A producer that never answers refuses BEFORE anything is published: no
+  # receipt, no next line, and the record does not move.
+  lines=$(stage_lines q1)
+  : > "$FM_TEST_QUALIFICATION_COUNT"
+  export FM_TEST_QUALIFICATION_REVOKE_AFTER=0
+  out=$("$STAGE" q1 ci-ready --pr https://github.com/o/r/pull/7 2>&1); rc=$?
+  unset FM_TEST_QUALIFICATION_REVOKE_AFTER FM_TEST_QUALIFICATION_COUNT
+  expect_code 1 "$rc" "an unanswered producer must refuse (got: $out)"
+  assert_contains "$out" "STAGE_REFUSED: transition=ci-ready task=q1" \
+    "a transition that did not apply must refuse"
+  assert_not_contains "$out" "STAGE: ci-ready" "a refusal appended a receipt"
+  assert_not_contains "$out" "next:" "a refusal printed a typed next line"
+  [ "$(stage_lines q1)" = "$lines" ] || fail "a refusal appended to the status log"
+  FM_FAKE_AXI_STATUS=$saved_status
+  pass "fm-stage ci-ready: a post-receipt producer move reports without refusing; a pre-publication one refuses with nothing applied"
+}
+
 test_landing_and_activated_need_readback() {
   local out rc line proj
   # The project clone is a separate checkout that does not contain the candidate
@@ -550,6 +613,13 @@ test_direct_pr_and_local_only_record_candidate_only() {
   assert_contains "$("$STAGE" e-direct show)" 'next: worker pushes the branch and opens the PR' "direct-PR next step"
   # shellcheck disable=SC2016 # literal assertion text: backticks are part of the expected next: line
   assert_contains "$("$STAGE" e-local show)" 'next: worker appends `done: ready in branch fm/e-local`' "local-only next step"
+  # A mode that never records a CI-ready effect must not have an empty
+  # qualification field injected into its record by a later transition: the
+  # record is what every obligation reader consults.
+  out=$("$STAGE" e-direct landing 2>&1); rc=$?
+  expect_code 0 "$rc" "direct-PR landing records (got: $out)"
+  ! grep -q '^stage_ci_ready_effect=' "$STATE/e-direct.meta" \
+    || fail "landing injected an empty CI-ready effect into a direct-PR record"
   pass "fm-stage: direct-PR and local-only record the candidate and keep their own definition of done"
 }
 
@@ -569,6 +639,7 @@ test_restart_resumes_at_recorded_stage_under_new_worker_epoch
 test_stale_candidate_head_refuses_typed
 test_running_binds_the_observer_run_and_descendant_fix_commits_stay_current
 test_ci_ready_needs_the_canonical_verdict_never_narration
+test_post_receipt_producer_move_reports_without_refusing
 test_landing_and_activated_need_readback
 test_open_hold_produces_pending_and_no_launch
 test_missing_capacity_produces_pending_and_no_launch

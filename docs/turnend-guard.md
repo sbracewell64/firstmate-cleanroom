@@ -72,6 +72,11 @@ The configured Codex hook uses `--codex`; a retry flag never proves post-final c
 Its bounded recovery and exact away-owner binding live in [`bin/fm-codex-continuation-lib.sh`](../bin/fm-codex-continuation-lib.sh).
 A finite checkpoint can deliver a foreground result but cannot justify model final while work remains.
 Exhausted recovery is reported and recorded as CNO, with unfinished work retained; it is not completion or receiver acceptance.
+The bounded recovery budget is scoped to the calling session's own verified harness ancestry, so two Codex sessions sharing one home never spend each other's turns.
+Stop custody is NOT verified when a supervisor target override is in effect, meaning `FM_SUPERVISOR_TARGET` or `FM_SUPERVISOR_BACKEND` is set.
+The away daemon publishes the target that override resolved, while the Stop hook can only compose its own pane, so the two are never compared on equal terms.
+That configuration reports its own disposition, `continuation-owner-unevaluable-target-override`, and allows immediately with a CNO receipt rather than claiming a custody failure or spending three forced continuations.
+Resolving both spellings to a comparable pane id through the backend is deliberately out of scope here and is tracked as its own follow-up.
 
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.

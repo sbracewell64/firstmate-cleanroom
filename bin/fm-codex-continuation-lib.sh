@@ -17,8 +17,17 @@
 #
 # The daemon is the sole writer of .supervise-daemon.lock/continuation; its
 # lock lifecycle retires it. Stop owns .turnend-codex-blocks (session-scoped
-# bounded recovery and explicit CNO failure, never task completion).
-# Requires fm-wake-lib.sh. No process launch, pipeline control or source effect.
+# bounded recovery and explicit CNO failure, never task completion). A recovery
+# budget names the session being budgeted - the caller's own harness ancestry -
+# so concurrent sessions in one home can never spend each other's turns.
+#
+# Custody is NOT evaluable at all when a supervisor target override is in
+# effect, because the daemon publishes the target that override resolved while
+# the hook can only compose its own pane. That configuration gets its own
+# self-naming disposition and an immediate CNO; it is never reported as a
+# custody failure, because custody is held and merely unprovable here.
+# Requires fm-wake-lib.sh and fm-session-lock-lib.sh, sourced by the caller.
+# No process launch, pipeline control or source effect.
 
 # The fleet's single owner of supervisor-pane composition; the hook must resolve
 # its own pane exactly as the daemon resolved the one it publishes.
@@ -74,39 +83,23 @@ fm_codex_continuation_owned() { # <state> <home> <root>
     "$home" "$root" "$backend" "$target")" ]
 }
 
-fm_codex_continuation_session_key() { # <state> <payload>
-  local state=$1 payload=$2 id primary identity
-  # A budget identity is never a constant. A vendor session id is preferred; an
-  # absent or unreadable one falls back to the live primary session's own
-  # identity, so two unrelated sessions can never share - and spend - one
-  # durable recovery budget.
-  if id=$(printf '%s' "$payload" | jq -c '
-      if (.session_id | type) == "string" and ((.session_id | length) > 0)
-      then .session_id else error("session_id") end' 2>/dev/null) && [ -n "$id" ]; then
-    printf 'payload=%s' "$id"
-    return 0
-  fi
-  primary=$(cat "$state/.lock" 2>/dev/null) || return 1
-  case "$primary" in ''|*[!0-9]*) return 1 ;; esac
-  identity=$(fm_pid_identity "$primary") || return 1
-  printf 'primary=%s %s' "$primary" "$identity"
+fm_codex_continuation_session_key() {
+  local pid identity
+  # The budget identity names the session being budgeted: this caller's own
+  # verified harness ancestry, never the home, the fleet-lock holder, the
+  # vendor payload or a literal. The POSIX session the hook runs in is the only
+  # fallback, because it is the one remaining value that stays constant for a
+  # session's whole life and still differs between concurrent sessions.
+  pid=$(fm_harness_ancestry_pid) || pid=$(ps -o sess= -p "$$" 2>/dev/null | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+  identity=$(fm_pid_identity "$pid") || identity=start-unresolved
+  printf 'harness=%s %s' "$pid" "$identity"
 }
 
-fm_codex_continuation_refuse() { # <state> <session-key> <reason>
-  local state=$1 session=$2 reason=$3 lock file count=0 saved tmp notified=no
+fm_codex_continuation_refuse() { # <state> <session-key> <reason> [unevaluable]
+  local state=$1 session=$2 reason=$3 unevaluable=${4:-no} lock file count=0 saved tmp notified=no wake
   lock="$state/.turnend-codex-blocks.lock"
   file="$state/.turnend-codex-blocks"
-  if [ -z "$session" ]; then
-    # Neither the payload nor the live primary session yields an identity, so
-    # the budget cannot be scoped. Filing the receipt under a constant key would
-    # hand every later unidentified session a budget already spent, so escalate
-    # once and leave the durable budget untouched.
-    fm_wake_append check codex-continuation-cno \
-      'check: Codex continuation CNO - Stop custody unprovable and no session identity to scope recovery; supervision retains unfinished work; verify native receiver custody before idle' \
-      || printf 'CONTINUATION_CNO: escalation queue unreadable; durable failure remains pending\n' >&2
-    printf 'CONTINUATION_CNO: no session identity to scope bounded recovery (%s); unfinished work remains open\n' "$reason" >&2
-    return 0
-  fi
   # A lock/write failure is a loud CNO, never a false receipt or an endless
   # sequence of forced model turns. The caller leaves unfinished work intact.
   fm_lock_try_acquire "$lock" || {
@@ -119,13 +112,21 @@ fm_codex_continuation_refuse() { # <state> <session-key> <reason>
     case "$count" in 0|1|2|3) ;; *) count=3 ;; esac
     notified=$(sed -n 's/^notified=//p' "$file" 2>/dev/null || true)
   fi
-  [ "$count" -ge 3 ] || count=$((count + 1))
+  if [ "$unevaluable" = yes ]; then
+    # Three forced continuations buy nothing when custody is known to be
+    # unprovable, so this disposition starts spent rather than climbing a
+    # ladder it can never finish.
+    count=3
+  else
+    [ "$count" -ge 3 ] || count=$((count + 1))
+  fi
   if [ "$count" -ge 3 ] && [ "$notified" != yes ]; then
     # The existing durable wake queue carries the escalation, while the task
     # records retain unfinished work. Queue-before-receipt may repeat a wake
     # after a crash, but never loses the failure or authorizes another action.
-    if fm_wake_append check codex-continuation-cno \
-      'check: Codex continuation CNO - bounded Stop recovery exhausted; supervision retains unfinished work; verify native receiver custody before idle'; then
+    wake='check: Codex continuation CNO - bounded Stop recovery exhausted; supervision retains unfinished work; verify native receiver custody before idle'
+    [ "$unevaluable" != yes ] || wake='check: Codex continuation CNO - Stop custody is not evaluable under a supervisor target override; supervision retains unfinished work; verify native receiver custody before idle'
+    if fm_wake_append check codex-continuation-cno "$wake"; then
       notified=yes
     else
       notified=no
@@ -141,6 +142,10 @@ fm_codex_continuation_refuse() { # <state> <session-key> <reason>
     return 0
   fi
   fm_lock_release "$lock"
+  if [ "$unevaluable" = yes ]; then
+    printf 'CONTINUATION_CNO: custody is not evaluable under a supervisor target override (%s); Stop custody is NOT verified in this configuration and no bounded recovery is attempted; unfinished work remains open for the supervision owner\n' "$reason" >&2
+    return 0
+  fi
   if [ "$count" -ge 3 ]; then
     printf 'CONTINUATION_CNO: bounded recovery exhausted (%s); no verified post-final receiver; unfinished work remains open for the supervision owner\n' "$reason" >&2
     return 0

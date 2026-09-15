@@ -38,9 +38,13 @@ set -eu
 cd "$FM_HOME"
 command=$(jq -r '.hooks.Stop[0].hooks[0].command' .codex/hooks.json)
 stop() { printf '%s' "$1" | bash -c "$command"; }
+# The recovery budget is scoped to this driver's own session, so every case
+# below is an independent scenario and starts from a fresh receipt.
+reset_budget() { rm -f state/.turnend-codex-blocks; }
 stop '{"stop_hook_active":true,"session_id":"empty"}' > empty.out 2>&1
 [ ! -s empty.out ]
 printf 'kind=ship\nharness=echo\n' > state/demo.meta
+reset_budget
 rc=0; stop '{"stop_hook_active":true,"session_id":"blind"}' > blind.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
 # No watcher is a watcher fault, not a continuation-owner fault: the durable
@@ -49,6 +53,7 @@ grep -q 'CONTINUATION_REQUIRED: watcher-unhealthy;' blind.out
 grep -qx 'reason=watcher-unhealthy' state/.turnend-codex-blocks
 # A malformed Stop payload is the harness's fault, and it is answered before
 # the watcher or the continuation owner is consulted at all.
+reset_budget
 rc=0; stop '{"stop_hook_active":"true","session_id":"badpayload"}' > badpayload.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
 grep -q 'CONTINUATION_REQUIRED: stop-payload-invalid;' badpayload.out
@@ -57,6 +62,7 @@ grep -qx 'reason=stop-payload-invalid' state/.turnend-codex-blocks
 stop '{"cursor_version":"2026.08.11","stop_hook_active":true}' > cursor.out 2>&1
 [ ! -s cursor.out ]
 printf 'sm-private\n' > .fm-secondmate-home
+reset_budget
 rc=0; stop '{"stop_hook_active":true,"session_id":"secondmate"}' > secondmate.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
 rm .fm-secondmate-home
@@ -70,6 +76,7 @@ until [ -f state/.supervise-daemon.lock/continuation ] && [ -f state/.watch.lock
   sleep 0.1
  done
 # The daemon is the actual record author, but a shell is not a native primary.
+reset_budget
 rc=0; stop '{"stop_hook_active":true,"session_id":"shell-owner"}' > shell-owner.out 2>&1 || rc=$?
 [ "$rc" = 2 ]
 grep -q CONTINUATION_REQUIRED shell-owner.out
@@ -77,7 +84,17 @@ grep -q CONTINUATION_REQUIRED shell-owner.out
 # genuinely a continuation-owner fault.
 grep -q 'CONTINUATION_REQUIRED: continuation-owner-unverified;' shell-owner.out
 grep -qx 'reason=continuation-owner-unverified' state/.turnend-codex-blocks
-printf 'ok - configured Stop refuses a shell owner despite real private daemon/watcher custody\n'
+# A documented supervisor target override makes custody UNEVALUABLE, not failed.
+# It names itself, allows on the very first Stop, and never climbs the ladder.
+reset_budget
+rc=0; FM_SUPERVISOR_TARGET=firstmate:0 stop '{"stop_hook_active":true,"session_id":"override"}' > override.out 2>&1 || rc=$?
+[ "$rc" = 0 ]
+! grep -q CONTINUATION_REQUIRED override.out
+! grep -q continuation-owner-unverified override.out
+grep -q 'CONTINUATION_CNO: custody is not evaluable under a supervisor target override' override.out
+grep -qx 'reason=continuation-owner-unevaluable-target-override' state/.turnend-codex-blocks
+grep -qx 'blocks=3' state/.turnend-codex-blocks
+printf 'ok - configured Stop refuses a shell owner despite real private daemon/watcher custody, and reports a target override as unevaluable rather than unverified\n'
 
 # Predicate-level units: double ONLY native session membership so later checks
 # are reached. All process identities, cwd and daemon records remain real.
@@ -125,21 +142,43 @@ sleep 30 &
 restarted=$!
 printf '%s\n' "$restarted" > state/.lock
 owned || exit 41
-# A budget identity is never a constant: with no readable vendor session id the
-# key binds to the live primary, so an unrelated later session cannot inherit an
-# already-spent recovery budget.
-swapped_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{}') || exit 42
+# The budget identity names the session being budgeted, not whoever happens to
+# hold the fleet lock, so swapping state/.lock must not move the key. It must
+# also name a live process that really is this session - an ancestor in this
+# caller's harness run, or the POSIX session it runs in - so no literal can
+# satisfy it.
+held_key=$(fm_codex_continuation_session_key)
+key_pid=${held_key#harness=}
+key_pid=${key_pid%% *}
+case "$key_pid" in ''|*[!0-9]*) exit 42 ;; esac
+kill -0 "$key_pid" 2>/dev/null || exit 42
+fm_harness_ancestry_pids 2>/dev/null | grep -qx "$key_pid" \
+  || [ "$key_pid" = "$(ps -o sess= -p $$ 2>/dev/null | tr -d '[:space:]')" ] || exit 42
 kill "$restarted" 2>/dev/null || true
 wait "$restarted" 2>/dev/null || true
 printf '%s\n' "$BASHPID" > state/.lock
 owned || exit 43
-primary_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"stop_hook_active":true}') || exit 44
-unparsed_key=$(fm_codex_continuation_session_key "$FM_HOME/state" 'not json at all') || exit 45
-[ "$primary_key" = "$unparsed_key" ] || exit 46
-[ "$primary_key" != "$swapped_key" ] || exit 47
-alpha_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"session_id":"alpha"}') || exit 48
-beta_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"session_id":"beta"}') || exit 49
-[ "$alpha_key" != "$beta_key" ] && [ "$alpha_key" != "$primary_key" ] || exit 50
+[ "$(fm_codex_continuation_session_key)" = "$held_key" ] || exit 44
+
+# state/.turnend-codex-blocks is this guard's own durable receipt contract.
+# Drive two distinct session keys through the refusal itself: the second
+# session's FIRST Stop must earn its own blocks=1 refusal rather than inherit
+# the first session's exhausted budget.
+budget() {
+  local rc=0
+  fm_codex_continuation_refuse "$FM_HOME/state" "$1" watcher-unhealthy 2>/dev/null || rc=$?
+  printf '%s' "$rc"
+}
+rm -f state/.turnend-codex-blocks
+[ "$(budget 'harness=101 session-a')" = 2 ] || exit 45
+grep -qx 'blocks=1' state/.turnend-codex-blocks || exit 46
+[ "$(budget 'harness=101 session-a')" = 2 ] || exit 47
+grep -qx 'blocks=2' state/.turnend-codex-blocks || exit 48
+[ "$(budget 'harness=101 session-a')" = 0 ] || exit 49
+grep -qx 'blocks=3' state/.turnend-codex-blocks || exit 50
+[ "$(budget 'harness=202 session-b')" = 2 ] || exit 51
+grep -qx 'blocks=1' state/.turnend-codex-blocks || exit 52
+grep -qx 'session=harness=202 session-b' state/.turnend-codex-blocks || exit 53
 
 # The mirror of a stale record: a daemon that wins its own lock before the
 # primary takes state/.lock must still publish, or no record would ever exist
@@ -147,9 +186,9 @@ beta_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"session_id":"be
 mkdir -p nolock/.supervise-daemon.lock
 printf '%s\n' "$BASHPID" > nolock/.supervise-daemon.lock/pid
 [ ! -e nolock/.lock ]
-fm_codex_continuation_publish nolock "$FM_HOME" "$FM_HOME" tmux %9 || exit 51
-diff continuation.good nolock/.supervise-daemon.lock/continuation || exit 52
-printf 'ok - custody survives a primary swap, a defaulted herdr session and a lock-less publish; recovery budgets never collapse to a constant\n'
+fm_codex_continuation_publish nolock "$FM_HOME" "$FM_HOME" tmux %9 || exit 54
+diff continuation.good nolock/.supervise-daemon.lock/continuation || exit 55
+printf 'ok - custody survives a primary swap, a defaulted herdr session and a lock-less publish; one session can never spend another session bounded recovery\n'
 
 DRIVER
 # Hard bound includes positive custody waiting and reaps private descendants.
@@ -157,7 +196,7 @@ DRIVER
 . "$ROOT/bin/fm-timeout-lib.sh"
 rc=0
 fm_run_timed 25 env -i PATH="$TMP_ROOT/fakebin:$PATH" HOME="$home" FM_HOME="$home" \
-  FM_BACKEND=tmux FM_SUPERVISOR_BACKEND=tmux FM_HARNESS=codex TMUX_PANE=%9 \
+  FM_BACKEND=tmux FM_HARNESS=codex TMUX_PANE=%9 \
   FM_POLL=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_HEARTBEAT_SCAN_SECS=999999 \
   bash "$TMP_ROOT/driver.sh" || rc=$?
 if [ "$rc" -ne 0 ]; then

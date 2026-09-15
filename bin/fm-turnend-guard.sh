@@ -177,25 +177,34 @@ if [ "$CODEX_MODE" -eq 1 ]; then
   . "$SCRIPT_DIR/fm-session-lock-lib.sh"
   # shellcheck source=bin/fm-codex-continuation-lib.sh
   . "$SCRIPT_DIR/fm-codex-continuation-lib.sh"
-  # Three independently reachable causes, evaluated in the order the allow
-  # conjunction had them so the short-circuit is unchanged. Each names itself:
-  # the durable reason= and both operator lines carry the cause that actually
-  # failed, because a malformed harness payload and a dead watcher send the
-  # operator somewhere other than daemon custody.
+  # Three independently reachable refusal causes, evaluated in the order the
+  # allow conjunction had them so the short-circuit is unchanged, plus one
+  # disposition that is not a refusal at all. Each names itself: the durable
+  # reason= and both operator lines carry the cause that actually failed,
+  # because a malformed harness payload and a dead watcher send the operator
+  # somewhere other than daemon custody.
+  CONTINUATION_UNEVALUABLE=no
   if [ "$STOP_HOOK_ACTIVE" = invalid ]; then
     CONTINUATION_CAUSE=stop-payload-invalid
   elif ! fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
     CONTINUATION_CAUSE=watcher-unhealthy
   elif ! fm_codex_continuation_owned "$STATE" "$FM_HOME" "$(cd "$SCRIPT_DIR/.." && pwd -P)"; then
-    CONTINUATION_CAUSE=continuation-owner-unverified
+    # A documented supervisor target override resolves the daemon's published
+    # target while the hook can only compose its own pane, so the comparison
+    # was never made on equal terms. Custody is held and unprovable here, and
+    # calling that a custody failure would be a false statement about this
+    # operator's system.
+    if [ -n "${FM_SUPERVISOR_TARGET:-}" ] || [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
+      CONTINUATION_CAUSE=continuation-owner-unevaluable-target-override
+      CONTINUATION_UNEVALUABLE=yes
+    else
+      CONTINUATION_CAUSE=continuation-owner-unverified
+    fi
   else
     exit 0
   fi
-  # JSON encoding keeps an arbitrary vendor session value on one record line;
-  # an unreadable one yields the live primary session's identity, and an empty
-  # key means no session identity exists to scope the budget to at all.
-  SESSION_ID=$(fm_codex_continuation_session_key "$STATE" "$PAYLOAD" || true)
-  fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "$CONTINUATION_CAUSE"
+  SESSION_ID=$(fm_codex_continuation_session_key)
+  fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "$CONTINUATION_CAUSE" "$CONTINUATION_UNEVALUABLE"
   exit $?
 fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then

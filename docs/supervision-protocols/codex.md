@@ -16,3 +16,4 @@ Codex cannot reason while a foreground tool call is running.
 The bounded checkpoint returns control regularly so user messages and queued wakes can be handled without relying on background-task wake semantics.
 A yielded tool session still requires its result to be awaited; it is not permission to finalize with unfinished work.
 Treat `CONTINUATION_CNO` as unverified continuation, even with an empty inbox or wake queue.
+Setting `FM_SUPERVISOR_TARGET` or `FM_SUPERVISOR_BACKEND` leaves Stop custody unverified for the whole session, reported as `continuation-owner-unevaluable-target-override`.

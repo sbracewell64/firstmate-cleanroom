@@ -47,7 +47,8 @@
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
 # arm/watcher identities, timestamps, exit/signal classification, beacon age,
-# lock identity before and after close, and successor disposition. The separate
+# lock identity before and after close, successor disposition, and whether a
+# --restart stop was confirmed. The separate
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
@@ -110,6 +111,10 @@ cycle_watcher_identity=none
 cycle_origin=unknown
 cycle_started_at=0
 cycle_lock_before='pid:none|identity:none'
+# Disposition of the --restart stop this arm performed before launching, carried
+# into every lifecycle record it writes. docs/watcher-continuity.md's arm-layer
+# cycle contract owns the field and its values.
+cycle_restart_stop=none
 
 cycle_begin() {
   cycle_watcher_pid=$1
@@ -151,7 +156,7 @@ cycle_log_append() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tsuccessor=%s\n' \
+  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\trestart_stop=%s\tsuccessor=%s\n' \
     "$ARM_PID" \
     "$(cycle_clean_field "$cycle_watcher_pid")" \
     "$(cycle_clean_field "$cycle_origin")" \
@@ -163,6 +168,7 @@ cycle_log_append() {
     "$beacon_age" \
     "$(cycle_clean_field "$cycle_lock_before")" \
     "$(cycle_clean_field "$lock_after")" \
+    "$(cycle_clean_field "$cycle_restart_stop")" \
     "$(cycle_clean_field "$successor")" >> "$CYCLE_LOG" 2>/dev/null || true
 
   size=$(wc -c < "$CYCLE_LOG" 2>/dev/null | tr -d '[:space:]')
@@ -341,7 +347,7 @@ attach_and_wait() {
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_attached_signal() {
   local signal=$1 rc=$2
-  trap - HUP TERM INT
+  trap '' HUP TERM INT
   cycle_log_append "$rc" "$signal" arm-interrupted none
   exit "$rc"
 }
@@ -410,16 +416,27 @@ fi
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  cycle_restart_stop=no-live-watcher
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      # Stop it and CONFIRM it is gone before relaunching, so the fresh watcher
-      # either takes a released lock or reclaims a now-dead-pid stale lock instead
-      # of seeing the dying one as a live holder and no-opping. One delivery is
-      # not a stop - fm_stop_process_confirmed owns why - and a restart that
-      # assumed it was would silently leave the old watcher running and start
-      # nothing. The matched lock identity keeps a recycled pid from being
-      # signalled.
-      fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50 || true
+      # Stop it and try to CONFIRM it is gone before relaunching, so the fresh
+      # watcher either takes a released lock or reclaims a now-dead-pid stale lock
+      # instead of seeing the dying one as a live holder and no-opping. One
+      # delivery is not a stop - fm_stop_process_confirmed owns why - so the stop
+      # is re-delivered until the watcher is observed gone or the bound elapses.
+      # The matched lock identity keeps a recycled pid from being signalled.
+      #
+      # An unconfirmed stop does NOT refuse the restart. --restart is the recovery
+      # path: leaving the fleet with no watcher at all is worse than the duplicate
+      # a refusal would avoid, and an escape hatch that will not open when the
+      # evidence is missing is not a safety property. The unknown is NAMED instead,
+      # as restart_stop in the lifecycle records this arm writes, so a consumer can
+      # tell a restart after a confirmed stop from one that could not confirm it.
+      if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50; then
+        cycle_restart_stop=confirmed
+      else
+        cycle_restart_stop=unconfirmed
+      fi
     else
       if ! clear_stale_recorded_watcher_lock; then
         echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
@@ -459,7 +476,7 @@ cleanup_child() {
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
-  trap - HUP TERM INT
+  trap '' HUP TERM INT
   if [ -n "$child" ] && fm_pid_alive "$child"; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -584,7 +601,7 @@ while :; do
   sleep 0.2
 done
 
-trap - HUP TERM INT
+trap '' HUP TERM INT
 print_watch_output "$child_out"
 cleanup_child
 wait "$child" 2>/dev/null

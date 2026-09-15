@@ -896,7 +896,7 @@ SH
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
   [ "$size" -le 1400 ] || fail "cycle ledger exceeded its configured cap ($size bytes)"
-  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
+  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*restart_stop=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
     || fail "bounded lifecycle ledger contains a partial or malformed record"
   pass "cycle-exit ledger links a verified successor and remains size-capped"
 }
@@ -1244,9 +1244,102 @@ test_watcher_close_path_is_not_abandoned_by_a_later_stop() {
   pass "a later stop cannot abandon the watcher close path that publishes its stop"
 }
 
+test_restart_records_whether_its_stop_was_confirmed() {
+  # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
+  # leaving the fleet with no watcher at all is worse than the duplicate a
+  # refusal would avoid, and an escape hatch that will not open when the evidence
+  # is missing is not a safety property. What the restart owes a consumer instead
+  # is the fact in a form it can act on, so the arm-layer lifecycle row carries
+  # restart_stop and names "could not confirm" as its own value rather than
+  # reading like a confirmed stop. This drives the real --restart against a real
+  # recorded holder in both dispositions, and pins the exclusion the unconfirmed
+  # case rests on - the singleton lock, not an assumption.
+  local dir state fakebin arm_out restart_out restart_err second_out second_err
+  local arm_pid holder_pid stopped_pid lock_pid status i
+  dir=$(make_case restart-stop-disposition)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  arm_out="$dir/arm.out"
+  restart_out="$dir/restart.out"
+  restart_err="$dir/restart.err"
+  second_out="$dir/unconfirmed.out"
+  second_err="$dir/unconfirmed.err"
+
+  restart_case_arm() {
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" "$@"
+  }
+
+  restart_case_arm > "$arm_out" 2>/dev/null &
+  arm_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && ! grep -qF 'watcher: started pid=' "$arm_out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  holder_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$holder_pid" "$arm_out" \
+    || { reap "$arm_pid"; fail "restart fixture watcher did not start"; }
+
+  # A recorded holder that DOES act on its stop: the confirmed disposition.
+  restart_case_arm --restart > "$restart_out" 2> "$restart_err" || true
+  is_live_non_zombie "$holder_pid" \
+    && { reap "$arm_pid"; fail "--restart returned while the watcher it stopped was still alive"; }
+  grep -q 'restart_stop=confirmed' "$state/.watch-cycle-exits.log" \
+    || { reap "$arm_pid"; fail "a --restart that confirmed its stop did not record the confirmed disposition"; }
+
+  # An arm that restarted nothing must not claim a stop disposition at all.
+  wait_for_exit "$arm_pid" 200 >/dev/null 2>&1
+  grep -q 'restart_stop=none' "$state/.watch-cycle-exits.log" \
+    || fail "an arm that performed no --restart stop did not record the absent disposition"
+  drain_and_ack "$state" || fail "recovery drain after the confirmed restart failed"
+
+  restart_case_arm > "$second_out" 2>/dev/null &
+  arm_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && ! grep -qF 'watcher: started pid=' "$second_out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  stopped_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$stopped_pid" "$second_out" \
+    || { reap "$arm_pid"; fail "stop-proof fixture watcher did not start"; }
+
+  # Now a recorded holder that CANNOT act on any stop, however often it is
+  # delivered: SIGSTOP leaves it live and identity-matched, so --restart signals
+  # it for real and its bounded confirmation genuinely cannot succeed.
+  kill -STOP "$stopped_pid" 2>/dev/null \
+    || { reap "$arm_pid"; fail "could not SIGSTOP the recorded watcher"; }
+  touch -t 200001010000 "$state/.last-watcher-beat"
+  status=0
+  restart_case_arm --restart > "$second_out.restart" 2> "$second_err" || status=$?
+  kill -CONT "$stopped_pid" 2>/dev/null || true
+
+  is_live_non_zombie "$stopped_pid" \
+    || { reap "$arm_pid"; fail "the stop-proof holder was collected, so this case proves nothing about an unconfirmed stop"; }
+  grep -q 'restart_stop=unconfirmed' "$state/.watch-cycle-exits.log" \
+    || { reap "$arm_pid"; fail "a --restart that could not confirm its stop did not record the unconfirmed disposition"; }
+  [ "$status" -ne 0 ] \
+    || { reap "$arm_pid"; fail "--restart reported success while the watcher it never confirmed stopped still held the lock"; }
+
+  # The exclusion the unconfirmed case rests on, proven rather than assumed: the
+  # relaunched watcher stands down against the still-live recorded holder instead
+  # of running beside it, so one live watcher remains and it is still that holder.
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ "$lock_pid" = "$stopped_pid" ] \
+    || { reap "$arm_pid"; fail "a second watcher took the singleton lock beside the one that was never confirmed stopped"; }
+  grep -qF "lock held by live pid $stopped_pid" "$second_err" \
+    || { reap "$arm_pid"; fail "the relaunched watcher did not stand down against the live recorded holder"; }
+
+  reap "$arm_pid"
+  unset -f restart_case_arm
+  pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
+}
+
 test_reap_bounds_a_signal_swallowing_watcher
 test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
 test_watcher_close_path_is_not_abandoned_by_a_later_stop
+test_restart_records_whether_its_stop_was_confirmed
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse

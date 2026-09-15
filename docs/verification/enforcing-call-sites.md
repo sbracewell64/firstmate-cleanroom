@@ -109,43 +109,26 @@ Most `bin/` callers underline that by invoking it as `|| true`, and the one that
 It is now declared as not an enforcement point, with the invariant restated as what it does guarantee, which is that the condition is announced.
 This sweep did NOT establish whether a narrower owner enforces the per-home session lock at some other boundary; that question is recorded as not observed rather than answered in either direction.
 
-The executable-reference rule changed the reading of thirteen references that a plain text match had accepted.
-Eight are shell header comments: `bin/fm-watch-arm.sh`, `bin/fm-subagent-pretool-check.sh`, `bin/fm-procevent-when.sh`, `bin/fm-check-register.sh`, `bin/fm-watch.sh`, `bin/fm-teardown.sh`, `bin/fm-claude-stop-autoarm.sh`, and `bin/fm-turnend-guard.sh` each name a capability without calling it.
-Seven of those entry points keep other real callers; the eighth, `bin/fm-check-unregister.sh`, turned out to have none at all.
+The executable-reference rule reclassified references that a plain text match had accepted.
+Most were shell header comments naming a capability the file never calls, and each of those entry points but one keeps a real caller elsewhere.
+The rest had been declared as verified call sites and are now recorded as `rejectedCallSites`, so the sweep's own finds became a permanent self-test that fails if the stripping rules are ever weakened.
+No entry's reading changed from ACTIVE to UNPROVEN; what changed is that the inventory now says where enforcement actually happens.
+Which entries those are, and the reason recorded against each, live in [`docs/enforcement-points.json`](../enforcement-points.json), which owns every per-entry row.
 
-The remaining five had been declared as verified call sites and are now recorded as `rejectedCallSites`, so the sweep's own finds became a permanent self-test on real files.
-`bin/fm-stage.sh` and `bin/fm-branch-prompt.sh` name `bin/fm-pr-check.sh` in emitted operator text, and `bin/fm-supervision-instructions.sh` names `bin/fm-turnend-guard-cursor.sh` the same way.
-`bin/fm-cd-command-policy.mjs` names `bin/fm-cd-pretool-check.sh` in a `//` comment, and `.no-mistakes.yaml` names `bin/fm-lint-workflows.sh` in a `#` comment.
-Each of those entry points keeps a genuine caller, so no entry's reading changed from ACTIVE to UNPROVEN; what changed is that the inventory now says where enforcement actually happens.
+### Why an entry can be accounted for without an automatic caller
+
+A capability with no automatic caller by design is declared `operator-invoked` with its reason and the prose owner that invokes it.
+That owner has to name the capability, not merely the script: for a tokened entry the check requires the file to carry the script's basename followed by the token, so a document that lists the script in a command index does not qualify.
+An entry of that kind is not the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
+
+A discovery false positive is declared `not-enforcement` with its reason.
+Three readings produce one: a reporter that prints and refuses nothing, a helper whose name carries an enforce verb only because it sits inside a namespace prefix, and an internal branch label that no caller can name.
+Neither kind is a softening, because both are explicit declarations a reviewer had to write, and an undeclared capability still fails by default.
 
 ### Known-good references, confirmed
 
 Both already-repaired instances of this family still name their production callers, and `tests/fm-enforcement-callers.test.sh` asserts each by name.
 That assertion is proven rather than trusted: the same predicate is run against copies of the inventory with each named caller removed, and both copies must be rejected.
-
-| Entry point | Enforcing call site | Repair |
-| --- | --- | --- |
-| `bin/fm-startup-memory-budget.sh:enforce` | `bin/fm-session-start.sh` | PR 46, merge `0e826aa` |
-| `bin/fm-outbound-write-lib.sh:fm_outbound_send` | `bin/fm-send.sh`, `bin/fm-backlog-handoff.sh`, `bin/fm-x-reply.sh`, `bin/fm-x-dismiss.sh` | PR 47, merge `0a519ea` |
-
-### Entries that are not automatically called
-
-Four discovered capabilities have no automatic caller, and each is declared `operator-invoked` with the reason and the prose owner that invokes it.
-That owner has to name the capability, not merely the script: for a tokened entry the check requires the file to carry the script's basename followed by the token, so a document that lists the script in a command index does not qualify.
-Widening discovery added no new instance of this shape: every newly discovered capability has a production caller, and the ones that are not enforcement points are declared as such.
-None of them is the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
-
-| Entry point | Reading | Why |
-| --- | --- | --- |
-| `bin/fm-home-seed.sh:validate` | ACTIVE at the write boundary | The same `validate_registry` predicate runs inside the transactional seed path; this subcommand is a standalone re-check. |
-| `bin/fm-decision-hold.sh:verify` | ACTIVE through its surviving owner | A one-release compatibility shim over `bin/fm-captain-hold.sh:verify`, which carries the production call site. |
-| `bin/fm-render-launcher.sh:--require-complete-config` | ACTIVE as an operator opt-in | A strictness flag on a captain-authorized launcher cutover that no script schedules. |
-| `bin/fm-check-unregister.sh` | ACTIVE as the command `AGENTS.md` names | No script calls it: `bin/fm-teardown.sh` removes a spawned task's check artifacts on its own path, so this is the retirement command for a check registered by hand. |
-
-`bin/fm-tool-update-check.sh` is declared as not an enforcement point: it reports a wake line and refuses nothing, and was discovered only because its name carries the word check.
-The four `fm_guard_*` helpers in `bin/fm-guard.sh` are declared the same way: they decide how loudly the watcher-down banner prints and never change whether a fleet mutation is allowed.
-`bin/fm-guard.sh` itself is declared the same way for the same reason, as recorded above.
-`bin/fm-wake-lib.sh:_fm_wake_require_classify` is declared the same way as well: `require` there means module import, and the function sources `bin/fm-classify-lib.sh` on demand rather than rejecting anything.
 
 ### Observation, not repaired in this slice
 
@@ -200,7 +183,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058153
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058186
 ```
 
 ```sh
@@ -208,7 +191,7 @@ bin/fm-doc-audience-check.sh
 ```
 
 ```text
-fm-doc-audience-check: ok surfaces=93 local_links=333
+fm-doc-audience-check: ok surfaces=93 local_links=334
 ```
 
 ```sh
@@ -216,10 +199,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T02:04:39Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=13089 gate_skip=false
-FM_TEST_END 2026-09-15T02:04:40Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=878 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=14033
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13967 failed=0
+FM_TEST_END 2026-09-15T02:19:35Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=13103 gate_skip=false
+FM_TEST_END 2026-09-15T02:19:35Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13993
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13927 failed=0
 ```
 
 ## Adding an entry point

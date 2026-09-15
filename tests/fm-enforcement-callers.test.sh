@@ -193,7 +193,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fm_inner_apply "$1"
 FIX
 
-  # An enforce-verb arm nested inside a function inside a loop.
+  # An enforce-verb arm on each axis, nested inside a function inside a loop.
   cat > "$repo/bin/fm-nested-arm.sh" <<'FIX'
 #!/usr/bin/env bash
 set -eu
@@ -205,6 +205,26 @@ main() {
     esac
     shift
   done
+}
+main "$@"
+FIX
+
+  cat > "$repo/bin/fm-nested-flag.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+main() {
+  case "$1" in
+    run)
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --enforce-nested-flag) printf 'strict\n' ;;
+          *) break ;;
+        esac
+        shift
+      done
+      ;;
+    *) exit 2 ;;
+  esac
 }
 main "$@"
 FIX
@@ -311,6 +331,12 @@ write_fixture_inventory() {
       "callSites": [{"path": "bin/fm-widget-binding-consumer.sh", "via": "production"}]
     },
     {
+      "id": "bin/fm-nested-flag.sh:--enforce-nested-flag",
+      "kind": "not-enforcement",
+      "invariant": "A nested widget pass runs in strict mode.",
+      "reason": "A scratch strictness flag that prints and refuses nothing."
+    },
+    {
       "id": "bin/fm-nested-arm.sh:enforce-nested",
       "kind": "not-enforcement",
       "invariant": "A nested widget pass reports itself.",
@@ -412,6 +438,10 @@ elif mode == "drop-shared-function":
 elif mode == "drop-nested-arm":
     data["entryPoints"] = [
         e for e in data["entryPoints"] if e["id"] != "bin/fm-nested-arm.sh:enforce-nested"
+    ]
+elif mode == "drop-nested-flag":
+    data["entryPoints"] = [
+        e for e in data["entryPoints"] if e["id"] != "bin/fm-nested-flag.sh:--enforce-nested-flag"
     ]
 elif mode == "drop-lever-flag":
     data["entryPoints"] = [
@@ -777,12 +807,19 @@ test_undeclared_entry_point_fails() {
   pass "a new enforce-style entry point cannot ship without being accounted for"
 }
 
-test_deeply_indented_arm_is_discovered() {
+test_every_arm_axis_shares_one_indent_policy() {
   local repo="$TMP_ROOT/indented-arm"
+
+  # Subcommand and long-option arms sit at the same depth, so a cap restored on
+  # either axis alone is caught here rather than surviving on its sibling.
   write_fixture "$repo"
   mutate_fixture_inventory "$repo" drop-nested-arm
   run_expect_failure "bin/fm-nested-arm.sh:enforce-nested" "$CHECK" --root "$repo"
-  pass "an arm nested inside a function and a loop is still discovered"
+
+  write_fixture "$repo"
+  mutate_fixture_inventory "$repo" drop-nested-flag
+  run_expect_failure "bin/fm-nested-flag.sh:--enforce-nested-flag" "$CHECK" --root "$repo"
+  pass "a subcommand and a long option nested inside a function and a loop are both discovered"
 }
 
 test_emitted_prose_after_an_opener_is_not_a_call() {
@@ -981,7 +1018,7 @@ test_unscheduled_repository_gate_fails
 test_undeclared_entry_point_fails
 test_undeclared_variable_dispatch_subcommand_fails
 test_dispatch_arms_survive_lexical_case_shapes
-test_deeply_indented_arm_is_discovered
+test_every_arm_axis_shares_one_indent_policy
 test_emitted_prose_after_an_opener_is_not_a_call
 test_undeclared_sourced_library_function_fails
 test_quoted_shift_does_not_start_a_heredoc

@@ -50,7 +50,11 @@ SUBCOMMAND_VERBS = ("admit", "assert", "enforce", "guard", "qualify", "refuse", 
 FLAG_VERBS = ("assert", "check", "enforce", "guard", "refuse", "require", "validate", "verify")
 FUNCTION_VERBS = ("assert", "enforce", "guard", "refuse", "require", "validate", "verify")
 
-SUBCOMMAND_RE = re.compile(r"^\s*([a-z0-9|_-]+)\)")
+# One indent policy for every case-arm axis. A cap on one axis and not the other
+# is how the long-option hole outlived the subcommand fix, so both arm patterns
+# and the declaration check read their leading-whitespace rule from here.
+ARM_INDENT = r"^\s*"
+SUBCOMMAND_RE = re.compile(ARM_INDENT + r"([a-z0-9|_-]+)\)")
 # A dispatcher is a `case` on the script's own argument stream: `$1` itself, or
 # a variable this file assigned directly from `$1`. Deliberately narrow, so an
 # unrelated internal `case` is not harvested as a subcommand table.
@@ -59,7 +63,7 @@ ARG_ASSIGN_RE = re.compile(
     r'^\s*(?:local\s+|declare\s+|readonly\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\{?1\b)'
 )
 # An alias group is discovered on every alternative: `--enforce|--enforce-all)`.
-FLAG_RE = re.compile(r"^\s{0,8}(-{1,2}[a-z][a-z0-9-]*(?:\|-{1,2}[a-z][a-z0-9-]*)*)\)")
+FLAG_RE = re.compile(ARM_INDENT + r"(-{1,2}[a-z][a-z0-9-]*(?:\|-{1,2}[a-z][a-z0-9-]*)*)\)")
 FUNCTION_RE = re.compile(r"^(fm_[a-z0-9_]+)\(\)")
 # A sourced library's functions are its entry points, so they are discovered
 # whatever they are named. A script that is only executed keeps the `fm_` gate:
@@ -708,11 +712,11 @@ def entry_exists(root: Path, entry_id: str, axis: str) -> None:
         return
     text = read_text(root, path)
     if axis == "flag":
-        present = re.search(rf"^\s{{0,8}}(?:-{{1,2}}[a-z0-9-]+\|)*{re.escape(token)}(?:\||\))", text, re.M)
+        present = re.search(ARM_INDENT + rf"(?:-{{1,2}}[a-z0-9-]+\|)*{re.escape(token)}(?:\||\))", text, re.M)
     elif axis == "function":
         present = re.search(rf"^{re.escape(token)}\(\)", text, re.M)
     else:
-        present = re.search(rf"^\s*(?:[a-z0-9|_-]*\|)?{re.escape(token)}(?:\||\))", text, re.M)
+        present = re.search(ARM_INDENT + rf"(?:[a-z0-9|_-]*\|)?{re.escape(token)}(?:\||\))", text, re.M)
     if not present:
         fail(f"{entry_id}: declared capability is no longer defined in {path}")
 

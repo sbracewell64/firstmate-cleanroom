@@ -18,6 +18,7 @@ pass() { printf 'ok - %s\n' "$1"; }
 FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
 for fn in console_profile_default console_profile_menu console_profile_harness console_profile_model \
           console_profile_model_ok console_profile_qualify console_profile_qualified_set \
+          console_profile_builtin_qualified_set \
           console_profile_gate console_profile_resolve console_argv_subscription_only console_harness_argv \
           read_scalar resolve_host_path; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
@@ -74,12 +75,19 @@ case "$(console_profile_qualify nope 1 1)" in "PENDING: nope is not a known prof
 case "$(console_profile_qualify codex-luna 0 0)" in "PENDING: harness codex is not installed"*) ;; *) fail "installed gate precedes the allowlist gate" ;; esac
 pass "qualify: QUALIFIED only when installed AND allowed; every PENDING states its exact gate"
 
-# --- the qualified set defaults to the default profile only ---------------------
+# --- the built-in qualified set does not follow the default profile -------------
+# Which profile is selected by default and which profiles are qualified are
+# separate facts: the built-in set is plan-generic (fable-5.1), while codex-luna
+# rests on gpt-5.6-luna evidence measured on one ChatGPT account, so a home must
+# grant it in its own config rather than inherit it from being the default.
+[ "$(console_profile_builtin_qualified_set)" = fable-5.1 ] || fail "the built-in qualified set is fable-5.1"
+[ "$(console_profile_builtin_qualified_set)" != "$(console_profile_default)" ] || fail "the built-in qualified set must not track the default profile"
+case " $(console_profile_builtin_qualified_set) " in *' codex-luna '*) fail "account-specific codex-luna must not be qualified out of the box" ;; esac
 ( unset FM_HOME; FM_HOME=$TMP/home-empty; mkdir -p "$FM_HOME/config"
-  [ "$(console_profile_qualified_set)" = codex-luna ] || exit 1 ) || fail "absent config qualifies only the default profile"
+  [ "$(console_profile_qualified_set)" = "$(console_profile_builtin_qualified_set)" ] || exit 1 ) || fail "absent config falls back to the built-in qualified set"
 ( FM_HOME=$TMP/home-two; mkdir -p "$FM_HOME/config"; printf 'codex-luna fable-5.1\n' > "$FM_HOME/config/console-qualified-profiles"
   [ "$(console_profile_qualified_set)" = 'codex-luna fable-5.1' ] || exit 1 ) || fail "config/console-qualified-profiles extends the qualified set"
-pass "qualified set: default-only unless config/console-qualified-profiles widens it"
+pass "qualified set: the built-in fallback is default-independent; config widens it"
 
 # --- the canonical precedence: env, then config, then the built-in default ------
 # console_profile_resolve is the single owner both the menu preview and the
@@ -87,8 +95,17 @@ pass "qualified set: default-only unless config/console-qualified-profiles widen
 # layer is proven with a profile that is NOT the built-in default.
 home_prec=$TMP/home-precedence; mkdir -p "$home_prec/config"
 printf 'opus-4-8\n' > "$home_prec/config/console-profile"
-( FM_HOME=$home_prec; export FM_CONSOLE_PROFILE=fable-5.1
-  [ "$(console_profile_resolve)" = fable-5.1 ] || exit 1 ) || fail "FM_CONSOLE_PROFILE wins over config"
+# each explicit override resolves to ITSELF while config names another profile,
+# so no case can pass by accidentally agreeing with the config or default layer
+for _explicit in fable-5.1 opus-4-8 codex-luna; do
+  for _other in fable-5.1 opus-4-8 codex-luna; do
+    [ "$_other" = "$_explicit" ] && continue
+    printf '%s\n' "$_other" > "$home_prec/config/console-profile"
+    ( FM_HOME=$home_prec; export FM_CONSOLE_PROFILE=$_explicit
+      [ "$(console_profile_resolve)" = "$_explicit" ] || exit 1 ) || fail "an explicit $_explicit override must win over config $_other"
+  done
+done
+printf 'opus-4-8\n' > "$home_prec/config/console-profile"
 ( FM_HOME=$home_prec; unset FM_CONSOLE_PROFILE
   [ "$(console_profile_resolve)" = opus-4-8 ] || exit 1 ) || fail "with no env value config/console-profile selects the profile"
 ( FM_HOME=$TMP/home-empty; unset FM_CONSOLE_PROFILE
@@ -101,12 +118,17 @@ pass "precedence: FM_CONSOLE_PROFILE, then config/console-profile, then the buil
 # then deterministic everywhere, including CI images carrying neither harness.
 mkdir -p "$TMP/bin" "$TMP/emptybin"
 for _h in claude codex; do printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$_h"; chmod +x "$TMP/bin/$_h"; done
-( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate fable-5.1)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "non-default fable profile stays PENDING"
-( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate opus-4-8)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "opus-4-8 stays PENDING out of the box (not in the default qualified set)"
-pass "gate: non-default Claude profiles stay PENDING even with the harness installed"
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; [ "$(console_profile_gate fable-5.1)" = QUALIFIED ] || exit 1 ) || fail "fable-5.1 still launches on a home with no qualification config"
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; case "$(console_profile_gate opus-4-8)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "opus-4-8 stays PENDING out of the box (not in the built-in qualified set)"
+pass "gate: the built-in set keeps fable-5.1 launchable and opus-4-8 PENDING"
 
-( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "default profile with an installed codex -> QUALIFIED"
-pass "gate: the default Codex profile qualifies with codex installed"
+# codex-luna is the default but rests on account-specific evidence: it is PENDING
+# on a home that has not granted it, and QUALIFIED once that home's config does.
+( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty
+  case "$(console_profile_gate codex-luna)" in "PENDING: model gpt-5.6-luna (codex) is not yet qualified"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the default Codex profile PENDING, never auto-qualified"
+home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > "$home_luna/config/console-qualified-profiles"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "a home granting codex-luna with codex installed -> QUALIFIED"
+pass "gate: codex-luna qualifies from the home's own grant, not from being the default"
 # with the harness off PATH the same default profile reports the install gate
 # shellcheck disable=SC2123 # emptying PATH is the point: the harness must be unfindable
 ( PATH=$TMP/emptybin; FM_HOME=$TMP/home-empty

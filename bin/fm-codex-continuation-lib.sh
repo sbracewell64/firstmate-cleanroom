@@ -1,26 +1,39 @@
 # shellcheck shell=bash
 # Codex turn-end custody, shared by the Stop guard and the existing away owner.
 # A finite checkpoint is never a post-final receiver. The away daemon may
-# publish continuity only in its own live lock, bound to the current primary
-# process/start identity, exact home/root and actual pane target. This proves
-# transport custody, never canonical control-message acceptance.
+# publish continuity only in its own live lock, bound to the exact home/root and
+# the actual pane target. This proves transport custody, never canonical
+# control-message acceptance.
+#
+# THE GUARD MUST PROVE CUSTODY BY OBSERVING WHAT CUSTODY ACTUALLY CONSISTS OF,
+# NOT BY COMPARING RECORDED IDENTITIES. Custody is a live daemon holding its own
+# lock and injecting into this pane, so the published record carries only what
+# cannot change while that daemon lives - home, root, backend and target - while
+# every process fact (daemon liveness and start identity, primary session
+# membership, the primary's working directory) is re-observed at Stop time. A
+# recorded identity that outlives what it described would report a healthy
+# session as unverified, and the bounded refusal would then allow exactly the
+# blind idle this guard exists to prevent.
 #
 # The daemon is the sole writer of .supervise-daemon.lock/continuation; its
 # lock lifecycle retires it. Stop owns .turnend-codex-blocks (session-scoped
 # bounded recovery and explicit CNO failure, never task completion).
 # Requires fm-wake-lib.sh. No process launch, pipeline control or source effect.
 
+# The fleet's single owner of supervisor-pane composition; the hook must resolve
+# its own pane exactly as the daemon resolved the one it publishes.
+# shellcheck source=bin/fm-supervisor-target-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/fm-supervisor-target-lib.sh"
+
 fm_codex_continuation_publish() { # <state> <home> <root> <backend> <target>
-  local state=$1 home=$2 root=$3 backend=$4 target=$5 lock pid primary identity tmp
+  local state=$1 home=$2 root=$3 backend=$4 target=$5 lock pid tmp
   lock="$state/.supervise-daemon.lock"
   pid=$(cat "$lock/pid" 2>/dev/null) || return 1
   [ "$pid" = "${BASHPID:-$$}" ] || return 1
-  primary=$(cat "$state/.lock" 2>/dev/null) || return 1
-  identity=$(fm_pid_identity "$primary") || return 1
   tmp="$lock/continuation.tmp"
   {
     printf 'schema=fm-codex-away-continuation.v1\nhome=%s\nroot=%s\n' "$home" "$root"
-    printf 'backend=%s\ntarget=%s\nprimary=%s\nprimary_identity=%s\n' "$backend" "$target" "$primary" "$identity"
+    printf 'backend=%s\ntarget=%s\n' "$backend" "$target"
   } > "$tmp" && mv "$tmp" "$lock/continuation"
 }
 
@@ -34,40 +47,66 @@ fm_codex_continuation_owned() { # <state> <home> <root>
   fm_pid_alive "$pid" || return 1
   identity=$(fm_pid_identity "$pid") || return 1
   [ "$identity" = "$(cat "$lock/pid-identity" 2>/dev/null)" ] || return 1
+  # Basename, carried by the start identity verified above. The interpreter
+  # spelling and the launcher's logical path are not part of custody.
   command=$(ps -p "$pid" -o args= 2>/dev/null) || return 1
-  case "$command" in
-    "bash $root/bin/fm-supervise-daemon.sh"|"/bin/bash $root/bin/fm-supervise-daemon.sh"|"/usr/bin/bash $root/bin/fm-supervise-daemon.sh") ;;
+  case " $command " in
+    *"/fm-supervise-daemon.sh "*) ;;
     *) return 1 ;;
   esac
   # Verify this hook belongs to the primary session; an unrelated live PID
   # cannot confer permission to stop this session.
   fm_session_lock_owned_by_self "$state" || return 1
   primary=$(cat "$state/.lock" 2>/dev/null) || return 1
-  identity=$(fm_pid_identity "$primary") || return 1
   if [ -d "/proc/$primary" ]; then
     cwd=$(readlink "/proc/$primary/cwd" 2>/dev/null) || return 1
   else
     cwd=$(lsof -a -p "$primary" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p') || return 1
   fi
   [ "$cwd" = "$root" ] || return 1
-  # Use the hook's actual pane, never the daemon's override or fallback target.
-  if [ -n "${TMUX_PANE:-}" ]; then
-    backend=tmux; target=$TMUX_PANE
-  elif [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SESSION:-}" ]; then
-    backend=herdr; target="$HERDR_SESSION:$HERDR_PANE_ID"
-  else
-    return 1
-  fi
+  # Use the hook's actual pane, never the daemon's override or fallback target:
+  # both env overrides are cleared, and the fallback's non-zero status refuses.
+  backend=$(unset FM_SUPERVISOR_BACKEND FM_SUPERVISOR_TARGET; discover_supervisor_backend) || return 1
+  target=$(unset FM_SUPERVISOR_BACKEND FM_SUPERVISOR_TARGET; discover_supervisor_target) || return 1
   # Compare the complete record so duplicates, missing fields and unknown
   # versions cannot be accepted by a permissive scalar reader.
-  [ "$(cat "$record")" = "$(printf 'schema=fm-codex-away-continuation.v1\nhome=%s\nroot=%s\nbackend=%s\ntarget=%s\nprimary=%s\nprimary_identity=%s' \
-    "$home" "$root" "$backend" "$target" "$primary" "$identity")" ]
+  [ "$(cat "$record")" = "$(printf 'schema=fm-codex-away-continuation.v1\nhome=%s\nroot=%s\nbackend=%s\ntarget=%s' \
+    "$home" "$root" "$backend" "$target")" ]
 }
 
-fm_codex_continuation_refuse() { # <state> <session-id> <reason>
+fm_codex_continuation_session_key() { # <state> <payload>
+  local state=$1 payload=$2 id primary identity
+  # A budget identity is never a constant. A vendor session id is preferred; an
+  # absent or unreadable one falls back to the live primary session's own
+  # identity, so two unrelated sessions can never share - and spend - one
+  # durable recovery budget.
+  if id=$(printf '%s' "$payload" | jq -c '
+      if (.session_id | type) == "string" and ((.session_id | length) > 0)
+      then .session_id else error("session_id") end' 2>/dev/null) && [ -n "$id" ]; then
+    printf 'payload=%s' "$id"
+    return 0
+  fi
+  primary=$(cat "$state/.lock" 2>/dev/null) || return 1
+  case "$primary" in ''|*[!0-9]*) return 1 ;; esac
+  identity=$(fm_pid_identity "$primary") || return 1
+  printf 'primary=%s %s' "$primary" "$identity"
+}
+
+fm_codex_continuation_refuse() { # <state> <session-key> <reason>
   local state=$1 session=$2 reason=$3 lock file count=0 saved tmp notified=no
   lock="$state/.turnend-codex-blocks.lock"
   file="$state/.turnend-codex-blocks"
+  if [ -z "$session" ]; then
+    # Neither the payload nor the live primary session yields an identity, so
+    # the budget cannot be scoped. Filing the receipt under a constant key would
+    # hand every later unidentified session a budget already spent, so escalate
+    # once and leave the durable budget untouched.
+    fm_wake_append check codex-continuation-cno \
+      'check: Codex continuation CNO - Stop custody unprovable and no session identity to scope recovery; supervision retains unfinished work; verify native receiver custody before idle' \
+      || printf 'CONTINUATION_CNO: escalation queue unreadable; durable failure remains pending\n' >&2
+    printf 'CONTINUATION_CNO: no session identity to scope bounded recovery (%s); unfinished work remains open\n' "$reason" >&2
+    return 0
+  fi
   # A lock/write failure is a loud CNO, never a false receipt or an endless
   # sequence of forced model turns. The caller leaves unfinished work intact.
   fm_lock_try_acquire "$lock" || {

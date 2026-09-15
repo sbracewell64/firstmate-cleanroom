@@ -117,7 +117,7 @@
           "via": "production"
         }
       ],
-      "note": "Reached from the --codex branch of the shared turn-end guard, which the .codex/hooks.json Stop hook invokes. Refusal is bounded: it blocks with exit 2 while the session-scoped recovery budget remains, then records a durable CNO receipt and returns 0 rather than looping forever."
+      "note": "Reached from the --codex branch of the shared turn-end guard, which the .codex/hooks.json Stop hook invokes. Refusal is bounded: it blocks with exit 2 while the session-scoped recovery budget remains, then records a durable CNO receipt and returns 0 rather than looping forever. When no session identity can be resolved at all the budget cannot be scoped, so it escalates once and returns 0 instead of filing the receipt under a shared constant key."
     },
     {
       "id": "bin/fm-commit-identity-verify.sh",

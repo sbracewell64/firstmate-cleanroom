@@ -191,8 +191,10 @@ if [ "$CODEX_MODE" -eq 1 ]; then
   else
     exit 0
   fi
-  # JSON encoding keeps an arbitrary vendor session value on one record line.
-  SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -c '.session_id // "unknown"' 2>/dev/null || printf '"invalid"')
+  # JSON encoding keeps an arbitrary vendor session value on one record line;
+  # an unreadable one yields the live primary session's identity, and an empty
+  # key means no session identity exists to scope the budget to at all.
+  SESSION_ID=$(fm_codex_continuation_session_key "$STATE" "$PAYLOAD" || true)
   fm_codex_continuation_refuse "$STATE" "$SESSION_ID" "$CONTINUATION_CAUSE"
   exit $?
 fi

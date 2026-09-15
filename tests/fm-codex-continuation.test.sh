@@ -7,6 +7,11 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-codex-continuation)
 fm_git_identity fmtest fmtest@example.invalid
+# The daemon publishes a physical root and the custody predicate reads a
+# physical cwd from /proc or lsof, so the fixture home must be physical too -
+# a symlinked TMPDIR component (macOS /var) would otherwise make every
+# predicate unit below fail for a reason that has nothing to do with custody.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 home="$TMP_ROOT/home"
 mkdir -p "$home/state" "$home/data" "$home/config" "$home/docs" "$TMP_ROOT/fakebin"
 cp -R "$ROOT/bin" "$ROOT/.codex" "$home/"
@@ -81,7 +86,7 @@ printf 'ok - configured Stop refuses a shell owner despite real private daemon/w
 . "$FM_HOME/bin/fm-codex-continuation-lib.sh"
 fm_session_lock_owned_by_self() { [ "$1" = "$FM_HOME/state" ]; }
 owned() { fm_codex_continuation_owned "$FM_HOME/state" "$FM_HOME" "$FM_HOME"; }
-owned
+owned || exit 30
 if TMUX_PANE=%foreign owned; then exit 31; fi
 cp state/.supervise-daemon.lock/pid-identity daemon.identity
 printf 'stale-start\n' > state/.supervise-daemon.lock/pid-identity
@@ -99,8 +104,52 @@ cp state/.supervise-daemon.lock/continuation continuation.good
 printf 'unknown=field\n' >> state/.supervise-daemon.lock/continuation
 if owned; then exit 36; fi
 cp continuation.good state/.supervise-daemon.lock/continuation
-owned
+owned || exit 37
 printf 'ok - portable predicate units reach and reject target/start/submit/home/root/record mismatches with native session membership explicitly doubled\n'
+
+# A herdr host that leaves HERDR_SESSION unset is NOT a custody fault: the hook
+# must compose its pane through the same single owner the daemon published with,
+# which defaults that session. Only the record's declared pane is substituted
+# here; no herdr transport behaviour is qualified.
+sed 's/^backend=tmux$/backend=herdr/; s/^target=%9$/target=default:%p7/' \
+  continuation.good > state/.supervise-daemon.lock/continuation
+if ! (unset TMUX_PANE HERDR_SESSION; export HERDR_ENV=1 HERDR_PANE_ID=%p7; owned); then exit 38; fi
+if (unset TMUX_PANE; export HERDR_ENV=1 HERDR_PANE_ID=%p7 HERDR_SESSION=other; owned); then exit 39; fi
+cp continuation.good state/.supervise-daemon.lock/continuation
+owned || exit 40
+
+# Custody belongs to the daemon's pane, not to the primary pid that happened to
+# hold state/.lock when the daemon started. A primary that exits and is replaced
+# in the same home keeps real custody, so the proof must survive the swap.
+sleep 30 &
+restarted=$!
+printf '%s\n' "$restarted" > state/.lock
+owned || exit 41
+# A budget identity is never a constant: with no readable vendor session id the
+# key binds to the live primary, so an unrelated later session cannot inherit an
+# already-spent recovery budget.
+swapped_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{}') || exit 42
+kill "$restarted" 2>/dev/null || true
+wait "$restarted" 2>/dev/null || true
+printf '%s\n' "$BASHPID" > state/.lock
+owned || exit 43
+primary_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"stop_hook_active":true}') || exit 44
+unparsed_key=$(fm_codex_continuation_session_key "$FM_HOME/state" 'not json at all') || exit 45
+[ "$primary_key" = "$unparsed_key" ] || exit 46
+[ "$primary_key" != "$swapped_key" ] || exit 47
+alpha_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"session_id":"alpha"}') || exit 48
+beta_key=$(fm_codex_continuation_session_key "$FM_HOME/state" '{"session_id":"beta"}') || exit 49
+[ "$alpha_key" != "$beta_key" ] && [ "$alpha_key" != "$primary_key" ] || exit 50
+
+# The mirror of a stale record: a daemon that wins its own lock before the
+# primary takes state/.lock must still publish, or no record would ever exist
+# and every later Stop in every later session would refuse and then CNO-allow.
+mkdir -p nolock/.supervise-daemon.lock
+printf '%s\n' "$BASHPID" > nolock/.supervise-daemon.lock/pid
+[ ! -e nolock/.lock ]
+fm_codex_continuation_publish nolock "$FM_HOME" "$FM_HOME" tmux %9 || exit 51
+diff continuation.good nolock/.supervise-daemon.lock/continuation || exit 52
+printf 'ok - custody survives a primary swap, a defaulted herdr session and a lock-less publish; recovery budgets never collapse to a constant\n'
 
 DRIVER
 # Hard bound includes positive custody waiting and reaps private descendants.

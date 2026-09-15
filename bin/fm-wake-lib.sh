@@ -122,19 +122,27 @@ fm_pid_identity() {
 # every delivery, so a pid recycled between polls is read as "the recorded
 # process is gone" and is never signalled. With an empty identity the check is
 # liveness only, which is safe for a process the caller launched and still owns.
-# Returns 0 once the target is gone, 1 when the deadline elapses with it alive,
-# 2 when the pid or the deadline is not a number - neither is signalled, so
-# nothing was asked of the target - and 3 when the FIRST delivery could not be
+# Returns 0 once the target is gone, 1 when the deadline elapses with it alive
+# AFTER at least one delivery, 2 for every shape in which NOTHING WAS ASKED of
+# the target - a pid that is not a number, a deadline that is not a number, and
+# a deadline of zero, which the bound check rejects before the first kill - and
+# 3 when the FIRST delivery could not be
 # sent at all to a target that is STILL THERE - the shape a caller refuses on,
 # rather than delivering its own signal first and paying an immediate second
 # delivery to learn the same thing. A first delivery that fails because the
 # target disappeared between the liveness check and the kill is the outcome the
 # caller asked for, not a refusal, so that reads 0.
 # True when fm_stop_process_confirmed actually delivered a stop to the target.
-# rc=0 and rc=1 were asked; rc=2 (a pid or deadline that is not a number) and
-# rc=3 (a first delivery that could not be sent at all) were not. A caller that
-# may only act on a live target once it has been asked to stop tests this rather
-# than listing codes, which is what let rc=2 be grouped with rc=1 before.
+# A caller that may only act on a live target once it has been asked to stop
+# tests this rather than listing codes, which is what let a not-asked shape be
+# grouped with the asked ones before.
+#
+# The shapes in which NOTHING WAS ASKED are enumerated here so a new one has
+# somewhere to be added rather than being inferred from whichever codes happen
+# to exist. Today they are: a pid that is not a number, a deadline that is not a
+# number, a deadline of zero (rejected before the first kill), and a first
+# delivery that could not be sent at all. The first three report rc=2 and the
+# last rc=3. Everything else reached at least one delivery.
 fm_stop_was_delivered() {  # <fm_stop_process_confirmed return code>
   case "$1" in
     2|3) return 1 ;;
@@ -151,6 +159,8 @@ fm_stop_process_confirmed() {
   case "$limit" in
     ''|*[!0-9]*) return 2 ;;
   esac
+  limit=${limit#"${limit%%[!0]*}"}
+  [ -n "$limit" ] || return 2
   case "$every" in
     ''|*[!0-9]*) every=20 ;;
   esac

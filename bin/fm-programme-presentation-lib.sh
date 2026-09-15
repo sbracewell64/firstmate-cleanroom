@@ -116,7 +116,7 @@ fm_programme_present() {  # <state> <mode: pending|commit>
   local state=$1 mode=$2 resolver out rc=0 identity summary verdict
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  out=$("$resolver" render 2>&1) || rc=$?
+  out=$("$resolver" render) || rc=$?
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")

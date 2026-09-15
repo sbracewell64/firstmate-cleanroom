@@ -416,6 +416,7 @@ fi
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  restart_free_polls=0
   cycle_restart_stop=no-live-watcher
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
@@ -432,10 +433,14 @@ if [ "$mode" = restart ]; then
       # evidence is missing is not a safety property. The unknown is NAMED instead,
       # as restart_stop in the lifecycle records this arm writes, so a consumer can
       # tell a restart after a confirmed stop from one that could not confirm it.
+      cycle_restart_stop=unconfirmed
       if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50; then
-        cycle_restart_stop=confirmed
-      else
-        cycle_restart_stop=unconfirmed
+        restart_free_polls=0
+        while [ "$restart_free_polls" -lt 20 ] && fm_pid_alive "$lock_pid"; do
+          sleep 0.1
+          restart_free_polls=$((restart_free_polls + 1))
+        done
+        fm_pid_alive "$lock_pid" || cycle_restart_stop=confirmed
       fi
     else
       if ! clear_stale_recorded_watcher_lock; then

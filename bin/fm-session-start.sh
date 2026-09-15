@@ -676,7 +676,7 @@ print_backlog_compact() {
 # optional N/A.
 print_programme_continuation() {
   local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
+  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render) || rc=$?
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then

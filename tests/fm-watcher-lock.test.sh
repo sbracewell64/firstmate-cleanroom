@@ -1236,10 +1236,13 @@ test_watcher_close_path_is_not_abandoned_by_a_later_stop() {
   done
   [ -e "$state/.last-watcher-beat" ] || { reap "$pid"; fail "watcher never reached its poll loop"; }
 
-  # Keep stopping it until it is gone, paced so the burst cannot corrupt the
-  # target's own pending-trap bookkeeping. Because the close path takes longer
-  # than one interval, at least one of these lands INSIDE it - which is what
-  # makes this deterministic rather than a race the run might miss.
+  # Keep stopping it until it is gone. The interval is deliberately far shorter
+  # than the library's own 2-second re-delivery pacing: the window this case must
+  # hit is the one before watcher_cleanup installs its ignore, and only an
+  # interval shorter than the close path lands a stop inside it, which is what
+  # makes this deterministic rather than a race the run might miss. The burst is
+  # safe once that ignore is in force because the close path IGNORES stops rather
+  # than queueing them, so they build no pending-trap bookkeeping to corrupt.
   i=0
   while [ "$i" -lt 250 ] && is_live_non_zombie "$pid"; do
     kill -TERM "$pid" 2>/dev/null || true

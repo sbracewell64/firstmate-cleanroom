@@ -235,7 +235,10 @@ read_resolution() {
   case "$rc" in
     0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;
     3) [ -z "$diag" ] || printf '%s\n' "$diag" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}" ;;
+    *)
+      [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+      fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}"
+      ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
     || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)$diag_suffix"

@@ -566,9 +566,12 @@ while :; do
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
-        cleanup_child
-        wait "$child" 2>/dev/null || true
+        trap '' HUP TERM INT
+        if [ -n "$child" ]; then
+          fm_stop_process_confirmed "$child" "" "$((CONFIRM_TIMEOUT * 10))" || true
+        fi
         cycle_log_append 1 none handling-handoff-failed none
+        cleanup_child
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
       fi

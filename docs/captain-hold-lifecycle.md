@@ -88,6 +88,7 @@ Those rows are already plain task ids, so they render, answer, verify, and close
 Three legacy inputs are resolved in place: a `decision_keys=` metadata entry that names no task resolves through `<origin>-decision-<entry>`; a channel key that names no task resolves the same way when the source's binding carries a concrete legacy origin; and resolution records written by the old script are recognized wherever a record is read.
 The shim recognizes an exact replay of a pre-collapse routed resolution by its historical answer digest and routed ids, then finishes any still-recorded dependency-edge cleanup without rewriting the old decision text.
 `bin/fm-decision-hold.sh` itself remains for one release as a thin command-mapping shim over `bin/fm-captain-hold.sh`, so in-flight work briefed before the collapse keeps working; its header owns the exact mapping.
+`bin/fm-decision-hold.sh verify <origin>` maps onto `bin/fm-captain-hold.sh verify <origin>` unchanged, so the completion gate described above reaches the same predicate through either surface.
 
 ## Verification record
 

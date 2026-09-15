@@ -66,7 +66,8 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints are the per-script mean of the `fm-test-timing-portable-serial-*` artifacts from the four green CI runs [34813628086](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34813628086), [34823065861](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34823065861), [34826043556](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34826043556), and [34843572468](https://github.com/sbracewell64/firstmate-cleanroom/actions/runs/34843572468) of 2026-09-14, where the lane ran 160 scripts in about 4.9 million ms of serial work per run.
 Averaging several runs damps the per-run spread (the same script varies by up to 2x between runs) that a single-run refresh bakes into the partition.
-One hint is not a CI mean: `tests/enter-firstmate-render.test.sh` was repaired in the same change that refreshed the table (see the 2026-09-14 refresh below), so its hint is its local post-repair wall scaled by the CI-to-local ratio the unchanged `tests/enter-firstmate-launch.test.sh` measured on the same machine, and the next refresh replaces it with the measured mean.
+A hint the refresh did not cover is a local measurement rather than a CI mean, and the next refresh replaces it with the measured mean.
+`tests/enter-firstmate-render.test.sh` was repaired in the same change that refreshed the table (see the 2026-09-14 refresh below), so its hint is its local post-repair wall scaled by the CI-to-local ratio the unchanged `tests/enter-firstmate-launch.test.sh` measured on the same machine, and a script added after that refresh carries its measured local wall the same way.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints affect balance and the shard budget guard below, never coverage: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard or a budget refusal rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured or grown scripts let one shard carry far more than another shard's real work and reach the job cap while another runner sits idle.
@@ -74,11 +75,11 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 39 | 1054886 ms (~1054.9 s) |
-| `portable-serial-2of4` | 41 | 1054892 ms (~1054.9 s) |
-| `portable-serial-3of4` | 40 | 1054896 ms (~1054.9 s) |
-| `portable-serial-4of4` | 40 | 1054881 ms (~1054.9 s) |
-| imbalance | | 15 ms |
+| `portable-serial-1of4` | 39 | 1058502 ms (~1058.5 s) |
+| `portable-serial-2of4` | 40 | 1058496 ms (~1058.5 s) |
+| `portable-serial-3of4` | 41 | 1058513 ms (~1058.5 s) |
+| `portable-serial-4of4` | 41 | 1058512 ms (~1058.5 s) |
+| imbalance | | 17 ms |
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 265573 ms, is the floor for any shard count.
 

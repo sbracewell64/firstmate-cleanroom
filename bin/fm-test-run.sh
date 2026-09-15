@@ -262,7 +262,8 @@ family_for_basename() {
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-captain-hold-lifecycle.test.sh|\
     fm-nm-commit-identity.test.sh|fm-commit-identity-verify.test.sh|\
-    fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
+    fm-documentation-audiences.test.sh|fm-enforcement-callers.test.sh|\
+    fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
     fm-operational-input.test.sh|fm-outbound-write.test.sh|fm-pi-primary-types.test.sh|\
@@ -613,6 +614,7 @@ tests/fm-cursor-primary-live-e2e.test.sh 20
 tests/fm-cursor-primary.test.sh 53650
 tests/fm-daemon.test.sh 25694
 tests/fm-documentation-audiences.test.sh 730
+tests/fm-enforcement-callers.test.sh 14468
 tests/fm-extension-binding.test.sh 24449
 tests/fm-fleet-snapshot-view.test.sh 9074
 tests/fm-fleet-sync.test.sh 37305

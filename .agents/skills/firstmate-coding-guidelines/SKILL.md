@@ -111,6 +111,14 @@ Move or delete evidence only after the current owner and regression pointer are 
 After all documentation, review-fix, and lint-fix commits, review the complete branch diff again against those criteria rather than reviewing only the latest commit.
 Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup routing, local link targets, and owner pointers without keyword-linting legitimate evidence prose.
 
+## Enforcement change review
+
+When a change adds or edits an enforce, validate or refuse capability in `bin/`, wire its enforcing call before declaring it done.
+A capability whose only callers are tests is UNPROVEN, not active, however clearly the rule is documented.
+Declare it in `docs/enforcement-points.json` and run `bin/fm-enforcement-caller-check.sh`; [`docs/verification/enforcing-call-sites.md`](../../../docs/verification/enforcing-call-sites.md) owns the reading behind that inventory.
+The check confirms a declared call site still names the capability in executable text; it does not prove the shell runs it, so read the wiring yourself rather than treating a green check as proof of enforcement.
+Prefer wiring the call at the narrowest shared owner every relevant caller traverses over adding prose, a startup reminder, or an agent instruction that restates the rule.
+
 ## Repo style rules
 
 - Put one full sentence per line in tracked Markdown.

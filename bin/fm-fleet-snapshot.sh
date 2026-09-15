@@ -1467,8 +1467,16 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # recap unchanged state as progress. The binding member is the resolver's own;
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve) || rc=$?
+  local out rc=0 identity verdict errfile diag=''
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-fleet-snapshot-resolve.XXXXXX" 2>/dev/null) || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>/dev/null) || rc=$?
+    diag='resolver diagnostics unavailable: they could not be staged'
+  fi
   case "$rc" in
     0)
       identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')
@@ -1476,7 +1484,7 @@ programme_continuation_json() {
       printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
         '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
     3) jq -n '{configured:false}' ;;
-    *) jq -n --arg err "$out" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
+    *) jq -n --arg err "$diag" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
   esac
 }
 

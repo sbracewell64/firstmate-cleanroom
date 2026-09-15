@@ -88,6 +88,8 @@ OUTPUT_COMMAND_RE = re.compile(r"^\s*(?:printf|echo|cat)\b")
 # becoming another step towards a shell parser.
 KEYWORD_OPENER_RE = re.compile(r"^\s*(?:then|else|elif|do|\{)\s")
 CASE_LABEL_OPENER_RE = re.compile(r"^\s*[A-Za-z0-9_*?.|\[\]-]+\)\s")
+# What ends a shell word, so the next `#` starts one and opens a comment.
+COMMENT_WORD_BREAK = " \t;&|()"
 SPLIT_OPERATORS = ("&&", "||", ";;", ";", "|", "&")
 COMMAND_SUB_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>[^`]*)`")
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
@@ -401,7 +403,9 @@ def strip_trailing_comment(line: str) -> str:
 
     A `#` opens a comment only at the start of a word and outside quotes, so a
     trailing note naming a capability is prose rather than a call, while a
-    parameter expansion that merely contains `#` survives untouched.
+    parameter expansion that merely contains `#` survives untouched. A word
+    starts after whitespace and after the control metacharacters that end the
+    previous one, which is why `run_thing;# note` is a comment to bash.
     """
     quote: str | None = None
     index = 0
@@ -423,7 +427,7 @@ def strip_trailing_comment(line: str) -> str:
             quote = char
             index += 1
             continue
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+        if char == "#" and (index == 0 or line[index - 1] in COMMENT_WORD_BREAK):
             return line[:index].rstrip()
         index += 1
     return line

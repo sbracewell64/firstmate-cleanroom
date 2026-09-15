@@ -198,13 +198,18 @@ FIX
 #!/usr/bin/env bash
 set -eu
 main() {
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      enforce-nested) printf 'nested\n' ;;
-      *) break ;;
-    esac
-    shift
-  done
+  case "$1" in
+    run)
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          enforce-nested) printf 'nested\n' ;;
+          *) break ;;
+        esac
+        shift
+      done
+      ;;
+    *) exit 2 ;;
+  esac
 }
 main "$@"
 FIX
@@ -636,6 +641,19 @@ FIX
   pass "a trailing comment naming a capability is not read as an enforcing call"
 }
 
+test_metacharacter_adjacent_comment_is_not_a_call() {
+  local repo="$TMP_ROOT/metachar-comment"
+  write_fixture "$repo"
+  cat > "$repo/bin/fm-widget-consumer.sh" <<'FIX'
+#!/usr/bin/env bash
+set -eu
+mkdir -p "${TMPDIR:-/tmp}/widgets";# bin/fm-widget.sh enforce runs upstream
+FIX
+  git -C "$repo" add -A
+  run_expect_failure "does not call it" "$CHECK" --root "$repo"
+  pass "a comment opened right after a shell metacharacter is not read as a call"
+}
+
 test_hash_comment_surfaces_share_one_rule() {
   local repo="$TMP_ROOT/hash-comments"
 
@@ -810,8 +828,9 @@ test_undeclared_entry_point_fails() {
 test_every_arm_axis_shares_one_indent_policy() {
   local repo="$TMP_ROOT/indented-arm"
 
-  # Subcommand and long-option arms sit at the same depth, so a cap restored on
-  # either axis alone is caught here rather than surviving on its sibling.
+  # Both arms sit at the same depth, deeper than any leading-whitespace cap this
+  # check has ever carried, so a cap restored on either axis alone is caught here
+  # rather than surviving on its sibling.
   write_fixture "$repo"
   mutate_fixture_inventory "$repo" drop-nested-arm
   run_expect_failure "bin/fm-nested-arm.sh:enforce-nested" "$CHECK" --root "$repo"
@@ -1007,6 +1026,7 @@ test_removing_the_enforcing_call_fails
 test_comment_mention_is_not_a_call
 test_trailing_comment_is_not_a_call
 test_hash_comment_surfaces_share_one_rule
+test_metacharacter_adjacent_comment_is_not_a_call
 test_mixed_flag_alias_group_is_discovered
 test_self_call_site_requires_a_traverser_note
 test_spaced_heredoc_body_is_stripped

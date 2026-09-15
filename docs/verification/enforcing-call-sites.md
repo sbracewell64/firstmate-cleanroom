@@ -110,7 +110,7 @@ It is now declared as not an enforcement point, with the invariant restated as w
 This sweep did NOT establish whether a narrower owner enforces the per-home session lock at some other boundary; that question is recorded as not observed rather than answered in either direction.
 
 The executable-reference rule reclassified references that a plain text match had accepted.
-Most were shell header comments naming a capability the file never calls, and each of those entry points but one keeps a real caller elsewhere.
+Most were shell header comments naming a capability the file never calls, which left some entry points resting on a caller elsewhere and, where the sweep found none at all, on a kind that says so.
 The rest had been declared as verified call sites and are now recorded as `rejectedCallSites`, so the sweep's own finds became a permanent self-test that fails if the stripping rules are ever weakened.
 No entry's reading changed from ACTIVE to UNPROVEN; what changed is that the inventory now says where enforcement actually happens.
 Which entries those are, and the reason recorded against each, live in [`docs/enforcement-points.json`](../enforcement-points.json), which owns every per-entry row.
@@ -122,7 +122,8 @@ That owner has to name the capability, not merely the script: for a tokened entr
 An entry of that kind is not the family's failure shape, because in each case the invariant itself is enforced elsewhere or the entry point is a human-initiated procedure.
 
 A discovery false positive is declared `not-enforcement` with its reason.
-Three readings produce one: a reporter that prints and refuses nothing, a helper whose name carries an enforce verb only because it sits inside a namespace prefix, and an internal branch label that no caller can name.
+The criterion is what the capability does rather than what it is called: an entry is not an enforcement point when, read in its own code, it refuses nothing a caller could act on.
+A reader classifying a new one asks whether the enforce verb in its name describes the thing it does, and whether any caller could be turned away by it; if either answer is no, it is a false positive and the reason records which.
 Neither kind is a softening, because both are explicit declarations a reviewer had to write, and an undeclared capability still fails by default.
 
 ### Known-good references, confirmed
@@ -183,7 +184,7 @@ bin/fm-test-run.sh --check-coverage
 ```
 
 ```text
-FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058186
+FM_TEST_COVERAGE ok total=197 parallel=24 serial=161 serial_shards=4 herdr=12 serial_cap_min=30 serial_shard_budget_ms=1188000 serial_shard_max_hint_ms=1058201
 ```
 
 ```sh
@@ -199,10 +200,10 @@ bin/fm-test-run.sh tests/fm-enforcement-callers.test.sh tests/fm-documentation-a
 ```
 
 ```text
-FM_TEST_END 2026-09-15T02:19:35Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=13103 gate_skip=false
-FM_TEST_END 2026-09-15T02:19:35Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=824 gate_skip=false
-FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=13993
-FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=13927 failed=0
+FM_TEST_END 2026-09-15T02:35:51Z tests/fm-enforcement-callers.test.sh exit=0 duration_ms=13192 gate_skip=false
+FM_TEST_END 2026-09-15T02:35:52Z tests/fm-documentation-audiences.test.sh exit=0 duration_ms=822 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=14081
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=14014 failed=0
 ```
 
 ## Adding an entry point

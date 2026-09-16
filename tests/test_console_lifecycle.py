@@ -49,10 +49,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.f.effects(), '')
 
     def test_maintained_remote_secondmate_does_not_block_unowned_pane(self):
-        record = self.worker_record('mate', pane='remote:mate')
-        record.write_text(record.read_text() +
-                          'kind=secondmate\nmode=secondmate\nremote_host=remote-mac\n'
-                          'remote_root=/remote/root\nhome=/remote/home\n')
+        record = self.f.home/'state/mate.meta'
+        record.write_text('window=remote:mate\nendpoint_task_id=mate\n'
+                          'worktree=/remote/home\nproject=/remote/root\n'
+                          'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                          'remote_host=remote-mac\nremote_root=/remote/root\n')
         (self.f.home/'data').mkdir()
         (self.f.home/'data/secondmates.md').write_text(
             '- mate - remote test (host: remote-mac; root: /remote/root; '
@@ -62,6 +63,38 @@ class LifecycleTests(unittest.TestCase):
                             HERDR_SOCKET_PATH='/synthetic.sock')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.f.effects(), '')
+
+    def test_proven_worker_owner_dominates_invalid_record_in_any_order(self):
+        for bad, worker in (('a-bad', 'z-worker'), ('a-worker', 'z-bad')):
+            with self.subTest(bad=bad, worker=worker):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                (fixture.home/'state'/f'{bad}.meta').write_text('not=an-endpoint\n')
+                (fixture.home/'state'/f'{worker}.meta').write_text(
+                    f'backend=herdr\nendpoint_task_id={worker}\nwindow=synthetic:w9:p2\n'
+                    'worktree=/tmp/worker\nproject=/tmp/project\n'
+                    'herdr_session=synthetic\nherdr_workspace_id=w9\n'
+                    'herdr_tab_id=w9:t2\nherdr_pane_id=w9:p2\n')
+                result = fixture.run('--doctor', HERDR_PANE_ID='w9:p2',
+                                     HERDR_SESSION='synthetic',
+                                     HERDR_SOCKET_PATH='/synthetic.sock')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('worker-owned', result.stderr)
+
+    def test_remote_secondmate_with_local_endpoint_claim_fails_closed(self):
+        record = self.worker_record('mate')
+        record.write_text(record.read_text() +
+                          'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                          'remote_host=remote-mac\nremote_root=/remote/root\n')
+        (self.f.home/'data').mkdir()
+        (self.f.home/'data/secondmates.md').write_text(
+            '- mate - remote test (host: remote-mac; root: /remote/root; '
+            'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2',
+                            HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
 
     def test_unreadable_task_record_is_not_clean(self):
         self.worker_record().write_text('backend=herdr\nherdr_pane_id=w9:p2\n')

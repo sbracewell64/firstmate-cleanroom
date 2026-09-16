@@ -558,7 +558,8 @@ fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-d
   [ "$kind" = secondmate ] && [ "$mode" = secondmate ] && [ "$binding" = "$id" ] \
     && [ "$window" = "remote:$id" ] || return 1
   [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] || return 1
-  registry=$FM_BACKEND_CONFIG_DIR/../data/secondmates.md
+  ! grep -qE '^(backend|herdr_session|herdr_workspace_id|herdr_tab_id|herdr_pane_id)=' "$meta" 2>/dev/null || return 1
+  registry=$state/../data/secondmates.md
   [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
   if ! type secondmate_registry_line_for_id >/dev/null 2>&1; then
     # shellcheck source=bin/fm-secondmate-registry-lib.sh
@@ -577,20 +578,27 @@ fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-d
 # record was evaluable and none owns the exact session:pane identity; 1 means
 # worker-owned, 2 means ownership cannot be verified. Never print task data.
 fm_backend_herdr_pane_ownership() {  # <state-dir> <session> <pane>
-  local state=$1 session=$2 pane=$3 meta id
+  local state=$1 session=$2 pane=$3 meta id invalid=0 owner=0
   [ -d "$state" ] && [ -r "$state" ] && [ -n "$session" ] && [ -n "$pane" ] || return 2
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || [ -L "$meta" ] || continue
-    [ -f "$meta" ] && [ ! -L "$meta" ] && [ -r "$meta" ] || return 2
+    if ! [ -f "$meta" ] && [ ! -L "$meta" ] || ! [ -r "$meta" ]; then
+      invalid=1
+      continue
+    fi
     id=${meta##*/}; id=${id%.meta}
     fm_backend_is_maintained_remote_secondmate "$meta" "$id" "$state" && continue
-    fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 || return 2
+    if ! fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+      invalid=1
+      continue
+    fi
     if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ] \
       && [ "$FM_BACKEND_VALIDATED_TARGET" = "$session:$pane" ]; then
-      return 1
+      owner=1
     fi
   done
-  return 0
+  [ "$owner" -eq 1 ] && return 1
+  [ "$invalid" -eq 0 ]
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>

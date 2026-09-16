@@ -896,7 +896,7 @@ SH
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
   [ "$size" -le 1400 ] || fail "cycle ledger exceeded its configured cap ($size bytes)"
-  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*restart_stop=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
+  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*restart_stop=.*child_stop=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
     || fail "bounded lifecycle ledger contains a partial or malformed record"
   pass "cycle-exit ledger links a verified successor and remains size-capped"
 }
@@ -1609,6 +1609,35 @@ test_an_unconfirmed_child_stop_is_never_the_arms_last_word() {
   pass "an arm stopping its owned child re-delivers until it is gone rather than trusting one signal"
 }
 
+test_forced_owned_child_stop_is_reaped_and_recorded() {
+  local dir state armbin siglog arm child status i
+  dir=$(make_case forced-owned-child-stop)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=ignore-stop \
+    FM_STOP_REDELIVER_POLLS=2 FM_ARM_STOP_POLLS=2 FM_STUB_LIB="$LIB" \
+    "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the ignore-stop stand-in watcher was never confirmed by the arm"; }
+  child=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -HUP "$arm" 2>/dev/null || true
+  status=0
+  wait "$arm" 2>/dev/null || status=$?
+  is_live_non_zombie "$child" \
+    && fail "the arm left a TERM-ignoring owned watcher alive after its bounded stop"
+  grep -q 'child_stop=forced-unconfirmed' "$state/.watch-cycle-exits.log" \
+    || fail "the arm did not record its forced unconfirmed child disposition"
+  [ "$status" -eq 129 ] || fail "the arm did not preserve its HUP outcome after force-collecting the child"
+  pass "a TERM-ignoring owned child is force-collected, reaped, and recorded unconfirmed"
+}
+
 test_restart_records_whether_its_stop_was_confirmed() {
   # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
   # leaving the fleet with no watcher at all is worse than the duplicate a
@@ -1777,6 +1806,7 @@ test_close_path_wait_for_the_marker_lock_stays_killable
 test_close_path_publishes_under_marker_lock_contention
 test_normal_cycle_end_sends_the_owned_child_no_stop
 test_an_unconfirmed_child_stop_is_never_the_arms_last_word
+test_forced_owned_child_stop_is_reaped_and_recorded
 test_restart_records_whether_its_stop_was_confirmed
 test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start

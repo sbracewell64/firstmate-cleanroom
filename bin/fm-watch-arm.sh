@@ -135,6 +135,8 @@ cycle_watcher_identity=none
 cycle_origin=unknown
 cycle_started_at=0
 cycle_lock_before='pid:none|identity:none'
+cycle_child_stop=none
+cycle_child_waited=0
 # Disposition of the --restart stop this arm performed before launching, carried
 # into every lifecycle record it writes. docs/watcher-continuity.md's arm-layer
 # cycle contract owns the field and its values.
@@ -144,6 +146,8 @@ cycle_begin() {
   cycle_watcher_pid=$1
   cycle_origin=$2
   cycle_watcher_identity=$3
+  cycle_child_stop=none
+  cycle_child_waited=0
   cycle_started_at=$(date +%s)
   cycle_lock_before=$(lock_snapshot)
   cycle_active=1
@@ -180,7 +184,7 @@ cycle_log_append() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\trestart_stop=%s\tsuccessor=%s\n' \
+  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\trestart_stop=%s\tchild_stop=%s\tsuccessor=%s\n' \
     "$ARM_PID" \
     "$(cycle_clean_field "$cycle_watcher_pid")" \
     "$(cycle_clean_field "$cycle_origin")" \
@@ -193,6 +197,7 @@ cycle_log_append() {
     "$(cycle_clean_field "$cycle_lock_before")" \
     "$(cycle_clean_field "$lock_after")" \
     "$(cycle_clean_field "$cycle_restart_stop")" \
+    "$(cycle_clean_field "$cycle_child_stop")" \
     "$(cycle_clean_field "$successor")" >> "$CYCLE_LOG" 2>/dev/null || true
 
   size=$(wc -c < "$CYCLE_LOG" 2>/dev/null | tr -d '[:space:]')
@@ -513,12 +518,35 @@ fi
 child=
 child_out=
 cleanup_child() {
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-  fi
   if [ -n "$child_out" ]; then
     rm -f "$child_out" 2>/dev/null || true
   fi
+}
+
+stop_owned_child() {
+  local current
+  cycle_child_stop=unconfirmed
+  if [ -z "$child" ]; then
+    cycle_child_stop=none
+    return 2
+  fi
+  if fm_stop_process_confirmed "$child" "$cycle_watcher_identity" "$ARM_STOP_POLLS"; then
+    cycle_child_stop=confirmed
+    return 0
+  fi
+  if ! fm_pid_alive "$child"; then
+    cycle_child_stop=confirmed
+    return 0
+  fi
+  current=$(fm_pid_identity "$child" 2>/dev/null || true)
+  if [ -n "$current" ] && [ -n "$cycle_watcher_identity" ] && [ "$current" != "$cycle_watcher_identity" ]; then
+    return 1
+  fi
+  kill -KILL "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || true
+  cycle_child_waited=1
+  cycle_child_stop=forced-unconfirmed
+  return 0
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
@@ -526,7 +554,7 @@ handle_arm_signal() {
   local signal=$1 rc=$2
   trap '' HUP TERM INT
   if [ -n "$child" ]; then
-    fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS" || true
+    stop_owned_child || true
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child
@@ -616,7 +644,7 @@ while :; do
       if ! handling_generation=$(handling_successor_generation); then
         trap '' HUP TERM INT
         if [ -n "$child" ]; then
-          fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS" || true
+          stop_owned_child || true
         fi
         cycle_log_append 1 none handling-handoff-failed none
         cleanup_child
@@ -653,9 +681,13 @@ done
 
 trap '' HUP TERM INT
 print_watch_output "$child_out"
-if fm_stop_process_confirmed "$child" "" "$ARM_STOP_POLLS"; then
-  wait "$child" 2>/dev/null
-  rc=$?
+if stop_owned_child; then
+  if [ "$cycle_child_waited" -eq 0 ]; then
+    wait "$child" 2>/dev/null
+    rc=$?
+  else
+    rc=unknown
+  fi
   cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 else
   cycle_log_append unknown unknown confirmation-timeout none

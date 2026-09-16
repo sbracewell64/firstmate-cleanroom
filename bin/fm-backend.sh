@@ -406,6 +406,13 @@ fm_backend_endpoint_schema_local_fields() {  # <backend>
   esac
 }
 
+fm_backend_validate_endpoint_schema() {  # <meta-file> <backend>
+  local meta=$1 backend=$2 field
+  while IFS= read -r field; do
+    fm_backend_meta_exact_value "$meta" "$field" >/dev/null || return 1
+  done < <(fm_backend_endpoint_schema_local_fields "$backend")
+}
+
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
@@ -443,6 +450,10 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   esac
   if [ -z "$backend" ] || ! fm_backend_is_known "$backend"; then
     echo "REFUSED: task $id has a missing, ambiguous, or unknown backend identity; preserving task state." >&2
+    return 1
+  fi
+  if ! fm_backend_validate_endpoint_schema "$meta" "$backend"; then
+    echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)

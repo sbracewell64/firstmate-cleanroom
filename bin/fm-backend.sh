@@ -606,10 +606,12 @@ fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-d
     # shellcheck source=bin/fm-secondmate-registry-lib.sh
     . "$FM_BACKEND_LIB_DIR/fm-secondmate-registry-lib.sh" || return 1
   fi
-  registry_host=$(secondmate_registry_field "$registry" "$id" host 2>/dev/null) || return 1
-  registry_root=$(secondmate_registry_field "$registry" "$id" root 2>/dev/null) || return 1
-  registry_home=$(secondmate_registry_field "$registry" "$id" home 2>/dev/null) || return 1
-  registry_remote=$(secondmate_registry_field "$registry" "$id" remote 2>/dev/null) || return 1
+  secondmate_registry_validate_bindings "$registry" secondmate_registry_path_key "$id" \
+    || return 1
+  registry_host=$SECONDMATE_REGISTRY_MATCH_HOST
+  registry_root=$SECONDMATE_REGISTRY_MATCH_ROOT
+  registry_home=$SECONDMATE_REGISTRY_MATCH_HOME
+  registry_remote=$SECONDMATE_REGISTRY_MATCH_REMOTE
   [ "$registry_remote" = 1 ] && [ "$registry_host" = "$host" ] \
     && [ "$registry_root" = "$root" ] && [ "$registry_home" = "$home" ]
 }

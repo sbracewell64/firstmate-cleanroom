@@ -64,6 +64,33 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.f.effects(), '')
 
+    def test_malformed_or_unreadable_remote_route_fails_closed(self):
+        cases = (
+            ('relative', 'host: remote-mac; root: relative/root; home: relative/home;'),
+            ('unreadable', 'host: remote-mac; root: /remote/root; home: /remote/home;'),
+        )
+        for name, route in cases:
+            with self.subTest(name=name):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                (fixture.home/'state/mate.meta').write_text(
+                    'window=remote:mate\nendpoint_task_id=mate\n'
+                    'worktree=relative/home\nproject=relative/root\n'
+                    'kind=secondmate\nmode=secondmate\nhome=relative/home\n'
+                    'remote_host=remote-mac\nremote_root=relative/root\n')
+                (fixture.home/'data').mkdir()
+                registry = fixture.home/'data/secondmates.md'
+                registry.write_text(f'- mate - remote test ({route} scope: testing; '
+                                    'projects: alpha; added 2026-08-02)\n')
+                if name == 'unreadable':
+                    registry.chmod(0)
+                result = fixture.run('--doctor', HERDR_PANE_ID='w9:p2',
+                                     HERDR_SESSION='synthetic',
+                                     HERDR_SOCKET_PATH='/synthetic.sock')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('cannot verify', result.stderr)
+                self.assertEqual(fixture.effects(), '')
+
     def test_proven_worker_owner_dominates_invalid_record_in_any_order(self):
         for bad, worker in (('a-bad', 'z-worker'), ('a-worker', 'z-bad')):
             with self.subTest(bad=bad, worker=worker):

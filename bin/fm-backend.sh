@@ -395,6 +395,17 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
+fm_backend_endpoint_schema_local_fields() {  # <backend>
+  case "$1" in
+    tmux) ;;
+    herdr) printf '%s\n' herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id ;;
+    zellij) printf '%s\n' zellij_session zellij_tab_id zellij_pane_id ;;
+    orca) printf '%s\n' orca_worktree_id terminal ;;
+    cmux) printf '%s\n' cmux_workspace_id cmux_surface_id ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
@@ -543,12 +554,15 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   return 0
 }
 
-# These are the local placement keys interpreted by the supported backend
-# endpoint validator above. A remote secondmate may carry window=remote:<id>,
-# but any of these additional local endpoint claims makes its placement
-# ambiguous, including an empty or malformed value.
 fm_backend_meta_has_local_endpoint_claim() {  # <meta-file>
-  grep -qE '^(backend|herdr_session|herdr_workspace_id|herdr_tab_id|herdr_pane_id|zellij_session|zellij_tab_id|zellij_pane_id|orca_worktree_id|terminal|cmux_workspace_id|cmux_surface_id)=' "$1"
+  local meta=$1 backend field
+  grep -q '^backend=' "$meta" 2>/dev/null && return 0
+  for backend in $FM_BACKEND_KNOWN; do
+    while IFS= read -r field; do
+      grep -q "^$field=" "$meta" 2>/dev/null && return 0
+    done < <(fm_backend_endpoint_schema_local_fields "$backend")
+  done
+  return 1
 }
 
 fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-dir>

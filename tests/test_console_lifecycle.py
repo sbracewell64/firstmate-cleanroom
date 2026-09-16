@@ -96,8 +96,17 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn('worker-owned', result.stderr)
 
-    def test_unreadable_task_record_is_not_clean(self):
-        self.worker_record().write_text('backend=herdr\nherdr_pane_id=w9:p2\n')
+    def test_malformed_task_record_with_proven_identity_is_worker_owned(self):
+        record = self.worker_record()
+        record.write_text(record.read_text() + 'not=an-endpoint\n')
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('worker-owned', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+
+    def test_malformed_ownership_identity_fails_closed(self):
+        self.worker_record().write_text('not=an-endpoint\n')
         for mode in ('--console', '--doctor'):
             result = self.f.run(mode, HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
             self.assertNotEqual(result.returncode, 0, result.stderr)

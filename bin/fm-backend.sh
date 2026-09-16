@@ -598,7 +598,8 @@ fm_backend_herdr_pane_ownership() {  # <state-dir> <session> <pane>
     fi
   done
   [ "$owner" -eq 1 ] && return 1
-  [ "$invalid" -eq 0 ]
+  [ "$invalid" -eq 0 ] && return 0
+  return 2
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>

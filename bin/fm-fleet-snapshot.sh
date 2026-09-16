@@ -1474,7 +1474,7 @@ programme_continuation_json() {
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>/dev/null) || rc=$?
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the

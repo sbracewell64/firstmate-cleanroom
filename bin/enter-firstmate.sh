@@ -17,9 +17,10 @@
 #
 # PRIMARY CONSOLE PROFILE MENU (runtime-pin-adoption-gap, slice 1). The console's
 # harness+model comes from a six-profile menu (console_profile_* below):
-# fable-5.1 (built-in default), opus-4-8, codex-luna, pi-sol, pi-astra, and
-# pi-luna-max. Select
-# with FM_CONSOLE_PROFILE or config/console-profile. An unqualified profile is
+# fable-5.1 (built-in default), opus-4-8, codex-luna, pi-sol, pi-astra and
+# pi-luna-max. Select with FM_CONSOLE_PROFILE or config/console-profile; the
+# built-in qualified set is fable-5.1 alone, so a home grants any other profile
+# in its own config/console-qualified-profiles. An unqualified profile is
 # PENDING with its exact gate and is never silently substituted; the console is
 # $0/subscription-only at the composed launch. Worker and pipeline model profiles
 # are separate owners (the code root's fm-spawn.sh, config/crew-dispatch.json)
@@ -492,7 +493,9 @@ permission_policy_posture() {  # <harness> -> the flag/config that removes inter
 # console argv (see console_harness_argv) is owned HERE as well as by fm-spawn.
 # claude and codex are the two; pi is also a primary-console harness but this
 # launcher composes only its pinned model selector and no posture, so it reports
-# no owner here rather than fm-spawn's. Worker-only harnesses are fm-spawn's alone.
+# no owner here rather than fm-spawn's. A worker harness whose posture fm-spawn
+# composes is fm-spawn's alone; a harness with no composed posture anywhere
+# (pi, pi-signed, bash, unknown) reports no owner at all.
 permission_policy_owner() {  # <harness>
   case "${1:-}" in
     claude|codex) echo 'this launcher (primary console argv) + fm-spawn (workers)' ;;

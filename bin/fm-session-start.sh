@@ -682,18 +682,23 @@ print_programme_continuation() {
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render) || rc=$?
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render \
+      2> >(sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/' >&2)) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful
   # resolve; bin/fm-programme-projection.sh states that policy in full,
   # including why exit 3 is the one deliberate exception.
-  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+  # A resolver diagnostic may be an entire WAKE_ACK_REQUIRED command. Keep it
+  # visible while marking that line as data before it reaches the hook output.
+  if [ "$rc" -ne 3 ] && [ -n "$diag" ]; then
+    printf '%s\n' "$diag" | sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/' >&2
+  fi
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out"
+    printf '%s\n' "$out" | sed 's/^WAKE_ACK_REQUIRED:/resolver data: WAKE_ACK_REQUIRED:/'
     identity=$(fm_programme_identity_from_render "$out")
     verdict=$(fm_programme_presentation_state "$STATE" "$identity")
     case "$verdict" in
@@ -703,7 +708,8 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "${diag:-$diag_note}"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n' "$rc"
+    printf '%s\n' "${diag:-$diag_note}" | sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/'
   fi
 }
 
@@ -934,55 +940,70 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  # The drain's stdout is the wake-queue section; its stderr carries the
-  # WAKE_ACK_REQUIRED instruction and any diagnostic. Merging them let a single
-  # stderr byte stand in for the queue section, so they are read apart. What this
-  # section then says is decided from all three of what the drain produced - its
-  # status, its stdout, and whether its stderr carries an acknowledgement
-  # instruction - rather than from whichever channel happened to be non-empty.
-  # Empty stdout alone does NOT mean nothing is queued: the drain presents no
-  # rows and still exits 0 when a downtime episode is pending, writing only the
-  # acknowledgement instruction to stderr, and a reader who believed a
-  # no-queued-wakes line there would leave that episode unacknowledged.
+  # The drain owns acknowledgement authority. Its stdout is the queue section,
+  # fd 3 carries a typed acknowledgement record, and stderr is diagnostic data
+  # that may include arbitrary resolver text. Keep all three apart: a diagnostic
+  # that looks exactly like WAKE_ACK_REQUIRED is still not an instruction.
+  # Empty stdout alone does not mean nothing is queued: a downtime episode can
+  # need acknowledgement even when the drain presents no rows.
   #
-  # On the unstageable path the redirection is omitted rather than merged or
-  # discarded: command substitution captures stdout only, so leaving stderr alone
-  # keeps the captured value clean and still delivers the diagnostic to the
-  # caller's stderr. The cost is that this script cannot then see whether an
-  # acknowledgement was emitted, so on that path it claims no queue verdict at
-  # all and says only what it knows: the diagnostics went somewhere the digest
-  # does not show. That line is conditional by construction - it never asserts an
-  # acknowledgement exists, only that one would not be visible here.
+  # If either channel cannot be staged, keep stdout separate and let stderr
+  # reach the caller. Without the typed record this section claims no queue
+  # verdict or acknowledgement; the direct drain remains available to inspect.
   DRAIN_RC=0
   DRAIN_DIAG_STAGED=1
+  DRAIN_ACK_VALID=1
   DRAIN_ACK_OUTSTANDING=0
+  DRAIN_ACK_SEQUENCE=
+  DRAIN_ACK_GENERATION=
+  DRAIN_ACK_RECORD=
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
-  if [ -n "$DRAIN_ERRFILE" ]; then
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
-    DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
-    rm -f -- "$DRAIN_ERRFILE"
-    if printf '%s\n' "$DRAIN_DIAG" | grep -Eq '^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$'; then
-      DRAIN_ACK_OUTSTANDING=1
+  DRAIN_ACKFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-ack.XXXXXX" 2>/dev/null) || DRAIN_ACKFILE=
+  if [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_ACKFILE" ]; then
+    DRAIN_OUT=$(FM_WAKE_DRAIN_ACK_FD=3 "$SCRIPT_DIR/fm-wake-drain.sh" 3>"$DRAIN_ACKFILE" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
+    DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null) || DRAIN_DIAG_STAGED=0
+    DRAIN_ACK_RECORD=$(cat "$DRAIN_ACKFILE" 2>/dev/null) || DRAIN_ACK_VALID=0
+    rm -f -- "$DRAIN_ERRFILE" "$DRAIN_ACKFILE"
+    if [ -n "$DRAIN_ACK_RECORD" ]; then
+      IFS=$'\t' read -r DRAIN_ACK_SCHEMA DRAIN_ACK_SEQUENCE DRAIN_ACK_GENERATION <<< "$DRAIN_ACK_RECORD"
+      if [ "$DRAIN_ACK_SCHEMA" = fm-wake-ack-v1 ] \
+        && [[ "$DRAIN_ACK_SEQUENCE" =~ ^[0-9]+$ ]] \
+        && [[ "$DRAIN_ACK_GENERATION" =~ ^[A-Za-z0-9._-]+$ ]] \
+        && [ "$DRAIN_ACK_RECORD" = "$(printf 'fm-wake-ack-v1\t%s\t%s' "$DRAIN_ACK_SEQUENCE" "$DRAIN_ACK_GENERATION")" ]; then
+        DRAIN_ACK_OUTSTANDING=1
+      else
+        DRAIN_ACK_VALID=0
+      fi
     fi
   else
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh") || DRAIN_RC=$?
+    [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE"
+    [ -z "$DRAIN_ACKFILE" ] || rm -f -- "$DRAIN_ACKFILE"
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" \
+      2> >(sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/' >&2)) || DRAIN_RC=$?
     DRAIN_DIAG=
     DRAIN_DIAG_STAGED=0
-  fi
-  if [ "$DRAIN_RC" -eq 0 ] && [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
-  elif [ "$DRAIN_RC" -eq 0 ] && [ "$DRAIN_DIAG_STAGED" -eq 1 ] && [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
-    printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
-  elif [ "$DRAIN_RC" -eq 0 ] && [ "$DRAIN_DIAG_STAGED" -eq 1 ]; then
-    printf '(no queued wakes)\n'
-  fi
-  if [ "$DRAIN_DIAG_STAGED" -eq 0 ]; then
-    printf 'wake drain diagnostics could not be staged, so any diagnostic or acknowledgement instruction it emitted went to this hook stderr rather than into this section.\n'
   fi
   if [ "$DRAIN_RC" -ne 0 ]; then
     printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"
   fi
-  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG"
+  if [ "$DRAIN_DIAG_STAGED" -eq 0 ]; then
+    printf 'wake drain diagnostics or acknowledgement status could not be staged, so this section has no usable queue verdict; any stderr went to this hook stderr.\n'
+  elif [ "$DRAIN_ACK_VALID" -eq 0 ]; then
+    printf 'wake drain returned an invalid acknowledgement status; its result is not a usable wake-queue verdict.\n'
+  elif [ "$DRAIN_RC" -eq 0 ]; then
+    if [ -n "$DRAIN_OUT" ]; then
+      printf '%s\n' "$DRAIN_OUT" | sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/'
+    elif [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
+      printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
+    else
+      printf '(no queued wakes)\n'
+    fi
+    if [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
+      printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
+        "$DRAIN_ACK_SEQUENCE" "$DRAIN_ACK_GENERATION"
+    fi
+  fi
+  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG" | sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/'
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

@@ -961,7 +961,7 @@ else
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
     DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
     rm -f -- "$DRAIN_ERRFILE"
-    if printf '%s\n' "$DRAIN_DIAG" | grep -q '^WAKE_ACK_REQUIRED:'; then
+    if printf '%s\n' "$DRAIN_DIAG" | grep -Eq '^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$'; then
       DRAIN_ACK_OUTSTANDING=1
     fi
   else

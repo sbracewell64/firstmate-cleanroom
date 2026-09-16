@@ -206,8 +206,12 @@ RESOLUTION=''
 # stderr - a git or node warning, or one of the shell's own runtime diagnostics
 # under load - part of the document this then requires to be the typed schema.
 # That turns a successful resolve into a hard refusal whose offending bytes are
-# thrown away, which is exactly how this failed intermittently in CI. Nothing is
-# swallowed in exchange: whatever the resolver wrote to stderr is relayed to this
+# thrown away - the SHAPE of the intermittent CI failure in this file's suite,
+# which is a real defect at this boundary either way. It is not a named cause:
+# the refusal discarded the bytes, so no CI log names an injector, and 60
+# back-to-back resolves under that suite's fixture produced clean JSON locally.
+# The failure stays UNATTRIBUTED. A recurrence reopens the investigation rather
+# than reading as already fixed. Nothing is swallowed in exchange: whatever the resolver wrote to stderr is relayed to this
 # script's stderr on every path, so a real diagnostic still reaches an operator
 # while stdout stays exactly the typed document. An unparseable stdout names what
 # it actually received, and exit 3 is still mirrored with stdout left empty.

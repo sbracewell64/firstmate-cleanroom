@@ -1709,6 +1709,67 @@ test_restart_records_whether_its_stop_was_confirmed() {
   pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
 }
 
+test_restart_stop_bound_outlasts_a_slow_redelivery_cadence() {
+  # --restart confirms its stop through the same re-delivering helper as the
+  # arm's close paths, so its bound must outlast the re-delivery interval: a
+  # bound that expires before the second delivery is due leaves exactly ONE
+  # signal, which is the unconfirmed single stop the confirmed stop exists to
+  # replace. FM_STOP_REDELIVER_POLLS is deliberately raised past the base bound
+  # here - the "do not re-signal aggressively" configuration - and a stand-in
+  # watcher that records every stop it receives and acts on none reports what
+  # --restart actually delivered. The holder and the relaunched successor record
+  # to SEPARATE logs, because the stand-in truncates its log at startup.
+  local dir state armbin siglog successor_log arm restart_arm holder successor delivered i
+  dir=$(make_case restart-stop-bound-floor)
+  state="$dir/state"
+  siglog="$dir/holder-signals.log"
+  successor_log="$dir/successor-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=wake \
+    FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the recording stand-in watcher was never confirmed by the arm"; }
+  holder=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  case "$holder" in
+    ''|*[!0-9]*) reap "$arm"; fail "the stand-in watcher recorded no lock pid" ;;
+  esac
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$successor_log" FM_STUB_MODE=wake \
+    FM_STUB_LIB="$LIB" FM_STOP_REDELIVER_POLLS=60 \
+    "$armbin/fm-watch-arm.sh" --restart > "$dir/restart.out" 2>/dev/null &
+  restart_arm=$!
+  # The relaunch is what proves the stop attempt finished, so the delivery count
+  # below is read from a completed confirmation window rather than mid-flight.
+  i=0
+  while [ "$i" -lt 250 ] && ! grep -qF 'watcher: started pid=' "$dir/restart.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  successor=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF 'watcher: started pid=' "$dir/restart.out" \
+    || { kill -KILL "$holder" 2>/dev/null || true; reap "$restart_arm"; reap "$arm"
+         fail "--restart never relaunched, so its stop window cannot be read"; }
+
+  delivered=$(grep -c . "$siglog" 2>/dev/null || echo 0)
+  kill -KILL "$holder" 2>/dev/null || true
+  case "$successor" in
+    ''|*[!0-9]*) ;;
+    *) [ "$successor" = "$holder" ] || kill -KILL "$successor" 2>/dev/null || true ;;
+  esac
+  reap "$restart_arm"
+  reap "$arm"
+  [ "$delivered" -ge 2 ] \
+    || fail "--restart delivered its stop $delivered time(s) with a 6s re-delivery cadence, so a dropped stop would never be re-sent"
+  pass "--restart keeps a confirmation window wide enough to re-deliver even when re-deliveries are paced far apart"
+}
+
 test_reap_bounds_a_signal_swallowing_watcher
 test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
 test_watcher_close_path_is_not_abandoned_by_a_later_stop
@@ -1717,6 +1778,7 @@ test_close_path_publishes_under_marker_lock_contention
 test_normal_cycle_end_sends_the_owned_child_no_stop
 test_an_unconfirmed_child_stop_is_never_the_arms_last_word
 test_restart_records_whether_its_stop_was_confirmed
+test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
 test_a_zombie_reads_live_but_yields_no_identity
 test_pid_identity_is_locale_invariant

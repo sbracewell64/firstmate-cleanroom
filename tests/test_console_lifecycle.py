@@ -48,6 +48,21 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.f.effects(), '')
 
+    def test_maintained_remote_secondmate_does_not_block_unowned_pane(self):
+        record = self.worker_record('mate', pane='remote:mate')
+        record.write_text(record.read_text() +
+                          'kind=secondmate\nmode=secondmate\nremote_host=remote-mac\n'
+                          'remote_root=/remote/root\nhome=/remote/home\n')
+        (self.f.home/'data').mkdir()
+        (self.f.home/'data/secondmates.md').write_text(
+            '- mate - remote test (host: remote-mac; root: /remote/root; '
+            'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2',
+                            HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
     def test_unreadable_task_record_is_not_clean(self):
         self.worker_record().write_text('backend=herdr\nherdr_pane_id=w9:p2\n')
         for mode in ('--console', '--doctor'):

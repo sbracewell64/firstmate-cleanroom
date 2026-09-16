@@ -543,6 +543,35 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   return 0
 }
 
+fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-dir>
+  local meta=$1 id=$2 state=$3 registry kind mode binding window host root home
+  local registry_host registry_root registry_home registry_remote
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  kind=$(fm_backend_meta_exact_value "$meta" kind) || return 1
+  mode=$(fm_backend_meta_exact_value "$meta" mode) || return 1
+  binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id) || return 1
+  window=$(fm_backend_meta_exact_value "$meta" window) || return 1
+  host=$(fm_backend_meta_exact_value "$meta" remote_host) || return 1
+  root=$(fm_backend_meta_exact_value "$meta" remote_root) || return 1
+  home=$(fm_backend_meta_exact_value "$meta" home) || return 1
+  [ "$kind" = secondmate ] && [ "$mode" = secondmate ] && [ "$binding" = "$id" ] \
+    && [ "$window" = "remote:$id" ] || return 1
+  [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] || return 1
+  registry=$FM_BACKEND_CONFIG_DIR/../data/secondmates.md
+  [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
+  if ! type secondmate_registry_line_for_id >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-secondmate-registry-lib.sh
+    . "$FM_BACKEND_LIB_DIR/fm-secondmate-registry-lib.sh" || return 1
+  fi
+  registry_host=$(secondmate_registry_field "$registry" "$id" host 2>/dev/null) || return 1
+  registry_root=$(secondmate_registry_field "$registry" "$id" root 2>/dev/null) || return 1
+  registry_home=$(secondmate_registry_field "$registry" "$id" home 2>/dev/null) || return 1
+  registry_remote=$(secondmate_registry_field "$registry" "$id" remote 2>/dev/null) || return 1
+  [ "$registry_remote" = 1 ] && [ "$registry_host" = "$host" ] \
+    && [ "$registry_root" = "$root" ] && [ "$registry_home" = "$home" ]
+}
+
 # Classify a Herdr pane against this home's durable task endpoints before a
 # launcher may treat that pane as a console. Return 0 only when every task
 # record was evaluable and none owns the exact session:pane identity; 1 means
@@ -554,6 +583,7 @@ fm_backend_herdr_pane_ownership() {  # <state-dir> <session> <pane>
     [ -e "$meta" ] || [ -L "$meta" ] || continue
     [ -f "$meta" ] && [ ! -L "$meta" ] && [ -r "$meta" ] || return 2
     id=${meta##*/}; id=${id%.meta}
+    fm_backend_is_maintained_remote_secondmate "$meta" "$id" "$state" && continue
     fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 || return 2
     if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ] \
       && [ "$FM_BACKEND_VALIDATED_TARGET" = "$session:$pane" ]; then

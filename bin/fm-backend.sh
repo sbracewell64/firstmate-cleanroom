@@ -543,9 +543,17 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   return 0
 }
 
+# These are the local placement keys interpreted by the supported backend
+# endpoint validator above. A remote secondmate may carry window=remote:<id>,
+# but any of these additional local endpoint claims makes its placement
+# ambiguous, including an empty or malformed value.
+fm_backend_meta_has_local_endpoint_claim() {  # <meta-file>
+  grep -qE '^(backend|herdr_session|herdr_workspace_id|herdr_tab_id|herdr_pane_id|zellij_session|zellij_tab_id|zellij_pane_id|orca_worktree_id|terminal|cmux_workspace_id|cmux_surface_id)=' "$1"
+}
+
 fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-dir>
-  local meta=$1 id=$2 state=$3 registry kind mode binding window host root home
-  local registry_host registry_root registry_home registry_remote
+  local meta=$1 id=$2 state=$3 registry kind mode binding window host root home project worktree
+  local registry_host registry_root registry_home registry_remote claim_status
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
   case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
   kind=$(fm_backend_meta_exact_value "$meta" kind) || return 1
@@ -555,10 +563,18 @@ fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-d
   host=$(fm_backend_meta_exact_value "$meta" remote_host) || return 1
   root=$(fm_backend_meta_exact_value "$meta" remote_root) || return 1
   home=$(fm_backend_meta_exact_value "$meta" home) || return 1
+  project=$(fm_backend_meta_exact_value "$meta" project) || return 1
+  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || return 1
   [ "$kind" = secondmate ] && [ "$mode" = secondmate ] && [ "$binding" = "$id" ] \
     && [ "$window" = "remote:$id" ] || return 1
-  [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] || return 1
-  ! grep -qE '^(backend|herdr_session|herdr_workspace_id|herdr_tab_id|herdr_pane_id)=' "$meta" 2>/dev/null || return 1
+  [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] \
+    && [ "$project" = "$root" ] && [ "$worktree" = "$home" ] || return 1
+  if fm_backend_meta_has_local_endpoint_claim "$meta" 2>/dev/null; then
+    return 1
+  else
+    claim_status=$?
+  fi
+  [ "$claim_status" -eq 1 ] || return 1
   registry=$state/../data/secondmates.md
   [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
   if ! type secondmate_registry_line_for_id >/dev/null 2>&1; then

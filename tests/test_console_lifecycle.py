@@ -96,6 +96,44 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn('worker-owned', result.stderr)
 
+    def test_remote_secondmate_local_placement_claims_fail_closed(self):
+        local_claims = (
+            'backend=tmux\n', 'backend=\n', 'window=synthetic:w9:p2\n',
+            'window=\n',
+            'herdr_session=synthetic\n', 'herdr_workspace_id=w9\n',
+            'herdr_tab_id=w9:t2\n', 'herdr_pane_id=w9:p2\n',
+            'zellij_session=local\n', 'zellij_tab_id=1\n',
+            'zellij_pane_id=2\n', 'orca_worktree_id=local\n',
+            'terminal=local\n', 'terminal=\n',
+            'cmux_workspace_id=local\n', 'cmux_surface_id=local\n',
+            'remote_host=\n', 'remote_root=\n', 'home=\n',
+            'project=/other\n', 'worktree=/other\n',
+        )
+        for claim in local_claims:
+            with self.subTest(claim=claim):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                record = fixture.home/'state/mate.meta'
+                record.write_text('window=remote:mate\nendpoint_task_id=mate\n'
+                                  'worktree=/remote/home\nproject=/remote/root\n'
+                                  'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                                  'remote_host=remote-mac\nremote_root=/remote/root\n'
+                                  + claim)
+                (fixture.home/'data').mkdir()
+                (fixture.home/'data/secondmates.md').write_text(
+                    '- mate - remote test (host: remote-mac; root: /remote/root; '
+                    'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+                before = (fixture.home/'state/captain-console.json').read_bytes()
+                for mode in ('--console', '--doctor'):
+                    result = fixture.run(mode, HERDR_PANE_ID='w9:p2',
+                                         HERDR_SESSION='synthetic',
+                                         HERDR_SOCKET_PATH='/synthetic.sock')
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('cannot verify', result.stderr)
+                    self.assertEqual(fixture.effects(), '')
+                    self.assertFalse((fixture.root/'focus').exists())
+                    self.assertEqual((fixture.home/'state/captain-console.json').read_bytes(), before)
+
     def test_malformed_task_record_with_proven_identity_is_worker_owned(self):
         record = self.worker_record()
         record.write_text(record.read_text() + 'not=an-endpoint\n')

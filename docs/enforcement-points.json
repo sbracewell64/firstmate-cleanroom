@@ -556,6 +556,19 @@
       ]
     },
     {
+      "id": "bin/fm-backend.sh:fm_backend_validate_endpoint_schema",
+      "kind": "enforced",
+      "invariant": "A recorded local task endpoint has exactly one nonempty value for every field required by its backend before task endpoint validation accepts it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-backend.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Task endpoint validation calls this schema check before any runtime command or cleanup mutation."
+    },
+    {
       "id": "bin/fm-backend.sh:fm_backend_validate_task_endpoint",
       "kind": "enforced",
       "invariant": "A task's recorded endpoint is proven to belong to that task before any command acts on the session it names.",

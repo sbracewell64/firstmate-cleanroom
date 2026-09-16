@@ -1135,6 +1135,23 @@ test_teardown_refuses_orca_missing_worktree_id() {
   assert_contains "$out" "missing orca_worktree_id" "teardown did not explain the missing Orca worktree id"
   assert_present "$state/$id.meta" "failed teardown must preserve task metadata"
   [ ! -s "$LOG" ] || fail "teardown should fail before closing terminals or removing worktrees without an Orca worktree id"
+
+  fm_write_meta "$state/$id.meta" \
+    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-missing-id" "worktree=$wt" "project=$proj" \
+    "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" "backend=orca" \
+    "orca_worktree_id=wt-first" "orca_worktree_id=wt-second" \
+    "decisions_reviewed=1" "decision_keys="
+  set +e
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$neutral" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-teardown.sh" "$id" 2>&1 )
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "Orca teardown accepted an ambiguous worktree id"
+  assert_contains "$out" "malformed endpoint metadata" "ambiguous Orca identity lost the strict schema refusal"
+  assert_not_contains "$out" "missing orca_worktree_id" "ambiguous Orca identity was described as absent"
+  assert_present "$state/$id.meta" "ambiguous Orca identity removed task metadata"
+  [ ! -s "$LOG" ] || fail "ambiguous Orca identity dispatched a runtime command"
   pass "fm-teardown.sh backend=orca: refuses missing worktree ids before cleanup"
 }
 

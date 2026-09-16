@@ -519,8 +519,8 @@ PY
   git -C "$repo" add -A
 }
 
-# known_good_callers <inventory>: the two already-repaired instances of this
-# family must still be declared enforced and still name their production caller.
+# known_good_callers <inventory>: repaired instances of this family must still
+# be declared enforced and still name their production caller.
 known_good_callers() {
   python3 - "$1" <<'PY'
 import json
@@ -532,6 +532,7 @@ entries = {entry["id"]: entry for entry in data["entryPoints"]}
 expected = {
     "bin/fm-startup-memory-budget.sh:enforce": "bin/fm-session-start.sh",
     "bin/fm-outbound-write-lib.sh:fm_outbound_send": "bin/fm-send.sh",
+    "bin/fm-backend.sh:fm_backend_validate_endpoint_schema": "bin/fm-backend.sh",
 }
 for entry_id, caller in expected.items():
     entry = entries.get(entry_id)
@@ -597,7 +598,14 @@ test_known_good_repairs_still_have_production_callers() {
     fail "dropping bin/fm-send.sh did not break the known-good assertion"
   fi
 
-  pass "the two already-repaired invariants still name their production callers, provably"
+  mutated="$TMP_ROOT/known-good-without-endpoint-schema.json"
+  drop_call_site "$INVENTORY" "$mutated" \
+    bin/fm-backend.sh:fm_backend_validate_endpoint_schema bin/fm-backend.sh
+  if known_good_callers "$mutated" >/dev/null 2>&1; then
+    fail "dropping bin/fm-backend.sh did not break the endpoint-schema assertion"
+  fi
+
+  pass "repaired invariants still name their production callers, provably"
 }
 
 test_removing_the_enforcing_call_fails() {

@@ -395,6 +395,30 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
+fm_backend_endpoint_schema_local_fields() {  # <backend>
+  case "$1" in
+    tmux) printf '%s\n' window ;;
+    herdr) printf '%s\n' herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id ;;
+    zellij) printf '%s\n' zellij_session zellij_tab_id zellij_pane_id ;;
+    orca) printf '%s\n' orca_worktree_id terminal ;;
+    cmux) printf '%s\n' cmux_workspace_id cmux_surface_id ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_backend_validate_endpoint_schema() {  # <meta-file> <backend>
+  local meta=$1 backend=$2 field count
+  FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD=
+  while IFS= read -r field; do
+    count=$(grep -c "^$field=" "$meta" 2>/dev/null || true)
+    if [ "$count" -eq 0 ]; then
+      FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD=$field
+      return 1
+    fi
+    fm_backend_meta_exact_value "$meta" "$field" >/dev/null || return 1
+  done < <(fm_backend_endpoint_schema_local_fields "$backend")
+}
+
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
@@ -432,6 +456,17 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   esac
   if [ -z "$backend" ] || ! fm_backend_is_known "$backend"; then
     echo "REFUSED: task $id has a missing, ambiguous, or unknown backend identity; preserving task state." >&2
+    return 1
+  fi
+  if ! fm_backend_validate_endpoint_schema "$meta" "$backend"; then
+    case "$backend:$FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD" in
+      orca:orca_worktree_id)
+        echo "REFUSED: missing orca_worktree_id in $meta; cannot remove Orca worktree; preserving task state." >&2 ;;
+      orca:terminal)
+        echo "REFUSED: missing terminal in $meta; cannot close Orca endpoint; preserving task state." >&2 ;;
+      *)
+        echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2 ;;
+    esac
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)
@@ -541,6 +576,92 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_TARGET=$window
   return 0
+}
+
+fm_backend_meta_has_local_endpoint_claim() {  # <meta-file> [<remote-task-id>]
+  local meta=$1 remote_id=${2:-} backend field count value
+  grep -q '^backend=' "$meta" 2>/dev/null && return 0
+  for backend in $FM_BACKEND_KNOWN; do
+    while IFS= read -r field; do
+      count=$(grep -c "^$field=" "$meta" 2>/dev/null || true)
+      [ "$count" -gt 0 ] || continue
+      if [ "$field" = window ] && [ -n "$remote_id" ] && [ "$count" -eq 1 ]; then
+        value=$(fm_backend_meta_exact_value "$meta" window 2>/dev/null || true)
+        [ "$value" = "remote:$remote_id" ] && continue
+      fi
+      return 0
+    done < <(fm_backend_endpoint_schema_local_fields "$backend")
+  done
+  return 1
+}
+
+fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-dir>
+  local meta=$1 id=$2 state=$3 registry kind mode binding window host root home project worktree
+  local registry_host registry_root registry_home registry_remote claim_status
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  kind=$(fm_backend_meta_exact_value "$meta" kind) || return 1
+  mode=$(fm_backend_meta_exact_value "$meta" mode) || return 1
+  binding=$(fm_backend_meta_exact_value "$meta" endpoint_task_id) || return 1
+  window=$(fm_backend_meta_exact_value "$meta" window) || return 1
+  host=$(fm_backend_meta_exact_value "$meta" remote_host) || return 1
+  root=$(fm_backend_meta_exact_value "$meta" remote_root) || return 1
+  home=$(fm_backend_meta_exact_value "$meta" home) || return 1
+  project=$(fm_backend_meta_exact_value "$meta" project) || return 1
+  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || return 1
+  [ "$kind" = secondmate ] && [ "$mode" = secondmate ] && [ "$binding" = "$id" ] \
+    && [ "$window" = "remote:$id" ] || return 1
+  [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] \
+    && [ "$project" = "$root" ] && [ "$worktree" = "$home" ] || return 1
+  if fm_backend_meta_has_local_endpoint_claim "$meta" "$id" 2>/dev/null; then
+    return 1
+  else
+    claim_status=$?
+  fi
+  [ "$claim_status" -eq 1 ] || return 1
+  registry=$state/../data/secondmates.md
+  [ -f "$registry" ] && [ ! -L "$registry" ] || return 1
+  if ! type secondmate_registry_line_for_id >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-secondmate-registry-lib.sh
+    . "$FM_BACKEND_LIB_DIR/fm-secondmate-registry-lib.sh" || return 1
+  fi
+  secondmate_registry_validate_bindings "$registry" secondmate_registry_path_key "$id" \
+    || return 1
+  registry_host=$SECONDMATE_REGISTRY_MATCH_HOST
+  registry_root=$SECONDMATE_REGISTRY_MATCH_ROOT
+  registry_home=$SECONDMATE_REGISTRY_MATCH_HOME
+  registry_remote=$SECONDMATE_REGISTRY_MATCH_REMOTE
+  [ "$registry_remote" = 1 ] && [ "$registry_host" = "$host" ] \
+    && [ "$registry_root" = "$root" ] && [ "$registry_home" = "$home" ]
+}
+
+# Classify a Herdr pane against this home's durable task endpoints before a
+# launcher may treat that pane as a console. Return 0 only when every task
+# record was evaluable and none owns the exact session:pane identity; 1 means
+# worker-owned, 2 means ownership cannot be verified. Never print task data.
+fm_backend_herdr_pane_ownership() {  # <state-dir> <session> <pane>
+  local state=$1 session=$2 pane=$3 meta id invalid=0 owner=0
+  [ -d "$state" ] && [ -r "$state" ] && [ -n "$session" ] && [ -n "$pane" ] || return 2
+  for meta in "$state"/*.meta; do
+    [ -e "$meta" ] || [ -L "$meta" ] || continue
+    if ! [ -f "$meta" ] && [ ! -L "$meta" ] || ! [ -r "$meta" ]; then
+      invalid=1
+      continue
+    fi
+    id=${meta##*/}; id=${id%.meta}
+    fm_backend_is_maintained_remote_secondmate "$meta" "$id" "$state" && continue
+    if ! fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+      invalid=1
+      continue
+    fi
+    if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ] \
+      && [ "$FM_BACKEND_VALIDATED_TARGET" = "$session:$pane" ]; then
+      owner=1
+    fi
+  done
+  [ "$owner" -eq 1 ] && return 1
+  [ "$invalid" -eq 0 ] && return 0
+  return 2
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>

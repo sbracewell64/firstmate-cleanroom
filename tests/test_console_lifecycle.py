@@ -16,6 +16,211 @@ ENTRY = Path(sys.argv.pop(1)).resolve()
 class LifecycleTests(unittest.TestCase):
     def setUp(self): self.f = LauncherFixture(ENTRY)
     def tearDown(self): self.f.close()
+    def worker_record(self, name='worker', pane='w9:p2', session='synthetic'):
+        record = self.f.home/'state'/f'{name}.meta'
+        record.write_text(f'backend=herdr\nendpoint_task_id={name}\nwindow={session}:{pane}\nworktree=/tmp/{name}\nproject=/tmp/project\nherdr_session={session}\nherdr_workspace_id=w9\nherdr_tab_id=w9:t2\nherdr_pane_id={pane}\n')
+        return record
+
+    def test_worker_pane_refuses_console_and_doctor_without_effects(self):
+        self.worker_record()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        env = dict(HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        for mode in ('--console', '--doctor'):
+            with self.subTest(mode=mode):
+                result = self.f.run(mode, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('worker-owned', result.stderr)
+                self.assertEqual(self.f.effects(), '')
+                self.assertFalse((self.f.root/'focus').exists())
+                self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_other_session_pane_id_does_not_hide_current_worker(self):
+        self.worker_record('other', session='elsewhere')
+        self.worker_record('worker')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
+        self.assertNotIn('other', result.stderr)
+
+    def test_same_pane_id_in_another_session_is_not_this_worker(self):
+        self.worker_record('other', session='elsewhere')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
+    def test_maintained_remote_secondmate_does_not_block_unowned_pane(self):
+        record = self.f.home/'state/mate.meta'
+        record.write_text('window=remote:mate\nendpoint_task_id=mate\n'
+                          'worktree=/remote/home\nproject=/remote/root\n'
+                          'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                          'remote_host=remote-mac\nremote_root=/remote/root\n')
+        (self.f.home/'data').mkdir()
+        (self.f.home/'data/secondmates.md').write_text(
+            '- mate - remote test (host: remote-mac; root: /remote/root; '
+            'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2',
+                            HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
+    def test_malformed_or_unreadable_remote_route_fails_closed(self):
+        cases = (
+            ('relative', 'host: remote-mac; root: relative/root; home: relative/home;'),
+            ('unreadable', 'host: remote-mac; root: /remote/root; home: /remote/home;'),
+        )
+        for name, route in cases:
+            with self.subTest(name=name):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                home = '/remote/home' if name == 'unreadable' else 'relative/home'
+                root = '/remote/root' if name == 'unreadable' else 'relative/root'
+                (fixture.home/'state/mate.meta').write_text(
+                    'window=remote:mate\nendpoint_task_id=mate\n'
+                    f'worktree={home}\nproject={root}\n'
+                    f'kind=secondmate\nmode=secondmate\nhome={home}\n'
+                    f'remote_host=remote-mac\nremote_root={root}\n')
+                (fixture.home/'data').mkdir()
+                registry = fixture.home/'data/secondmates.md'
+                registry.write_text(f'- mate - remote test ({route} scope: testing; '
+                                    'projects: alpha; added 2026-08-02)\n')
+                if name == 'unreadable':
+                    registry.chmod(0)
+                result = fixture.run('--doctor', HERDR_PANE_ID='w9:p2',
+                                     HERDR_SESSION='synthetic',
+                                     HERDR_SOCKET_PATH='/synthetic.sock')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('cannot verify', result.stderr)
+                self.assertEqual(fixture.effects(), '')
+
+    def test_proven_worker_owner_dominates_invalid_record_in_any_order(self):
+        for bad, worker in (('a-bad', 'z-worker'), ('a-worker', 'z-bad')):
+            with self.subTest(bad=bad, worker=worker):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                (fixture.home/'state'/f'{bad}.meta').write_text('not=an-endpoint\n')
+                (fixture.home/'state'/f'{worker}.meta').write_text(
+                    f'backend=herdr\nendpoint_task_id={worker}\nwindow=synthetic:w9:p2\n'
+                    'worktree=/tmp/worker\nproject=/tmp/project\n'
+                    'herdr_session=synthetic\nherdr_workspace_id=w9\n'
+                    'herdr_tab_id=w9:t2\nherdr_pane_id=w9:p2\n')
+                result = fixture.run('--doctor', HERDR_PANE_ID='w9:p2',
+                                     HERDR_SESSION='synthetic',
+                                     HERDR_SOCKET_PATH='/synthetic.sock')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('worker-owned', result.stderr)
+
+    def test_remote_secondmate_with_local_endpoint_claim_fails_closed(self):
+        record = self.worker_record('mate')
+        record.write_text(record.read_text() +
+                          'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                          'remote_host=remote-mac\nremote_root=/remote/root\n')
+        (self.f.home/'data').mkdir()
+        (self.f.home/'data/secondmates.md').write_text(
+            '- mate - remote test (host: remote-mac; root: /remote/root; '
+            'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2',
+                            HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
+
+    def test_remote_secondmate_local_placement_claims_fail_closed(self):
+        local_claims = (
+            'backend=tmux\n', 'backend=\n', 'window=synthetic:w9:p2\n',
+            'window=\n',
+            'herdr_session=synthetic\n', 'herdr_workspace_id=w9\n',
+            'herdr_tab_id=w9:t2\n', 'herdr_pane_id=w9:p2\n',
+            'zellij_session=local\n', 'zellij_tab_id=1\n',
+            'zellij_pane_id=2\n', 'orca_worktree_id=local\n',
+            'terminal=local\n', 'terminal=\n',
+            'cmux_workspace_id=local\n', 'cmux_surface_id=local\n',
+            'remote_host=\n', 'remote_root=\n', 'home=\n',
+            'project=/other\n', 'worktree=/other\n',
+        )
+        for claim in local_claims:
+            with self.subTest(claim=claim):
+                fixture = LauncherFixture(ENTRY)
+                self.addCleanup(fixture.close)
+                record = fixture.home/'state/mate.meta'
+                record.write_text('window=remote:mate\nendpoint_task_id=mate\n'
+                                  'worktree=/remote/home\nproject=/remote/root\n'
+                                  'kind=secondmate\nmode=secondmate\nhome=/remote/home\n'
+                                  'remote_host=remote-mac\nremote_root=/remote/root\n'
+                                  + claim)
+                (fixture.home/'data').mkdir()
+                (fixture.home/'data/secondmates.md').write_text(
+                    '- mate - remote test (host: remote-mac; root: /remote/root; '
+                    'home: /remote/home; scope: testing; projects: alpha; added 2026-08-02)\n')
+                before = (fixture.home/'state/captain-console.json').read_bytes()
+                for mode in ('--console', '--doctor'):
+                    result = fixture.run(mode, HERDR_PANE_ID='w9:p2',
+                                         HERDR_SESSION='synthetic',
+                                         HERDR_SOCKET_PATH='/synthetic.sock')
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('cannot verify', result.stderr)
+                    self.assertEqual(fixture.effects(), '')
+                    self.assertFalse((fixture.root/'focus').exists())
+                    self.assertEqual((fixture.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_malformed_task_record_with_proven_identity_is_worker_owned(self):
+        record = self.worker_record()
+        record.write_text(record.read_text() + 'not=an-endpoint\n')
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('worker-owned', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+
+    def test_malformed_ownership_identity_fails_closed(self):
+        self.worker_record().write_text('not=an-endpoint\n')
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('cannot verify', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+
+    def test_incomplete_non_orca_endpoint_fails_closed(self):
+        record = self.worker_record()
+        record.write_text(record.read_text().replace('herdr_tab_id=w9:t2\n', ''))
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p3', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('cannot verify', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+            self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_herdr_context_without_pane_identity_is_not_clean(self):
+        self.worker_record()
+        for pane_id in ('', None):
+            with self.subTest(pane_id=pane_id):
+                env = {'HERDR_ENV': '1', 'HERDR_SESSION': 'synthetic'}
+                if pane_id is not None:
+                    env['HERDR_PANE_ID'] = pane_id
+                result = self.f.run('--doctor', **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('cannot verify', result.stderr)
+                self.assertEqual(self.f.effects(), '')
+
+    def test_repeated_probe_never_consumes_worker_pane(self):
+        self.worker_record()
+        self.f.inventory([{'workspace_id':'w9','pane_id':'w9:p2'}])
+        for _ in range(3):
+            result = self.f.run('--console', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('worker-owned', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+        self.assertIn('w9:p2', (self.f.root/'inventory').read_text())
+
+    def test_console_record_collision_with_worker_refuses_before_convergence(self):
+        self.worker_record(pane='w7:p1')
+        self.f.record(harness='codex')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run()
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
+        self.assertEqual(self.f.effects(), '')
     def test_existing_shell_and_harness_attach_without_wait(self):
         # Real Herdr reports the wrapper and its harness in one foreground group.
         # Only this external process observation is substituted; the Desktop

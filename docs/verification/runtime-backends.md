@@ -398,6 +398,15 @@ ok - real herdr E2E: teardown closes only the worker's own pane and leaves the l
 That suite's headline case runs `bin/fm-spawn.sh` inside a real Herdr pane, so the parent identity comes from Herdr's own injection rather than a composed environment.
 Cross-session and contradictory bindings are covered deterministically in `tests/fm-backend-herdr.test.sh`, which can script a second server's socket without provisioning one.
 
+Launcher console and doctor pane isolation is owned by:
+
+```sh
+FM_LAUNCHER_LIVE_LAB=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/enter-firstmate-pane-isolation-e2e.test.sh
+```
+
+The opt-in proof uses separate worker and console panes in a guarded lab session, verifies the dedicated console pane is absent from live-home task records, and checks repeated refusal leaves the worker process, pane identities, console record, and focus unchanged.
+
 ### Per-home and presentation topology
 
 Per-home behavior is owned by:

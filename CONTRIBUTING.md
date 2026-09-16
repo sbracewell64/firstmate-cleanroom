@@ -82,6 +82,7 @@ The pipeline publishes that evidence itself, so never hand-commit `.no-mistakes/
 The captain launcher/console is versioned as a host-agnostic source at [`bin/enter-firstmate.sh`](bin/enter-firstmate.sh); its header and `--doctor` own the mechanics, including the four-profile primary console menu (fable-5.1 default, opus-4-8, codex-astra, codex-sol), the `$FM_HOME/config` host-path resolution, and the zero-dollar/subscription launch boundary.
 The concrete host-local `$FM_HOME/enter-firstmate.sh` is an activation consumer rendered from that source by [`bin/fm-render-launcher.sh`](bin/fm-render-launcher.sh), which also captures the pre-cutover rollback snapshot and a qualification report; that script performs no cutover.
 The pure launch, permission, and profile decisions are pinned by `tests/enter-firstmate-arm.test.sh`, `tests/enter-firstmate-launch.test.sh`, and `tests/enter-firstmate-profile.test.sh`.
+The caller's Herdr pane-ownership refusal and lifecycle isolation are pinned by `tests/test_console_lifecycle.py`, with the dedicated-pane positive path covered by `tests/test_startup_selection.py`.
 
 Check and test the toolbelt before pushing:
 

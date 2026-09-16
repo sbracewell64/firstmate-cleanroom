@@ -45,6 +45,12 @@ class StartupBoundaryTests(unittest.TestCase):
         self.assertFalse((self.f.home/'no-mistakes').exists())
 
     def test_owned_console_reaches_preparation_and_harness(self):
+        # The fixture's console pane is dedicated; another recorded task owns a
+        # different pane. A positive console run must never adopt that worker.
+        (self.f.home/'state/worker.meta').write_text(
+            'backend=herdr\nendpoint_task_id=worker\nwindow=synthetic:w9:p2\n'
+            'worktree=/tmp/worker\nproject=/tmp/project\nherdr_session=synthetic\n'
+            'herdr_workspace_id=w9\nherdr_tab_id=w9:t2\nherdr_pane_id=w9:p2\n')
         result = self.evidence_console('w7:p1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.f.root/'startup-effects').read_text(), 'preparation\nharness\n')

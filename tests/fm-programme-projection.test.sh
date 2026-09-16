@@ -456,10 +456,14 @@ test_not_configured_and_summary() {
 # process tree writes to stderr must still compose. Folding the two streams
 # together made every such byte part of the document this layer requires to be
 # the typed schema, so a healthy resolve was refused as "an unrecognized result
-# schema" - the intermittent CI failure this pins - and the offending bytes were
-# discarded with it. The noise here is one real line from that failure's own
-# shard, but nothing about it is special: a git or node warning, or any of the
-# shell's runtime diagnostics under load, lands on the same channel.
+# schema" - the shape this suite's intermittent CI failure took - and the
+# offending bytes were discarded with it. This pins the MECHANISM, not a
+# diagnosed cause: no CI log names what wrote to that stderr, and the failure
+# was never reproduced locally, so it stays unattributed and a recurrence is a
+# reopened investigation rather than a regression of this fix. The noise here is
+# one real line from that failure's own shard, but nothing about it is special:
+# a git or node warning, or any of the shell's runtime diagnostics under load,
+# lands on the same channel.
 #
 # The same separation is what lets an exit-3 refusal still reach the caller: it
 # is the resolver's stderr, mirrored, with stdout left empty.

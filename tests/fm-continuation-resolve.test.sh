@@ -902,8 +902,10 @@ SH
 # Folding the resolver's stderr into that capture made any byte written there -
 # by the resolver, by anything in its process tree, or by the shell's own
 # runtime diagnostics under load - part of the document being parsed, so a
-# healthy resolve was read as a malformed one. That is the shape of the
-# intermittent CI failure this pins, and the snapshot shows it at its worst: one
+# healthy resolve was read as a malformed one. That is the shape the
+# intermittent CI failure took - the mechanism, not an attributed cause, since
+# no log names the writer and it was never reproduced locally - and the
+# snapshot shows that mechanism at its worst: one
 # stray line took down the WHOLE canonical snapshot, not only its programme
 # section. Nothing is swallowed in exchange - the diagnostic still reaches the
 # operator on the consumer's own stderr.

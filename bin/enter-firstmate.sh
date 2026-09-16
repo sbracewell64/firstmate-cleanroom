@@ -16,8 +16,9 @@
 # FM_HOME contract in <code-root>/docs/configuration.md ("FM_HOME").
 #
 # PRIMARY CONSOLE PROFILE MENU (runtime-pin-adoption-gap, slice 1). The console's
-# harness+model comes from a three-profile menu (console_profile_* below):
-# fable-5.1 (default), opus-4-8 (Opus 4.8 only), and codex-luna. Select
+# harness+model comes from a six-profile menu (console_profile_* below):
+# fable-5.1 (built-in default), opus-4-8, codex-luna, pi-sol, pi-astra, and
+# pi-luna-max. Select
 # with FM_CONSOLE_PROFILE or config/console-profile. An unqualified profile is
 # PENDING with its exact gate and is never silently substituted; the console is
 # $0/subscription-only at the composed launch. Worker and pipeline model profiles
@@ -513,14 +514,14 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 
 # --- Primary console profile menu (runtime-pin-adoption-gap, slice 1) ----------
 # Tested by enter-firstmate-profile.test.sh (FM_ENTRY_LIB=1 loads this block).
-# The primary console's three-profile menu selects ONLY the primary console's
+# The primary console's six-profile menu selects ONLY the primary console's
 # harness + model + permission posture. Worker and pipeline model profiles are
 # SEPARATE owners (the code root's bin/fm-spawn.sh and config/crew-dispatch.json)
 # and are never switched from here. Invariants held at every profile:
 #   * fable-5.1 is the built-in default, and the built-in qualified set is a
 #     SEPARATE fact (console_profile_builtin_qualified_set), never derived from
-#     the default. codex-luna rests on account-specific gpt-5.6-luna evidence, so
-#     a home selects it in config/console-profile and qualifies it in
+#     the default. Codex and Pi profile grants rest on account-specific evidence;
+#     a home selects one in config/console-profile and qualifies it in
 #     config/console-qualified-profiles rather than inheriting either here.
 #   * An unqualified profile is PENDING with its exact gate and is NEVER
 #     silently substituted for another; console_run refuses rather than launch.
@@ -528,11 +529,16 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 #     (console_argv_subscription_only): no API/gateway/provider override, no paid
 #     overage, and no invented budget flag is ever composed or accepted.
 console_profile_default() { printf 'fable-5.1'; }
-console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna'; }
-console_profile_harness() {  # <profile> -> claude | codex | ''
+console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna pi-sol pi-astra pi-luna-max'; }
+# Native profile harnesses are inherited by a Herdr pane and re-resolved there.
+console_profile_native_harness() {
+  case "${1:-}" in claude|codex|pi) return 0 ;; *) return 1 ;; esac
+}
+console_profile_harness() {  # <profile> -> claude | codex | pi | ''
   case "${1:-}" in
     fable-5.1|opus-4-8)    printf claude ;;
     codex-luna)            printf codex ;;
+    pi-sol|pi-astra|pi-luna-max) printf pi ;;
     *) printf '' ;;
   esac
 }
@@ -548,6 +554,10 @@ console_profile_model() {  # <profile> -> selector | ''
     fable-5.1)   printf fable ;;
     opus-4-8)    printf claude-opus-4-8 ;;
     codex-luna)  printf gpt-5.6-luna ;;
+    # Measured on this home's Pi opencode provider; the Codex provider rejects Sol.
+    pi-sol)      printf opencode/gpt-5.6-sol ;;
+    pi-astra)    printf opencode/gpt-6-astra ;;
+    pi-luna-max) printf opencode/gpt-5.6-luna:max ;;
     *) printf '' ;;
   esac
 }
@@ -555,7 +565,7 @@ console_profile_model() {  # <profile> -> selector | ''
 # selector is the exact selector known to be valid for this profile and account.
 console_profile_model_ok() {  # <profile> <model> -> 0 ok / 1 refuse
   case "${1:-}:${2:-}" in
-    fable-5.1:fable|opus-4-8:claude-opus-4-8|codex-luna:gpt-5.6-luna) return 0 ;;
+    fable-5.1:fable|opus-4-8:claude-opus-4-8|codex-luna:gpt-5.6-luna|pi-sol:opencode/gpt-5.6-sol|pi-astra:opencode/gpt-6-astra|pi-luna-max:opencode/gpt-5.6-luna:max) return 0 ;;
   esac
   return 1
 }
@@ -577,10 +587,10 @@ console_profile_qualify() {
 # qualifies or de-qualifies a profile. Only fable-5.1 is qualified here, on the
 # plan-generic subscription evidence that predates the Codex profiles; it is
 # listed literally, not read back from the default.
-# codex-luna is NOT built in: gpt-5.6-luna was measured to work on THIS ChatGPT
-# account, and that evidence does not transfer to another home or account, so a
-# home grants it in its own config/console-qualified-profiles. opus-4-8 likewise
-# stays PENDING until a home qualifies it live.
+# Codex and Pi grants are NOT built in: account-specific evidence does not
+# transfer to another home, so a home grants them in its own
+# config/console-qualified-profiles. opus-4-8 likewise stays PENDING until a
+# home qualifies it live.
 console_profile_builtin_qualified_set() { printf 'fable-5.1'; }
 # The set of profiles this home has qualified for the zero-dollar subscription
 # plan: its own config when present, else the built-in set above. The rest stay
@@ -615,7 +625,7 @@ console_profile_resolve() {  # -> the selected profile name
   [ -n "$p" ] || p=$(console_profile_default)
   printf '%s' "$p"
 }
-# Sole owner of the three-profile primary console menu layout: heading, the active
+# Sole owner of the six-profile primary console menu layout: heading, the active
 # and default markers, the qualified set, the $0/subscription note, and every
 # profile's harness, pinned model, permission posture and gate verdict. Called by
 # both --doctor and --print-console-menu so the two never drift. Reads only
@@ -670,8 +680,8 @@ doctor_path_leak() {  # -> "YES - <dir> is on PATH" | none | none (no retired ho
 
 # --- Console launch contract (control issue #8 REVISE 2): pure decisions --------
 # console_harness_argv <harness> <model|""> <settings-file|""> <resume-id|""> [passthrough...]
-# prints the console argv one element per line. A profile harness (claude, codex)
-# leads with its captain-authorized permission posture, then the pinned profile
+# prints the console argv one element per line. Claude and Codex lead with their
+# captain-authorized permission posture; all profile harnesses pass their pinned
 # model selector, then (claude only) the private style settings and the validated
 # resume target, then the captain's own arguments. bash (the evidence harness)
 # and any non-profile harness get only the passthrough.
@@ -687,6 +697,10 @@ console_harness_argv() {
       ;;
     codex)
       permission_policy_posture codex
+      [ -z "$model" ]    || printf '%s\n%s\n' --model "$model"
+      ;;
+    pi)
+      # Pi has no documented permission flag; pass only its pinned model.
       [ -z "$model" ]    || printf '%s\n%s\n' --model "$model"
       ;;
   esac
@@ -834,7 +848,7 @@ cold_arm_supersede_stale() {  # <gen> <owner-pid>
 if [ -n "${FM_ENTRY_LIB:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 # --- Internal: render the profile menu and exit -------------------------------
-# Renders ONLY the three-profile console menu and exits, before every mandatory
+# Renders ONLY the six-profile console menu and exits, before every mandatory
 # environment gate (code/tools root, backend, herdr session, tools surface,
 # no-mistakes). It resolves the active profile exactly as the launch path does,
 # then defers to the single menu owner. It starts, execs and installs nothing and
@@ -887,14 +901,14 @@ case "$PATH" in
 esac
 
 # --- Primary console profile resolution (runtime) ------------------------------
-# The three-profile menu (console_profile_* above) drives the primary console's
+# The six-profile menu (console_profile_* above) drives the primary console's
 # harness + model. A non-native FM_HARNESS override (evidence runs) skips it. The
 # selected profile is refused, never silently swapped, when it is not QUALIFIED;
 # --doctor shows every profile's gate and starts nothing.
 FM_CONSOLE_PROFILE=$(console_profile_resolve)
 # A Herdr pane inherits the selected native harness from the outer launcher.
 # Re-resolve its model and gate here; that inherited value is not an evidence override.
-if [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = codex ] || [ "$FM_HARNESS_ENV" = claude ]; then
+if [ -z "$FM_HARNESS_ENV" ] || console_profile_native_harness "$FM_HARNESS_ENV"; then
   h=$(console_profile_harness "$FM_CONSOLE_PROFILE")
   [ -n "$h" ] || die "config/console-profile names an unknown profile '$FM_CONSOLE_PROFILE'; known profiles: $(console_profile_menu)"
   [ -z "$FM_HARNESS_ENV" ] || [ "$FM_HARNESS_ENV" = "$h" ] || die "native harness $FM_HARNESS_ENV conflicts with selected profile $FM_CONSOLE_PROFILE; select the matching profile explicitly"

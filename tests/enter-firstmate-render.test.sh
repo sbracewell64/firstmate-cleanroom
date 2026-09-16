@@ -76,7 +76,7 @@ SRC
 # tests that exit 0, and a launcher of the requested kind: `real` copies the real
 # source (its menu and shellcheck qualification then run for real), while
 # `menu:complete` / `menu:incomplete` write a stub whose --print-console-menu
-# renders all three profiles or omits one. Echoes the copied tool's path; the tool
+# renders all six profiles or omits one. Echoes the copied tool's path; the tool
 # resolves its repo root from its own location, so this is the seam that keeps a
 # staging from re-running the whole real launcher family.
 mk_repo() {  # <dir> <real|menu:complete|menu:incomplete>
@@ -95,7 +95,8 @@ mk_repo() {  # <dir> <real|menu:complete|menu:incomplete>
         printf '%s\n' 'if [ "${1:-}" = --print-console-menu ]; then'
         printf '%s\n' '  echo "-- primary console profile menu (stub)"'
         printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"'
-        [ "$kind" = menu:complete ] && printf '%s\n' '  echo "  codex-luna"'
+        printf '%s\n' '  echo "  codex-luna"; echo "  pi-sol"; echo "  pi-astra"'
+        [ "$kind" = menu:complete ] && printf '%s\n' '  echo "  pi-luna-max"'
         printf '%s\n' '  exit 0'
         printf '%s\n' 'fi'
         printf '%s\n' 'exit 0'
@@ -169,6 +170,7 @@ run_fast_render "$home" "$ROOT_B"
 printf '%s' "$OUT" | grep -Eq "$REFUSE_RE" && fail "(v) a genuine different code root must not be refused (got: $OUT)"
 [ -f "$home/state/launcher-staging/config/code-root" ] || fail "(v) a genuine move must proceed past the guard into staging"
 [ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/code-root")" = "$ROOT_B" ] || fail "(v) staging must record the adopted (different) code root"
+[ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/console-profile")" = pi-sol ] || fail "(v) default staging must retain the accepted pi-sol selection"
 pass "(v) a genuine move to a different code root passes the guard and stages"
 
 # --- caller-level --print-console-menu qualification ---------------------------

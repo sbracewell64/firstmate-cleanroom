@@ -130,7 +130,7 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$resolver" render 2>/dev/null) || rc=$?
+    out=$("$resolver" render) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the

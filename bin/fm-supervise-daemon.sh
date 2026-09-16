@@ -706,7 +706,7 @@ programme_digest_token() {  # [<state>]
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>/dev/null) || rc=$?
+    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the

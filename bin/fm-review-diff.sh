@@ -52,6 +52,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 usage() {
@@ -88,10 +91,21 @@ META="$STATE/$ID.meta"
 # meta_field <key> <presence-var>: the single value of key= in META. Refuses a
 # repeated key outright: every producer writes each of these fields once, so a
 # second line is a corrupt or contradictory record, never a legitimate update.
+# The shared owner (bin/fm-backlog-transition-lib.sh's fm_meta_duplicate_key)
+# decides what counts as duplicated, scoped to the key being read; this adds
+# only the count the operator needs to see which field is answered twice.
 meta_field() {
-  local key=$1 count
-  count=$(grep -c "^$key=" "$META" || true)
-  [ "$count" -le 1 ] || refuse "meta for task $ID has $count $key= lines; exactly one is allowed"
+  local key=$1 count dup_rc=0
+  fm_meta_duplicate_key "$META" "$key" >/dev/null || dup_rc=$?
+  case "$dup_rc" in
+    0)
+      count=$(grep -c "^$key=" "$META" || true)
+      refuse "meta for task $ID has $count $key= lines; exactly one is allowed"
+      ;;
+    2)
+      refuse "meta for task $ID could not be read; its $key= value is unproven"
+      ;;
+  esac
   grep "^$key=" "$META" | cut -d= -f2- || true
 }
 

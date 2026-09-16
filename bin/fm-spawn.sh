@@ -1735,7 +1735,9 @@ if [ "$KIND" = secondmate ]; then
       echo "error: secondmate task record is unsafe: $FM_BACKLOG_TRANSITION_ERROR" >&2
       exit 1
     }
-    FIRSTMATE_HOME=$(grep '^home=' "$STATE/$ID.meta" | cut -d= -f2- || true)
+    # One value, never a two-line one that would spawn against a path built
+    # from both answers (bin/fm-backend.sh's fm_meta_get owns the rule).
+    FIRSTMATE_HOME=$(fm_meta_get "$STATE/$ID.meta" home || true)
   fi
   if [ -z "$FIRSTMATE_HOME" ]; then
     FIRSTMATE_HOME=$(secondmate_registry_value "$ID" home || true)

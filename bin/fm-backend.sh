@@ -332,9 +332,21 @@ fm_backend_required_tool_available() {  # <backend> <tool>
   esac
 }
 
-# fm_meta_get: the LAST value of `key=` in <meta-file>, or empty (never
-# errors) if the file or key is absent. Mirrors the ad hoc `grep '^key=' |
-# tail -1 | cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
+# fm_meta_get: the LAST value of `key=` in <meta-file>, or empty (never errors)
+# if the file or key is absent. Mirrors the ad hoc `grep '^key=' | tail -1 |
+# cut -d= -f2-` snippet every fm-*.sh script used to repeat inline.
+#
+# This reader is PERMISSIVE by contract and stays that way. Whether a task
+# record holds one value per key is owned by
+# bin/fm-backlog-transition-lib.sh's fm_meta_duplicate_key, and REFUSING on a
+# conflict is OPT-IN at the readers that chose it - fm_classify_meta_value in
+# bin/fm-classify-lib.sh, meta_field in bin/fm-review-diff.sh, and
+# bin/fm-stage.sh's conflicting-record preflight. Strictness on a reader this
+# widely shared cannot be opt-out: its callers number in the hundreds, they
+# spread across guards that discard the status and bare assignments under
+# `set -e`, and a contract flip here would change each of them in a direction
+# nobody audited. A duplicate is still unrepresentable at the publication guard,
+# which is where it is stopped from being created at all.
 fm_meta_get() {  # <meta-file> <key>
   local meta=$1 key=$2
   [ -f "$meta" ] || return 0

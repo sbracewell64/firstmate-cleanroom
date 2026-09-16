@@ -488,9 +488,11 @@ permission_policy_posture() {  # <harness> -> the flag/config that removes inter
     *) echo 'none: not a verified harness' ;;
   esac
 }
-# A harness this launcher composes a primary-console posture for (see
-# console_harness_argv) is owned HERE as well as by fm-spawn; the rest are
-# fm-spawn's alone. claude and codex are both primary-console harnesses.
+# A harness whose permission POSTURE this launcher composes into the primary
+# console argv (see console_harness_argv) is owned HERE as well as by fm-spawn.
+# claude and codex are the two; pi is also a primary-console harness but this
+# launcher composes only its pinned model selector and no posture, so it reports
+# no owner here rather than fm-spawn's. Worker-only harnesses are fm-spawn's alone.
 permission_policy_owner() {  # <harness>
   case "${1:-}" in
     claude|codex) echo 'this launcher (primary console argv) + fm-spawn (workers)' ;;

@@ -64,18 +64,19 @@ class StartupBoundaryTests(unittest.TestCase):
         result = self.console()
         self.assertIn('firstmate native console refused', result.stderr)
         self.assertNotIn('harness codex is not installed', result.stderr)
-    def test_inherited_pi_harness_keeps_selected_model_through_guard(self):
+    def test_api_key_backed_pi_grant_refuses_before_launch(self):
         (self.f.home/'config/console-profile').write_text('pi-sol\n')
         (self.f.home/'config/console-qualified-profiles').write_text('pi-sol\n')
+        auth = self.f.user/'.pi/agent/auth.json'
+        auth.parent.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({'opencode': {'type': 'api_key', 'key': 'SYNTHETIC'}}))
         self.f.script(self.f.user/'.local/bin/pi', 'printf "%s\\n" "$@" > "$FIXTURE_ROOT/pi-argv"; exit 91\n')
         self.f.record(harness='pi', profile='pi-sol', model='opencode/gpt-5.6-sol')
         result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic',
                             HERDR_SOCKET_PATH='/synthetic.sock', FM_HARNESS='pi')
-        self.assertEqual(result.returncode, 91, result.stderr)
-        self.assertEqual((self.f.root/'pi-argv').read_text(), '--model\nopencode/gpt-5.6-sol\n')
-        record = json.loads((self.f.home/'state/captain-console.json').read_text())
-        self.assertIn('--model opencode/gpt-5.6-sol', record['argv'])
-        self.assertEqual(record['exit_rc'], 91)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('API-key-backed opencode provider', result.stderr)
+        self.assertFalse((self.f.root/'pi-argv').exists())
 
     def test_unqualified_inherited_pi_harness_refuses_before_launch(self):
         (self.f.home/'config/console-profile').write_text('pi-sol\n')

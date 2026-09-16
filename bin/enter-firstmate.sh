@@ -20,7 +20,8 @@
 # fable-5.1 (built-in default), opus-4-8, codex-luna, pi-sol, pi-astra and
 # pi-luna-max. Select with FM_CONSOLE_PROFILE or config/console-profile; the
 # built-in qualified set is fable-5.1 alone, so a home grants any other profile
-# in its own config/console-qualified-profiles. An unqualified profile is
+# in its own config/console-qualified-profiles. A grant is necessary but the
+# provider must also pass the spend gate. An unqualified profile is
 # PENDING with its exact gate and is never silently substituted; the console is
 # $0/subscription-only at the composed launch. Worker and pipeline model profiles
 # are separate owners (the code root's fm-spawn.sh, config/crew-dispatch.json)
@@ -531,8 +532,8 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 #   * An unqualified profile is PENDING with its exact gate and is NEVER
 #     silently substituted for another; console_run refuses rather than launch.
 #   * $0 / subscription-only is enforced at the composed-launch boundary
-#     (console_argv_subscription_only): no API/gateway/provider override, no paid
-#     overage, and no invented budget flag is ever composed or accepted.
+#     (console_profile_qualify and console_argv_subscription_only): no
+#     API-key-backed provider, paid overage, or budget flag is accepted.
 console_profile_default() { printf 'fable-5.1'; }
 console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna pi-sol pi-astra pi-luna-max'; }
 console_profile_harness() {  # <profile> -> claude | codex | pi | ''
@@ -583,7 +584,10 @@ console_profile_model_ok() {  # <profile> <model> -> 0 ok / 1 refuse
   return 1
 }
 # console_profile_qualify <profile> <harness-installed 0|1> <model-allowed 0|1>
-# -> QUALIFIED | PENDING: <exact gate>.  Pure: the caller gathers the two facts.
+# -> QUALIFIED | PENDING: <exact gate>. The home grant alone cannot prove the
+# provider's spend posture. Pi documents opencode as an API-key provider; the
+# measured reply did not establish a subscription-only, no-charge route.
+# This keeps the selected Pi profile visible but refuses to launch it.
 console_profile_qualify() {
   local p=${1:-} installed=${2:-0} allowed=${3:-0} h m
   h=$(console_profile_harness "$p")
@@ -592,6 +596,10 @@ console_profile_qualify() {
   console_profile_model_ok "$p" "$m" || { printf 'PENDING: profile %s pins selector %s that this account does not accept; refusing' "$p" "$m"; return 0; }
   [ "$installed" = 1 ] || { printf 'PENDING: harness %s is not installed' "$h"; return 0; }
   [ "$allowed" = 1 ]   || { printf 'PENDING: model %s (%s) is not yet qualified on the zero-dollar subscription plan; adoption pending' "$m" "$h"; return 0; }
+  case "$h:$m" in
+    pi:opencode/*) printf 'PENDING: model %s uses API-key-backed opencode provider; zero-spend not verified' "$m"; return 0 ;;
+    pi:*) printf 'PENDING: model %s has no verified subscription-only, no-charge provider route' "$m"; return 0 ;;
+  esac
   printf 'QUALIFIED'
 }
 # The profiles any home qualifies with no config of its own. Deliberately NOT
@@ -605,10 +613,9 @@ console_profile_qualify() {
 # config/console-qualified-profiles. opus-4-8 likewise stays PENDING until a
 # home qualifies it live.
 console_profile_builtin_qualified_set() { printf 'fable-5.1'; }
-# The set of profiles this home has qualified for the zero-dollar subscription
-# plan: its own config when present, else the built-in set above. The rest stay
-# PENDING until a later adoption slice qualifies them live. Reads config, so its
-# result depends on $FM_HOME.
+# The set of home grants: its own config when present, else the built-in set
+# above. A grant alone cannot prove a provider's spend posture; the live gate
+# checks that separately. Reads config, so its result depends on $FM_HOME.
 console_profile_qualified_set() {  # a space/newline-separated LIST (not a scalar)
   local f="$FM_HOME/config/console-qualified-profiles" s=''
   if [ -f "$f" ]; then
@@ -648,7 +655,7 @@ console_profile_menu_render() {
   local _p _h _m _g
   echo "-- primary console profile menu (runtime-pin-adoption-gap; owner: this launcher's console_profile_* block)"
   echo "  active profile:    $FM_CONSOLE_PROFILE$( [ -n "$FM_HARNESS_ENV" ] && printf ' (overridden by FM_HARNESS=%s; menu bypassed)' "$FM_HARNESS_ENV")"
-  echo "  default profile:   $(console_profile_default)   qualified here: $(console_profile_qualified_set)"
+  echo "  default profile:   $(console_profile_default)   home grants: $(console_profile_qualified_set)"
   echo "  \$0/subscription:   enforced at the composed launch (no API/gateway/provider override, no overage, no budget flag)"
   for _p in $(console_profile_menu); do
     _h=$(console_profile_harness "$_p"); _m=$(console_profile_model "$_p"); _g=$(console_profile_gate "$_p")

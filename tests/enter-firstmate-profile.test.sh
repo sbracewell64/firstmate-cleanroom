@@ -159,9 +159,13 @@ home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > 
 pass "gate: codex-luna qualifies only from the home's own grant"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty
   case "$(console_profile_gate pi-sol)" in "PENDING: model opencode/gpt-5.6-sol (pi) is not yet qualified"*) ;; *) exit 1 ;; esac ) || fail "pi-sol stays PENDING without a home grant"
-home_pi_gate=$TMP/home-pi-gate; mkdir -p "$home_pi_gate/config"; printf 'pi-sol\n' > "$home_pi_gate/config/console-qualified-profiles"
-( PATH=$TMP/bin:$PATH; FM_HOME=$home_pi_gate; [ "$(console_profile_gate pi-sol)" = QUALIFIED ] || exit 1 ) || fail "the pi-sol home grant qualifies the installed harness"
-pass "gate: pi-sol qualifies only from the home's own grant"
+home_pi_gate=$TMP/home-pi-gate; mkdir -p "$home_pi_gate/config"; printf 'pi-sol pi-astra pi-luna-max codex-luna\n' > "$home_pi_gate/config/console-qualified-profiles"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_pi_gate
+  [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1
+  for _p in pi-sol pi-astra pi-luna-max; do
+    case "$(console_profile_gate "$_p")" in "PENDING: model "*" uses API-key-backed opencode provider; zero-spend not verified"*) ;; *) exit 1 ;; esac
+  done ) || fail "a home grant qualifies Codex Luna but cannot prove zero spend for Pi's opencode provider"
+pass "gate: API-key-backed Pi routes stay PENDING despite a home grant"
 # with the harness off PATH the same default profile reports the install gate
 # shellcheck disable=SC2123 # emptying PATH is the point: the harness must be unfindable
 ( PATH=$TMP/emptybin; FM_HOME=$TMP/home-empty
@@ -239,12 +243,15 @@ home_pi=$TMP/home-pi; mkdir -p "$home_pi/config"
 printf 'pi-sol\n' > "$home_pi/config/console-profile"
 printf 'pi-sol\n' > "$home_pi/config/console-qualified-profiles"
 rc=0
-out=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_CODE_ROOT \
+out=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_CODE_ROOT PATH="$TMP/bin:$PATH" \
       FM_HOME="$home_pi" FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "a bare pi-sol preview must exit 0 (rc=$rc, out: $out)"
 case "$out" in *'active profile:    pi-sol'*) ;; *) fail "the home must select pi-sol with no env override (got: $out)" ;; esac
+case "$out" in *'home grants: pi-sol'*) ;; *) fail "the menu must identify the pi-sol allowlist entry as a grant, not a qualified verdict (got: $out)" ;; esac
 case "$out" in *'pi-sol'*'harness=pi'*'model=opencode/gpt-5.6-sol'*) ;; *) fail "pi-sol must compose the accepted Pi selector (got: $out)" ;; esac
-pass "print-console-menu: the configured pi-sol profile resolves without an environment override"
+printf '%s\n' "$out" | awk '$1 == "pi-sol" && /PENDING:.*API-key-backed opencode provider/ { found=1 } END { exit !found }' \
+  || fail "the selected pi-sol row must show the provider cost gate (got: $out)"
+pass "print-console-menu: pi-sol stays selected but PENDING without a proven no-charge route"
 
 # --- --print-console-menu: a non-default config profile renders as active -------
 # Builds on the default-profile case above: a home whose config/console-profile

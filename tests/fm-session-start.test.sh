@@ -1160,6 +1160,46 @@ EOF
   pass "session start stays read-only when lock ownership cannot be published"
 }
 
+test_lock_refusal_families_keep_wake_verdict_distinct() {
+  local rec root home fakebin holder out status
+  rec=$(new_world lock-refusal-families-live)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  sleep 300 &
+  holder=$!
+  printf '%s\n' "$holder" > "$home/state/.lock"
+  status=0
+  out=$(FM_FAKE_LIVE_HOLDER_PID="$holder" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  expect_code 0 "$status" "live-holder refusal must still complete session start"
+  assert_contains "$out" "another live firstmate session holds the lock" \
+    "live-holder refusal lost its owning diagnostic"
+  assert_contains "$out" "skipped (read-only session)" \
+    "live-holder refusal changed the wake verdict"
+
+  rec=$(new_world lock-refusal-families-write)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  chmod 0500 "$home/state"
+  status=0
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  chmod 0700 "$home/state"
+  expect_code 0 "$status" "publication refusal must still complete session start"
+  assert_contains "$out" "cannot write session lock" \
+    "publication refusal lost its owning diagnostic"
+  assert_not_contains "$out" "another live firstmate session holds the lock" \
+    "publication refusal was misclassified as a live-holder refusal"
+  assert_contains "$out" "skipped (read-only session)" \
+    "publication refusal changed the wake verdict"
+  pass "live-holder and publication lock refusals remain distinct without changing the wake verdict"
+}
+
 test_trace_context_effective_state_is_frozen_after_lock() {
   local rec root home fakebin out frozen
   rec=$(new_world trace-context-session-state)
@@ -1707,6 +1747,43 @@ SH
   chmod +x "$root/bin/fm-wake-drain.sh"
 }
 
+print_failed_drain_evidence() {  # <root> <home> <digest> <stderr>
+  local root=$1 home=$2 digest=$3 stderr=$4 lock_out lock_status owner_pid owner_identity owner_start owner_ppid
+  printf '%s\n' '--- failed-drain evidence: full digest ---'
+  cat "$digest" 2>/dev/null || true
+  printf '%s\n' '--- failed-drain evidence: LOCK subsection ---'
+  awk '/^LOCK$/{inside=1} inside{print} inside && /^={10,}$/{exit}' "$digest" 2>/dev/null || true
+  printf '%s\n' '--- failed-drain evidence: session-start stderr ---'
+  cat "$stderr" 2>/dev/null || true
+  printf '%s\n' '--- failed-drain evidence: copied fm-lock availability/exit ---'
+  if [ -x "$root/bin/fm-lock.sh" ]; then
+    printf '%s\n' 'available=executable'
+  else
+    printf '%s\n' 'available=not-executable'
+  fi
+  lock_out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$root/bin/fm-lock.sh" status 2>&1)
+  lock_status=$?
+  printf 'exit=%s\n%s\n' "$lock_status" "$lock_out"
+  printf '%s\n' '--- failed-drain evidence: exact fixture lock bytes ---'
+  if [ -e "$home/state/.lock" ] && [ ! -L "$home/state/.lock" ]; then
+    od -An -v -tx1 "$home/state/.lock" 2>/dev/null || true
+    owner_pid=$(cat "$home/state/.lock" 2>/dev/null || true)
+  else
+    printf '%s\n' 'lock=absent-or-nonregular'
+    owner_pid=
+  fi
+  case "$owner_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      owner_identity=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_pid_identity "$2" 2>/dev/null || true' _ "$ROOT/bin/fm-wake-lib.sh" "$owner_pid")
+      owner_start=$(awk '{print $22}' "/proc/$owner_pid/stat" 2>/dev/null || true)
+      owner_ppid=$(awk '{print $4}' "/proc/$owner_pid/stat" 2>/dev/null || true)
+      printf 'owner_pid=%s\nowner_identity=%s\nowner_start_tick=%s\nowner_parent_pid=%s\n' \
+        "$owner_pid" "$owner_identity" "$owner_start" "$owner_ppid"
+      ;;
+  esac
+}
+
 # wake_queue_section <digest>: just the WAKE QUEUE section of a digest, so an
 # assertion about what that section says is not satisfied (or defeated) by
 # another section of the same digest mentioning the same words.
@@ -1724,7 +1801,7 @@ wake_queue_section() {  # <digest>
 # wakes)" directly above that outstanding instruction, and an operator who
 # believed the queue verdict left the episode unacknowledged.
 test_wake_queue_verdict_follows_the_drain() {
-  local rec root home fakebin section sequence generation
+  local rec root home fakebin section sequence generation digest stderr status
 
   # (1) nothing queued and nothing outstanding: the queue verdict is the whole
   # story, and no acknowledgement is claimed.
@@ -1793,12 +1870,17 @@ EOF
   make_fake_toolchain "$fakebin"
   install_drain_fixture "$root" "partial-row-that-must-be-withheld" "drain failed after partial output" 7
   FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
-  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  digest="$home/failed-drain.digest"
+  stderr="$home/failed-drain.stderr"
+  status=0
+  run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest" 2>"$stderr" || status=$?
+  section=$(wake_queue_section "$(cat "$digest")")
   unset FM_TEST_SESSION_START_PATH
-  assert_not_contains "$section" "partial-row-that-must-be-withheld" \
-    "a failed drain presented partial output as valid queue rows"
-  assert_contains "$section" "wake drain failed (exit 7)" \
-    "a failed drain omitted its explicit failure verdict"
+  if printf '%s\n' "$section" | grep -F 'partial-row-that-must-be-withheld' >/dev/null \
+    || ! printf '%s\n' "$section" | grep -F 'wake drain failed (exit 7)' >/dev/null; then
+    print_failed_drain_evidence "$root" "$home" "$digest" "$stderr"
+    fail "failed-drain verdict contradicted its exit status (status $status)"
+  fi
 
   # A diagnostic that merely mentions the protocol marker is not an outstanding
   # acknowledgement instruction.
@@ -3014,6 +3096,7 @@ test_context_memory_budget_gate_absent_budget_names_primary_owner_in_secondmate
 test_digest_presents_nm_observation_findings_once
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
+test_lock_refusal_families_keep_wake_verdict_distinct
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead

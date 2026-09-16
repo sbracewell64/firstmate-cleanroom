@@ -209,6 +209,16 @@ FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=15518
 FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=2 duration_ms=15453 failed=0
 ```
 
+## Endpoint schema registration, 2026-09-16
+
+The branch-added endpoint schema validator is registered in the canonical inventory as an enforced runtime entry point called by task endpoint validation in `bin/fm-backend.sh`.
+The new inventory assertion rejects a copy with that call site removed, and the repository check still rejects undeclared entry points.
+The check reported this result on the successor candidate:
+
+```text
+fm-enforcement-caller-check: ok entries=52 enforced=40 operator_invoked=4 not_enforcement=8 call_sites=76 rejected_call_sites=5
+```
+
 ## Adding an entry point
 
 Add the capability, wire its enforcing call, then declare it in `docs/enforcement-points.json` with its `id`, `kind`, one-sentence `invariant`, `guards`, and `callSites`.

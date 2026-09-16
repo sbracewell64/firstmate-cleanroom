@@ -180,6 +180,17 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn('cannot verify', result.stderr)
             self.assertEqual(self.f.effects(), '')
 
+    def test_incomplete_non_orca_endpoint_fails_closed(self):
+        record = self.worker_record()
+        record.write_text(record.read_text().replace('herdr_tab_id=w9:t2\n', ''))
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p3', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('cannot verify', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+            self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
     def test_herdr_context_without_pane_identity_is_not_clean(self):
         self.worker_record()
         for pane_id in ('', None):

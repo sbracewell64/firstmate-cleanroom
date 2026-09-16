@@ -407,8 +407,14 @@ fm_backend_endpoint_schema_local_fields() {  # <backend>
 }
 
 fm_backend_validate_endpoint_schema() {  # <meta-file> <backend>
-  local meta=$1 backend=$2 field
+  local meta=$1 backend=$2 field count
+  FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD=
   while IFS= read -r field; do
+    count=$(grep -c "^$field=" "$meta" 2>/dev/null || true)
+    if [ "$count" -eq 0 ]; then
+      FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD=$field
+      return 1
+    fi
     fm_backend_meta_exact_value "$meta" "$field" >/dev/null || return 1
   done < <(fm_backend_endpoint_schema_local_fields "$backend")
 }
@@ -453,7 +459,14 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
     return 1
   fi
   if ! fm_backend_validate_endpoint_schema "$meta" "$backend"; then
-    echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2
+    case "$backend:$FM_BACKEND_ENDPOINT_SCHEMA_MISSING_FIELD" in
+      orca:orca_worktree_id)
+        echo "REFUSED: missing orca_worktree_id in $meta; cannot remove Orca worktree; preserving task state." >&2 ;;
+      orca:terminal)
+        echo "REFUSED: missing terminal in $meta; cannot close Orca endpoint; preserving task state." >&2 ;;
+      *)
+        echo "REFUSED: task $id has malformed endpoint metadata; preserving task state." >&2 ;;
+    esac
     return 1
   fi
   binding_count=$(grep -c '^endpoint_task_id=' "$meta" 2>/dev/null || true)

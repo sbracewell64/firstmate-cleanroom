@@ -8,7 +8,7 @@ command -v herdr >/dev/null 2>&1 || { echo 'skip: herdr is unavailable'; exit 0;
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 LIVE_HOME=${FM_LAUNCHER_LIVE_HOME:-/home/shane/.firstmate-cleanroom}
-HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fix5-launcher-test-pane-isolation)
+HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fix5-launcher-ci-successor)
 TMP_ROOT=$(mktemp -d)
 home=$TMP_ROOT/home
 tools_root=$TMP_ROOT/tools

@@ -12,8 +12,11 @@ FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 # Tenths of a second fm_autoarm_release_abandoned spends confirming a retired
 # legacy auto-arm owner actually stopped. Three seconds: the one-second
 # unconfirmed wait this replaced, plus room for one re-delivery if the first
-# stop produced nothing. Still bounded, so a stop that never lands leaves the
-# documented upgrade-window residual rather than deadlocking the next claimant.
+# stop produced nothing. That room is a FLOOR rather than an arithmetic
+# coincidence of the two defaults - see the floor applied below, once the
+# re-delivery interval itself has been normalised. Still bounded, so a stop that
+# never lands leaves the documented upgrade-window residual rather than
+# deadlocking the next claimant.
 FM_AUTOARM_RETIRE_POLLS="${FM_AUTOARM_RETIRE_POLLS:-30}"
 case "$FM_AUTOARM_RETIRE_POLLS" in ''|*[!0-9]*) FM_AUTOARM_RETIRE_POLLS=30 ;; esac
 FM_AUTOARM_RETIRE_POLLS=${FM_AUTOARM_RETIRE_POLLS#"${FM_AUTOARM_RETIRE_POLLS%%[!0]*}"}
@@ -32,6 +35,13 @@ FM_STOP_REDELIVER_POLLS="${FM_STOP_REDELIVER_POLLS:-20}"
 case "$FM_STOP_REDELIVER_POLLS" in ''|*[!0-9]*) FM_STOP_REDELIVER_POLLS=20 ;; esac
 FM_STOP_REDELIVER_POLLS=${FM_STOP_REDELIVER_POLLS#"${FM_STOP_REDELIVER_POLLS%%[!0]*}"}
 [ -n "$FM_STOP_REDELIVER_POLLS" ] || FM_STOP_REDELIVER_POLLS=20
+# The retire bound takes the same floor the arm layer's stop bounds take, for the
+# same reason and only once the interval above is a normalised number: a window
+# that does not OUTLAST the re-delivery interval delivers exactly once, which is
+# the single unconfirmed signal a confirmed stop exists to replace - and here
+# that one consumed signal would retire a still-running owner's lock. Neither
+# knob is capped; the window only ever widens.
+[ "$FM_AUTOARM_RETIRE_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || FM_AUTOARM_RETIRE_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.

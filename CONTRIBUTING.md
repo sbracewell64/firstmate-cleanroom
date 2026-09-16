@@ -79,7 +79,7 @@ Firstmate's wrapper still matters: crewmates route every `ask-user` finding to f
 Local no-mistakes Test is intent-targeted and must not re-run every `tests/*.test.sh`; `.github/workflows/ci.yml` owns the broad behavior suite plus platform-specific compatibility lanes.
 The pipeline publishes that evidence itself, so never hand-commit `.no-mistakes/` paths onto a feature branch; CI rejects them as tracked personal fleet paths.
 
-The captain launcher/console is versioned as a host-agnostic source at [`bin/enter-firstmate.sh`](bin/enter-firstmate.sh); its header and `--doctor` own the mechanics, including the six-profile primary console menu (fable-5.1 built-in default, opus-4-8, codex-luna, pi-sol, pi-astra, pi-luna-max), the `$FM_HOME/config` host-path resolution, and the zero-dollar/subscription launch boundary.
+The captain launcher/console is versioned as a host-agnostic source at [`bin/enter-firstmate.sh`](bin/enter-firstmate.sh); its header and `--doctor` own the mechanics, including the six-profile primary console menu (fable-5.1 built-in default, opus-4-8, codex-luna, pi-sol, pi-astra, pi-luna-max), the `$FM_HOME/config` host-path resolution, and the zero-dollar/subscription launch boundary, where a home grant alone does not establish provider spend safety.
 The concrete host-local `$FM_HOME/enter-firstmate.sh` is an activation consumer rendered from that source by [`bin/fm-render-launcher.sh`](bin/fm-render-launcher.sh), which also captures the pre-cutover rollback snapshot and a qualification report; that script performs no cutover.
 The pure launch, permission, and profile decisions are pinned by `tests/enter-firstmate-arm.test.sh`, `tests/enter-firstmate-launch.test.sh`, and `tests/enter-firstmate-profile.test.sh`.
 

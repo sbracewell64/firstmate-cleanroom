@@ -397,7 +397,7 @@ fm_backend_endpoint_atom_valid() {  # <value>
 
 fm_backend_endpoint_schema_local_fields() {  # <backend>
   case "$1" in
-    tmux) ;;
+    tmux) printf '%s\n' window ;;
     herdr) printf '%s\n' herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id ;;
     zellij) printf '%s\n' zellij_session zellij_tab_id zellij_pane_id ;;
     orca) printf '%s\n' orca_worktree_id terminal ;;
@@ -565,12 +565,18 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   return 0
 }
 
-fm_backend_meta_has_local_endpoint_claim() {  # <meta-file>
-  local meta=$1 backend field
+fm_backend_meta_has_local_endpoint_claim() {  # <meta-file> [<remote-task-id>]
+  local meta=$1 remote_id=${2:-} backend field count value
   grep -q '^backend=' "$meta" 2>/dev/null && return 0
   for backend in $FM_BACKEND_KNOWN; do
     while IFS= read -r field; do
-      grep -q "^$field=" "$meta" 2>/dev/null && return 0
+      count=$(grep -c "^$field=" "$meta" 2>/dev/null || true)
+      [ "$count" -gt 0 ] || continue
+      if [ "$field" = window ] && [ -n "$remote_id" ] && [ "$count" -eq 1 ]; then
+        value=$(fm_backend_meta_exact_value "$meta" window 2>/dev/null || true)
+        [ "$value" = "remote:$remote_id" ] && continue
+      fi
+      return 0
     done < <(fm_backend_endpoint_schema_local_fields "$backend")
   done
   return 1
@@ -594,7 +600,7 @@ fm_backend_is_maintained_remote_secondmate() {  # <meta-file> <task-id> <state-d
     && [ "$window" = "remote:$id" ] || return 1
   [ -n "$host" ] && [ -n "$root" ] && [ -n "$home" ] \
     && [ "$project" = "$root" ] && [ "$worktree" = "$home" ] || return 1
-  if fm_backend_meta_has_local_endpoint_claim "$meta" 2>/dev/null; then
+  if fm_backend_meta_has_local_endpoint_claim "$meta" "$id" 2>/dev/null; then
     return 1
   else
     claim_status=$?

@@ -1318,7 +1318,7 @@ test_close_path_wait_for_the_marker_lock_stays_killable() {
   # halves: the watcher is still collectable by an ordinary stop while it waits,
   # and what it leaves behind is the ordinary killed-watcher state the next
   # watcher recovers rather than a half-written marker.
-  local dir state fakebin out watcher holder successor i
+  local dir state fakebin out watcher holder successor watcher_status i
   dir=$(make_case close-path-marker-lock)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -1364,7 +1364,10 @@ test_close_path_wait_for_the_marker_lock_stays_killable() {
   done
   is_live_non_zombie "$watcher" \
     && { kill -KILL "$holder" 2>/dev/null || true; reap "$watcher"; fail "a watcher waiting for the downtime marker lock discarded every stop: only an uncatchable KILL could collect it"; }
-  wait "$watcher" 2>/dev/null || true
+  watcher_status=0
+  wait "$watcher" 2>/dev/null || watcher_status=$?
+  [ "$watcher_status" -eq 1 ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "the marker-lock signal path did not exit directly after releasing its lock (status $watcher_status)"; }
 
   # Nothing was half-done: the marker was never written, and the singleton lock
   # still names the collected watcher, exactly as for a watcher killed outright.

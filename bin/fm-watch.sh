@@ -1448,6 +1448,7 @@ fi
 # re-derives current state from the owning home anyway, while beacon freshness
 # is what the whole supervision chain rests on.
 HOME_SUMMARY_PID=
+WATCHER_CLEANUP_ESCAPED=0
 home_summary_refresh_detached() {
   if [ -n "$HOME_SUMMARY_PID" ]; then
     if kill -0 "$HOME_SUMMARY_PID" 2>/dev/null; then
@@ -1463,6 +1464,7 @@ home_summary_refresh_detached() {
 
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock-held downtime_lock
+  [ "$WATCHER_CLEANUP_ESCAPED" -eq 1 ] && return 0
   # The close path below is what makes this watcher's stop READABLE: it releases
   # the singleton lock and publishes the downtime episode the next drain presents
   # and retires. A stop signal arriving while it runs would re-enter the `exit 1`
@@ -1507,7 +1509,7 @@ watcher_cleanup() {
   if [ "$owns_lock" -eq 1 ]; then
     downtime_lock="$WATCHER_DOWNTIME_MARKER.lock"
     if ! fm_lock_try_acquire "$downtime_lock"; then
-      trap 'fm_lock_release "$downtime_lock"; exit 1' HUP INT TERM
+      trap 'WATCHER_CLEANUP_ESCAPED=1; fm_lock_release "$downtime_lock"; exit 1' HUP INT TERM
       fm_lock_acquire_wait "$downtime_lock"
       trap '' HUP INT TERM
     fi

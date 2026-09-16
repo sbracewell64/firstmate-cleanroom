@@ -94,6 +94,14 @@ case "$ARM_STOP_POLLS" in ''|*[!0-9]*) ARM_STOP_POLLS=$ARM_STOP_DEFAULT ;; esac
 ARM_STOP_POLLS=${ARM_STOP_POLLS#"${ARM_STOP_POLLS%%[!0]*}"}
 [ -n "$ARM_STOP_POLLS" ] || ARM_STOP_POLLS=$ARM_STOP_DEFAULT
 [ "$ARM_STOP_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || ARM_STOP_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
+# Tenths of a second --restart spends confirming the watcher recorded in THIS
+# home's lock stopped. It is a fixed base rather than a knob because the caller
+# of a recovery path has no cycle to tune, but it takes the SAME floor as the
+# close paths above and for the same reason: a bound that does not outlast the
+# re-delivery interval yields exactly one delivery, which is the single
+# unconfirmed signal the confirmed stop exists to replace.
+RESTART_STOP_POLLS=50
+[ "$RESTART_STOP_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || RESTART_STOP_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -450,7 +458,7 @@ if [ "$mode" = restart ]; then
       # as restart_stop in the lifecycle records this arm writes, so a consumer can
       # tell a restart after a confirmed stop from one that could not confirm it.
       cycle_restart_stop=unconfirmed
-      if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" 50; then
+      if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" "$RESTART_STOP_POLLS"; then
         # `confirmed` means the pid is FREE, which is stricter than the helper's
         # rc=0, so this waits for that before upgrading the label. rc=0 arrives in
         # three shapes. The pid is gone: the poll below exits on its first

@@ -539,7 +539,7 @@ stop_owned_child() {
     return 0
   fi
   current=$(fm_pid_identity "$child" 2>/dev/null || true)
-  if [ -n "$current" ] && [ -n "$cycle_watcher_identity" ] && [ "$current" != "$cycle_watcher_identity" ]; then
+  if [ -z "$cycle_watcher_identity" ] || [ -z "$current" ] || [ "$current" != "$cycle_watcher_identity" ]; then
     return 1
   fi
   kill -KILL "$child" 2>/dev/null || true

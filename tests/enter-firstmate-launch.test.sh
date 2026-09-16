@@ -6,7 +6,7 @@
 # functions and runs no identity check, so this file touches no home, no Herdr
 # session, no watcher, and starts no harness.
 #
-# The three-profile primary menu is covered by enter-firstmate-profile.test.sh;
+# The six-profile primary menu is covered by enter-firstmate-profile.test.sh;
 # this file proves the single-profile console composition still holds (the
 # regression proof for the pre-existing launch/console/resume path).
 #
@@ -51,23 +51,44 @@ done
 pass "permission policy: claude exact flag, seven QUALIFIED equivalents, pi CNO, unknown CNO"
 
 # --- permission policy OWNER: who composes the posture that actually runs -------
-# The primary console's posture is composed here by console_harness_argv; every
-# other harness's posture is fm-spawn's alone. The reported owner must match that
-# composition for every harness, so the doctor line can never name the wrong one.
+# Ownership follows POSTURE composition, not argv composition: a harness whose
+# permission posture console_harness_argv emits is owned here as well as by
+# fm-spawn, and every other harness's posture is fm-spawn's alone. Pi composes a
+# pinned model selector here but no posture (its posture is prose, not a flag),
+# so it legitimately reports no launcher ownership. Each harness is probed with
+# its real pinned selector so a harness cannot hide behind an empty model.
+profile_selector_for() {  # <harness> -> the first pinned selector of that harness ('' = not a profile harness)
+  local p
+  for p in $(console_profile_menu); do
+    [ "$(console_profile_harness "$p")" = "$1" ] || continue
+    console_profile_model "$p"; return 0
+  done
+  printf ''
+}
 for h in $(permission_policy_harnesses); do
-  composed=$(console_harness_argv "$h" '' '' '')
+  posture=$(permission_policy_posture "$h")
+  selector=$(profile_selector_for "$h")
+  composes_posture=0
+  while IFS= read -r el; do
+    [ "$el" = "$posture" ] && composes_posture=1
+  done <<EOF
+$(console_harness_argv "$h" "$selector" '' '')
+EOF
   case "$(permission_policy_owner "$h")" in
     *'this launcher (primary console argv)'*)
-      [ -n "$composed" ] || fail "$h is credited to this launcher but the launcher composes no primary console argv for it" ;;
+      [ "$composes_posture" = 1 ] || fail "$h is credited to this launcher but the launcher composes no permission posture for it" ;;
     *)
-      [ -z "$composed" ] || fail "this launcher composes $h's primary console argv but the reported owner omits it" ;;
+      [ "$composes_posture" = 0 ] || fail "this launcher composes $h's permission posture but the reported owner omits it" ;;
   esac
 done
+[ -n "$(profile_selector_for pi)" ] || fail "pi must be probed with a real pinned selector, not an empty model"
+[ -n "$(console_harness_argv pi "$(profile_selector_for pi)" '' '')" ] || fail "pi's primary console argv must carry its pinned selector"
 [ "$(permission_policy_owner codex)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "codex is a primary console harness: the launcher must be named as an owner"
 [ "$(permission_policy_owner claude)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "claude ownership is unchanged"
 [ "$(permission_policy_owner opencode)" = 'fm-spawn (workers and secondmates)' ] || fail "a worker-only harness stays fm-spawn's"
+[ "$(permission_policy_owner pi)" = none ] || fail "pi composes no permission posture here, so this launcher is not its posture owner"
 [ "$(permission_policy_owner made-up)" = none ] || fail "an unknown harness has no owner"
-pass "permission policy owner: every harness the launcher composes a console argv for names it as owner"
+pass "permission policy owner: every harness the launcher composes a permission posture for names it as owner"
 
 # --- console argv (launch-byte watched reds), new <harness> <model> signature ---
 # console_harness_argv <harness> <model|""> <settings|""> <resume|""> [passthrough...]

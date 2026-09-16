@@ -700,7 +700,9 @@ console_harness_argv() {
       [ -z "$model" ]    || printf '%s\n%s\n' --model "$model"
       ;;
     pi)
-      # Pi has no documented permission flag; pass only its pinned model.
+      # No permission flag: permission_policy_posture reports pi as undocumented
+      # and returns PROSE, not a flag, so calling it here would inject that prose
+      # into argv. Pi is launched with its own defaults plus the model selector.
       [ -z "$model" ]    || printf '%s\n%s\n' --model "$model"
       ;;
   esac

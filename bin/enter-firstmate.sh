@@ -262,7 +262,7 @@
 #         FM_ENTRY_STARTUP_WAIT=<s>                      bound for observed matching startup; default includes arm, projection and native preflight budgets
 #         FM_ENTRY_LIB=1 . enter-firstmate.sh            load only the pure decision functions (tests)
 #         FM_CONSOLE_PROFILE=<name>                      select the primary console profile (default fable-5.1)
-#         FM_HARNESS=<harness>                           explicit harness override (e.g. bash evidence runs); bypasses the profile menu
+#         FM_HARNESS=<harness>                           explicit harness override (e.g. bash evidence runs); non-native values bypass the profile menu
 #   Host paths (env override, else $FM_HOME/config/<name>): FM_CODE_ROOT/config code-root,
 #   FM_TOOLS_ROOT/config tools-root, FM_CONTROL_RESOLVER/config control-resolver,
 #   FM_RETIRED_HOME/config retired-home, FM_EXCHANGE_OWNER/config exchange-owner.

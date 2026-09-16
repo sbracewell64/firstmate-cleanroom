@@ -532,10 +532,6 @@ permission_policy_harnesses() { echo 'claude codex opencode pi pi-signed grok ki
 #     overage, and no invented budget flag is ever composed or accepted.
 console_profile_default() { printf 'fable-5.1'; }
 console_profile_menu()    { printf 'fable-5.1 opus-4-8 codex-luna pi-sol pi-astra pi-luna-max'; }
-# Native profile harnesses are inherited by a Herdr pane and re-resolved there.
-console_profile_native_harness() {
-  case "${1:-}" in claude|codex|pi) return 0 ;; *) return 1 ;; esac
-}
 console_profile_harness() {  # <profile> -> claude | codex | pi | ''
   case "${1:-}" in
     fable-5.1|opus-4-8)    printf claude ;;
@@ -543,6 +539,18 @@ console_profile_harness() {  # <profile> -> claude | codex | pi | ''
     pi-sol|pi-astra|pi-luna-max) printf pi ;;
     *) printf '' ;;
   esac
+}
+# A harness any menu profile resolves to is inherited by a Herdr pane and
+# re-resolved there rather than treated as an evidence override. Derived from the
+# menu and the harness table above, which are its only owners, so a new profile
+# can never reach a pane that skips the model pin and the qualification gate.
+console_profile_native_harness() {  # <harness> -> 0 native / 1 not
+  local p
+  [ -n "${1:-}" ] || return 1
+  for p in $(console_profile_menu); do
+    if [ "$(console_profile_harness "$p")" = "$1" ]; then return 0; fi
+  done
+  return 1
 }
 # The exact model selector composed onto the harness. Pinned per profile and not
 # overridable, so a profile name always describes the model it resolves to.

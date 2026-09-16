@@ -22,7 +22,8 @@ FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
 for fn in console_profile_default console_profile_menu console_profile_harness console_profile_model \
           console_profile_model_ok console_profile_qualify console_profile_qualified_set \
           console_profile_builtin_qualified_set \
-          console_profile_gate console_profile_resolve console_argv_subscription_only console_harness_argv \
+          console_profile_gate console_profile_resolve console_profile_native_harness \
+          console_argv_subscription_only console_harness_argv \
           read_scalar resolve_host_path; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
 done
@@ -43,6 +44,13 @@ trap 'rm -rf "$TMP"' EXIT
 [ -z "$(console_profile_harness codex-astra)" ] || fail "retired codex-astra has no harness"
 [ -z "$(console_profile_harness codex-sol)" ] || fail "retired codex-sol has no harness"
 [ -z "$(console_profile_harness nope)" ] || fail "an unknown profile has no harness"
+for _p in $(console_profile_menu); do
+  console_profile_native_harness "$(console_profile_harness "$_p")" \
+    || fail "$_p resolves to harness $(console_profile_harness "$_p"), which a Herdr pane would treat as an evidence override and launch without the pinned model or the gate"
+done
+for _h in opencode grok kimi cursor muse bash pi-signed made-up ''; do
+  ! console_profile_native_harness "$_h" || fail "'$_h' is not a menu harness and must stay an evidence override"
+done
 [ "$(console_profile_model fable-5.1)" = fable ] || fail "fable-5.1 selector is 'fable'"
 [ "$(console_profile_model opus-4-8)" = claude-opus-4-8 ] || fail "opus-4-8 model is the pinned 4.8 id"
 [ "$(console_profile_model codex-luna)" = gpt-5.6-luna ] || fail "codex-luna model is gpt-5.6-luna"

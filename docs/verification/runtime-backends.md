@@ -401,7 +401,7 @@ Cross-session and contradictory bindings are covered deterministically in `tests
 Launcher console and doctor pane isolation is owned by:
 
 ```sh
-FM_LAUNCHER_LIVE_LAB=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \\
+FM_LAUNCHER_LIVE_LAB=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/enter-firstmate-pane-isolation-e2e.test.sh
 ```
 

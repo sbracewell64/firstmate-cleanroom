@@ -1679,6 +1679,101 @@ EOF
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
 }
 
+# --- the wake-queue verdict follows the drain --------------------------------
+
+# seed_pending_downtime_episode <state>: publish a downtime recovery episode
+# through the production owner (fm_recovery_transition in bin/fm-wake-lib.sh),
+# the same call bin/fm-watch-arm.sh makes when it clears a stale lock. The wake
+# queue is left empty, which is the combination that matters here: the drain
+# presents no rows, exits 0, and writes only its acknowledgement instruction.
+seed_pending_downtime_episode() {  # <state>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_recovery_transition "$2/.watcher-down" publish downtime
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$1"
+}
+
+# wake_queue_section <digest>: just the WAKE QUEUE section of a digest, so an
+# assertion about what that section says is not satisfied (or defeated) by
+# another section of the same digest mentioning the same words.
+wake_queue_section() {  # <digest>
+  printf '%s\n' "$1" | awk '/^WAKE QUEUE$/ {inside = 1; next} inside && /^={10,}$/ {exit} inside {print}'
+}
+
+# The WAKE QUEUE section states one of three things, and which one is decided
+# from what the drain actually produced - its exit status, its stdout, and
+# whether its stderr carries an acknowledgement instruction - rather than from
+# whichever channel happened to be non-empty. The third case is the one that
+# makes this matter: with an empty queue and a downtime episode pending, the
+# drain presents no rows and still exits 0, writing only WAKE_ACK_REQUIRED to
+# stderr. Reading empty stdout as "nothing is queued" printed "(no queued
+# wakes)" directly above that outstanding instruction, and an operator who
+# believed the queue verdict left the episode unacknowledged.
+test_wake_queue_verdict_follows_the_drain() {
+  local rec root home fakebin section sequence generation
+
+  # (1) nothing queued and nothing outstanding: the queue verdict is the whole
+  # story, and no acknowledgement is claimed.
+  rec=$(new_world wake-verdict-quiet)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  assert_contains "$section" "(no queued wakes)" "an empty queue with no pending episode did not report itself empty"
+  assert_not_contains "$section" "WAKE_ACK_REQUIRED" "a quiet queue claimed an outstanding acknowledgement"
+  assert_not_contains "$section" "still outstanding" "a quiet queue claimed an outstanding acknowledgement"
+  assert_not_contains "$section" "wake drain failed" "a healthy drain was labelled failed"
+
+  # (2) nothing on stdout but an acknowledgement outstanding: the section must
+  # not claim the queue is empty, and the instruction the operator has to act on
+  # must reach the digest and still be usable.
+  rec=$(new_world wake-verdict-episode)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  seed_pending_downtime_episode "$home/state" || fail "could not publish the downtime episode fixture"
+  [ ! -s "$home/state/.wake-queue" ] || fail "the pending-episode fixture must leave the wake queue empty"
+  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  assert_not_contains "$section" "(no queued wakes)" \
+    "the digest claimed nothing was queued while an acknowledgement instruction was outstanding"
+  assert_contains "$section" "the acknowledgement instruction below is still outstanding" \
+    "the digest did not say why it had no wake rows to present"
+  assert_contains "$section" "WAKE_ACK_REQUIRED:" \
+    "the acknowledgement instruction never reached the digest"
+  sequence=$(printf '%s\n' "$section" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
+  generation=$(printf '%s\n' "$section" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' | tail -1)
+  [ -n "$sequence" ] && [ -n "$generation" ] \
+    || fail "the relayed acknowledgement instruction did not carry a usable sequence and generation"
+  FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-wake-drain.sh" \
+    --ack-through "$sequence" --recovery-generation "$generation" >/dev/null 2>&1 \
+    || fail "the acknowledgement command the digest printed was refused"
+
+  # (3) rows presented: the drain's own output is the section, with no queue
+  # verdict of this script's invention layered over it.
+  rec=$(new_world wake-verdict-rows)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'needs-decision: pick a library\n' > "$home/state/task-w.status"
+  append_wake "$home/state" signal task-w.status "needs-decision: pick a library" \
+    || fail "seed wake failed"
+  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  assert_contains "$section" "$(printf 'signal\ttask-w.status\tneeds-decision: pick a library')" \
+    "a queued wake was not presented as a drained row"
+  assert_not_contains "$section" "(no queued wakes)" "a presented wake row was reported as an empty queue"
+  assert_not_contains "$section" "still outstanding" "a section presenting rows also claimed it had none to present"
+  assert_not_contains "$section" "wake drain failed" "a healthy drain was labelled failed"
+
+  pass "the wake-queue section states an empty queue, an outstanding acknowledgement, or the drained rows, each from what the drain produced"
+}
+
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
@@ -2895,6 +2990,7 @@ test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
+test_wake_queue_verdict_follows_the_drain
 test_branch_outcome_replay_and_lease_sweep
 test_non_pi_session_start_leaves_branch_state_untouched
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata

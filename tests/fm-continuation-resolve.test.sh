@@ -869,6 +869,89 @@ test_captain_hold_binding_mechanics() {
 
 # --- consumer closure: snapshot, bearings, fleet view, away digest -------------------
 
+# noisy_resolver_bin <name>: a mirror of bin/ whose fm-continuation-resolve.sh
+# writes one line to STDERR and then execs the real resolver unchanged. Every
+# other tool is symlinked, so a consumer invoked out of this directory resolves
+# its siblings, and its own root, exactly as it does from the real bin/. Echoes
+# the mirror's bin directory.
+#
+# The noise is staged as a file rather than interpolated into the stub: the line
+# carries a backtick, which is the shape that would otherwise be re-read as
+# syntax by the stub instead of written to its stderr.
+noisy_resolver_bin() {  # <name>
+  local mirror="$TMP_ROOT/$1-bin" f
+  mkdir -p "$mirror/bin"
+  for f in "$ROOT"/bin/*; do
+    [ "${f##*/}" = fm-continuation-resolve.sh ] || ln -snf "$f" "$mirror/bin/${f##*/}"
+  done
+  # The stub is created where no symlink was left, because a redirection onto a
+  # symlink writes THROUGH it - which would overwrite the real resolver in bin/.
+  rm -f "$mirror/bin/fm-continuation-resolve.sh"
+  printf '%s\n' 'bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching `)'"'" \
+    > "$mirror/noise.txt"
+  cat > "$mirror/bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+cat '$mirror/noise.txt' >&2
+exec '$RESOLVE' "\$@"
+SH
+  chmod +x "$mirror/bin/fm-continuation-resolve.sh"
+  printf '%s\n' "$mirror/bin"
+}
+
+# Every consumer here captures the resolver to read a TYPED result out of it.
+# Folding the resolver's stderr into that capture made any byte written there -
+# by the resolver, by anything in its process tree, or by the shell's own
+# runtime diagnostics under load - part of the document being parsed, so a
+# healthy resolve was read as a malformed one. That is the shape of the
+# intermittent CI failure this pins, and the snapshot shows it at its worst: one
+# stray line took down the WHOLE canonical snapshot, not only its programme
+# section. Nothing is swallowed in exchange - the diagnostic still reaches the
+# operator on the consumer's own stderr.
+test_consumers_survive_a_noisy_resolver() {
+  local home mirror snap view out err presented
+  home=$(make_home noisy-consumers)
+  disposition "$home" proof-a 1 PROVED
+  mirror=$(noisy_resolver_bin noisy-consumers)
+
+  snap=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-snapshot.sh" --json 2>/dev/null) \
+    || fail "a diagnostic on the resolver's stderr failed the whole fleet snapshot"
+  printf '%s' "$snap" | jq -e . >/dev/null 2>&1 || fail "the snapshot is not parseable JSON under a noisy resolver"
+  [ "$(field "$snap" '.programme_continuation.configured')" = true ] || fail "noisy snapshot lost the configured programme"
+  [ "$(field "$snap" '.programme_continuation.next_action')" = proof-b ] || fail "noisy snapshot next_action: $(field "$snap" '.programme_continuation.next_action')"
+  [ "$(field "$snap" '.programme_continuation.schema')" = 'fm-continuation-resolution/v1' ] || fail "noisy snapshot lost the typed schema"
+  [ "$(field "$snap" '.programme_continuation.error')" = null ] || fail "noisy snapshot recorded a resolver error: $(field "$snap" '.programme_continuation.error')"
+  printf '%s' "$snap" | grep -F 'unexpected EOF' >/dev/null && fail "the resolver's stderr leaked into the snapshot"
+
+  # Negative control: the mirror really did write to stderr, so the assertions
+  # above cannot pass by it having been quiet - and the relay is what carries it
+  # to the operator instead.
+  err=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-snapshot.sh" --json 2>&1 >/dev/null)
+  assert_contains "$err" "unexpected EOF" "the noisy resolver wrote nothing, or the consumer dropped its stderr instead of relaying it"
+
+  view=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-view.sh" 2>/dev/null) || fail "the fleet view failed under a noisy resolver"
+  assert_contains "$view" "cleanroom-requalification: next action proof-b - SELF_HANDLE / AUTHORIZED [STANDING_GRANT]" \
+    "the fleet view line is corrupted by the resolver's stderr"
+
+  # The presenter digests the same capture into the identity it dedupes on, so a
+  # stray line there presents a healthy programme as a resolver failure.
+  out=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    bash -c '
+      # shellcheck disable=SC1090,SC1091
+      . "$1"
+      fm_programme_present "$2" commit
+    ' _ "$mirror/fm-programme-presentation-lib.sh" "$home/state" 2>/dev/null) \
+    || fail "the presenter failed under a noisy resolver"
+  assert_contains "$out" "next action proof-b" "the presentation is corrupted by the resolver's stderr"
+  assert_not_contains "$out" "resolver failed" "a healthy resolve was presented as a resolver failure"
+  presented=$(jq -r '.material_identity // ""' "$home/state/.programme-presented" 2>/dev/null || true)
+  [ -n "$presented" ] || fail "the presenter recorded no material identity under a noisy resolver"
+
+  pass "a diagnostic on the resolver's stderr leaves every consumer's typed reading intact and still reaches the operator"
+}
+
 test_consumers_project_the_typed_result() {
   local home snap bearings view token
   home=$(make_home consumers)
@@ -1548,6 +1631,7 @@ timed test_completion_and_configuration
 timed test_render_and_check_prose
 timed test_captain_hold_binding_mechanics
 timed test_consumers_project_the_typed_result
+timed test_consumers_survive_a_noisy_resolver
 timed test_af_accepted_owner_evidence_yields_f
 timed test_af_landing_without_qualification_cannot_yield_f
 timed test_af_refusal_matrix

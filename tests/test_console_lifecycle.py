@@ -180,10 +180,15 @@ class LifecycleTests(unittest.TestCase):
 
     def test_herdr_context_without_pane_identity_is_not_clean(self):
         self.worker_record()
-        result = self.f.run('--doctor', HERDR_ENV='1', HERDR_PANE_ID='', HERDR_SESSION='synthetic')
-        self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertIn('cannot verify', result.stderr)
-        self.assertEqual(self.f.effects(), '')
+        for pane_id in ('', None):
+            with self.subTest(pane_id=pane_id):
+                env = {'HERDR_ENV': '1', 'HERDR_SESSION': 'synthetic'}
+                if pane_id is not None:
+                    env['HERDR_PANE_ID'] = pane_id
+                result = self.f.run('--doctor', **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('cannot verify', result.stderr)
+                self.assertEqual(self.f.effects(), '')
 
     def test_repeated_probe_never_consumes_worker_pane(self):
         self.worker_record()

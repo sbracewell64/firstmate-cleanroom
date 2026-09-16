@@ -364,7 +364,7 @@ if { [ "$MODE" = console-run ] || [ "$MODE" = doctor ]; } \
   # shellcheck source=/dev/null
   . "$FM_CODE_ROOT/bin/fm-backend.sh"
   pane_ownership=0
-  fm_backend_herdr_pane_ownership "$FM_HOME/state" "${HERDR_SESSION:-}" "$HERDR_PANE_ID" || pane_ownership=$?
+  fm_backend_herdr_pane_ownership "$FM_HOME/state" "${HERDR_SESSION:-}" "${HERDR_PANE_ID:-}" || pane_ownership=$?
   case "$pane_ownership" in
     0) ;;
     1) die "pane is worker-owned in this home; console and doctor refuse to use it" ;;

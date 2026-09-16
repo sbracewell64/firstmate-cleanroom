@@ -961,15 +961,15 @@ else
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
     DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null || true)
     rm -f -- "$DRAIN_ERRFILE"
-    case "$DRAIN_DIAG" in
-      *"WAKE_ACK_REQUIRED:"*) DRAIN_ACK_OUTSTANDING=1 ;;
-    esac
+    if printf '%s\n' "$DRAIN_DIAG" | grep -q '^WAKE_ACK_REQUIRED:'; then
+      DRAIN_ACK_OUTSTANDING=1
+    fi
   else
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh") || DRAIN_RC=$?
     DRAIN_DIAG=
     DRAIN_DIAG_STAGED=0
   fi
-  if [ -n "$DRAIN_OUT" ]; then
+  if [ "$DRAIN_RC" -eq 0 ] && [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   elif [ "$DRAIN_RC" -eq 0 ] && [ "$DRAIN_DIAG_STAGED" -eq 1 ] && [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
     printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'

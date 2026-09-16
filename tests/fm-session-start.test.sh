@@ -511,6 +511,7 @@ SH
 # (no ambient markers) still passes.
 run_session_start() {
   local home=$1 root=$2 path=$3 pi_harness=${4:-}
+  local session_start=${FM_TEST_SESSION_START_PATH:-$SESSION_START}
   # A test may mask a tool host-independently (see mask_tool_missing) by pointing
   # FM_TEST_SESSION_BASH_ENV at a BASH_ENV file every bash in the session-start
   # tree sources; when unset the assignment expands away and env is unchanged.
@@ -518,12 +519,12 @@ run_session_start() {
     env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
       ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-      "$SESSION_START"
+      "$session_start"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
       ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-      "$SESSION_START"
+      "$session_start"
   fi
 }
 
@@ -1694,6 +1695,18 @@ seed_pending_downtime_episode() {  # <state>
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$1"
 }
 
+install_drain_fixture() {  # <root> <stdout> <stderr> <status>
+  local root=$1 stdout=$2 stderr=$3 status=$4
+  cp -a "$ROOT/bin" "$root/bin"
+  cat > "$root/bin/fm-wake-drain.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' '$stdout'
+printf '%s\\n' '$stderr' >&2
+exit $status
+SH
+  chmod +x "$root/bin/fm-wake-drain.sh"
+}
+
 # wake_queue_section <digest>: just the WAKE QUEUE section of a digest, so an
 # assertion about what that section says is not satisfied (or defeated) by
 # another section of the same digest mentioning the same words.
@@ -1770,6 +1783,38 @@ EOF
   assert_not_contains "$section" "(no queued wakes)" "a presented wake row was reported as an empty queue"
   assert_not_contains "$section" "still outstanding" "a section presenting rows also claimed it had none to present"
   assert_not_contains "$section" "wake drain failed" "a healthy drain was labelled failed"
+
+  # A failed drain may have emitted a partial row before discovering its error,
+  # but that output is not a valid queue presentation.
+  rec=$(new_world wake-verdict-partial-failure)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  install_drain_fixture "$root" "partial-row-that-must-be-withheld" "drain failed after partial output" 7
+  FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
+  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  unset FM_TEST_SESSION_START_PATH
+  assert_not_contains "$section" "partial-row-that-must-be-withheld" \
+    "a failed drain presented partial output as valid queue rows"
+  assert_contains "$section" "wake drain failed (exit 7)" \
+    "a failed drain omitted its explicit failure verdict"
+
+  # A diagnostic that merely mentions the protocol marker is not an outstanding
+  # acknowledgement instruction.
+  rec=$(new_world wake-verdict-marker-diagnostic)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  install_drain_fixture "$root" "" "warning: WAKE_ACK_REQUIRED: not a protocol line" 0
+  FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
+  section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
+  unset FM_TEST_SESSION_START_PATH
+  assert_contains "$section" "(no queued wakes)" \
+    "diagnostic text containing the marker suppressed the empty-queue verdict"
+  assert_not_contains "$section" "still outstanding" \
+    "diagnostic text containing the marker was treated as an acknowledgement"
 
   pass "the wake-queue section states an empty queue, an outstanding acknowledgement, or the drained rows, each from what the drain produced"
 }

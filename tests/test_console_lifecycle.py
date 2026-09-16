@@ -73,11 +73,13 @@ class LifecycleTests(unittest.TestCase):
             with self.subTest(name=name):
                 fixture = LauncherFixture(ENTRY)
                 self.addCleanup(fixture.close)
+                home = '/remote/home' if name == 'unreadable' else 'relative/home'
+                root = '/remote/root' if name == 'unreadable' else 'relative/root'
                 (fixture.home/'state/mate.meta').write_text(
                     'window=remote:mate\nendpoint_task_id=mate\n'
-                    'worktree=relative/home\nproject=relative/root\n'
-                    'kind=secondmate\nmode=secondmate\nhome=relative/home\n'
-                    'remote_host=remote-mac\nremote_root=relative/root\n')
+                    f'worktree={home}\nproject={root}\n'
+                    f'kind=secondmate\nmode=secondmate\nhome={home}\n'
+                    f'remote_host=remote-mac\nremote_root={root}\n')
                 (fixture.home/'data').mkdir()
                 registry = fixture.home/'data/secondmates.md'
                 registry.write_text(f'- mate - remote test ({route} scope: testing; '

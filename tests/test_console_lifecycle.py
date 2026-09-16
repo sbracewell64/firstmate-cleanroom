@@ -16,6 +16,71 @@ ENTRY = Path(sys.argv.pop(1)).resolve()
 class LifecycleTests(unittest.TestCase):
     def setUp(self): self.f = LauncherFixture(ENTRY)
     def tearDown(self): self.f.close()
+    def worker_record(self, name='worker', pane='w9:p2', session='synthetic'):
+        record = self.f.home/'state'/f'{name}.meta'
+        record.write_text(f'backend=herdr\nendpoint_task_id={name}\nwindow={session}:{pane}\nworktree=/tmp/{name}\nproject=/tmp/project\nherdr_session={session}\nherdr_workspace_id=w9\nherdr_tab_id=w9:t2\nherdr_pane_id={pane}\n')
+        return record
+
+    def test_worker_pane_refuses_console_and_doctor_without_effects(self):
+        self.worker_record()
+        before = (self.f.home/'state/captain-console.json').read_bytes()
+        env = dict(HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        for mode in ('--console', '--doctor'):
+            with self.subTest(mode=mode):
+                result = self.f.run(mode, **env)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('worker-owned', result.stderr)
+                self.assertEqual(self.f.effects(), '')
+                self.assertFalse((self.f.root/'focus').exists())
+                self.assertEqual((self.f.home/'state/captain-console.json').read_bytes(), before)
+
+    def test_other_session_pane_id_does_not_hide_current_worker(self):
+        self.worker_record('other', session='elsewhere')
+        self.worker_record('worker')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
+        self.assertNotIn('other', result.stderr)
+
+    def test_same_pane_id_in_another_session_is_not_this_worker(self):
+        self.worker_record('other', session='elsewhere')
+        result = self.f.run('--doctor', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
+    def test_unreadable_task_record_is_not_clean(self):
+        self.worker_record().write_text('backend=herdr\nherdr_pane_id=w9:p2\n')
+        for mode in ('--console', '--doctor'):
+            result = self.f.run(mode, HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('cannot verify', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+
+    def test_herdr_context_without_pane_identity_is_not_clean(self):
+        self.worker_record()
+        result = self.f.run('--doctor', HERDR_ENV='1', HERDR_PANE_ID='', HERDR_SESSION='synthetic')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('cannot verify', result.stderr)
+        self.assertEqual(self.f.effects(), '')
+
+    def test_repeated_probe_never_consumes_worker_pane(self):
+        self.worker_record()
+        self.f.inventory([{'workspace_id':'w9','pane_id':'w9:p2'}])
+        for _ in range(3):
+            result = self.f.run('--console', HERDR_PANE_ID='w9:p2', HERDR_SESSION='synthetic', HERDR_SOCKET_PATH='/synthetic.sock')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('worker-owned', result.stderr)
+            self.assertEqual(self.f.effects(), '')
+        self.assertIn('w9:p2', (self.f.root/'inventory').read_text())
+
+    def test_console_record_collision_with_worker_refuses_before_convergence(self):
+        self.worker_record(pane='w7:p1')
+        self.f.record(harness='codex')
+        self.f.inventory([{'workspace_id':'w7','pane_id':'w7:p1'}])
+        result = self.f.run()
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn('worker-owned', result.stderr)
+        self.assertEqual(self.f.effects(), '')
     def test_existing_shell_and_harness_attach_without_wait(self):
         # Real Herdr reports the wrapper and its harness in one foreground group.
         # Only this external process observation is substituted; the Desktop

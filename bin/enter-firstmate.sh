@@ -315,8 +315,8 @@ case "${1:-}" in
   --console) MODE=console-run; shift ;;
   --arm-owner) MODE=arm-owner; shift ;;
   --converge-owner) MODE=converge-owner; shift ;;
-  --tool-profile-inline) MODE=tool-profile-inline; DOCTOR=; shift ;;
-  --print-console-menu) MODE=print-console-menu; DOCTOR=; shift ;;
+  --tool-profile-inline) MODE='tool-profile-inline'; DOCTOR=; shift ;;
+  --print-console-menu) MODE='print-console-menu'; DOCTOR=; shift ;;
 esac
 [ -z "$DOCTOR" ] || MODE=doctor
 
@@ -353,6 +353,24 @@ console_record_update() {
 }
 
 die() { printf 'enter-firstmate: %s\n' "$*" >&2; exit 1; }
+
+# The task record is the earliest authority for whether this invocation's pane
+# is already a worker endpoint. Refuse before installing the failure trap: even
+# a failed --console must not rewrite the console record or hold this pane.
+if { [ "$MODE" = console-run ] || [ "$MODE" = doctor ]; } \
+  && { [ -n "${HERDR_PANE_ID:-}" ] || [ "${HERDR_ENV:-}" = 1 ]; }; then
+  [ -f "$FM_CODE_ROOT/bin/fm-backend.sh" ] \
+    || die "cannot verify pane ownership; backend owner is unavailable"
+  # shellcheck source=/dev/null
+  . "$FM_CODE_ROOT/bin/fm-backend.sh"
+  pane_ownership=0
+  fm_backend_herdr_pane_ownership "$FM_HOME/state" "${HERDR_SESSION:-}" "$HERDR_PANE_ID" || pane_ownership=$?
+  case "$pane_ownership" in
+    0) ;;
+    1) die "pane is worker-owned in this home; console and doctor refuse to use it" ;;
+    *) die "cannot verify pane ownership from this home's task records; console and doctor refuse to use it" ;;
+  esac
+fi
 
 # Keep Desktop and pane failures visible until the operator acknowledges them.
 # Only the entry shell holds the terminal; command substitutions, background
@@ -1076,7 +1094,7 @@ console_record_pid_alive() {  # -> 0 | 1 | unknown, for the record's console_pid
 # explicitly relinquished record (console_ownership_class), which authorizes
 # the caller to archive it and establish a new exact identity.
 console_record_pane() {
-  local ws pane rec_harness inventory count pane_count owner
+  local ws pane rec_harness inventory count pane_count owner pane_ownership
   if [ ! -e "$CONSOLE_RECORD" ]; then console_absence_proven; return $?; fi
   if ! jq -e 'type == "object" and (.workspace_id | type == "string" and length > 0)
       and (.pane_id | type == "string" and length > 0)
@@ -1087,6 +1105,18 @@ console_record_pane() {
   fi
   ws=$(jq -r '.workspace_id' "$CONSOLE_RECORD"); pane=$(jq -r '.pane_id' "$CONSOLE_RECORD")
   [ "$(jq -r '.session' "$CONSOLE_RECORD")" = "$FM_HERDR_SESSION" ] || return 2
+  if ! command -v fm_backend_herdr_pane_ownership >/dev/null 2>&1; then
+    [ -f "$FM_CODE_ROOT/bin/fm-backend.sh" ] || return 2
+    # shellcheck source=/dev/null
+    . "$FM_CODE_ROOT/bin/fm-backend.sh"
+  fi
+  pane_ownership=0
+  fm_backend_herdr_pane_ownership "$FM_HOME/state" "$FM_HERDR_SESSION" "$pane" || pane_ownership=$?
+  case "$pane_ownership" in
+    0) ;;
+    1) printf 'enter-firstmate: recorded console pane is worker-owned in this home; refusing console convergence\n' >&2; return 2 ;;
+    *) printf "enter-firstmate: cannot verify recorded console pane ownership from this home's task records; refusing console convergence\n" >&2; return 2 ;;
+  esac
   owner=$(console_ownership_class "$(console_record_field launch_stage)" "$(console_record_field handoff_at)" "$(console_record_pid_alive)")
   case "$owner" in
     relinquished) return 3 ;;

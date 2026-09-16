@@ -543,6 +543,26 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   return 0
 }
 
+# Classify a Herdr pane against this home's durable task endpoints before a
+# launcher may treat that pane as a console. Return 0 only when every task
+# record was evaluable and none owns the exact session:pane identity; 1 means
+# worker-owned, 2 means ownership cannot be verified. Never print task data.
+fm_backend_herdr_pane_ownership() {  # <state-dir> <session> <pane>
+  local state=$1 session=$2 pane=$3 meta id
+  [ -d "$state" ] && [ -r "$state" ] && [ -n "$session" ] && [ -n "$pane" ] || return 2
+  for meta in "$state"/*.meta; do
+    [ -e "$meta" ] || [ -L "$meta" ] || continue
+    [ -f "$meta" ] && [ ! -L "$meta" ] && [ -r "$meta" ] || return 2
+    id=${meta##*/}; id=${id%.meta}
+    fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 || return 2
+    if [ "$FM_BACKEND_VALIDATED_BACKEND" = herdr ] \
+      && [ "$FM_BACKEND_VALIDATED_TARGET" = "$session:$pane" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 fm_backend_meta_for_window() {  # <target> <state-dir>
   local target=$1 state=$2 meta window terminal
   for meta in "$state"/*.meta; do

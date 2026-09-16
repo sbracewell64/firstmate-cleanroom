@@ -9,6 +9,8 @@
 # Usage: bash tests/enter-firstmate-profile.test.sh
 #        FM_ENTRY_LAUNCHER=/path/to/enter-firstmate.sh bash tests/enter-firstmate-profile.test.sh
 set -u
+# Refusal probes are not allowed to inherit the caller's live Herdr pane.
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LAUNCHER=${FM_ENTRY_LAUNCHER:-$HERE/../bin/enter-firstmate.sh}
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }

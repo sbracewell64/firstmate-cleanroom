@@ -623,7 +623,7 @@ console_profile_grant_matches() {  # <profile> <expected-token> -> 0 for one exa
   local p=$1 expected=$2 token count=0
   for token in $(console_profile_qualified_set); do
     case "$token" in
-      "$p"@*) [ "$token" = "$expected" ] || return 1 ;;
+      "$p"|"$p"[![:alnum:]-]*) [ "$token" = "$expected" ] || return 1 ;;
     esac
     [ "$token" = "$expected" ] && count=$((count + 1))
   done
@@ -689,7 +689,9 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
     console_profile_grant_matches "$p" "$grant" || { printf 'PENDING: exact native Codex grant %s is absent or malformed; bare and duplicate grants do not qualify' "$grant"; return; }
     allowed=1
   fi
-  case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
+  if [ "$h" != codex ]; then
+    case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
+  fi
   console_profile_qualify "$p" "$installed" "$allowed"
 }
 # Sole owner of the canonical profile precedence: FM_CONSOLE_PROFILE, then

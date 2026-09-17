@@ -166,6 +166,43 @@ home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > 
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "a bare native Codex grant must stay PENDING"
 printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$home_luna/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "an exact native Codex grant -> QUALIFIED"
+native_grant='codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only'
+native_refuse() {
+  printf '%s\n' "$1" > "$home_luna/config/console-qualified-profiles"
+  ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna
+    case "$(console_profile_gate codex-luna)" in "PENDING: exact native Codex grant "*) ;; *) exit 1 ;; esac
+  ) || fail "native Codex accepted $2"
+}
+# Each row changes one identity axis of the six-field grant, independently.
+native_refuse 'other-profile@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'wrong profile'
+native_refuse 'codex-luna@pi@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'wrong harness'
+native_refuse 'codex-luna@codex@0.82.0@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'wrong installed version'
+native_refuse 'codex-luna@codex@0.81.1@openai-codex/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'wrong native provider'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-sol:max@chatgpt-oauth@included-allowance-only' 'wrong model'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:xhigh@chatgpt-oauth@included-allowance-only' 'wrong fixed effort'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@api-key@included-allowance-only' 'wrong auth'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@paid-overage' 'wrong spend posture'
+native_refuse '@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'missing profile'
+native_refuse 'codex-luna@@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'missing harness'
+native_refuse 'codex-luna@codex@@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'missing version'
+native_refuse 'codex-luna@codex@0.81.1@/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'missing provider'
+native_refuse 'codex-luna@codex@0.81.1@openai/:max@chatgpt-oauth@included-allowance-only' 'missing model'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:@chatgpt-oauth@included-allowance-only' 'missing effort'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@@included-allowance-only' 'missing auth'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@' 'missing spend posture'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth' 'short field count'
+native_refuse 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only@extra' 'long field count'
+native_refuse 'codex-luna@@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'malformed delimiter'
+native_refuse "$native_grant $native_grant" 'duplicate exact records'
+native_refuse "$native_grant codex-luna" 'exact then bare'
+native_refuse "codex-luna $native_grant" 'bare then exact'
+native_refuse "$native_grant codex-luna:codex:0.81.1:openai/gpt-5.6-luna:max:chatgpt-oauth:included-allowance-only" 'exact then malformed delimiter'
+native_refuse "$native_grant codex-luna@codex@0.81.1@openai/gpt-5.6-sol:max@chatgpt-oauth@included-allowance-only" 'exact then wrong'
+native_refuse "codex-luna@codex@0.81.1@openai/gpt-5.6-sol:max@chatgpt-oauth@included-allowance-only $native_grant" 'wrong then exact'
+native_refuse 'codex-luna@pi@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only codex-luna@codex@0.82.0@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' 'multiple wrong records'
+native_refuse 'codex-luna' 'bare legacy record'
+printf '%s\n' "pi-sol $native_grant opus-4-8" > "$home_luna/config/console-qualified-profiles"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] ) || fail 'unrelated profile records must not affect native Codex'
 printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$home_luna/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "a duplicate native Codex grant must stay PENDING"
 pass "gate: native Codex requires one exact typed grant"

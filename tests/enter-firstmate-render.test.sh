@@ -228,6 +228,36 @@ case "$route_menu" in
 esac
 pass "(vi-b) the staged consumer reaches the exact Pi route checker in its adopted code root"
 
+# The staged native config must apply the same typed-grant gate after copying
+# the grant file, including a mixed record that previously re-enabled the route.
+home=$(mk_home codex-route-consumer shim "$ROOT_A")
+printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only codex-luna' > "$home/config/console-qualified-profiles"
+run_fast_render "$home" "$HERE/.." --console-profile codex-luna
+[ "$RC" -eq 0 ] || fail "(vi-c) native consumer staging must succeed (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
+mkdir -p "$TMP/codex-route-bin"
+cat > "$TMP/codex-route-bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+[ "${1:-}" = --version ] && printf 'codex-cli 0.81.1\n'
+CODEX
+chmod 0755 "$TMP/codex-route-bin/codex"
+native_menu=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_ENTRY_LIB \
+  FM_HOME="$stg" PATH="$TMP/codex-route-bin:$PATH" bash "$LAUNCHER" --print-console-menu 2>&1) \
+  || fail '(vi-c) staged native config menu must render'
+case "$native_menu" in
+  *'codex-luna'*'model=gpt-5.6-luna'*'PENDING: exact native Codex grant '*) ;;
+  *) fail "(vi-c) mixed staged native grant must refuse (got: $native_menu)" ;;
+esac
+printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$stg/config/console-qualified-profiles"
+native_menu=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_ENTRY_LIB \
+  FM_HOME="$stg" PATH="$TMP/codex-route-bin:$PATH" bash "$LAUNCHER" --print-console-menu 2>&1) \
+  || fail '(vi-c) staged native config exact grant menu must render'
+case "$native_menu" in
+  *'codex-luna'*'model=gpt-5.6-luna'*'QUALIFIED'*) ;;
+  *) fail "(vi-c) one exact staged native grant must qualify (got: $native_menu)" ;;
+esac
+pass "(vi-c) staged native config rejects mixed grants and qualifies one exact grant"
+
 # (vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks
 #       into the report: the staged code root and profile come from the flags,
 #       never from the ambient FM_CODE_ROOT / FM_CONSOLE_PROFILE the live console

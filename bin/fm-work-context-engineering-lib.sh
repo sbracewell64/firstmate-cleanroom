@@ -125,12 +125,11 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
     [ -n "$row" ] || continue
     path=$(printf '%s' "$row" | jq -r .path)
     expected=$(printf '%s' "$row" | jq -r .sha256)
-    [ -f "$path" ] && [ -r "$path" ] || {
-      _fm_wc_engineering_gap "missing-skill-source: $path owner=pocock-seven-skill-adoption"; return 3;
-    }
-    actual=$(_fm_wc_engineering_sha "$path") || {
+    fm_discipline_capture "$path" || {
       _fm_wc_engineering_gap "unreadable-skill-source: $path"; return 3;
     }
+    actual=$FM_DISCIPLINE_CAPTURE_SHA256
+    fm_discipline_capture_cleanup
     [ "$actual" = "$expected" ] || {
       _fm_wc_engineering_gap "stale-skill-source: $path expected=$expected actual=$actual owner=pocock-seven-skill-adoption"; return 3;
     }

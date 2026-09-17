@@ -1488,7 +1488,7 @@ fm_autoarm_confirm_stop_bounded() {
   (
     # shellcheck source=bin/fm-timeout-lib.sh
     . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
-    fm_run_timed 1 bash -c '
+    fm_run_timed 1 bash -s -- _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded" <<'EOF'
       set -u
       lib=$1
       pid=$2
@@ -1504,7 +1504,7 @@ fm_autoarm_confirm_stop_bounded() {
         sleep 0.1
       done
       exit 0
-    ' _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded"
+EOF
   )
 }
 

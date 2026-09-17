@@ -38,6 +38,7 @@ The result is one JSON object (schema `fm-continuation-resolution/v1`) whose fie
 Its load-bearing fields are the next action, its action generation, the classification, the authority state, the single reason code, the exact basis references, and the applicability tuple with its digest.
 Applicability binds the result to the action, the programme generation, the action generation, the predecessor disposition identity, the current disposition, the gating holds, and the date, so any change to canonical state changes the digest and a stale result cannot be reused.
 The `why` field and the `render` output are presentation derived from the typed fields; no renderer can override them.
+The resolver's JSON result is emitted on stdout, while diagnostics are emitted on stderr and remain non-authoritative; every projection and presentation consumer keeps those streams separate so command-shaped diagnostic text cannot become a typed result or an acknowledgement instruction.
 
 The classification law itself, including how a bound hold or a step's own typed facts gate an action, is stated once in the library header and applied by the resolver; a CAPTAIN result from a typed step fact is made durable with `resolve --materialize` through the captain-hold owner.
 That completes the lifecycle in code: the fact fires CAPTAIN, `--materialize` creates the hold, the captain answers through `bin/fm-captain-hold.sh answer`, and the recorded answer retires the fact without any programme-file edit.

@@ -363,7 +363,7 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
-  local data=$1 task=$2 desc tmp current existing='' outer_generation desc_exists=0
+  local data=$1 task=$2 desc tmp tmp_dir current existing='' outer_generation desc_exists=0
   local compile_args=()
   shift 2
   desc="$data/$task/work-context.json"
@@ -394,7 +394,12 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     return 0
   fi
   mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
-  tmp="$data/$task/.work-context.json.${BASHPID:-$$}"
+  tmp_dir=$(umask 077; mktemp -d "$data/$task/.discipline-prepare.XXXXXX") || {
+    fm_discipline_gap 'discipline-write: temporary directory creation failed'; return 3;
+  }
+  [ -d "$tmp_dir" ] && [ ! -L "$tmp_dir" ] || { rmdir "$tmp_dir" 2>/dev/null || true; return 3; }
+  tmp=$(umask 077; mktemp "$tmp_dir/work-context.XXXXXX") || { rmdir "$tmp_dir"; return 3; }
+  [ -f "$tmp" ] && [ ! -L "$tmp" ] || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; return 3; }
   if [ "$desc_exists" -eq 1 ]; then
     jq --argjson discipline "$current" --arg generation "$outer_generation" '
     .engineering = ((.engineering // {triggers:[],skills:[],verification:[]}) +
@@ -402,13 +407,14 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     .engineering.triggers = (.engineering.triggers // []) |
     .engineering.skills = (.engineering.skills // []) |
     .engineering.verification = (.engineering.verification // [])
-    ' "$desc" > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+    ' "$desc" > "$tmp" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
   else
     printf '%s\n' '{}' | jq --argjson discipline "$current" --arg generation "$outer_generation" '
       {engineering:{triggers:[],skills:[],verification:[],generation:$generation,discipline:$discipline}}
-    ' > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+    ' > "$tmp" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
   fi
-  mv -f "$tmp" "$desc" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  mv -f "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  rmdir "$tmp_dir" 2>/dev/null || true
   return 0
 }
 

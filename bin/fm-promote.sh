@@ -144,37 +144,60 @@ INSTRUCTIONS_SNAPSHOT=
 INSTRUCTIONS_EXISTED=0
 META_SNAPSHOT=
 META_EXISTED=0
+PROMOTE_DATA_TMP_DIR=
+PROMOTE_STATE_TMP_DIR=
 promote_cleanup() {
   local status=$?
+  local rollback_failed=0 rollback_tmp
+  promote_restore_regular() {
+    local target=$1 snapshot=$2 existed=$3 directory
+    directory=${target%/*}
+    if [ "$existed" -eq 0 ]; then
+      rm -f -- "$target" || return 1
+    else
+      rollback_tmp=$(umask 077; mktemp "$directory/.rollback.XXXXXX") || return 1
+      cp -p -- "$snapshot" "$rollback_tmp" || { rm -f -- "$rollback_tmp"; return 1; }
+      [ -f "$rollback_tmp" ] && [ ! -L "$rollback_tmp" ] || { rm -f -- "$rollback_tmp"; return 1; }
+      mv -f -- "$rollback_tmp" "$target" || { rm -f -- "$rollback_tmp"; return 1; }
+    fi
+    if [ "$existed" -eq 0 ]; then
+      [ ! -e "$target" ] && [ ! -L "$target" ]
+    else
+      [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$snapshot" "$target" &&
+        [ "$(stat -c %a "$snapshot" 2>/dev/null || stat -f %Lp "$snapshot")" = "$(stat -c %a "$target" 2>/dev/null || stat -f %Lp "$target")" ]
+    fi
+  }
   if [ "$status" -ne 0 ]; then
     if [ -n "$DESC_SNAPSHOT" ]; then
-      if [ "$DESC_EXISTED" -eq 1 ]; then
-        cp -p -- "$DESC_SNAPSHOT" "$DESC" 2>/dev/null || true
-      else
-        rm -f -- "$DESC" 2>/dev/null || true
-      fi
+      promote_restore_regular "$DESC" "$DESC_SNAPSHOT" "$DESC_EXISTED" || { echo "error: promotion rollback failed for work context" >&2; rollback_failed=1; }
     fi
     if [ -n "$INSTRUCTIONS_SNAPSHOT" ]; then
-      if [ "$INSTRUCTIONS_EXISTED" -eq 1 ]; then
-        rm -f -- "$INSTRUCTIONS" 2>/dev/null || true
-        cp -p -- "$INSTRUCTIONS_SNAPSHOT" "$INSTRUCTIONS" 2>/dev/null || true
-      else
-        rm -f -- "$INSTRUCTIONS" 2>/dev/null || true
-      fi
+      promote_restore_regular "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" "$INSTRUCTIONS_EXISTED" || { echo "error: promotion rollback failed for ship instructions" >&2; rollback_failed=1; }
     fi
     if [ -n "$META_SNAPSHOT" ]; then
       if [ "$META_EXISTED" -eq 1 ]; then
-        rm -f -- "$META" 2>/dev/null || true
-        cp -p -- "$META_SNAPSHOT" "$META" 2>/dev/null || true
+        rollback_tmp=$(umask 077; mktemp "$PROMOTE_STATE_TMP_DIR/meta-rollback.XXXXXX") || rollback_failed=1
+        if [ "$rollback_failed" -eq 0 ]; then
+          cp -p -- "$META_SNAPSHOT" "$rollback_tmp" || rollback_failed=1
+          [ -f "$rollback_tmp" ] && [ ! -L "$rollback_tmp" ] || rollback_failed=1
+          if [ "$rollback_failed" -eq 0 ] && ! fm_backlog_atomic_transition publish "$rollback_tmp" "$META" "task record rollback" "$STATE"; then
+            rollback_failed=1
+          fi
+          [ "$rollback_failed" -eq 0 ] || rm -f -- "$rollback_tmp" 2>/dev/null || true
+        fi
+        [ "$rollback_failed" -eq 0 ] && cmp -s "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
       else
-        rm -f -- "$META" 2>/dev/null || true
+        rm -f -- "$META" || rollback_failed=1
       fi
     fi
   fi
+  [ "$rollback_failed" -eq 0 ] || status=70
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
   [ -z "$DESC_SNAPSHOT" ] || rm -f -- "$DESC_SNAPSHOT" 2>/dev/null || true
   [ -z "$INSTRUCTIONS_SNAPSHOT" ] || rm -f -- "$INSTRUCTIONS_SNAPSHOT" 2>/dev/null || true
   [ -z "$META_SNAPSHOT" ] || rm -f -- "$META_SNAPSHOT" 2>/dev/null || true
+  [ -z "$PROMOTE_DATA_TMP_DIR" ] || rmdir "$PROMOTE_DATA_TMP_DIR" 2>/dev/null || true
+  [ -z "$PROMOTE_STATE_TMP_DIR" ] || rmdir "$PROMOTE_STATE_TMP_DIR" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -203,6 +226,8 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 META_EXISTED=1
+PROMOTE_STATE_TMP_DIR=$(umask 077; mktemp -d "$STATE/.promote-$ID.XXXXXX") || { echo "error: could not create metadata staging directory" >&2; exit 1; }
+[ -d "$PROMOTE_STATE_TMP_DIR" ] && [ ! -L "$PROMOTE_STATE_TMP_DIR" ] || { echo "error: unsafe metadata staging directory" >&2; exit 1; }
 META_SNAPSHOT=$(mktemp "$STATE/.${ID}.meta.promote.XXXXXX") || { echo "error: could not stage task metadata" >&2; exit 1; }
 cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task metadata" >&2; exit 1; }
 
@@ -221,11 +246,13 @@ if [ -e "$DESC" ] || [ -L "$DESC" ]; then
   [ -f "$DESC" ] && [ ! -L "$DESC" ] || { echo "error: work context path is unsafe: $DESC" >&2; exit 1; }
   DESC_EXISTED=1
 fi
-DESC_SNAPSHOT=$(mktemp "$DATA/$ID/.work-context.promote.XXXXXX") || { echo "error: could not stage work context" >&2; exit 1; }
+PROMOTE_DATA_TMP_DIR=$(umask 077; mktemp -d "$DATA/$ID/.promote.XXXXXX") || { echo "error: could not create promotion staging directory" >&2; exit 1; }
+[ -d "$PROMOTE_DATA_TMP_DIR" ] && [ ! -L "$PROMOTE_DATA_TMP_DIR" ] || { echo "error: unsafe promotion staging directory" >&2; exit 1; }
+DESC_SNAPSHOT=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/work-context.snapshot.XXXXXX") || { echo "error: could not stage work context" >&2; exit 1; }
 if [ "$DESC_EXISTED" -eq 1 ]; then
   cp -p -- "$DESC" "$DESC_SNAPSHOT" || { echo "error: could not snapshot work context" >&2; exit 1; }
 fi
-INSTRUCTIONS_SNAPSHOT=$(mktemp "$DATA/$ID/.ship-instructions.promote.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
+INSTRUCTIONS_SNAPSHOT=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.snapshot.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
 if [ -f "$INSTRUCTIONS" ]; then
   INSTRUCTIONS_EXISTED=1
   cp -p -- "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" || { echo "error: could not snapshot ship instructions" >&2; exit 1; }
@@ -241,7 +268,8 @@ ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" all all) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
 }
-TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
+TMP=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
+[ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe ship instructions staging file" >&2; exit 1; }
 {
   printf '%s\n' "$DISCIPLINE"
   cat <<EOF
@@ -264,7 +292,8 @@ mv "$TMP" "$INSTRUCTIONS"
 TMP=
 [ -f "$INSTRUCTIONS" ] && [ -r "$INSTRUCTIONS" ] || { echo "error: ship instructions were not published as a readable file: $INSTRUCTIONS" >&2; exit 1; }
 
-TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
+TMP=$(umask 077; mktemp "$PROMOTE_STATE_TMP_DIR/meta.XXXXXX") || { echo "error: could not stage task metadata" >&2; exit 1; }
+[ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe task metadata staging file" >&2; exit 1; }
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
   echo "kind=ship"

@@ -90,7 +90,7 @@ printf '%s\n' 'pi-luna-max@pi@0.81.1@openai-codex/gpt-5.6-luna:max@chatgpt-oauth
 printf '%s\n' 'pi-astra@pi@0.81.1@openai-codex/gpt-6-astra:max@chatgpt-oauth' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(FAKE_MODEL=gpt-6-astra console_profile_gate pi-astra) == 'PENDING: exact Pi OAuth route verified; included-allowance-only spend is CNO'* ]]
 [ "$(console_profile_resolve)" = pi-sol ]
-[[ $(console_harness_argv pi "$(console_profile_model pi-sol)" '' '' | tr '\n' ' ') == '--model openai-codex/gpt-5.6-sol:xhigh ' ]]
+[[ $(console_harness_argv pi "$(console_profile_model pi-sol)" "$(console_profile_effort pi-sol)" '' '' | tr '\n' ' ') == '--model openai-codex/gpt-5.6-sol --thinking xhigh ' ]]
 printf 'pi\n' > "$FM_HOME/config/crew-harness"
 [ "$(FM_CONSOLE_PROFILE=pi-sol bash "$ROOT/bin/fm-harness.sh" crew)" = pi ]
 [ "$(FM_CONSOLE_PROFILE=pi-astra bash "$ROOT/bin/fm-harness.sh" crew)" = pi ]

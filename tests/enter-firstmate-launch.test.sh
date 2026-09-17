@@ -72,7 +72,7 @@ for h in $(permission_policy_harnesses); do
   while IFS= read -r el; do
     [ "$el" = "$posture" ] && composes_posture=1
   done <<EOF
-$(console_harness_argv "$h" "$selector" '' '')
+$(console_harness_argv "$h" "$selector" '' '' '')
 EOF
   case "$(permission_policy_owner "$h")" in
     *'this launcher (primary console argv)'*)
@@ -82,7 +82,7 @@ EOF
   esac
 done
 [ -n "$(profile_selector_for pi)" ] || fail "pi must be probed with a real pinned selector, not an empty model"
-[ -n "$(console_harness_argv pi "$(profile_selector_for pi)" '' '')" ] || fail "pi's primary console argv must carry its pinned selector"
+[ -n "$(console_harness_argv pi "$(profile_selector_for pi)" "$(console_profile_effort pi-sol)" '' '')" ] || fail "pi's primary console argv must carry its pinned selector"
 [ "$(permission_policy_owner codex)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "codex is a primary console harness: the launcher must be named as an owner"
 [ "$(permission_policy_owner claude)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "claude ownership is unchanged"
 [ "$(permission_policy_owner opencode)" = 'fm-spawn (workers and secondmates)' ] || fail "a worker-only harness stays fm-spawn's"
@@ -91,19 +91,19 @@ done
 pass "permission policy owner: every harness the launcher composes a permission posture for names it as owner"
 
 # --- console argv (launch-byte watched reds), new <harness> <model> signature ---
-# console_harness_argv <harness> <model|""> <settings|""> <resume|""> [passthrough...]
+# console_harness_argv <harness> <model|""> <effort|""> <settings|""> <resume|""> [passthrough...]
 argv_lines() { console_harness_argv "$@" | tr '\n' ' '; }
-a=$(argv_lines claude "" "" "")
+a=$(argv_lines claude "" "" "" "")
 [ "$a" = '--dangerously-skip-permissions ' ] || fail "fresh claude argv, no model/settings, is exactly the permission flag (got '$a')"
-a=$(argv_lines claude "" /h/config/claude-settings.json "")
+a=$(argv_lines claude "" "" /h/config/claude-settings.json "")
 [ "$a" = '--dangerously-skip-permissions --settings /h/config/claude-settings.json ' ] || fail "settings follow the permission flag (got '$a')"
-a=$(argv_lines claude "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab --verbose)
+a=$(argv_lines claude "" "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab --verbose)
 [ "$a" = '--dangerously-skip-permissions --settings /h/s.json --resume 0123abcd-0123-4567-89ab-0123456789ab --verbose ' ] || fail "resume and passthrough follow (got '$a')"
-case "$(console_harness_argv claude "" "" "" x)" in *--dangerously-skip-permissions*) ;; *) fail "claude argv can never omit the permission flag" ;; esac
-[ "$(console_harness_argv claude "" "" "" | head -1)" = '--dangerously-skip-permissions' ] || fail "the permission flag is argv[1] for claude"
-a=$(argv_lines bash "" "" "" -c 'echo hi')
+case "$(console_harness_argv claude "" "" "" "" x)" in *--dangerously-skip-permissions*) ;; *) fail "claude argv can never omit the permission flag" ;; esac
+[ "$(console_harness_argv claude "" "" "" "" | head -1)" = '--dangerously-skip-permissions' ] || fail "the permission flag is argv[1] for claude"
+a=$(argv_lines bash "" "" "" "" -c 'echo hi')
 [ "$a" = "-c echo hi " ] || fail "a non-profile harness gets only the passthrough (got '$a')"
-[ -z "$(argv_lines bash "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab)" ] || fail "model/settings/resume are never composed for bash"
+[ -z "$(argv_lines bash "" "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab)" ] || fail "model/settings/resume are never composed for bash"
 pass "console argv: claude always leads with --dangerously-skip-permissions; bash gets passthrough only"
 
 # --- resume id shape and Claude's native transcript store -----------------------

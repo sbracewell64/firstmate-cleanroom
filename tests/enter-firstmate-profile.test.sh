@@ -21,7 +21,7 @@ pass() { printf 'ok - %s\n' "$1"; }
 [ -f "$LAUNCHER" ] || fail "launcher not found: $LAUNCHER"
 # shellcheck disable=SC1090 # the launcher path is resolved at run time
 FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
-for fn in console_profile_default console_profile_menu console_profile_harness console_profile_model \
+for fn in console_profile_default console_profile_menu console_profile_harness console_profile_model console_profile_effort \
           console_profile_model_ok console_profile_qualify console_profile_qualified_set \
           console_profile_builtin_qualified_set \
           console_profile_gate console_profile_resolve console_profile_native_harness \
@@ -56,9 +56,12 @@ done
 [ "$(console_profile_model fable-5.1)" = fable ] || fail "fable-5.1 selector is 'fable'"
 [ "$(console_profile_model opus-4-8)" = claude-opus-4-8 ] || fail "opus-4-8 model is the pinned 4.8 id"
 [ "$(console_profile_model codex-luna)" = gpt-5.6-luna ] || fail "codex-luna model is gpt-5.6-luna"
-[ "$(console_profile_model pi-sol)" = openai-codex/gpt-5.6-sol:xhigh ] || fail "pi-sol model is provider and effort qualified"
-[ "$(console_profile_model pi-astra)" = openai-codex/gpt-6-astra:max ] || fail "pi-astra retains its provider-qualified selector"
-[ "$(console_profile_model pi-luna-max)" = openai-codex/gpt-5.6-luna:max ] || fail "pi-luna-max retains its provider-qualified selector"
+[ "$(console_profile_model pi-sol)" = openai-codex/gpt-5.6-sol ] || fail "pi-sol model is provider qualified"
+[ "$(console_profile_effort pi-sol)" = xhigh ] || fail "pi-sol effort is xhigh"
+[ "$(console_profile_model pi-astra)" = openai-codex/gpt-6-astra ] || fail "pi-astra retains its provider-qualified model"
+[ "$(console_profile_effort pi-astra)" = max ] || fail "pi-astra effort is max"
+[ "$(console_profile_model pi-luna-max)" = openai-codex/gpt-5.6-luna ] || fail "pi-luna-max retains its provider-qualified model"
+[ "$(console_profile_effort pi-luna-max)" = max ] || fail "pi-luna-max effort is max"
 [ -z "$(console_profile_model codex-astra)" ] || fail "retired codex-astra has no selector"
 [ -z "$(console_profile_model codex-sol)" ] || fail "retired codex-sol has no selector"
 pass "menu: six profiles map to the exact harness + pinned model selector"
@@ -67,9 +70,9 @@ pass "menu: six profiles map to the exact harness + pinned model selector"
 console_profile_model_ok fable-5.1 fable || fail "fable-5.1 selector is accepted"
 console_profile_model_ok opus-4-8 claude-opus-4-8 || fail "opus-4-8 selector is accepted"
 console_profile_model_ok codex-luna gpt-5.6-luna || fail "codex-luna selector is accepted"
-console_profile_model_ok pi-sol openai-codex/gpt-5.6-sol:xhigh || fail "Pi's measured Sol selector is accepted"
-console_profile_model_ok pi-astra openai-codex/gpt-6-astra:max || fail "Pi Astra retains its selector"
-console_profile_model_ok pi-luna-max openai-codex/gpt-5.6-luna:max || fail "Pi Luna Max retains its selector"
+console_profile_model_ok pi-sol openai-codex/gpt-5.6-sol xhigh || fail "Pi's measured Sol route is accepted"
+console_profile_model_ok pi-astra openai-codex/gpt-6-astra max || fail "Pi Astra retains its route"
+console_profile_model_ok pi-luna-max openai-codex/gpt-5.6-luna max || fail "Pi Luna Max retains its route"
 console_profile_model_ok pi-sol opencode/gpt-5.6-sol:xhigh && fail "OpenCode cannot alias subscription Sol"
 console_profile_model_ok pi-sol openrouter/gpt-5.6-sol:xhigh && fail "OpenRouter cannot alias subscription Sol"
 console_profile_model_ok pi-sol openai/gpt-5.6-sol:xhigh && fail "regular OpenAI cannot alias subscription Sol"
@@ -192,25 +195,25 @@ off=$(console_argv_subscription_only --max-budget=5 --model fable) && fail "an =
 pass "subscription-only: every paid/gateway/budget selector is refused and named; clean argvs pass"
 
 # --- console_harness_argv model composition (the menu reaches the argv) ---------
-a=$(console_harness_argv claude fable "" "" | tr '\n' ' ')
+a=$(console_harness_argv claude fable "" "" "" | tr '\n' ' ')
 [ "$a" = '--dangerously-skip-permissions --model fable ' ] || fail "claude fable argv (got '$a')"
-a=$(console_harness_argv claude claude-opus-4-8 /h/s.json 0123abcd-0123-4567-89ab-0123456789ab | tr '\n' ' ')
+a=$(console_harness_argv claude claude-opus-4-8 "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab | tr '\n' ' ')
 [ "$a" = '--dangerously-skip-permissions --model claude-opus-4-8 --settings /h/s.json --resume 0123abcd-0123-4567-89ab-0123456789ab ' ] || fail "claude opus argv with settings+resume (got '$a')"
-a=$(console_harness_argv codex gpt-5.6-luna "" "" --sandbox | tr '\n' ' ')
+a=$(console_harness_argv codex gpt-5.6-luna "" "" "" --sandbox | tr '\n' ' ')
 [ "$a" = '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna --sandbox ' ] || fail "codex argv leads with its bypass posture + model (got '$a')"
 # codex never gets claude-only settings/resume even if passed
-a=$(console_harness_argv codex gpt-5.6-luna /h/s.json 0123abcd-0123-4567-89ab-0123456789ab | tr '\n' ' ')
+a=$(console_harness_argv codex gpt-5.6-luna "" /h/s.json 0123abcd-0123-4567-89ab-0123456789ab | tr '\n' ' ')
 [ "$a" = '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna ' ] || fail "codex ignores --settings/--resume (got '$a')"
-a=$(console_harness_argv pi openai-codex/gpt-5.6-sol:xhigh "" "" | tr '\n' ' ')
-[ "$a" = '--model openai-codex/gpt-5.6-sol:xhigh ' ] || fail "pi-sol composes the exact provider and effort without an invented permission flag (got '$a')"
+a=$(console_harness_argv pi openai-codex/gpt-5.6-sol xhigh "" "" | tr '\n' ' ')
+[ "$a" = '--model openai-codex/gpt-5.6-sol --thinking xhigh ' ] || fail "pi-sol composes separate model and effort flags (got '$a')"
 for bad in --model --models --thinking --provider --extension -e; do
   off=$(console_pi_passthrough_ok "$bad" opencode/gpt-5.6-sol) && fail "Pi route override must refuse $bad"
   [ "$off" = "$bad" ] || fail "Pi route refusal must name $bad"
 done
-off=$(console_harness_argv pi openai-codex/gpt-5.6-sol:xhigh "" "" --model opencode/gpt-5.6-sol) && fail "Pi composition must refuse a second model"
+off=$(console_harness_argv pi openai-codex/gpt-5.6-sol xhigh "" "" --model opencode/gpt-5.6-sol) && fail "Pi composition must refuse a second model"
 [ "$off" = '--model' ] || fail "Pi composition must name the override"
-[ "$(console_harness_argv claude fable "" "" | head -1)" = '--dangerously-skip-permissions' ] || fail "claude posture is still argv[1] under the menu"
-[ "$(console_harness_argv codex gpt-5.6-luna "" "" | head -1)" = '--dangerously-bypass-approvals-and-sandbox' ] || fail "codex posture is argv[1]"
+[ "$(console_harness_argv claude fable "" "" "" | head -1)" = '--dangerously-skip-permissions' ] || fail "claude posture is still argv[1] under the menu"
+[ "$(console_harness_argv codex gpt-5.6-luna "" "" "" | head -1)" = '--dangerously-bypass-approvals-and-sandbox' ] || fail "codex posture is argv[1]"
 pass "console argv: the profile model reaches the composed argv; posture always leads"
 
 # --- host-path resolution: env override, then config, else empty ----------------
@@ -262,7 +265,7 @@ out=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_CODE_ROOT PATH="$TMP/bin:$PA
 [ "$rc" -eq 0 ] || fail "a bare pi-sol preview must exit 0 (rc=$rc, out: $out)"
 case "$out" in *'active profile:    pi-sol'*) ;; *) fail "the home must select pi-sol with no env override (got: $out)" ;; esac
 case "$out" in *'home grants: pi-sol'*) ;; *) fail "the menu must identify the pi-sol allowlist entry as a grant, not a qualified verdict (got: $out)" ;; esac
-case "$out" in *'pi-sol'*'harness=pi'*'model=openai-codex/gpt-5.6-sol:xhigh'*) ;; *) fail "pi-sol must compose the accepted Pi selector (got: $out)" ;; esac
+case "$out" in *'pi-sol'*'harness=pi'*'model=openai-codex/gpt-5.6-sol'*'effort=xhigh'*) ;; *) fail "pi-sol must compose the accepted Pi model and effort (got: $out)" ;; esac
 printf '%s\n' "$out" | awk '$1 == "pi-sol" && /PENDING: exact route grant/ { found=1 } END { exit !found }' \
   || fail "the selected pi-sol row must show the route grant gate (got: $out)"
 pass "print-console-menu: pi-sol stays selected but PENDING without a route-specific grant"

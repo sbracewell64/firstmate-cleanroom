@@ -675,31 +675,17 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict errfile diag='' diag_note='' fallback_fifo relay_pid
-  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) \
-    || errfile=$(mktemp "$STATE/.session-start-resolve.XXXXXX" 2>/dev/null) \
-    || errfile=
-  if [ -n "$errfile" ]; then
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$errfile") || rc=$?
-    diag=$(cat "$errfile" 2>/dev/null || true)
-    rm -f -- "$errfile"
+  local out rc=0 identity verdict diag='' diag_note=''
+  if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" render fm-session-start; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    fallback_fifo="$STATE/.session-start-resolve.${BASHPID:-$$}.fifo"
-    if mkfifo "$fallback_fifo" 2>/dev/null; then
-      _fm_programme_prefix_diagnostic <"$fallback_fifo" >&2 &
-      relay_pid=$!
-      out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$fallback_fifo") || rc=$?
-      wait "$relay_pid" 2>/dev/null || true
-      rm -f -- "$fallback_fifo"
-    else
-      out=
-      rc=1
-      diag_note='resolver diagnostics: staging was unavailable'
-    fi
+    out=''
+    rc=1
+    diag_note='resolver diagnostics: staging was unavailable'
   fi
-  if [ -n "$diag" ]; then
-    _fm_programme_prefix_diagnostic <<< "$diag" >&2
-  fi
+  fm_programme_relay_diagnostic "$diag" >&2
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then

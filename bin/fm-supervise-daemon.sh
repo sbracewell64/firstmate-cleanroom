@@ -699,8 +699,7 @@ escalate_add() {  # <state> <distilled-item>
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
 programme_digest_token() {  # [<state>]
-  local out rc=0 state=${1:-} token presented pending errfile diag='' diag_note=''
-  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-supervise-daemon-resolve.XXXXXX" 2>/dev/null) || errfile=
+  local out rc=0 state=${1:-} token presented pending diag='' diag_note=''
   if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
     out=$FM_PROGRAMME_RESOLVER_OUT
     diag=$FM_PROGRAMME_RESOLVER_DIAG

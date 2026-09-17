@@ -1467,8 +1467,7 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # recap unchanged state as progress. The binding member is the resolver's own;
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
-  local out rc=0 identity verdict errfile diag='' diag_note=''
-  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-fleet-snapshot-resolve.XXXXXX" 2>/dev/null) || errfile=
+  local out rc=0 identity verdict diag='' diag_note=''
   if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" resolve fm-fleet-snapshot; then
     out=$FM_PROGRAMME_RESOLVER_OUT
     diag=$FM_PROGRAMME_RESOLVER_DIAG

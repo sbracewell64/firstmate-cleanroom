@@ -213,6 +213,22 @@ make_fake_ps_claude() {
   make_fake_ps_harness "$fakebin" claude
 }
 
+# Force an ancestry with no harness even when the test runner itself was
+# launched under one. This is the control for lock-publication fixtures.
+make_fake_ps_without_harness() {
+  local fakebin=$1
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' /bin/bash ;;
+  *"args="*) printf '%s\n' bash ;;
+  *"ppid="*) /bin/ps "$@" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+}
+
 make_fake_ps_harness() {
   local fakebin=$1 harness=$2
   cat > "$fakebin/ps" <<'SH'
@@ -1160,43 +1176,74 @@ EOF
   pass "session start stays read-only when lock ownership cannot be published"
 }
 
-test_lock_refusal_families_keep_wake_verdict_distinct() {
-  local rec root home fakebin holder out status
-  rec=$(new_world lock-refusal-families-live)
+assert_lock_refusal_family() {  # <kind> <fixture-name>
+  local kind=$1 name=$2 rec root home fakebin holder out status
+  rec=$(new_world "$name")
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  sleep 300 &
-  holder=$!
-  printf '%s\n' "$holder" > "$home/state/.lock"
+  append_wake "$home/state" signal task-a "done: must remain queued" || fail "seed wake failed"
+  if [ "$kind" = live ]; then
+    sleep 300 &
+    holder=$!
+    printf '%s\n' "$holder" > "$home/state/.lock"
+  else
+    chmod 0500 "$home/state"
+  fi
   status=0
-  out=$(FM_FAKE_LIVE_HOLDER_PID="$holder" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
-  expect_code 0 "$status" "live-holder refusal must still complete session start"
-  assert_contains "$out" "another live firstmate session holds the lock" \
-    "live-holder refusal lost its owning diagnostic"
+  out=$(FM_FAKE_LIVE_HOLDER_PID="${holder:-}" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  if [ "$kind" = live ]; then
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    expect_code 0 "$status" "live-holder refusal must still complete session start"
+    assert_contains "$out" "another live firstmate session holds the lock" \
+      "live-holder refusal lost its owning diagnostic"
+    assert_not_contains "$out" "cannot write session lock" \
+      "live-holder refusal was misclassified as publication refusal"
+  else
+    chmod 0700 "$home/state"
+    expect_code 0 "$status" "publication refusal must still complete session start"
+    assert_contains "$out" "cannot write session lock" \
+      "publication refusal lost its owning diagnostic"
+    assert_not_contains "$out" "another live firstmate session holds the lock" \
+      "publication refusal was misclassified as a live-holder refusal"
+  fi
+  assert_not_contains "$out" "cannot locate harness process in ancestry" \
+    "$kind refusal stopped before the intended lock check"
   assert_contains "$out" "skipped (read-only session)" \
-    "live-holder refusal changed the wake verdict"
+    "$kind refusal changed the wake verdict"
+  [ -s "$home/state/.wake-queue" ] || fail "$kind refusal drained a queued wake"
+}
 
-  rec=$(new_world lock-refusal-families-write)
+test_lock_refusal_without_harness_preempts_publication() {
+  local rec root home fakebin out status
+  rec=$(new_world lock-refusal-no-harness)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
+  make_fake_ps_without_harness "$fakebin"
   chmod 0500 "$home/state"
   status=0
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
   chmod 0700 "$home/state"
-  expect_code 0 "$status" "publication refusal must still complete session start"
-  assert_contains "$out" "cannot write session lock" \
-    "publication refusal lost its owning diagnostic"
-  assert_not_contains "$out" "another live firstmate session holds the lock" \
-    "publication refusal was misclassified as a live-holder refusal"
+  expect_code 0 "$status" "missing harness ancestry must still complete read-only session start"
+  assert_contains "$out" "cannot locate harness process in ancestry" \
+    "missing harness ancestry did not produce its owning diagnostic"
+  assert_not_contains "$out" "cannot write session lock" \
+    "missing harness ancestry reached publication"
   assert_contains "$out" "skipped (read-only session)" \
-    "publication refusal changed the wake verdict"
+    "missing harness ancestry changed the wake verdict"
+  pass "missing harness ancestry preempts lock publication on every host"
+}
+
+test_lock_refusal_families_keep_wake_verdict_distinct() {
+  assert_lock_refusal_family live lock-refusal-families-live-first
+  assert_lock_refusal_family write lock-refusal-families-write-second
+  assert_lock_refusal_family write lock-refusal-families-write-first
+  assert_lock_refusal_family live lock-refusal-families-live-second
   pass "live-holder and publication lock refusals remain distinct without changing the wake verdict"
 }
 
@@ -3158,6 +3205,7 @@ test_context_memory_budget_gate_absent_budget_names_primary_owner_in_secondmate
 test_digest_presents_nm_observation_findings_once
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
+test_lock_refusal_without_harness_preempts_publication
 test_lock_refusal_families_keep_wake_verdict_distinct
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner

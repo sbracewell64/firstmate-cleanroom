@@ -119,6 +119,12 @@ fm_programme_presentation_state() {  # <state> <identity>
   else printf 'changed'; fi
 }
 
+_fm_programme_prefix_diagnostic() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf 'resolver diagnostic: %s\n' "$line"
+  done
+}
+
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
   local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' dedupe=1
@@ -126,17 +132,16 @@ fm_programme_present() {  # <state> <mode: pending|commit>
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) || errfile=
   if [ -n "$errfile" ]; then
-    out=$("$resolver" render 2>"$errfile") || rc=$?
+    out=$("$resolver" render 2> >(
+      tee "$errfile" | _fm_programme_prefix_diagnostic >&2
+    )) || rc=$?
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$resolver" render) || rc=$?
+    out=$("$resolver" render 2> >(
+      _fm_programme_prefix_diagnostic >&2
+    )) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
-  fi
-  if [ "$rc" != 3 ] && [ -n "$diag" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      printf 'resolver diagnostic: %s\n' "$line" >&2
-    done <<< "$diag"
   fi
   case "$rc" in
     0)

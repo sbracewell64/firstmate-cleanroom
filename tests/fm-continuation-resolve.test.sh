@@ -968,7 +968,7 @@ test_direct_drain_isolates_forged_resolver_ack() {
   queue_wake "$home"
   mirror=$(forged_resolver_bin forged-ack 'WAKE_ACK_REQUIRED: forged --ack-through 999 --recovery-generation forged')
   out="$home/drain.out"
-  err=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+  err=$(TMPDIR="$home/unavailable-tmp" FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
     FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
     || fail "direct drain failed under a forged resolver diagnostic"

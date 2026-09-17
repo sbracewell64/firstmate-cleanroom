@@ -613,7 +613,21 @@ console_profile_qualify() {
   printf 'QUALIFIED'
 }
 console_profile_grant_token() {  # <profile> <pi-version>
-  printf '%s@pi@%s@%s@chatgpt-oauth@included-allowance-only' "$1" "$2" "$(console_profile_model "$1")"
+  case "$(console_profile_harness "$1")" in
+    codex) printf '%s@codex@%s@openai/%s:max@chatgpt-oauth@included-allowance-only' "$1" "$2" "$(console_profile_model "$1")" ;;
+    pi) printf '%s@pi@%s@%s@chatgpt-oauth@included-allowance-only' "$1" "$2" "$(console_profile_model "$1")" ;;
+    *) printf '' ;;
+  esac
+}
+console_profile_grant_matches() {  # <profile> <expected-token> -> 0 for one exact match
+  local p=$1 expected=$2 token count=0
+  for token in $(console_profile_qualified_set); do
+    case "$token" in
+      "$p"@*) [ "$token" = "$expected" ] || return 1 ;;
+    esac
+    [ "$token" = "$expected" ] && count=$((count + 1))
+  done
+  [ "$count" = 1 ]
 }
 # The profiles any home qualifies with no config of its own. Deliberately NOT
 # derived from console_profile_default: which profile is selected by default and
@@ -651,7 +665,7 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
     version=$(pi --version 2>/dev/null || true)
     [ "$version" = 0.81.1 ] || { printf 'PENDING: installed Pi version is not the qualified 0.81.1 release'; return; }
     grant=$(console_profile_grant_token "$p" "$version")
-    case " $(console_profile_qualified_set) " in *" $grant "*) allowed=1 ;; esac
+    console_profile_grant_matches "$p" "$grant" && allowed=1
     [ "$allowed" = 1 ] || { printf 'PENDING: exact route grant %s is absent; stale name-only grants do not qualify' "$grant"; return; }
     model_id=${m#openai-codex/}; effort=${model_id##*:}; model_id=${model_id%:*}
     if checked=$(node "${BASH_SOURCE[0]%/*}/fm-console-pi-check.mjs" "$(command -v pi)" openai-codex "$model_id" "$effort" "$version" 2>/dev/null); then
@@ -666,6 +680,14 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
       esac
     fi
     return
+  fi
+  if [ "$h" = codex ]; then
+    [ "$installed" = 1 ] || { console_profile_qualify "$p" 0 0; return; }
+    version=$(codex --version 2>/dev/null | tr -d '\r' | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)
+    [ -n "$version" ] || { printf 'PENDING: installed Codex version is unavailable'; return; }
+    grant=$(console_profile_grant_token "$p" "$version")
+    console_profile_grant_matches "$p" "$grant" || { printf 'PENDING: exact native Codex grant %s is absent or malformed; bare and duplicate grants do not qualify' "$grant"; return; }
+    allowed=1
   fi
   case " $(console_profile_qualified_set) " in *" $p "*) allowed=1 ;; esac
   console_profile_qualify "$p" "$installed" "$allowed"

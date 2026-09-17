@@ -31,7 +31,7 @@ class GuardTests(unittest.TestCase):
     def test_api_mode_override_refuses(self):
         with self.assertRaises(guard.Refused):guard.launch_args([guard.POSTURE,'--model','gpt-5.6-luna','-c','forced_login_method="api"'])
     def test_exact_native_args(self):
-        self.assertEqual(guard.launch_args([guard.POSTURE,'--model','gpt-5.6-luna']),['-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','model_reasoning_effort="xhigh"',guard.POSTURE,'--model','gpt-5.6-luna'])
+        self.assertEqual(guard.launch_args([guard.POSTURE,'--model','gpt-5.6-luna']),['-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','model_reasoning_effort="max"',guard.POSTURE,'--model','gpt-5.6-luna'])
     def test_retired_profile_selectors_refuse(self):
         for model in ('gpt-6-astra','gpt-5.6-sol'):
             with self.subTest(model=model):
@@ -41,13 +41,13 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(guard.Refused) as e:guard.subscription_environment(env)
         self.assertNotIn('PRIVATE_SENTINEL',str(e.exception));self.assertEqual(env['OPENAI_API_KEY'],'PRIVATE_SENTINEL')
     def test_effective_custom_provider_refuses(self):
-        config={'model':'gpt-5.6-luna','model_reasoning_effort':'xhigh','forced_login_method':'chatgpt','model_provider':'openai','model_providers':{'openai':{'base_url':'https://private.invalid'}}}
+        config={'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','model_providers':{'openai':{'base_url':'https://private.invalid'}}}
         with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-5.6-luna')
     def test_effective_root_endpoint_refuses(self):
-        config={'model':'gpt-5.6-luna','model_reasoning_effort':'xhigh','forced_login_method':'chatgpt','model_provider':'openai','chatgpt_base_url':'https://private.invalid'}
+        config={'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','chatgpt_base_url':'https://private.invalid'}
         with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-5.6-luna')
     def test_native_route_accepts_default_config(self):
-        guard.check_config({'model':'gpt-5.6-luna','model_reasoning_effort':'xhigh','forced_login_method':'chatgpt','model_provider':'openai','model_providers':None},'gpt-5.6-luna')
+        guard.check_config({'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','model_providers':None},'gpt-5.6-luna')
     def test_missing_auth_is_unknown(self):
         with self.assertRaises(guard.Refused):guard.check_config({'model':'gpt-5.6-luna','model_provider':'openai'},'gpt-5.6-luna')
 

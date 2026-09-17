@@ -32,7 +32,7 @@
 #   --control-resolver <path> config/control-resolver           (recorded if given)
 #   --retired-home <path>     config/retired-home               (recorded if given)
 #   --exchange-owner <path>   config/exchange-owner             (recorded if given)
-#   --console-profile <name>  config/console-profile            (default: pi-sol)
+#   --console-profile <name>  config/console-profile            (default: fable-5.1)
 #   --staging <dir>           output dir (default: <fm-home>/state/launcher-staging)
 #   --lnk <file>              a Windows .lnk to snapshot for rollback (repeatable; bytes only)
 #   --require-complete-config refuse activation staging with missing isolation inputs
@@ -52,7 +52,7 @@ TOOLS_ROOT=''
 CONTROL_RESOLVER=''
 RETIRED_HOME=''
 EXCHANGE_OWNER=''
-CONSOLE_PROFILE=pi-sol
+CONSOLE_PROFILE=fable-5.1
 STAGING=''
 ALLOW_SAME=0
 REQUIRE_COMPLETE=0

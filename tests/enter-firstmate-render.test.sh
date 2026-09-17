@@ -170,7 +170,7 @@ run_fast_render "$home" "$ROOT_B"
 printf '%s' "$OUT" | grep -Eq "$REFUSE_RE" && fail "(v) a genuine different code root must not be refused (got: $OUT)"
 [ -f "$home/state/launcher-staging/config/code-root" ] || fail "(v) a genuine move must proceed past the guard into staging"
 [ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/code-root")" = "$ROOT_B" ] || fail "(v) staging must record the adopted (different) code root"
-[ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/console-profile")" = pi-sol ] || fail "(v) default staging must retain the accepted pi-sol selection"
+[ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/console-profile")" = fable-5.1 ] || fail "(v) default staging must retain the built-in fable-5.1 selection"
 pass "(v) a genuine move to a different code root passes the guard and stages"
 
 # --- caller-level --print-console-menu qualification ---------------------------

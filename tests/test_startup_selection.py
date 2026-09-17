@@ -103,7 +103,7 @@ class StartupBoundaryTests(unittest.TestCase):
         (self.f.home/'config/console-qualified-profiles').write_text('opus-4-8\n')
         result = self.console(FM_HARNESS='codex')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('not yet qualified', result.stderr)
+        self.assertIn('exact native Codex grant', result.stderr)
     def test_api_environment_refuses_at_actual_guard(self):
         result = self.console(FM_HARNESS='codex', OPENAI_API_KEY='SYNTHETIC_SECRET')
         self.assertNotEqual(result.returncode, 0)

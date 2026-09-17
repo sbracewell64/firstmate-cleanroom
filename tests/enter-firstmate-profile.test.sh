@@ -161,15 +161,19 @@ pass "gate: the built-in set keeps fable-5.1 launchable and opus-4-8 PENDING"
 # codex-luna rests on account-specific evidence: it is PENDING on a home that
 # has not granted it, and QUALIFIED once that home's config does.
 ( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty
-  case "$(console_profile_gate codex-luna)" in "PENDING: model gpt-5.6-luna (codex) is not yet qualified"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the Codex profile PENDING, never auto-qualified"
+  case "$(console_profile_gate codex-luna)" in "PENDING: exact native Codex grant"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the Codex profile PENDING, never auto-qualified"
 home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > "$home_luna/config/console-qualified-profiles"
-( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "a home granting codex-luna with codex installed -> QUALIFIED"
-pass "gate: codex-luna qualifies only from the home's own grant"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "a bare native Codex grant must stay PENDING"
+printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$home_luna/config/console-qualified-profiles"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "an exact native Codex grant -> QUALIFIED"
+printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$home_luna/config/console-qualified-profiles"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "a duplicate native Codex grant must stay PENDING"
+pass "gate: native Codex requires one exact typed grant"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$TMP/home-empty
   case "$(console_profile_gate pi-sol)" in "PENDING: exact route grant "*) ;; *) exit 1 ;; esac ) || fail "pi-sol stays PENDING without an exact route grant"
 home_pi_gate=$TMP/home-pi-gate; mkdir -p "$home_pi_gate/config"; printf 'pi-sol pi-astra pi-luna-max codex-luna\n' > "$home_pi_gate/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_pi_gate
-  [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1
+  case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac
   for _p in pi-sol pi-astra pi-luna-max; do
     case "$(console_profile_gate "$_p")" in "PENDING: exact route grant "*) ;; *) exit 1 ;; esac
   done ) || fail "a stale name-only Pi grant cannot qualify a provider route"

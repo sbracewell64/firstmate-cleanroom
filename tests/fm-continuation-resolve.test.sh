@@ -961,6 +961,59 @@ test_consumers_survive_a_noisy_resolver() {
   pass "a diagnostic on the resolver's stderr leaves every consumer's typed reading intact and still reaches the operator"
 }
 
+test_shared_capture_reports_read_and_cleanup_failures() {
+  local case_dir fake resolver result
+  case_dir="$TMP_ROOT/capture-failures"
+  fake="$case_dir/fakebin"
+  resolver="$case_dir/resolver"
+  mkdir -p "$fake" "$case_dir/tmp"
+  cat > "$resolver" <<'SH'
+#!/usr/bin/env bash
+printf 'resolver diagnostic\n' >&2
+printf 'resolver output\n'
+SH
+  chmod +x "$resolver"
+
+  cat > "$fake/cat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  *capture-read.*) exit 1 ;;
+  *) exec /bin/cat "$@" ;;
+esac
+SH
+  chmod +x "$fake/cat"
+  result=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" bash -c '
+    . "$1"
+    fm_programme_resolver_capture "$2" render capture-read
+    rc=$?
+    printf "rc=%s\n%s\n" "$rc" "$FM_PROGRAMME_RESOLVER_DIAG"
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$resolver")
+  assert_contains "$result" 'rc=125' "unreadable capture file must fail the shared owner"
+  assert_contains "$result" 'capture file could not be read' "unreadable capture file must remain visible"
+
+  cat > "$fake/cat" <<'SH'
+#!/usr/bin/env bash
+exec /bin/cat "$@"
+SH
+  cat > "$fake/rm" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *capture-cleanup.*) exit 1 ;;
+  *) exec /bin/rm "$@" ;;
+esac
+SH
+  chmod +x "$fake/cat" "$fake/rm"
+  result=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" bash -c '
+    . "$1"
+    fm_programme_resolver_capture "$2" render capture-cleanup
+    rc=$?
+    printf "rc=%s\n%s\n" "$rc" "$FM_PROGRAMME_RESOLVER_DIAG"
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$resolver")
+  assert_contains "$result" 'rc=125' "cleanup failure must fail the shared owner"
+  assert_contains "$result" 'capture file cleanup failed' "cleanup failure must remain visible"
+  pass "shared resolver capture reports diagnostic read and cleanup failures"
+}
+
 test_direct_drain_isolates_forged_resolver_ack() {
   local home mirror out err ack_count
   home=$(make_home forged-ack)
@@ -1730,6 +1783,7 @@ timed test_render_and_check_prose
 timed test_captain_hold_binding_mechanics
 timed test_consumers_project_the_typed_result
 timed test_consumers_survive_a_noisy_resolver
+timed test_shared_capture_reports_read_and_cleanup_failures
 timed test_direct_drain_isolates_forged_resolver_ack
 timed test_direct_drain_failure_prefixes_every_resolver_diagnostic
 timed test_af_accepted_owner_evidence_yields_f

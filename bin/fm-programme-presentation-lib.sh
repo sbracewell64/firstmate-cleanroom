@@ -139,8 +139,19 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
     || return 125
   out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
   FM_PROGRAMME_RESOLVER_OUT=$out
-  FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile" 2>/dev/null || true)
-  rm -f -- "$errfile"
+  if ! FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile"); then
+    FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read'
+    if ! rm -f -- "$errfile"; then
+      FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read or removed'
+    fi
+    FM_PROGRAMME_RESOLVER_RC=125
+    return 125
+  fi
+  if ! rm -f -- "$errfile"; then
+    FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file cleanup failed'
+    FM_PROGRAMME_RESOLVER_RC=125
+    return 125
+  fi
   FM_PROGRAMME_RESOLVER_RC=$rc
   return 0
 }

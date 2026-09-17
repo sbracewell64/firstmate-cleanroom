@@ -941,13 +941,17 @@ else
     DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null) || DRAIN_ERR=
     rm -f -- "$DRAIN_ERRFILE"
   else
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1) || DRAIN_RC=$?
-    DRAIN_ERR=
+    DRAIN_OUT=
+    DRAIN_ERR='wake drain skipped: diagnostic staging could not be secured'
+    DRAIN_RC=125
+  fi
+  if [ -n "$DRAIN_OUT" ]; then
+    printf '%s\n' "$DRAIN_OUT"
+  elif [ "$DRAIN_RC" -eq 0 ]; then
+    printf '(no queued wakes)\n'
   fi
   if [ "$DRAIN_RC" -ne 0 ]; then
     printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"
-  elif [ "$DRAIN_RC" -eq 0 ]; then
-    [ -n "$DRAIN_OUT" ] && printf '%s\n' "$DRAIN_OUT" || printf '(no queued wakes)\n'
   fi
   [ -z "$DRAIN_ERR" ] || printf '%s\n' "$DRAIN_ERR"
 fi

@@ -126,26 +126,27 @@ fm_run_external_timeout() {
 }
 
 fm_run_external_timeout_strict() {
-  local runner=$1 seconds=$2 status_file done_file expired_file runner_pid watchdog_pid runner_rc command_rc
+  local runner=$1 seconds=$2 status_file done_dir expired_dir runner_pid watchdog_pid runner_rc command_rc
   shift 2
   status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-strict-status.XXXXXX" 2>/dev/null) || return 124
-  done_file="${status_file}.done"
-  expired_file="${status_file}.expired"
+  done_dir="${status_file}.done"
+  expired_dir="${status_file}.expired"
   "$runner" -s KILL "$seconds" bash -c '
     status_file=$1
-    done_file=$2
+    done_dir=$2
     shift 2
     "$@"
     command_rc=$?
     printf "%s\n" "$command_rc" > "$status_file"
-    printf "done\n" > "$done_file"
+    mkdir "$done_dir" 2>/dev/null || exit 124
     exit "$command_rc"
-  ' _ "$status_file" "$done_file" "$@" &
+  ' _ "$status_file" "$done_dir" "$@" &
   runner_pid=$!
   (
     sleep "$seconds"
-    printf 'expired\n' > "$expired_file"
-    kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    if [ ! -d "$done_dir" ] && mkdir "$expired_dir" 2>/dev/null; then
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    fi
     exit 124
   ) &
   watchdog_pid=$!
@@ -154,18 +155,20 @@ fm_run_external_timeout_strict() {
   else
     runner_rc=$?
   fi
-  if [ -s "$done_file" ]; then
+  if [ -d "$done_dir" ]; then
     kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
     wait "$watchdog_pid" 2>/dev/null || true
   else
     wait "$watchdog_pid" 2>/dev/null || true
   fi
   command_rc=$(cat "$status_file" 2>/dev/null || true)
-  if [ -s "$expired_file" ]; then
-    rm -f "$status_file" "$done_file" "$expired_file" 2>/dev/null || true
+  if [ -d "$expired_dir" ]; then
+    rm -f "$status_file" 2>/dev/null || true
+    rmdir "$done_dir" "$expired_dir" 2>/dev/null || true
     return 124
   fi
-  rm -f "$status_file" "$done_file" "$expired_file" 2>/dev/null || true
+  rm -f "$status_file" 2>/dev/null || true
+  rmdir "$done_dir" "$expired_dir" 2>/dev/null || true
   case "$command_rc" in
     ''|*[!0-9]*) ;;
     *) [ "$command_rc" -le 255 ] && return "$command_rc" ;;
@@ -180,10 +183,11 @@ fm_run_external_timeout_strict() {
 }
 
 fm_run_bash_timeout_strict() {
-  local seconds=$1 command_status deadline_status child_pid watchdog_pid command_rc recorded_rc monitor_was_on=0
+  local seconds=$1 command_status deadline_dir done_dir child_pid watchdog_pid command_rc recorded_rc monitor_was_on=0
   shift
   command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-strict-timeout-command.XXXXXX" 2>/dev/null) || return 124
-  deadline_status="${command_status}.deadline"
+  deadline_dir="${command_status}.deadline"
+  done_dir="${command_status}.done"
   case $- in *m*) monitor_was_on=1 ;; esac
   set -m
   (
@@ -191,14 +195,16 @@ fm_run_bash_timeout_strict() {
     "$@"
     command_rc=$?
     printf '%s\n' "$command_rc" > "$command_status"
+    mkdir "$done_dir" 2>/dev/null || exit 124
     exit "$command_rc"
   ) &
   child_pid=$!
   (
     set +m
     sleep "$seconds"
-    printf 'expired\n' > "$deadline_status"
-    kill -KILL -- "-$child_pid" 2>/dev/null || true
+    if [ ! -d "$done_dir" ] && mkdir "$deadline_dir" 2>/dev/null; then
+      kill -KILL -- "-$child_pid" 2>/dev/null || true
+    fi
     exit 124
   ) &
   watchdog_pid=$!
@@ -209,7 +215,7 @@ fm_run_bash_timeout_strict() {
   else
     command_rc=$?
   fi
-  if [ -s "$deadline_status" ]; then
+  if [ -d "$deadline_dir" ]; then
     wait "$watchdog_pid" 2>/dev/null || true
     command_rc=124
   else
@@ -218,7 +224,8 @@ fm_run_bash_timeout_strict() {
     recorded_rc=$(cat "$command_status" 2>/dev/null || true)
     case "$recorded_rc" in ''|*[!0-9]*) ;; *) command_rc=$recorded_rc ;; esac
   fi
-  rm -f "$command_status" "$deadline_status" 2>/dev/null || true
+  rm -f "$command_status" 2>/dev/null || true
+  rmdir "$done_dir" "$deadline_dir" 2>/dev/null || true
   return "$command_rc"
 }
 

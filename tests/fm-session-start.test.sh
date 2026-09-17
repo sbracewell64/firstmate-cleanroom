@@ -534,11 +534,13 @@ run_session_start() {
   if [ -n "$pi_harness" ]; then
     env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
       ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
+      FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$session_start"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
       ${FM_TEST_SESSION_BASH_ENV:+BASH_ENV="$FM_TEST_SESSION_BASH_ENV"} \
+      FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$session_start"
   fi

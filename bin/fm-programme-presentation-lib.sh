@@ -185,7 +185,7 @@ fm_programme_relay_diagnostic() {  # <diagnostic>
 }
 
 _fm_programme_present_locked() {
-  local state=$1 mode=$2 identity=$3 summary=$4 out=$5 dedupe=$6 verdict
+  local state=$1 mode=$2 identity=$3 summary=$4 out=$5 dedupe=$6 verdict pending
   if [ "$dedupe" -eq 1 ]; then
     verdict=$(fm_programme_presentation_state "$state" "$identity")
     case "$verdict" in
@@ -197,6 +197,8 @@ _fm_programme_present_locked() {
         ;;
     esac
   fi
+  pending=$(fm_programme_pending_identity "$state")
+  [ -z "$pending" ] || [ "$pending" = "$identity" ] || return 0
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
   printf '%s\n' "$out" | fm_programme_render_non_actionable
   if [ "$mode" = pending ]; then

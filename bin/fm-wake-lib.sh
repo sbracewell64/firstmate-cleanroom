@@ -43,10 +43,16 @@ fm_current_pid() {
 }
 
 fm_pid_alive() {
-  local pid=$1
+  local pid=$1 proc_root stat_line state
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  if [ -r "$proc_root/$pid/stat" ]; then
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    read -r state _ <<< "${stat_line##*)}"
+    [ "$state" != Z ] || return 1
+  fi
   kill -0 "$pid" 2>/dev/null
 }
 
@@ -1488,7 +1494,8 @@ fm_autoarm_confirm_stop_bounded() {
   (
     # shellcheck source=bin/fm-timeout-lib.sh
     . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
-    fm_run_timed 1 bash -s -- _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded" <<'EOF'
+    # shellcheck disable=SC2016 # The bounded child receives its arguments positionally.
+    fm_run_timed 1 bash -c '
       set -u
       lib=$1
       pid=$2
@@ -1504,7 +1511,7 @@ fm_autoarm_confirm_stop_bounded() {
         sleep 0.1
       done
       exit 0
-EOF
+    ' _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded"
   )
 }
 

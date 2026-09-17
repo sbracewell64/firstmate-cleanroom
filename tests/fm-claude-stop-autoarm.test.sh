@@ -973,7 +973,13 @@ test_stuck_live_legacy_owner_is_retired_and_deferred() {
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   expect_code 0 "$status" "a proven-stuck identity-verified live legacy owner must defer reconciliation"
-  kill -0 "$pid" 2>/dev/null && fail "the stuck legacy owner was not retired"
+  if kill -0 "$pid" 2>/dev/null; then
+    owner_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    case "$owner_state" in
+      Z*) : ;;
+      *) fail "the stuck legacy owner was not retired" ;;
+    esac
+  fi
   wait "$pid" 2>/dev/null || true
   [ ! -e "$dir/state/arm-ran" ] || fail "the deferred home re-armed before reconciliation"
   assert_present "$dir/state/.claude-autoarm.lock" "deferred reconciliation lost the legacy owner lock"

@@ -87,8 +87,10 @@
 #      `generation` (integer), `candidate` {exact identities such as head,
 #      merge_commit, base}, `policy` {id, digest}, `verifier` {tool, ...},
 #      `qualification` {pipeline, evidence_refs[]} (required for
-#      MERGED_QUALIFIED), `captures[]` (declared locators, byte counts and
-#      sha256 of the owner bytes the producer read), `sources[]` (local files
+#      MERGED_QUALIFIED), and for local_project_delivery the strict `delivery`
+#      and `privacy` identities described below; `captures[]` (declared
+#      locators, byte counts and sha256 of the owner bytes the producer read),
+#      `sources[]` (local files
 #      under <root> the record binds: {kind:"local_file", path, sha256,
 #      outcome?}, verified here by recomputed sha256 and, when `outcome` is
 #      declared, by that file's own `.outcome`), `observed_bad[]`, and
@@ -113,6 +115,20 @@
 #      becomes CAPTAIN. No command, predicate registry, plugin, or workflow
 #      language is read from a record; an owner kind or outcome outside the
 #      closed tables is refused, not interpreted.
+#      local_project_delivery / DELIVERED_QUALIFIED is the private/local route.
+#      It is accepted only when the step pins owner, evidence digest and
+#      generation, policy, candidate head/tree, delivery id, owner project and
+#      branch, and fm-project-mode must read that project's registered posture
+#      as local-only; the record exposes digests only and binds one mode-0600
+#      fm-local-project-delivery-receipt/v1 under FM_HOME/data. The receipt
+#      carries an exact manifest, private-local/digests-only classification,
+#      distinct maker and checker identities, one bound mode-0600
+#      fm-local-checker-receipt/v1, and checker-attributed MATCH read-back.
+#      Every resolution independently verifies the local project's current ref
+#      and tree, hashes each candidate blob and destination, and refuses moved,
+#      replayed, forged, self-certified, privacy-exposing, or mismatched input;
+#      an unavailable project, receipt, source, or destination is CNO. Private
+#      candidate bytes never enter the programme record or resolver output.
 #   3. Durable hold state through tasks-axi in FM_HOME, the same backlog the
 #      captain-hold owner (bin/fm-captain-hold.sh) writes. A hold binds to an
 #      action only through the typed `Continuation-binding:` body line that
@@ -254,13 +270,15 @@ fail() {
 }
 
 sha256_file() {  # <path>
+  local digest
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    digest=$(shasum -a 256 "$1" 2>/dev/null) || return 1
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    digest=$(sha256sum "$1" 2>/dev/null) || return 1
   else
     fail "shasum or sha256sum is required"
   fi
+  printf '%s\n' "$digest" | awk '{print $1}'
 }
 
 sha256_text() {  # <text>
@@ -268,6 +286,14 @@ sha256_text() {  # <text>
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
   else
     printf '%s' "$1" | sha256sum | awk '{print $1}'
+  fi
+}
+
+sha256_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
   fi
 }
 
@@ -461,7 +487,7 @@ validate_binding() {
 # with an outcome: an in-flight or broken newest attempt is never terminal,
 # and an older attempt's disposition never stands in for it.
 latest_disposition() {  # <artifact-root>
-  local rel=$1 dir best=-1 best_dir='' n d disp outcome
+  local rel=$1 dir best=-1 best_dir='' n d disp outcome digest
   case "$rel" in
     /*) dir=$rel ;;
     *) dir="$ROOT/$rel" ;;
@@ -480,16 +506,325 @@ latest_disposition() {  # <artifact-root>
   [ -f "$disp" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
   outcome=$(jq -r 'if (.outcome | type) == "string" then .outcome else empty end' "$disp" 2>/dev/null) || outcome=''
   [ -n "$outcome" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
-  printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$(sha256_file "$disp")"
+  if ! digest=$(sha256_file "$disp"); then
+    printf '%s\t\t%s\t\n' "$best" "$disp"
+    return 1
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$digest"
 }
 
 # --- accepted owner evidence ---------------------------------------------------
 
+LOCAL_OWNER_STATUS=''
+LOCAL_OWNER_REASON=''
+LOCAL_OWNER_DETAIL=''
+
+local_owner_result() {  # <ACCEPTED|REFUSED|CNO> <reason> <detail>
+  LOCAL_OWNER_STATUS=$1
+  LOCAL_OWNER_REASON=$2
+  LOCAL_OWNER_DETAIL=$3
+}
+
+local_owner_sha256() {
+  case "$1" in
+    *[!0-9a-f]*|'') return 1 ;;
+    *) [ "${#1}" -eq 64 ] ;;
+  esac
+}
+
+local_owner_oid() {
+  case "$1" in
+    *[!0-9a-f]*|'') return 1 ;;
+    *) [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ] ;;
+  esac
+}
+
+local_owner_relative_path() {  # <path> <data|content>
+  local path=$1 class=$2
+  case "$path" in ''|.|..|/*|*//*|../*|*/../*|*/..|./*|*/./*|*/.) return 1 ;; esac
+  case "$path" in *[!A-Za-z0-9._/-]*) return 1 ;; esac
+  case "$class:$path" in data:data/*.json|content:*) return 0 ;; *) return 1 ;; esac
+}
+
+local_owner_deliverable_prefix() {  # <step-id>
+  case "$1" in
+    slice-a|slice-b) printf 'exchange/' ;;
+    slice-d) printf 'artifacts/synthesis/' ;;
+    *) return 1 ;;
+  esac
+}
+
+local_owner_path_has_no_symlink_parents() {  # <root> <relative-path>
+  local root=$1 path=$2 part current=$1 index=0 last
+  local -a parts
+  IFS='/' read -r -a parts <<< "$path"
+  last=$((${#parts[@]} - 1))
+  for part in "${parts[@]}"; do
+    current="$current/$part"
+    [ "$index" -eq "$last" ] || { [ ! -L "$current" ] || return 1; }
+    index=$((index + 1))
+  done
+}
+
+local_owner_private_file() {  # <path>
+  local mode links owner data_real parent_real
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  data_real=$(CDPATH='' cd -- "$FM_HOME/data" 2>/dev/null && pwd -P) || return 1
+  parent_real=$(CDPATH='' cd -- "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  case "$parent_real/" in "$data_real/"*) ;; *) return 1 ;; esac
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    mode=$(stat -f %Lp "$1" 2>/dev/null) || return 1
+    links=$(stat -f %l "$1" 2>/dev/null) || return 1
+    owner=$(stat -f %u "$1" 2>/dev/null) || return 1
+  else
+    mode=$(stat -c %a "$1" 2>/dev/null) || return 1
+    links=$(stat -c %h "$1" 2>/dev/null) || return 1
+    owner=$(stat -c %u "$1" 2>/dev/null) || return 1
+  fi
+  [ "$mode" = 600 ] && [ "$links" = 1 ] && [ "$owner" = "$(id -u)" ]
+}
+
+# Validate the one privacy-preserving qualified-local-delivery owner record.
+# The programme record contains identities and digests only. Its private
+# receipt lives under this home's data/, names one local project under
+# projects/, and binds immutable candidate, independent checker, manifest, and
+# read-back facts. The resolver re-reads the git ref, every candidate blob,
+# every destination, and the checker receipt; prose and self-certification have
+# no field that can satisfy this owner kind.
+validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
+  local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
+  local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
+  local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode
+  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
+  local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown
+  LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
+
+  unknown=$(printf '%s' "$doc" | jq -r '[keys[]] - ["candidate","captures","delivery","evidence_id","generation","observed_bad","outcome","owner","policy","privacy","programme_id","project","qualification","schema","sources","step","superseded_by","verifier","work_id"] | join(",")')
+  [ -z "$unknown" ] || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "local delivery evidence carries unsupported fields that could expose private bytes: $unknown"; return 0; }
+  if ! printf '%s' "$doc" | jq -e '
+      (.delivery | type)=="object" and ([.delivery|keys[]]-["receipt"]|length)==0 and
+      (.delivery.receipt | type)=="object" and ([.delivery.receipt|keys[]]-["path","sha256"]|length)==0 and
+      (.privacy | type)=="object" and ([.privacy|keys[]]-["classification","exposure","published_private_bytes"]|length)==0 and
+      .verifier=={tool:"fm-local-project-delivery/v1"} and
+      (.policy | type)=="object" and ([.policy|keys[]]-["digest","id"]|length)==0 and
+      (.captures | type)=="array" and (.captures|length)==0 and (.sources | type)=="array" and (.sources|length)==0' >/dev/null 2>&1; then
+    local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "local delivery evidence must use only delivery receipt identities, an exact privacy classification, and empty captures/sources"
+    return 0
+  fi
+  pin_ref=$(jq -r ".steps[$i].terminal_predicate.owner_ref // \"\"" "$PROGRAMME")
+  pin_sha=$(jq -r ".steps[$i].terminal_predicate.evidence_sha256 // \"\"" "$PROGRAMME")
+  pin_gen=$(jq -r ".steps[$i].terminal_predicate.evidence_generation // \"\"" "$PROGRAMME")
+  pin_policy=$(jq -r ".steps[$i].terminal_predicate.policy_digest // \"\"" "$PROGRAMME")
+  pin_candidate=$(jq -c ".steps[$i].terminal_predicate.candidate // {}" "$PROGRAMME")
+  if [ -z "$pin_ref" ] || [ -z "$pin_sha" ] || [ -z "$pin_gen" ] || [ -z "$pin_policy" ] \
+    || ! printf '%s' "$pin_candidate" | jq -e 'has("head") and has("tree") and has("delivery_id") and has("owner_project") and has("ref")' >/dev/null; then
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery requires programme pins for owner, record digest, generation, policy, and candidate head/tree/delivery_id/owner_project/ref"
+    return 0
+  fi
+
+  receipt_rel=$(printf '%s' "$doc" | jq -r '.delivery.receipt.path // ""')
+  receipt_sha=$(printf '%s' "$doc" | jq -r '.delivery.receipt.sha256 // ""')
+  if ! local_owner_relative_path "$receipt_rel" data || ! local_owner_sha256 "$receipt_sha"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "delivery receipt path must be a safe data/*.json locator and its sha256 must be exact"
+    return 0
+  fi
+  receipt_file="$FM_HOME/$receipt_rel"
+  [ -e "$receipt_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt $receipt_rel is unavailable"; return 0; }
+  local_owner_private_file "$receipt_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel is not a private same-user single-link mode-0600 file"; return 0; }
+  if ! receipt_actual=$(sha256_file "$receipt_file"); then
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt cannot be read or hashed"
+    return 0
+  fi
+  [ "$receipt_actual" = "$receipt_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel no longer has its recorded sha256"; return 0; }
+  receipt=$(jq -c 'if type=="object" then . else error("not object") end' "$receipt_file" 2>/dev/null) || {
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not a readable JSON object"
+    return 0
+  }
+  unknown=$(printf '%s' "$receipt" | jq -r '[keys[]]-["candidate","checker","delivery_id","generation","maker","manifest","owner","privacy","qualification","read_back","schema"]|join(",")')
+  [ -z "$unknown" ] || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "local delivery receipt carries unsupported fields that could expose private bytes: $unknown"; return 0; }
+  if ! printf '%s' "$receipt" | jq -e '
+      .schema=="fm-local-project-delivery-receipt/v1" and (.delivery_id|type)=="string" and (.generation|type)=="number" and .generation>=1 and
+      (.owner|type)=="object" and ([.owner|keys[]]-["kind","ref"]|length)==0 and
+      (.candidate|type)=="object" and ([.candidate|keys[]]-["delivery_id","head","owner_project","ref","tree"]|length)==0 and
+      (.maker|type)=="object" and ([.maker|keys[]]-["commit","id"]|length)==0 and
+      (.checker|type)=="object" and ([.checker|keys[]]-["id"]|length)==0 and
+      (.privacy|type)=="object" and ([.privacy|keys[]]-["classification","exposure","published_private_bytes"]|length)==0 and
+      (.qualification|type)=="object" and ([.qualification|keys[]]-["evidence_refs","outcome","pipeline"]|length)==0 and
+      (.manifest|type)=="array" and (.manifest|length)>0 and
+      (.read_back|type)=="object" and ([.read_back|keys[]]-["observer","status"]|length)==0' >/dev/null 2>&1; then
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "local delivery receipt does not match fm-local-project-delivery-receipt/v1"
+    return 0
+  fi
+  if ! printf '%s' "$receipt" | jq -e --argjson d "$doc" '
+      .owner==$d.owner and .candidate==$d.candidate and .privacy==$d.privacy and .qualification==$d.qualification and
+      .generation==$d.generation and .delivery_id==$d.evidence_id' >/dev/null; then
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the owner record does not exactly project its bound local delivery receipt"
+    return 0
+  fi
+
+  evidence_id=$(printf '%s' "$doc" | jq -r '.evidence_id')
+  generation=$(printf '%s' "$doc" | jq -r '.generation')
+  if ! fm_continuation_is_slug "$(printf '%s' "$doc" | jq -r '.policy.id // ""')" \
+    || ! local_owner_sha256 "$(printf '%s' "$doc" | jq -r '.policy.digest // ""')"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery policy must carry a slug id and exact sha256 digest"
+    return 0
+  fi
+  candidate=$(printf '%s' "$doc" | jq -c '.candidate')
+  head=$(printf '%s' "$candidate" | jq -r '.head // ""'); tree=$(printf '%s' "$candidate" | jq -r '.tree // ""')
+  delivery_id=$(printf '%s' "$candidate" | jq -r '.delivery_id // ""'); project=$(printf '%s' "$candidate" | jq -r '.owner_project // ""')
+  ref=$(printf '%s' "$candidate" | jq -r '.ref // ""')
+  maker=$(printf '%s' "$receipt" | jq -r '.maker.id // ""'); maker_commit=$(printf '%s' "$receipt" | jq -r '.maker.commit // ""')
+  checker=$(printf '%s' "$receipt" | jq -r '.checker.id // ""')
+  if ! fm_continuation_is_slug "$evidence_id" || ! fm_continuation_is_slug "$delivery_id" || ! fm_continuation_is_slug "$project" \
+    || ! fm_continuation_is_slug "$maker" || ! fm_continuation_is_slug "$checker" || ! local_owner_oid "$head" || ! local_owner_oid "$tree"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery identities must be slugs and candidate head/tree must be exact git object ids"
+    return 0
+  fi
+  [ "$evidence_id" = "$delivery_id" ] && [ "$maker_commit" = "$head" ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery id and maker commit must bind the exact candidate"
+    return 0
+  }
+  [ "$maker" != "$checker" ] || { local_owner_result REFUSED OWNER_EVIDENCE_MAKER_CHECKER "maker and checker identities must be distinct"; return 0; }
+  case "$ref" in refs/heads/*) fm_continuation_is_slug "${ref#refs/heads/}" ;; *) false ;; esac || {
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "candidate ref must name one exact local branch"
+    return 0
+  }
+  privacy=$(printf '%s' "$receipt" | jq -c '.privacy')
+  [ "$(printf '%s' "$privacy" | jq -r '.classification')" = private_local ] \
+    && [ "$(printf '%s' "$privacy" | jq -r '.exposure')" = digests_only ] \
+    && [ "$(printf '%s' "$privacy" | jq -r '.published_private_bytes')" = false ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "qualified local delivery permits digests only and never published private bytes"
+    return 0
+  }
+  qualification=$(printf '%s' "$receipt" | jq -c '.qualification')
+  case "$(printf '%s' "$qualification" | jq -r '.pipeline // ""')" in no-mistakes|independent-checker) ;; *)
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "qualification pipeline must be no-mistakes or independent-checker"; return 0 ;; esac
+  [ "$(printf '%s' "$qualification" | jq -r '.outcome // ""')" = checks-passed ] \
+    && [ "$(printf '%s' "$qualification" | jq -r '.evidence_refs | type')" = array ] \
+    && [ "$(printf '%s' "$qualification" | jq -r '.evidence_refs | length')" -gt 0 ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "qualified local delivery requires checks-passed and at least one checker receipt"
+    return 0
+  }
+  check_rel=$(printf '%s' "$qualification" | jq -r '.evidence_refs[0].path // ""'); check_sha=$(printf '%s' "$qualification" | jq -r '.evidence_refs[0].sha256 // ""')
+  if [ "$(printf '%s' "$qualification" | jq -r '.evidence_refs | length')" != 1 ] \
+    || ! local_owner_relative_path "$check_rel" data || ! local_owner_sha256 "$check_sha"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "qualification must bind exactly one safe private checker receipt by sha256"
+    return 0
+  fi
+  check_file="$FM_HOME/$check_rel"
+  [ -e "$check_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt $check_rel is unavailable"; return 0; }
+  local_owner_private_file "$check_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel is not a private same-user single-link mode-0600 file"; return 0; }
+  if ! check_actual=$(sha256_file "$check_file"); then
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt cannot be read or hashed"
+    return 0
+  fi
+  [ "$check_actual" = "$check_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel no longer has its recorded sha256"; return 0; }
+  check_doc=$(jq -c 'if type=="object" then . else error("not object") end' "$check_file" 2>/dev/null) || {
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt is not a readable JSON object"; return 0; }
+  if ! printf '%s' "$check_doc" | jq -e --arg head "$head" --arg tree "$tree" --arg maker "$maker" --arg checker "$checker" --arg pipeline "$(printf '%s' "$qualification" | jq -r '.pipeline')" '
+      ([keys[]]-["candidate","checker","maker","outcome","pipeline","receipt_id","schema"]|length)==0 and
+      .schema=="fm-local-checker-receipt/v1" and .candidate=={head:$head,tree:$tree} and
+      .maker=={id:$maker} and .checker=={id:$checker} and .pipeline==$pipeline and .outcome=="checks-passed" and
+      (.receipt_id|type)=="string"' >/dev/null \
+    || ! fm_continuation_is_slug "$(printf '%s' "$check_doc" | jq -r '.receipt_id // ""')"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt does not authenticate the exact candidate and separated identities"
+    return 0
+  fi
+
+  [ "$project" = "$(printf '%s' "$doc" | jq -r '.owner.ref')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "candidate owner project differs from the evidence owner"; return 0; }
+  project_mode=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-project-mode.sh" --raw "$project" 2>/dev/null) || {
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the registered delivery posture for local owner project $project is unreadable"
+    return 0
+  }
+  case "$project_mode" in local-only\ *) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "project $project is not governed by the registered local-only owner"; return 0 ;; esac
+  repo="$FM_HOME/projects/$project"
+  [ -d "$repo" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project is unavailable"; return 0; }
+  projects_real=$(CDPATH='' cd -- "$FM_HOME/projects" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local project registry root is unavailable"; return 0; }
+  repo_real=$(CDPATH='' cd -- "$repo" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project cannot be resolved"; return 0; }
+  case "$repo_real/" in "$projects_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "local owner project resolves outside this home's projects root"; return 0 ;; esac
+  top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project is not readable as git"; return 0; }
+  top=$(CDPATH='' cd -- "$top" 2>/dev/null && pwd -P) || true
+  [ "$top" = "$repo_real" ] || { local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "local owner project path is not its repository root"; return 0; }
+  current_head=$(git -C "$repo" rev-parse --verify "${ref}^{commit}" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate ref $ref is unavailable"; return 0; }
+  current_tree=$(git -C "$repo" rev-parse --verify "${current_head}^{tree}" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate tree cannot be read"; return 0; }
+  [ "$current_head" = "$head" ] && [ "$current_tree" = "$tree" ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "local owner ref no longer resolves to the bound candidate head/tree"
+    return 0
+  }
+
+  manifest=$(printf '%s' "$receipt" | jq -c '.manifest')
+  [ "$(printf '%s' "$manifest" | jq -r '[.[].destination] | unique | length')" = "$(printf '%s' "$manifest" | jq -r 'length')" ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest destination identities must be unique"
+    return 0
+  }
+  root_real=$(CDPATH='' cd -- "$ROOT" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root is unavailable for delivery read-back"; return 0; }
+  family=$(local_owner_deliverable_prefix "$sid") || { local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery is governed only for A, B, and D steps"; return 0; }
+  n=$(printf '%s' "$manifest" | jq -r 'length'); j=0
+  while [ "$j" -lt "$n" ]; do
+    row=$(printf '%s' "$manifest" | jq -c ".[$j]"); j=$((j + 1))
+    if ! printf '%s' "$row" | jq -e 'type=="object" and ([keys[]]-["destination","sha256","source"]|length)==0 and
+        (.source|type)=="string" and (.destination|type)=="string" and (.sha256|type)=="string"' >/dev/null; then
+      local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest entry $j is not an exact source/destination/sha256 object"; return 0
+    fi
+    source=$(printf '%s' "$row" | jq -r '.source'); destination=$(printf '%s' "$row" | jq -r '.destination'); expected=$(printf '%s' "$row" | jq -r '.sha256')
+    if ! local_owner_relative_path "$source" content || ! local_owner_relative_path "$destination" content || ! local_owner_sha256 "$expected" \
+      || [[ "$source" != "$family"* ]] || [[ "$destination" != "$family"* ]]; then
+      local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery manifest entry $j contains an unsafe path or non-digest identity"
+      return 0
+    fi
+    source_type=$(git -C "$repo" cat-file -t "$head:$source" 2>/dev/null || true)
+    [ -n "$source_type" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source is not readable at the bound head"; return 0; }
+    [ "$source_type" = blob ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a regular-file object"; return 0; }
+    source_sha=$(git -C "$repo" show "$head:$source" 2>/dev/null | sha256_stream) || source_sha=''
+    [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
+    [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
+    source_mode=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $1}')
+    source_type=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $2}')
+    case "$source_mode:$source_type" in 100644:blob|100755:blob) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a governed regular-file object"; return 0 ;; esac
+    destination_file="$ROOT/$destination"
+    local_owner_path_has_no_symlink_parents "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
+    destination_parent=$(CDPATH='' cd -- "$(dirname "$destination_file")" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination parent for $destination is unavailable"; return 0; }
+    case "$destination_parent/" in "$root_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination resolves outside the programme root"; return 0 ;; esac
+    if [ ! -e "$destination_file" ] && [ ! -L "$destination_file" ]; then
+      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"
+      return 0
+    fi
+    [ ! -L "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is a symlink object"; return 0; }
+    [ -f "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a regular-file object"; return 0; }
+    destination_index_oid=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $2}')
+    destination_mode=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $1}')
+    case "$destination_mode" in 100644|100755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a governed regular-file object"; return 0 ;; esac
+    if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+      destination_fs_mode=$(stat -f %Lp "$destination_file" 2>/dev/null) || destination_fs_mode=''
+    else
+      destination_fs_mode=$(stat -c %a "$destination_file" 2>/dev/null) || destination_fs_mode=''
+    fi
+    case "$destination_mode:$destination_fs_mode" in 100644:644|100755:755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination mode differs from the tracked candidate"; return 0 ;; esac
+    source_oid=$(git -C "$repo" rev-parse "$head:$source" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source object identity is unavailable"; return 0; }
+    destination_oid=$(git -C "$ROOT" hash-object -- "$destination_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination object identity is unavailable"; return 0; }
+    [ "$source_mode" = "$destination_mode" ] && [ "$destination_index_oid" = "$destination_oid" ] && [ "$destination_oid" = "$source_oid" ] || {
+      local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not the exact tracked candidate object and mode"
+      return 0
+    }
+    if ! destination_sha=$(sha256_file "$destination_file"); then
+      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination cannot be read back or hashed"; return 0
+    fi
+    [ "$destination_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_READBACK_MISMATCH "delivery destination $destination does not match the exact candidate bytes"; return 0; }
+  done
+  [ "$(printf '%s' "$receipt" | jq -r '.read_back.status')" = MATCH ] && [ "$(printf '%s' "$receipt" | jq -r '.read_back.observer')" = "$checker" ] || {
+    local_owner_result REFUSED OWNER_EVIDENCE_READBACK_MISMATCH "delivery receipt lacks checker-attributed MATCH read-back"; return 0
+  }
+  [ "$generation" = "$(printf '%s' "$receipt" | jq -r '.generation')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_GENERATION_MISMATCH "delivery receipt generation differs from its owner record"; return 0; }
+  [ "$sid" = "$(printf '%s' "$doc" | jq -r '.step')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_STEP_MISMATCH "delivery record step changed during validation"; return 0; }
+  local_owner_result ACCEPTED '' ''
+}
+
 # One JSON object describing the adapter's reading of a step's owner evidence
 # record: {path, sha256, status, outcome, reason_code, detail, evidence_id,
-# owner, generation, candidate, policy, verifier, qualification, captures,
-# sources}. Always prints; status carries the verdict (ACCEPTED, NOT_ACCEPTED,
-# REFUSED, CNO). Every check is a closed comparison of record fields against
+# owner, generation, candidate, policy, verifier, qualification, delivery,
+# privacy, captures, sources}. Always prints; status carries the verdict
+# (ACCEPTED, NOT_ACCEPTED, REFUSED, CNO). Every check is a closed comparison
+# of record fields against
 # the programme step, the binding, and local bytes; nothing in the record is
 # executed or interpreted.
 read_owner_evidence() {  # <step-index> <step-id>
@@ -507,7 +842,7 @@ read_owner_evidence() {  # <step-index> <step-id>
        reason_code:(if $reason == "" then null else $reason end), detail:(if $detail == "" then null else $detail end),
        evidence_id:($doc.evidence_id // null), owner:($doc.owner // null), generation:($doc.generation // null),
        candidate:($doc.candidate // null), policy:($doc.policy // null), verifier:($doc.verifier // null),
-       qualification:($doc.qualification // null), captures:($doc.captures // []),
+       qualification:($doc.qualification // null), delivery:($doc.delivery // null), privacy:($doc.privacy // null), captures:($doc.captures // []),
        sources:[(($doc.sources // []) | if type == "array" then .[] else empty end)
                 | if type == "object" then {kind, path, sha256, outcome:(.outcome // null)} else {kind:null, path:null, sha256:null, outcome:null} end]}'
   }
@@ -515,7 +850,10 @@ read_owner_evidence() {  # <step-index> <step-id>
     emit CNO REQUIRED_BINDING_MISSING "no owner-produced evidence record is bound at $path for step $sid (accepted owner kinds: $FM_CONTINUATION_OWNER_KINDS)" null '' ''
     return 0
   fi
-  sha=$(sha256_file "$path")
+  if ! sha=$(sha256_file "$path"); then
+    emit CNO OWNER_EVIDENCE_UNREADABLE "$path cannot be read or hashed" null '' ''
+    return 0
+  fi
   if ! doc=$(jq -c 'if type == "object" then . else error("not an object") end' "$path" 2>/dev/null); then
     emit CNO OWNER_EVIDENCE_UNREADABLE "$path is not a readable JSON object" null "$sha" ''
     return 0
@@ -584,6 +922,15 @@ read_owner_evidence() {  # <step-index> <step-id>
   if [ "$(printf '%s' "$doc" | jq -r '(.observed_bad // []) | length')" != 0 ]; then
     refuse OWNER_EVIDENCE_CONTRADICTORY "record carries observed_bad: $(printf '%s' "$doc" | jq -c '.observed_bad')"; return 0
   fi
+  if [ "$kind" = local_project_delivery ]; then
+    validate_local_project_delivery "$doc" "$i" "$sid"
+    case "$LOCAL_OWNER_STATUS" in
+      ACCEPTED) ;;
+      REFUSED) refuse "$LOCAL_OWNER_REASON" "$LOCAL_OWNER_DETAIL"; return 0 ;;
+      CNO) emit CNO "$LOCAL_OWNER_REASON" "$LOCAL_OWNER_DETAIL" "$doc" "$sha" "$outcome"; return 0 ;;
+      *) refuse OWNER_EVIDENCE_MALFORMED "local project delivery validation produced no typed result"; return 0 ;;
+    esac
+  fi
   sources=$(printf '%s' "$doc" | jq -c '.sources // []')
   [ "$(printf '%s' "$sources" | jq -r 'type')" = array ] || { refuse OWNER_EVIDENCE_MALFORMED "sources must be an array (got $(printf '%s' "$sources" | jq -r 'type'))"; return 0; }
   n=$(printf '%s' "$sources" | jq 'length'); j=0
@@ -600,7 +947,9 @@ read_owner_evidence() {  # <step-index> <step-id>
     if [ ! -f "$sfile" ]; then
       emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath is not readable under root $ROOT" "$doc" "$sha" "$outcome"; return 0
     fi
-    fsha=$(sha256_file "$sfile")
+    if ! fsha=$(sha256_file "$sfile"); then
+      emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath cannot be read or hashed" "$doc" "$sha" "$outcome"; return 0
+    fi
     [ "$fsha" = "$ssha" ] || { refuse OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH "bound source $spath sha256 $fsha differs from the recorded $ssha"; return 0; }
     if [ -n "$sout" ]; then
       fout=$(jq -r 'if (.outcome | type) == "string" then .outcome else "" end' "$sfile" 2>/dev/null) || fout=''

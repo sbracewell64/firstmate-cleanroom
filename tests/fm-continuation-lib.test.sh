@@ -99,7 +99,7 @@ done
 [ "$(printf '%s' "$FM_CONTINUATION_EVIDENCE_KINDS" | wc -w | tr -d ' ')" = 2 ] || fail "the completion-evidence vocabulary is exactly two kinds"
 pass "the completion-evidence vocabulary is closed to the two kinds the resolver represents"
 
-for k in control_ruling control_report pull_request_merge; do
+for k in control_ruling control_report pull_request_merge local_project_delivery; do
   fm_continuation_is_owner_kind "$k" || fail "$k must be an owner kind"
   [ -n "$(fm_continuation_owner_outcomes "$k")" ] || fail "$k must carry an outcome vocabulary"
 done
@@ -108,8 +108,8 @@ for k in shell_command captain_word '' control; do
   fm_continuation_owner_outcomes "$k" >/dev/null 2>&1 && fail "'$k' must have no outcome vocabulary"
   fm_continuation_owner_outcome_supported "$k" MERGED_QUALIFIED && fail "an unknown owner kind supports no outcome"
 done
-[ "$(printf '%s' "$FM_CONTINUATION_OWNER_KINDS" | wc -w | tr -d ' ')" = 3 ] || fail "the owner vocabulary is exactly three kinds"
-pass "the owner vocabulary is closed to the three governed owner kinds"
+[ "$(printf '%s' "$FM_CONTINUATION_OWNER_KINDS" | wc -w | tr -d ' ')" = 4 ] || fail "the owner vocabulary is exactly four kinds"
+pass "the owner vocabulary is closed to the four governed owner kinds"
 
 for o in PROCEED_WITH_CONDITIONS ADOPT_OPTION REFUSED OUT_OF_SCOPE_CAPTAIN_RESERVED NO_ANSWER; do
   fm_continuation_owner_outcome_supported control_ruling "$o" || fail "control_ruling supports $o"
@@ -120,10 +120,15 @@ done
 for o in OPEN CLOSED_UNMERGED MERGED MERGED_QUALIFIED; do
   fm_continuation_owner_outcome_supported pull_request_merge "$o" || fail "pull_request_merge supports $o"
 done
+for o in DELIVERED_UNQUALIFIED DELIVERED_QUALIFIED DELIVERY_FAILED; do
+  fm_continuation_owner_outcome_supported local_project_delivery "$o" || fail "local_project_delivery supports $o"
+done
 fm_continuation_owner_outcome_supported control_report MERGED_QUALIFIED && fail "a self-report can never claim MERGED_QUALIFIED"
 fm_continuation_owner_outcome_supported control_report PROCEED_WITH_CONDITIONS && fail "a self-report can never rule"
 fm_continuation_owner_outcome_supported pull_request_merge PROCEED_WITH_CONDITIONS && fail "a merge record can never rule"
 fm_continuation_owner_outcome_supported control_ruling MERGED_QUALIFIED && fail "a ruling can never qualify a landing"
+fm_continuation_owner_outcome_supported pull_request_merge DELIVERED_QUALIFIED && fail "a forge merge cannot claim a local delivery"
+fm_continuation_owner_outcome_supported local_project_delivery MERGED_QUALIFIED && fail "a local delivery cannot claim a forge merge"
 fm_continuation_owner_outcome_supported pull_request_merge MERGED_QUALIFIE && fail "an outcome prefix is not an outcome"
 fm_continuation_owner_outcome_supported pull_request_merge '' && fail "an empty outcome is never supported"
 pass "each owner kind's outcome vocabulary is closed, exact-token, and disjoint from the others' authority tokens"

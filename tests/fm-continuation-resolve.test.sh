@@ -11,6 +11,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 RESOLVE="$ROOT/bin/fm-continuation-resolve.sh"
+PROJECTION="$ROOT/bin/fm-programme-projection.sh"
 HOLD="$ROOT/bin/fm-captain-hold.sh"
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
@@ -1239,6 +1240,276 @@ ROWS
   pass "a ruling record whose decision is not the accepted one leaves the predecessor step waiting on Browser Sol rather than fabricating a proof attempt or a captain gate"
 }
 
+write_local_abd_programme() {  # <home>
+  local home=$1 policy tmp
+  policy=$(sha_of "$home/cleanroom/policy.md")
+  write_af_programme "$home" ".steps[0].terminal_predicate.policy_digest = \"$policy\"
+    | .steps[2].terminal_predicate.accept += [\"DELIVERED_QUALIFIED\"]
+    | .steps = .steps[0:3] +
+      [{id:\"slice-b\", title:\"B / S2 qualification\", phase:\"package-qualification\", depends_on:[\"architecture-re-review-ruling\"],
+        terminal_predicate:{kind:\"accepted_owner_evidence\", evidence:\"evidence/slice-b.json\", accept:[\"MERGED_QUALIFIED\",\"ADOPT_OPTION\",\"DELIVERED_QUALIFIED\"]}, classification_when_next:\"SELF_HANDLE\"},
+       {id:\"slice-d\", title:\"D / S4 qualification\", phase:\"package-qualification\", depends_on:[\"architecture-re-review-ruling\"],
+        terminal_predicate:{kind:\"accepted_owner_evidence\", evidence:\"evidence/slice-d.json\", accept:[\"MERGED_QUALIFIED\",\"ADOPT_OPTION\",\"DELIVERED_QUALIFIED\"]}, classification_when_next:\"SELF_HANDLE\"}] +
+      [(.steps[3] | .depends_on = [\"slice-c\",\"slice-a\",\"slice-b\",\"slice-d\"])]"
+  tmp="$home/config/programme.tmp"
+  printf 'programme=%s\nroot=%s\n' "$(af_programme_path "$home")" "$home/cleanroom" > "$tmp"
+  mv "$tmp" "$home/config/programme"
+}
+
+make_local_delivery_candidate() {  # <home>
+  local home=$1 repo="$1/projects/exchange-work"
+  printf '%s\n' '- exchange-work [local-only] - governed fixture owner (added 2026-09-17)' > "$home/data/projects.md"
+  mkdir -p "$home/cleanroom/exchange/bin" "$home/cleanroom/artifacts/synthesis/bin"
+  printf 'print("slice-a")\n' > "$home/cleanroom/exchange/bin/slice-a.py"
+  printf 'print("slice-b")\n' > "$home/cleanroom/exchange/bin/slice-b.py"
+  printf 'print("slice-d")\n' > "$home/cleanroom/artifacts/synthesis/bin/slice-d.py"
+  git -C "$home/cleanroom" init -q -b main
+  git -C "$home/cleanroom" add exchange/bin/slice-a.py exchange/bin/slice-b.py artifacts/synthesis/bin/slice-d.py
+  git -C "$home/cleanroom" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m 'tracked delivery destinations'
+  mkdir -p "$repo/exchange/bin" "$repo/artifacts/synthesis/bin"
+  git -C "$repo" init -q -b main
+  printf 'print("slice-a")\n' > "$repo/exchange/bin/slice-a.py"
+  printf 'print("slice-b")\n' > "$repo/exchange/bin/slice-b.py"
+  printf 'print("slice-d")\n' > "$repo/artifacts/synthesis/bin/slice-d.py"
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=maker-one -c user.email=maker-one@example.invalid commit -q -m 'local candidate'
+}
+
+pin_local_delivery_step() {  # <home> <step> <evidence-file>
+  local home=$1 step=$2 file=$3 ev="$1/cleanroom/af/evidence/$3" tmp
+  tmp="$(af_programme_path "$home").tmp"
+  jq --arg step "$step" --arg sha "$(sha_of "$ev")" --arg head "$(jq -r '.candidate.head' "$ev")" \
+    --arg tree "$(jq -r '.candidate.tree' "$ev")" --arg delivery "$(jq -r '.candidate.delivery_id' "$ev")" '
+      (.steps[] | select(.id == $step) | .terminal_predicate) +=
+        {owner_ref:"exchange-work", evidence_generation:1, evidence_sha256:$sha,
+         policy_digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+         candidate:{head:$head, tree:$tree, delivery_id:$delivery, owner_project:"exchange-work", ref:"refs/heads/main"}}
+    ' "$(af_programme_path "$home")" > "$tmp" && mv "$tmp" "$(af_programme_path "$home")"
+}
+
+write_local_delivery_evidence() {  # <home> <step> <source> <destination> <file>
+  local home=$1 step=$2 source=$3 destination=$4 file=$5 repo head tree bytes_sha check_rel check_file check_sha receipt_rel receipt_file receipt_sha
+  repo="$home/projects/exchange-work"
+  head=$(git -C "$repo" rev-parse HEAD)
+  tree=$(git -C "$repo" rev-parse 'HEAD^{tree}')
+  mkdir -p "$home/cleanroom/$(dirname "$destination")" "$home/data/local-delivery"
+  git -C "$repo" show "$head:$source" > "$home/cleanroom/$destination"
+  bytes_sha=$(sha_of "$home/cleanroom/$destination")
+  check_rel="data/local-delivery/$step-check.json"
+  check_file="$home/$check_rel"
+  jq -n --arg head "$head" --arg tree "$tree" '
+    {schema:"fm-local-checker-receipt/v1", receipt_id:"check-one", candidate:{head:$head,tree:$tree},
+     maker:{id:"maker-one"}, checker:{id:"checker-one"}, pipeline:"independent-checker", outcome:"checks-passed"}' > "$check_file"
+  chmod 600 "$check_file"
+  check_sha=$(sha_of "$check_file")
+  receipt_rel="data/local-delivery/$step-delivery.json"
+  receipt_file="$home/$receipt_rel"
+  jq -n --arg step "$step" --arg head "$head" --arg tree "$tree" --arg source "$source" --arg destination "$destination" \
+    --arg bytes_sha "$bytes_sha" --arg check_rel "$check_rel" --arg check_sha "$check_sha" '
+    {schema:"fm-local-project-delivery-receipt/v1", delivery_id:("delivery-"+$step), generation:1,
+     owner:{kind:"local_project_delivery",ref:"exchange-work"}, candidate:{head:$head,tree:$tree,delivery_id:("delivery-"+$step),owner_project:"exchange-work",ref:"refs/heads/main"},
+     maker:{id:"maker-one",commit:$head}, checker:{id:"checker-one"},
+     privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+     qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$check_rel,sha256:$check_sha}]},
+     manifest:[{source:$source,destination:$destination,sha256:$bytes_sha}], read_back:{status:"MATCH",observer:"checker-one"}}' > "$receipt_file"
+  chmod 600 "$receipt_file"
+  receipt_sha=$(sha_of "$receipt_file")
+  jq -n --arg step "$step" --arg head "$head" --arg tree "$tree" --arg receipt_rel "$receipt_rel" --arg receipt_sha "$receipt_sha" \
+    --arg check_rel "$check_rel" --arg check_sha "$check_sha" '
+    {schema:"fm-accepted-owner-evidence/v1", evidence_id:("delivery-"+$step), programme_id:"cleanroom-af-package", step:$step,
+     project:"sbracewell64/firstmate-cleanroom", work_id:"cleanroom-af-package", generation:1,
+     owner:{kind:"local_project_delivery",ref:"exchange-work"}, outcome:"DELIVERED_QUALIFIED",
+     candidate:{head:$head,tree:$tree,delivery_id:("delivery-"+$step),owner_project:"exchange-work",ref:"refs/heads/main"},
+     policy:{id:"local-delivery-policy",digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+     verifier:{tool:"fm-local-project-delivery/v1"},
+     qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$check_rel,sha256:$check_sha}]},
+     delivery:{receipt:{path:$receipt_rel,sha256:$receipt_sha}},
+     privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+     captures:[],sources:[],observed_bad:[],superseded_by:null}' > "$(af_evidence_dir "$home")/$file"
+  pin_local_delivery_step "$home" "$step" "$file"
+}
+
+repin_local_delivery() {  # <home> <step> <evidence-file>
+  local home=$1 step=$2 file=$3 ev="$1/cleanroom/af/evidence/$3" receipt rel tmp
+  rel=$(jq -r '.delivery.receipt.path' "$ev")
+  receipt="$home/$rel"
+  tmp="$ev.tmp"
+  jq --arg sha "$(sha_of "$receipt")" --argjson candidate "$(jq -c '.candidate' "$receipt")" \
+    --argjson privacy "$(jq -c '.privacy' "$receipt")" --argjson qualification "$(jq -c '.qualification' "$receipt")" \
+    '.delivery.receipt.sha256=$sha | .candidate=$candidate | .privacy=$privacy | .qualification=$qualification' "$ev" > "$tmp" && mv "$tmp" "$ev"
+  tmp="$(af_programme_path "$home").tmp"
+  jq --arg step "$step" --arg sha "$(sha_of "$ev")" --argjson candidate "$(jq -c '.candidate' "$ev")" \
+    '(.steps[] | select(.id==$step) | .terminal_predicate) |= (.evidence_sha256=$sha | .candidate=$candidate)' \
+    "$(af_programme_path "$home")" > "$tmp" && mv "$tmp" "$(af_programme_path "$home")"
+}
+
+test_af_private_local_delivery_owner() {
+  local home out projection proof_sha receipt check dest tmp fakebin old_path
+  home=$(make_af_home af-local-delivery)
+  write_proof_b_adverse "$home"
+  proof_sha=$(sha_of "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")
+  write_evidence "$home" ruling.json architecture-re-review-ruling control_ruling control#3#issuecomment-5554585623 PROCEED_WITH_CONDITIONS \
+    ".policy={id:\"architecture-review-acceptance-v1\",digest:\"$(sha_of "$home/cleanroom/policy.md")\"} | .sources=[{kind:\"local_file\",path:\"artifacts/proofs/proof-b/attempt-3/disposition.json\",sha256:\"$proof_sha\",outcome:\"CNO_AT_B-S9\"}]"
+  write_evidence "$home" slice-c.json slice-c pull_request_merge 'sbracewell64/firstmate-cleanroom#5' MERGED_QUALIFIED \
+    '.candidate={merge_commit:"dc66ba5ce35be4917424a529a45e61f4a9fa556c"} | .qualification={pipeline:"no-mistakes",evidence_refs:["qualified"]}'
+  write_local_abd_programme "$home"
+  make_local_delivery_candidate "$home"
+
+  out=$(run_resolve "$home" resolve) || fail "local delivery baseline failed: $out"
+  expect_cno_refusal "$out" slice-a REQUIRED_BINDING_MISSING "local delivery before"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+  out=$(run_resolve "$home" resolve) || fail "local delivery accepted resolve failed: $out"
+  expect_cno_refusal "$out" slice-b REQUIRED_BINDING_MISSING "local delivery after A"
+  [ "$(field "$out" '.completed | map(.id) | join(",")')" = "architecture-re-review-ruling,slice-c,slice-a" ] || fail "local delivery accepted only A: $(field "$out" '.completed')"
+  [ "$(field "$out" '.completed[-1].outcome')" = DELIVERED_QUALIFIED ] || fail "local delivery outcome not projected"
+  write_local_delivery_evidence "$home" slice-a artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-a.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice A resolve failed: $out"
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "A refuses an artifacts/synthesis deliverable"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+  projection=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$PROJECTION" project) || fail "local delivery projection failed: $projection"
+  [ "$(field "$projection" '.next_action')" = slice-b ] && [ "$(field "$projection" '.reason_code')" = REQUIRED_BINDING_MISSING ] || fail "projection did not consume the exact resolver result"
+  [ "$projection" = "$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$PROJECTION" project)" ] || fail "unchanged local delivery projection is not idempotent"
+  write_local_delivery_evidence "$home" slice-b exchange/bin/slice-b.py exchange/bin/slice-b.py slice-b.json
+  out=$(run_resolve "$home" resolve) || fail "local delivery B resolve failed: $out"
+  expect_cno_refusal "$out" slice-d REQUIRED_BINDING_MISSING "local delivery keeps D separate"
+  [ "$(field "$out" '.next_action')" != pilot-f ] || fail "local delivery launched F before D qualified"
+  write_local_delivery_evidence "$home" slice-b artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-b.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice B resolve failed: $out"
+  expect_cno_refusal "$out" slice-b OWNER_EVIDENCE_PRIVACY_EXPOSURE "B refuses an artifacts/synthesis deliverable"
+  write_local_delivery_evidence "$home" slice-b exchange/bin/slice-b.py exchange/bin/slice-b.py slice-b.json
+  write_local_delivery_evidence "$home" slice-d exchange/bin/slice-a.py exchange/bin/slice-a.py slice-d.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice D resolve failed: $out"
+  expect_cno_refusal "$out" slice-d OWNER_EVIDENCE_PRIVACY_EXPOSURE "D refuses an exchange deliverable"
+  write_local_delivery_evidence "$home" slice-d artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-d.json
+  out=$(run_resolve "$home" resolve) || fail "local delivery D resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] || fail "right D family did not leave F as next action"
+  [ "$(jq -r '.outcome' "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")" = CNO_AT_B-S9 ] || fail "local delivery changed Proof-B"
+  pass "private local delivery qualifies only the exact owner-produced A/B units, projection advances idempotently, Proof-B stays CNO_AT_B-S9, and F stays unlaunched behind D"
+
+  # Every mutation below starts from the accepted A record and changes one
+  # independently load-bearing fact.
+  receipt="$home/data/local-delivery/slice-a-delivery.json"
+  check="$home/data/local-delivery/slice-a-check.json"
+  dest="$home/cleanroom/exchange/bin/slice-a.py"
+
+  tmp="$(af_evidence_dir "$home")/slice-a.json.tmp"; jq '.owner.ref="other-owner"' "$(af_evidence_dir "$home")/slice-a.json" > "$tmp" && mv "$tmp" "$(af_evidence_dir "$home")/slice-a.json"
+  tmp="$(af_programme_path "$home").tmp"; jq --arg sha "$(sha_of "$(af_evidence_dir "$home")/slice-a.json")" '(.steps[]|select(.id=="slice-a")|.terminal_predicate.evidence_sha256)=$sha' "$(af_programme_path "$home")" > "$tmp" && mv "$tmp" "$(af_programme_path "$home")"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_OWNER_MISMATCH "wrong local owner"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.maker.id="checker-one"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_MAKER_CHECKER "maker/checker separation"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.privacy.published_private_bytes=true' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "privacy exposure"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '\n' >> "$receipt"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "receipt authenticity"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '\n' >> "$check"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "forged checker receipt"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  fakebin="$home/fake-bin"; mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *slice-a-delivery.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery receipt"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *slice-a-check.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable checker receipt"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/af/evidence/slice-a.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_UNREADABLE "unhashable owner record"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/exchange/bin/slice-a.py*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery destination"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in "-a 256") exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_SOURCE_UNREADABLE "unhashable candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].source="exchange/bin"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "tree candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  mkdir -p "$home/cleanroom/exchange/bin/target-dir"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/bin/target-dir"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "directory destination"
+  rmdir "$home/cleanroom/exchange/bin/target-dir"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  ln -s "$dest" "$home/cleanroom/exchange/bin/target-link"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/bin/target-link"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "symlink destination"
+  rm "$home/cleanroom/exchange/bin/target-link"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  ln -s exchange/bin/slice-a.py "$home/projects/exchange-work/exchange/bin/source-link"
+  git -C "$home/projects/exchange-work" add exchange/bin/source-link
+  git -C "$home/projects/exchange-work" -c user.name=maker-one -c user.email=maker-one@example.invalid commit -q -m 'symlink candidate source'
+  write_local_delivery_evidence "$home" slice-a exchange/bin/source-link exchange/bin/slice-a.py slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "symlink candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  chmod 755 "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "readable mode substitution"
+  chmod 644 "$dest"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange//bin/slice-a.py"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "duplicate-separator path"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  mkdir -p "$home/escape-target"; ln -s "$home/escape-target" "$home/cleanroom/exchange/escape"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/escape/slice-a.py"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "symlink escape path"
+  rm "$home/cleanroom/exchange/escape"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  rm "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unavailable read-back"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  chmod 755 "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "mode mutation"
+  chmod 644 "$dest"
+  printf 'tampered\n' > "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "tracked-object mutation"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].sha256="0000000000000000000000000000000000000000000000000000000000000000"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate digest mutation"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf 'advance\n' > "$home/projects/exchange-work/advance.txt"; git -C "$home/projects/exchange-work" add advance.txt
+  git -C "$home/projects/exchange-work" -c user.name=maker-one -c user.email=maker-one@example.invalid commit -q -m advance
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "changed head"
+  git -C "$home/projects/exchange-work" reset -q --hard HEAD^
+
+  tmp="$check.tmp"; jq '.candidate.tree="1111111111111111111111111111111111111111"' "$check" > "$tmp" && mv "$tmp" "$check"; chmod 600 "$check"
+  tmp="$receipt.tmp"; jq --arg sha "$(sha_of "$check")" '.candidate.tree="1111111111111111111111111111111111111111" | .qualification.evidence_refs[0].sha256=$sha' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "changed tree"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$(af_evidence_dir "$home")/slice-a.json.tmp"; jq '.generation=2' "$(af_evidence_dir "$home")/slice-a.json" > "$tmp" && mv "$tmp" "$(af_evidence_dir "$home")/slice-a.json"
+  tmp="$(af_programme_path "$home").tmp"; jq --arg sha "$(sha_of "$(af_evidence_dir "$home")/slice-a.json")" '(.steps[]|select(.id=="slice-a")|.terminal_predicate.evidence_sha256)=$sha' "$(af_programme_path "$home")" > "$tmp" && mv "$tmp" "$(af_programme_path "$home")"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_GENERATION_MISMATCH "stale generation"
+  pass "local delivery refuses independent owner, candidate, generation, maker/checker, authenticity, privacy, and read-back mutations"
+}
+
 test_af_structure_and_binding_refusals() {
   local home err rc
   home=$(make_af_home af-structure)
@@ -1551,6 +1822,7 @@ timed test_consumers_project_the_typed_result
 timed test_af_accepted_owner_evidence_yields_f
 timed test_af_landing_without_qualification_cannot_yield_f
 timed test_af_refusal_matrix
+timed test_af_private_local_delivery_owner
 timed test_af_structure_and_binding_refusals
 timed test_af_applicability_invalidation
 timed test_af_presentation_quiet_and_ack_race

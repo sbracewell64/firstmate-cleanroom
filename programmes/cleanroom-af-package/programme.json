@@ -204,7 +204,8 @@
         "evidence": "evidence/slice-a-s1-qualification.json",
         "accept": [
           "MERGED_QUALIFIED",
-          "ADOPT_OPTION"
+          "ADOPT_OPTION",
+          "DELIVERED_QUALIFIED"
         ]
       },
       "phase": "package-qualification",
@@ -243,7 +244,7 @@
         },
         "note": "the publication handoff traced there (edges 4-9 pending on the interactive publisher and Browser Sol read-back) is S1 delivery evidence, not a prerequisite manufactured for the pilot"
       },
-      "qualification_required": "independent qualification of the S1 deliverables through the normal gates (5554812621 F: after A-E independently qualify); the deliverables live outside a git repository, so the accepted record is either a pull_request_merge MERGED_QUALIFIED once they land through a qualified path or a control_ruling ADOPT_OPTION on a request that binds their exact bytes"
+      "qualification_required": "independent qualification of the S1 deliverables through the normal gates (5554812621 F: after A-E independently qualify); accepted evidence is a pull_request_merge MERGED_QUALIFIED, a control_ruling ADOPT_OPTION that binds inspectable exact bytes, or a local_project_delivery DELIVERED_QUALIFIED whose pinned private receipt the resolver independently reproduces without publishing the bytes"
     },
     {
       "id": "slice-b-s2-reference-catalog",
@@ -253,7 +254,8 @@
         "evidence": "evidence/slice-b-s2-qualification.json",
         "accept": [
           "MERGED_QUALIFIED",
-          "ADOPT_OPTION"
+          "ADOPT_OPTION",
+          "DELIVERED_QUALIFIED"
         ]
       },
       "phase": "package-qualification",
@@ -292,7 +294,8 @@
         "evidence": "evidence/slice-d-s4-qualification.json",
         "accept": [
           "MERGED_QUALIFIED",
-          "ADOPT_OPTION"
+          "ADOPT_OPTION",
+          "DELIVERED_QUALIFIED"
         ]
       },
       "phase": "package-qualification",

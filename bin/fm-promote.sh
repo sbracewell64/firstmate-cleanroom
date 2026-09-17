@@ -171,6 +171,7 @@ ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" all all) || {
 }
 TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
 {
+  printf '%s\n' "$DISCIPLINE"
   cat <<EOF
 Your scout task has been promoted to a ship task, mode=$MODE. Your window, worktree, and context stay as they are; only the contract below changes.
 
@@ -184,8 +185,6 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 The worker discipline below replaces the scout evidence subset. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
 
 EOF
-  printf '%s' "$DISCIPLINE"
-  printf '\n\n'
   printf '%s\n\n' "$ENGINEERING"
   fm_dod_block "$MODE" "$ID"
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
@@ -199,6 +198,7 @@ grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  echo "origin=scout-to-ship"
 } >> "$TMP"
 if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
   rm -f -- "$TMP"

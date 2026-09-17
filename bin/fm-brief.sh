@@ -467,7 +467,8 @@ case "$MODE" in
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 
-cat > "$BRIEF" <<EOF
+printf '%s\n' "$DISCIPLINE" > "$BRIEF"
+cat >> "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task

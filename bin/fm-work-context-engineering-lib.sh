@@ -237,21 +237,44 @@ fm_work_context_engineering_residuals() { # <descriptor>
        source_identity:.sha256,caller_identity:"pending",status:"open"}) end' "$1"
 }
 
-fm_work_context_engineering_brief() { # <data> <id> <ship|scout|secondmate>
-  local data=$1 id=$2 kind=$3 line expected brief instructions
+fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
+  local data=$1 id=$2 kind=$3 state=$4 line expected brief instructions origin_count origin mode
   brief="$data/$id/brief.md"
   instructions="$data/$id/ship-instructions.md"
   if [ "$kind" = ship ]; then
-    if [ -e "$instructions" ] || [ -L "$instructions" ]; then
+    origin_count=$(grep -c '^origin=' "$state/$id.meta" 2>/dev/null || true)
+    origin=$(fm_meta_get "$state/$id.meta" origin)
+    case "$origin_count:$origin" in
+      0:) [ ! -e "$instructions" ] && [ ! -L "$instructions" ] || {
+        _fm_wc_engineering_gap 'discipline-artifact: unexpected promoted instructions shadow'; return 3;
+      } ;;
+      1:scout-to-ship) : ;;
+      *) _fm_wc_engineering_gap 'discipline-artifact: malformed promotion origin'; return 3 ;;
+    esac
+    if [ "$origin" = scout-to-ship ]; then
       [ -f "$instructions" ] && [ ! -L "$instructions" ] || {
         _fm_wc_engineering_gap 'discipline-artifact: promoted instructions path is unsafe'; return 3;
       }
       brief="$instructions"
     fi
     if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
-      fm_discipline_brief "$data" "$id" ship "$brief" || return 3
+      if [ "$origin" = scout-to-ship ]; then
+        mode=$(fm_meta_get "$state/$id.meta" mode)
+        fm_discipline_envelope_validate "$data" "$id" "$brief" \
+          "Your scout task has been promoted to a ship task, mode=$mode. Your window, worktree, and context stay as they are; only the contract below changes." || return 3
+      else
+        fm_discipline_brief "$data" "$id" ship "$brief" || return 3
+      fi
     fi
   elif [ "$kind" = scout ] || [ "$kind" = secondmate ]; then
+    if [ "$kind" = scout ]; then
+      [ -f "$brief" ] && [ ! -L "$brief" ] || {
+        _fm_wc_engineering_gap 'discipline-artifact: unsafe or missing scout brief'; return 3;
+      }
+      [ "$(head -n 1 "$brief" 2>/dev/null)" = 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' ] || {
+        _fm_wc_engineering_gap 'discipline-role: scout brief has an unexpected generated prefix'; return 3;
+      }
+    fi
     fm_discipline_brief "$data" "$id" "$kind" "$brief" || return 3
   fi
   line=$(grep -F 'engineering SHA256 ' "$brief" 2>/dev/null || true)

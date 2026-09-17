@@ -455,37 +455,31 @@ fm_discipline_envelope_render() { # <data> <task>
   printf '\n%s\n' "$end"
 }
 
-fm_discipline_envelope_validate() { # <data> <task> <artifact>
-  local data=$1 task=$2 artifact=$3 begin end begin_count end_count
-  local expected_file actual_file
+fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix>
+  local data=$1 task=$2 artifact=$3 successor=$4 bytes
+  local expected_file actual_file combined_file
   [ -f "$artifact" ] && [ ! -L "$artifact" ] && [ -r "$artifact" ] || {
     fm_discipline_gap "discipline-artifact: unsafe or missing $artifact"; return 3;
   }
   expected_file="$artifact.discipline.expected.$$"
   actual_file="$artifact.discipline.actual.$$"
+  combined_file="$artifact.discipline.combined.$$"
   fm_discipline_envelope_render "$data" "$task" > "$expected_file" || {
-    rm -f "$expected_file" "$actual_file" 2>/dev/null; return 3;
+    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
   }
-  begin=$(sed -n '1p' "$expected_file")
-  end=$(sed -n '$p' "$expected_file")
-  begin_count=$(grep -Fxc "$begin" "$artifact" 2>/dev/null || true)
-  end_count=$(grep -Fxc "$end" "$artifact" 2>/dev/null || true)
-  if [ "$begin_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
-    fm_discipline_gap 'discipline-artifact: expected one canonical envelope'
-    return 3
-  fi
-  LC_ALL=C awk -v begin="$begin" -v end="$end" '
-    $0 == begin { on=1; print; next }
-    on { print; if ($0 == end) { done=1; exit } }
-    END { exit !(done && on) }
-  ' "$artifact" > "$actual_file" 2>/dev/null || true
+  { cat "$expected_file"; printf '%s\n' "$successor"; } > "$combined_file" || {
+    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
+  }
+  bytes=$(wc -c < "$combined_file") || {
+    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
+  }
+  head -c "$bytes" "$artifact" > "$actual_file" 2>/dev/null || true
   if ! cmp -s "$expected_file" "$actual_file"; then
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
-    fm_discipline_gap 'discipline-artifact: envelope content or boundary changed'
+    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null
+    fm_discipline_gap 'discipline-artifact: fixed envelope slot or successor prefix changed'
     return 3
   fi
-  rm -f "$expected_file" "$actual_file" 2>/dev/null
+  rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null
   return 0
 }
 
@@ -497,5 +491,6 @@ fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
     ship) ;;
     *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
   esac
-  fm_discipline_envelope_validate "$data" "$task" "$brief"
+  fm_discipline_envelope_validate "$data" "$task" "$brief" \
+    'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
 }

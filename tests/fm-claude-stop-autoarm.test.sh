@@ -1120,7 +1120,8 @@ test_bounded_retirement_preserves_surfaces_and_deadline() {
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   [ "$status" -ne 0 ] || fail "a stubborn bounded target was reported stopped"
-  [ "$elapsed" -le 1500 ] || fail "bounded retirement exceeded its one-second owner: ${elapsed}ms"
+  [ "$elapsed" -ge 800 ] || fail "bounded retirement returned before its one-second deadline: ${elapsed}ms"
+  [ "$elapsed" -le 1300 ] || fail "bounded retirement exceeded its one-second owner: ${elapsed}ms"
   [ "$delivered" -eq 1 ] || fail "bounded retirement delivered $delivered TERM signals"
   cmp -s "$before" "$after" || fail "bounded retirement changed lock or ledger surfaces"
   pass "auto-arm: bounded retirement preserves surfaces and deadline"
@@ -1177,7 +1178,8 @@ run_bounded_mechanism_case() {
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   [ "$status" -ne 0 ] || fail "$mechanism reported a stubborn target stopped"
-  [ "$elapsed" -le 1500 ] || fail "$mechanism exceeded the one-second owner: ${elapsed}ms"
+  [ "$elapsed" -ge 800 ] || fail "$mechanism returned before its one-second deadline: ${elapsed}ms"
+  [ "$elapsed" -le 1300 ] || fail "$mechanism exceeded the one-second owner: ${elapsed}ms"
   [ "${delivered:-0}" -eq 1 ] || fail "$mechanism delivered ${delivered:-0} TERM signals"
   cmp -s "$before" "$after" || fail "$mechanism changed lock or ledger surfaces"
   if [ "$mechanism" != bash ]; then

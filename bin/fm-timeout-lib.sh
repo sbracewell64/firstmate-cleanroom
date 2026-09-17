@@ -125,6 +125,82 @@ fm_run_external_timeout() {
   esac
 }
 
+fm_run_external_timeout_strict() {
+  local runner=$1 seconds=$2 status_file runner_pid runner_rc command_rc
+  shift 2
+  status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-strict-status.XXXXXX" 2>/dev/null) || return 124
+  "$runner" -s KILL "$seconds" bash -c '
+    status_file=$1
+    shift
+    "$@"
+    command_rc=$?
+    printf "%s\n" "$command_rc" > "$status_file"
+    exit "$command_rc"
+  ' _ "$status_file" "$@" &
+  runner_pid=$!
+  if wait "$runner_pid"; then
+    runner_rc=0
+  else
+    runner_rc=$?
+  fi
+  command_rc=$(cat "$status_file" 2>/dev/null || true)
+  rm -f "$status_file" 2>/dev/null || true
+  case "$command_rc" in
+    ''|*[!0-9]*) ;;
+    *) [ "$command_rc" -le 255 ] && return "$command_rc" ;;
+  esac
+  case "$runner_rc" in
+    124|137)
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      return 124
+      ;;
+    *) return "$runner_rc" ;;
+  esac
+}
+
+fm_run_bash_timeout_strict() {
+  local seconds=$1 command_status deadline_status child_pid watchdog_pid command_rc recorded_rc monitor_was_on=0
+  shift
+  command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-strict-timeout-command.XXXXXX" 2>/dev/null) || return 124
+  deadline_status="${command_status}.deadline"
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m
+  (
+    set +m
+    "$@"
+    command_rc=$?
+    printf '%s\n' "$command_rc" > "$command_status"
+    exit "$command_rc"
+  ) &
+  child_pid=$!
+  (
+    set +m
+    sleep "$seconds"
+    printf 'expired\n' > "$deadline_status"
+    kill -KILL -- "-$child_pid" 2>/dev/null || true
+    exit 124
+  ) &
+  watchdog_pid=$!
+  [ "$monitor_was_on" -eq 1 ] || set +m
+
+  if wait "$child_pid" 2>/dev/null; then
+    command_rc=0
+  else
+    command_rc=$?
+  fi
+  if [ -s "$deadline_status" ]; then
+    wait "$watchdog_pid" 2>/dev/null || true
+    command_rc=124
+  else
+    kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    recorded_rc=$(cat "$command_status" 2>/dev/null || true)
+    case "$recorded_rc" in ''|*[!0-9]*) ;; *) command_rc=$recorded_rc ;; esac
+  fi
+  rm -f "$command_status" "$deadline_status" 2>/dev/null || true
+  return "$command_rc"
+}
+
 fm_run_timed() {  # <seconds> <command...>
   local seconds=$1
   shift
@@ -136,6 +212,21 @@ fm_run_timed() {  # <seconds> <command...>
         "$seconds" "$@"
       ;;
     bash) fm_run_bash_timeout "$seconds" "$@" ;;
+    *) return 124 ;;
+  esac
+}
+
+fm_run_timed_strict() {  # <seconds> <command...>
+  local seconds=$1
+  shift
+  case "$(fm_timeout_mechanism)" in
+    timeout) fm_run_external_timeout_strict timeout "$seconds" "$@" ;;
+    gtimeout) fm_run_external_timeout_strict gtimeout "$seconds" "$@" ;;
+    perl)
+      perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+        "$seconds" "$@"
+      ;;
+    bash) fm_run_bash_timeout_strict "$seconds" "$@" ;;
     *) return 124 ;;
   esac
 }

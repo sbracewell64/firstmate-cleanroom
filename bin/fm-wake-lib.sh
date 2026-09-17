@@ -1495,7 +1495,7 @@ fm_autoarm_confirm_stop_bounded() {
     # shellcheck source=bin/fm-timeout-lib.sh
     . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
     # shellcheck disable=SC2016 # The bounded child receives its arguments positionally.
-    fm_run_timed 1 bash -c '
+    fm_run_timed_strict 1 bash -c '
       set -u
       lib=$1
       pid=$2

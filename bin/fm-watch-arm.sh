@@ -81,27 +81,6 @@ CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 case "$CONFIRM_TIMEOUT" in ''|*[!0-9]*) CONFIRM_TIMEOUT=$ARM_CONFIRM_DEFAULT ;; esac
 CONFIRM_TIMEOUT=${CONFIRM_TIMEOUT#"${CONFIRM_TIMEOUT%%[!0]*}"}
 [ -n "$CONFIRM_TIMEOUT" ] || CONFIRM_TIMEOUT=0
-# Tenths of a second the arm's close paths spend confirming their watcher child
-# stopped. It is its OWN budget rather than a multiple of the startup
-# confirmation above: those are unrelated questions, and deriving one from the
-# other let a fail-fast FM_ARM_CONFIRM_TIMEOUT of 0 silently deliver no stop at
-# all. The floor keeps the bound wide enough for one delivery and one
-# re-delivery, so a value below the re-delivery interval cannot reduce the
-# confirmed stop to the single unconfirmed signal it exists to replace.
-ARM_STOP_DEFAULT=$((ARM_CONFIRM_DEFAULT * 10))
-ARM_STOP_POLLS=${FM_ARM_STOP_POLLS:-$ARM_STOP_DEFAULT}
-case "$ARM_STOP_POLLS" in ''|*[!0-9]*) ARM_STOP_POLLS=$ARM_STOP_DEFAULT ;; esac
-ARM_STOP_POLLS=${ARM_STOP_POLLS#"${ARM_STOP_POLLS%%[!0]*}"}
-[ -n "$ARM_STOP_POLLS" ] || ARM_STOP_POLLS=$ARM_STOP_DEFAULT
-[ "$ARM_STOP_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || ARM_STOP_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
-# Tenths of a second --restart spends confirming the watcher recorded in THIS
-# home's lock stopped. It is a fixed base rather than a knob because the caller
-# of a recovery path has no cycle to tune, but it takes the SAME floor as the
-# close paths above and for the same reason: a bound that does not outlast the
-# re-delivery interval yields exactly one delivery, which is the single
-# unconfirmed signal the confirmed stop exists to replace.
-RESTART_STOP_POLLS=50
-[ "$RESTART_STOP_POLLS" -gt "$FM_STOP_REDELIVER_POLLS" ] || RESTART_STOP_POLLS=$((FM_STOP_REDELIVER_POLLS + 10))
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -136,7 +115,6 @@ cycle_origin=unknown
 cycle_started_at=0
 cycle_lock_before='pid:none|identity:none'
 cycle_child_stop=none
-cycle_child_waited=0
 # Disposition of the --restart stop this arm performed before launching, carried
 # into every lifecycle record it writes. docs/watcher-continuity.md's arm-layer
 # cycle contract owns the field and its values.
@@ -147,7 +125,6 @@ cycle_begin() {
   cycle_origin=$2
   cycle_watcher_identity=$3
   cycle_child_stop=none
-  cycle_child_waited=0
   cycle_started_at=$(date +%s)
   cycle_lock_before=$(lock_snapshot)
   cycle_active=1
@@ -420,6 +397,33 @@ handling_successor_generation() {
 mode=arm
 handling_generation=
 handling_watcher_pid=
+
+fm_watch_stop_confirmed() {
+  local pid=$1 recorded=$2
+  [ -n "$recorded" ] || return 4
+  (
+    # shellcheck source=bin/fm-timeout-lib.sh
+    . "$SCRIPT_DIR/fm-timeout-lib.sh"
+    # shellcheck disable=SC2016 # The bounded child receives its arguments positionally.
+    fm_run_timed_strict 1 bash -c '
+      . "$1"
+      pid=$2
+      recorded=$3
+      current=$(fm_pid_identity "$pid" 2>/dev/null) || exit 4
+      [ "$current" = "$recorded" ] || exit 4
+      fm_pid_alive "$pid" || exit 0
+      kill -TERM "$pid" 2>/dev/null || {
+        fm_pid_alive "$pid" || exit 0
+        exit 3
+      }
+      while fm_pid_alive "$pid"; do
+        sleep 0.1
+      done
+      exit 0
+    ' _ "$SCRIPT_DIR/fm-wake-lib.sh" "$pid" "$recorded"
+  )
+}
+
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
   --restart) mode=restart ;;
@@ -445,50 +449,12 @@ fi
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
-  restart_free_polls=0
   cycle_restart_stop=no-live-watcher
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
-      # Stop it and try to CONFIRM it is gone before relaunching, so the fresh
-      # watcher either takes a released lock or reclaims a now-dead-pid stale lock
-      # instead of seeing the dying one as a live holder and no-opping. One
-      # delivery is not a stop - fm_stop_process_confirmed owns why - so the stop
-      # is re-delivered until the watcher is observed gone or the bound elapses.
-      # The matched lock identity keeps a recycled pid from being signalled.
-      #
-      # An unconfirmed stop does NOT refuse the restart. --restart is the recovery
-      # path: leaving the fleet with no watcher at all is worse than the duplicate
-      # a refusal would avoid, and an escape hatch that will not open when the
-      # evidence is missing is not a safety property. The unknown is NAMED instead,
-      # as restart_stop in the lifecycle records this arm writes, so a consumer can
-      # tell a restart after a confirmed stop from one that could not confirm it.
       cycle_restart_stop=unconfirmed
-      if fm_stop_process_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" "$RESTART_STOP_POLLS"; then
-        # `confirmed` means the pid is FREE, which is stricter than the helper's
-        # rc=0, so this waits for that before upgrading the label. rc=0 arrives in
-        # three shapes. The pid is gone: the poll below exits on its first
-        # evaluation and contributes nothing. The pid is a ZOMBIE: the helper reads
-        # it as gone because /proc/<pid>/cmdline is empty so fm_pid_identity fails,
-        # while kill -0 still succeeds - measured directly as
-        # `state=Z kill0_succeeds=yes cmdline_len=0` for a forked child that exited
-        # while its parent had not yet reaped it, and pinned by the predicate-pair
-        # case in tests/fm-watcher-lock.test.sh. This is the shape the poll exists
-        # for: without it a restart records `confirmed` for a pid still visible
-        # enough that the relaunched watcher stands down against it. The pid was
-        # RECYCLED and a live stranger holds it: the poll spends its bound and the
-        # restart keeps the conservative `unconfirmed`, which is the accepted
-        # caveat docs/watcher-continuity.md records.
-        #
-        # The end-to-end restart against a real zombie watcher is deliberately not
-        # tested: the reap window is not controllable, so such a case would be
-        # flaky in the very lane this branch de-flakes. The test pins the two
-        # predicates the reasoning rests on instead.
-        restart_free_polls=0
-        while [ "$restart_free_polls" -lt 20 ] && fm_pid_alive "$lock_pid"; do
-          sleep 0.1
-          restart_free_polls=$((restart_free_polls + 1))
-        done
-        fm_pid_alive "$lock_pid" || cycle_restart_stop=confirmed
+      if fm_watch_stop_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" || ! fm_pid_alive "$lock_pid"; then
+        cycle_restart_stop=confirmed
       fi
     else
       if ! clear_stale_recorded_watcher_lock; then
@@ -524,29 +490,16 @@ cleanup_child() {
 }
 
 stop_owned_child() {
-  local current
   cycle_child_stop=unconfirmed
   if [ -z "$child" ]; then
     cycle_child_stop=none
     return 2
   fi
-  if fm_stop_process_confirmed "$child" "$cycle_watcher_identity" "$ARM_STOP_POLLS"; then
+  if fm_watch_stop_confirmed "$child" "$cycle_watcher_identity" || ! fm_pid_alive "$child"; then
     cycle_child_stop=confirmed
     return 0
   fi
-  if ! fm_pid_alive "$child"; then
-    cycle_child_stop=confirmed
-    return 0
-  fi
-  current=$(fm_pid_identity "$child" 2>/dev/null || true)
-  if [ -z "$cycle_watcher_identity" ] || [ -z "$current" ] || [ "$current" != "$cycle_watcher_identity" ]; then
-    return 1
-  fi
-  kill -KILL "$child" 2>/dev/null || true
-  wait "$child" 2>/dev/null || true
-  cycle_child_waited=1
-  cycle_child_stop=forced-unconfirmed
-  return 0
+  return 1
 }
 
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
@@ -682,12 +635,8 @@ done
 trap '' HUP TERM INT
 print_watch_output "$child_out"
 if stop_owned_child; then
-  if [ "$cycle_child_waited" -eq 0 ]; then
-    wait "$child" 2>/dev/null
-    rc=$?
-  else
-    rc=unknown
-  fi
+  wait "$child" 2>/dev/null
+  rc=$?
   cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 else
   cycle_log_append unknown unknown confirmation-timeout none

@@ -1661,11 +1661,6 @@ test_normal_cycle_end_sends_the_owned_child_no_stop() {
 }
 
 test_an_unconfirmed_child_stop_is_never_the_arms_last_word() {
-  # The counterpart exclusion: cleanup_child delivers ONE unconfirmed TERM and is
-  # only safe because every path that reaches it has already run the confirmed
-  # stop. A stand-in that drops its first stop proves that ordering from outside:
-  # if a single delivery were the arm's whole stop, this child would outlive the
-  # arm that owned it.
   local dir state armbin siglog arm child delivered i
   dir=$(make_case arm-stop-is-confirmed)
   state="$dir/state"
@@ -1687,17 +1682,13 @@ test_an_unconfirmed_child_stop_is_never_the_arms_last_word() {
   esac
 
   reap "$arm" HUP
-  i=0
-  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
   is_live_non_zombie "$child" \
-    && { kill -KILL "$child" 2>/dev/null || true; fail "the arm left behind a child that ignored its single stop: the stop was never confirmed"; }
+    || fail "the arm unexpectedly treated an unconfirmed child stop as proven death"
   delivered=$(grep -c . "$siglog" 2>/dev/null || echo 0)
-  [ "$delivered" -ge 2 ] \
-    || fail "the arm stopped its child with $delivered delivery/deliveries, so a dropped stop would have been abandoned"
-  pass "an arm stopping its owned child re-delivers until it is gone rather than trusting one signal"
+  [ "$delivered" -eq 1 ] \
+    || fail "the arm stopped its child with $delivered TERM deliveries instead of one"
+  kill -KILL "$child" 2>/dev/null || true
+  pass "an arm stops its owned child with one bounded TERM"
 }
 
 test_forced_owned_child_stop_is_reaped_and_recorded() {
@@ -1707,7 +1698,7 @@ test_forced_owned_child_stop_is_reaped_and_recorded() {
   siglog="$dir/child-signals.log"
   armbin=$(make_recording_watcher_bin "$dir")
   FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=ignore-stop \
-    FM_STOP_REDELIVER_POLLS=2 FM_ARM_STOP_POLLS=2 FM_STUB_LIB="$LIB" \
+    FM_STUB_LIB="$LIB" \
     "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
   arm=$!
   i=0
@@ -1722,11 +1713,14 @@ test_forced_owned_child_stop_is_reaped_and_recorded() {
   status=0
   wait "$arm" 2>/dev/null || status=$?
   is_live_non_zombie "$child" \
-    && fail "the arm left a TERM-ignoring owned watcher alive after its bounded stop"
-  grep -q 'child_stop=forced-unconfirmed' "$state/.watch-cycle-exits.log" \
-    || fail "the arm did not record its forced unconfirmed child disposition"
+    || fail "the arm did not retain a TERM-ignoring owned watcher after its bounded stop"
+  [ "$(grep -c . "$siglog" 2>/dev/null || echo 0)" -eq 1 ] \
+    || fail "the arm delivered more than one TERM to a TERM-ignoring child"
+  grep -q 'child_stop=unconfirmed' "$state/.watch-cycle-exits.log" \
+    || fail "the arm did not record its unconfirmed child disposition"
+  kill -KILL "$child" 2>/dev/null || true
   [ "$status" -eq 129 ] || fail "the arm did not preserve its HUP outcome after force-collecting the child"
-  pass "a TERM-ignoring owned child is force-collected, reaped, and recorded unconfirmed"
+  pass "a TERM-ignoring owned child is retained after one bounded TERM"
 }
 
 test_restart_records_whether_its_stop_was_confirmed() {
@@ -1829,16 +1823,7 @@ test_restart_records_whether_its_stop_was_confirmed() {
   pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
 }
 
-test_restart_stop_bound_outlasts_a_slow_redelivery_cadence() {
-  # --restart confirms its stop through the same re-delivering helper as the
-  # arm's close paths, so its bound must outlast the re-delivery interval: a
-  # bound that expires before the second delivery is due leaves exactly ONE
-  # signal, which is the unconfirmed single stop the confirmed stop exists to
-  # replace. FM_STOP_REDELIVER_POLLS is deliberately raised past the base bound
-  # here - the "do not re-signal aggressively" configuration - and a stand-in
-  # watcher that records every stop it receives and acts on none reports what
-  # --restart actually delivered. The holder and the relaunched successor record
-  # to SEPARATE logs, because the stand-in truncates its log at startup.
+test_restart_stop_bound_is_one_second_and_single_signal() {
   local dir state armbin siglog successor_log arm restart_arm holder successor delivered i
   dir=$(make_case restart-stop-bound-floor)
   state="$dir/state"
@@ -1862,7 +1847,7 @@ test_restart_stop_bound_outlasts_a_slow_redelivery_cadence() {
   esac
 
   FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$successor_log" FM_STUB_MODE=wake \
-    FM_STUB_LIB="$LIB" FM_STOP_REDELIVER_POLLS=60 \
+    FM_STUB_LIB="$LIB" \
     "$armbin/fm-watch-arm.sh" --restart > "$dir/restart.out" 2>/dev/null &
   restart_arm=$!
   # The relaunch is what proves the stop attempt finished, so the delivery count
@@ -1885,9 +1870,9 @@ test_restart_stop_bound_outlasts_a_slow_redelivery_cadence() {
   esac
   reap "$restart_arm"
   reap "$arm"
-  [ "$delivered" -ge 2 ] \
-    || fail "--restart delivered its stop $delivered time(s) with a 6s re-delivery cadence, so a dropped stop would never be re-sent"
-  pass "--restart keeps a confirmation window wide enough to re-deliver even when re-deliveries are paced far apart"
+  [ "$delivered" -eq 1 ] \
+    || fail "--restart delivered its stop $delivered time(s) instead of one"
+  pass "--restart uses a one-second confirmation bound and one TERM"
 }
 
 test_reap_bounds_a_signal_swallowing_watcher
@@ -1899,7 +1884,7 @@ test_normal_cycle_end_sends_the_owned_child_no_stop
 test_an_unconfirmed_child_stop_is_never_the_arms_last_word
 test_forced_owned_child_stop_is_reaped_and_recorded
 test_restart_records_whether_its_stop_was_confirmed
-test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
+test_restart_stop_bound_is_one_second_and_single_signal
 test_singleton_start
 test_a_zombie_is_dead_and_does_not_block_successor
 test_unevaluable_proc_state_is_live_safe

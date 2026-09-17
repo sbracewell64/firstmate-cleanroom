@@ -35,23 +35,9 @@ ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
 
-# Session start opens fd 3 only for this drain invocation. Write the owned
-# acknowledgement fields there before programme presentation can run a resolver,
-# then close the descriptor so a resolver cannot forge the control record.
-# Direct drain callers continue to receive the instruction on stderr.
 report_ack_required() {  # <sequence> <generation>
-  if [ "${FM_WAKE_DRAIN_ACK_FD:-}" = 3 ]; then
-    printf 'fm-wake-ack-v1\t%s\t%s\n' "$1" "$2" >&3 || return 1
-    exec 3>&-
-  else
-    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-      "$1" "$2" >&2
-  fi
-}
-
-close_ack_report_fd() {
-  [ "${FM_WAKE_DRAIN_ACK_FD:-}" = 3 ] || return 0
-  exec 3>&-
+  printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
+    "$1" "$2" >&2
 }
 
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
@@ -433,7 +419,6 @@ reclaim_stale_branch_grant_locked || exit 1
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
 
 if [ -n "$ACK_THROUGH" ]; then
-  close_ack_report_fd
   if [ "$ACTOR" = main ]; then
     # Preserve main's original whole-cutoff acknowledgement contract: rows may
     # arrive after presentation but before the printed ack runs, and a direct
@@ -551,15 +536,9 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
-    if [ "${FM_WAKE_DRAIN_ACK_FD:-}" = 3 ]; then
-      report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
-    fi
     (print_status_presentation '' pending) || true
-    if [ "${FM_WAKE_DRAIN_ACK_FD:-}" != 3 ]; then
-      report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
-    fi
+    report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
   else
-    close_ack_report_fd
     (print_status_presentation '' commit) || true
   fi
   assert_watcher_liveness

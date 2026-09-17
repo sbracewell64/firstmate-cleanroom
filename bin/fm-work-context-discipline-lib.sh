@@ -446,7 +446,8 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
 }
 
 fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
-  local data=$1 task=$2 kind=$3 brief=$4 expected_file actual_file expected_bytes
+  local data=$1 task=$2 kind=$3 brief=$4 expected_file boundary_file combined_file actual_file
+  local combined_bytes candidates line previous found=1 engineering_file
   case "$kind" in
     secondmate) return 0 ;;
     scout)
@@ -458,36 +459,67 @@ fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
     *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
   esac
   expected_file="$brief.discipline.expected.$$"
+  boundary_file="$brief.discipline.boundary.$$"
+  combined_file="$brief.discipline.combined.$$"
+  engineering_file="$brief.discipline.engineering.$$"
   actual_file="$brief.discipline.actual.$$"
   fm_discipline_render "$data" "$task" ship implementation > "$expected_file" || {
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
     return 3
   }
-  expected_bytes=$(wc -c < "$expected_file") || {
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
+  fm_work_context_engineering_render "$data" "$task" all all > "$engineering_file" || {
+    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
+    return 3
+  }
+  {
+    printf '\n\n'
+    cat "$engineering_file"
+    printf '\n\n# Firstmate instruction inbox\n'
+  } > "$boundary_file" || {
+    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
     fm_discipline_gap "discipline-brief: unreadable $brief"
     return 3
   }
-  LC_ALL=C awk -v wanted="$expected_bytes" '
-    !started && /^# Worker discipline$/ { started=1 }
-    started && copied < wanted {
-      line=$0 "\n"
-      remaining=wanted-copied
-      if (length(line) <= remaining) printf "%s", line
-      else printf "%s", substr(line, 1, remaining)
-      copied += length(line)
-    }
-    copied >= wanted { exit }
-  ' "$brief" > "$actual_file" 2>/dev/null || {
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
+  cat "$expected_file" "$boundary_file" > "$combined_file" || {
+    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
     fm_discipline_gap "discipline-brief: unreadable $brief"
     return 3
   }
-  if ! cmp -s "$expected_file" "$actual_file"; then
-    rm -f "$expected_file" "$actual_file" 2>/dev/null
+  combined_bytes=$(wc -c < "$combined_file") || {
+    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap "discipline-brief: unreadable $brief"
+    return 3
+  }
+  candidates=$(grep -n '^# Worker discipline$' "$brief" 2>/dev/null || true)
+  while IFS=: read -r line _; do
+    [ -n "$line" ] || continue
+    [ "$line" -gt 1 ] || continue
+    previous=$(sed -n "$((line - 1))p" "$brief" 2>/dev/null || true)
+    case "$previous" in
+      *'daemon error, append '* ) : ;;
+      *) continue ;;
+    esac
+    LC_ALL=C awk -v start="$line" -v wanted="$combined_bytes" '
+      NR >= start && copied < wanted {
+        line=$0 "\n"
+        remaining=wanted-copied
+        if (length(line) <= remaining) printf "%s", line
+        else printf "%s", substr(line, 1, remaining)
+        copied += length(line)
+      }
+      copied >= wanted { exit }
+    ' "$brief" > "$actual_file" 2>/dev/null || continue
+    if cmp -s "$combined_file" "$actual_file"; then
+      found=0
+      break
+    fi
+  done <<CANDIDATES
+$candidates
+CANDIDATES
+  rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
+  if [ "$found" -ne 0 ]; then
     fm_discipline_gap 'discipline-brief: rendered selection does not match the canonical receipt'
     return 3
   fi
-  rm -f "$expected_file" "$actual_file" 2>/dev/null
   return 0
 }

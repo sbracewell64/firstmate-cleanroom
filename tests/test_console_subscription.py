@@ -29,21 +29,28 @@ class GuardTests(unittest.TestCase):
             (home/'config/console-codex-client.json').write_text(json.dumps({'path':str(client),'sha256':hashlib.sha256(client.read_bytes()).hexdigest()}))
             with self.assertRaises(guard.Refused):guard.checked_pin(home)
     def test_api_mode_override_refuses(self):
-        with self.assertRaises(guard.Refused):guard.launch_args([guard.POSTURE,'--model','gpt-6-astra','-c','forced_login_method="api"'])
+        with self.assertRaises(guard.Refused):guard.launch_args([guard.POSTURE,'--model','gpt-5.6-luna','-c','forced_login_method="api"'])
     def test_exact_native_args(self):
-        self.assertEqual(guard.launch_args([guard.POSTURE,'--model','gpt-6-astra']),['-c','forced_login_method="chatgpt"','-c','model_provider="openai"',guard.POSTURE,'--model','gpt-6-astra'])
+        self.assertEqual(guard.launch_args([guard.POSTURE,'--model','gpt-5.6-luna']),['-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','model_reasoning_effort="max"',guard.POSTURE,'--model','gpt-5.6-luna'])
+    def test_retired_profile_selectors_refuse(self):
+        for model in ('gpt-6-astra','gpt-5.6-sol'):
+            with self.subTest(model=model):
+                with self.assertRaises(guard.Refused):guard.launch_args([guard.POSTURE,'--model',model])
     def test_secret_environment_refuses_without_value(self):
         env={'OPENAI_API_KEY':'PRIVATE_SENTINEL'}
         with self.assertRaises(guard.Refused) as e:guard.subscription_environment(env)
         self.assertNotIn('PRIVATE_SENTINEL',str(e.exception));self.assertEqual(env['OPENAI_API_KEY'],'PRIVATE_SENTINEL')
     def test_effective_custom_provider_refuses(self):
-        config={'model':'gpt-6-astra','forced_login_method':'chatgpt','model_provider':'openai','model_providers':{'openai':{'base_url':'https://private.invalid'}}}
-        with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-6-astra')
+        config={'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','model_providers':{'openai':{'base_url':'https://private.invalid'}}}
+        with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-5.6-luna')
     def test_effective_root_endpoint_refuses(self):
-        config={'model':'gpt-6-astra','forced_login_method':'chatgpt','model_provider':'openai','chatgpt_base_url':'https://private.invalid'}
-        with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-6-astra')
+        config={'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','chatgpt_base_url':'https://private.invalid'}
+        with self.assertRaises(guard.Refused):guard.check_config(config,'gpt-5.6-luna')
     def test_native_route_accepts_default_config(self):
-        guard.check_config({'model':'gpt-6-astra','forced_login_method':'chatgpt','model_provider':'openai','model_providers':None},'gpt-6-astra')
+        guard.check_config({'model':'gpt-5.6-luna','model_reasoning_effort':'max','forced_login_method':'chatgpt','model_provider':'openai','model_providers':None},'gpt-5.6-luna')
     def test_missing_auth_is_unknown(self):
-        with self.assertRaises(guard.Refused):guard.check_config({'model':'gpt-6-astra','model_provider':'openai'},'gpt-6-astra')
+        with self.assertRaises(guard.Refused):guard.check_config({'model':'gpt-5.6-luna','model_provider':'openai'},'gpt-5.6-luna')
+
+    def test_missing_effort_is_unknown(self):
+        with self.assertRaises(guard.Refused):guard.check_config({'model':'gpt-5.6-luna','forced_login_method':'chatgpt','model_provider':'openai'},'gpt-5.6-luna')
 if __name__=='__main__':unittest.main(verbosity=2)

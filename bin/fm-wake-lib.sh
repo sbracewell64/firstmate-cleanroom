@@ -1436,6 +1436,7 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # below.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
+  local FM_STOP_REDELIVER_POLLS=2
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"

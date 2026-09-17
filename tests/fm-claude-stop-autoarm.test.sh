@@ -950,14 +950,9 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   pass "auto-arm: a SIGSTOPped legacy owner blocks until TERM termination is confirmed"
 }
 
-# Retirement is a CONFIRMED stop, so the window it spends must outlast the
-# interval between deliveries - otherwise the owner is signalled once and the
-# reclaim removes its lock on the strength of a single signal the bash the whole
-# branch is built around can consume without running the handler. This drives the
-# real hook against a live identity-matched legacy owner that RECORDS every stop
-# it receives and acts on none, with the re-delivery interval raised to equal the
-# retire default: the natural "make the two match" configuration, and the shape
-# in which an unfloored window delivers exactly once.
+# Retirement is a CONFIRMED stop, so the bounded window must redeliver before it
+# expires. This drives the real hook against a live identity-matched legacy owner
+# that records every stop it receives and acts on none.
 write_stop_recording_owner() {  # <dir>
   local dir=$1
   cat > "$dir/bin/legacy-owner.sh" <<'SH'
@@ -980,7 +975,7 @@ SH
   chmod +x "$dir/bin/legacy-owner.sh"
 }
 
-test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
+test_legacy_owner_retirement_clamps_redelivery_cadence() {
   local dir out status pid log ready delivered i
   dir=$(make_primary_dir "$TMP_ROOT/legacy-retire-cadence")
   : > "$dir/state/task1.meta"
@@ -1019,10 +1014,10 @@ test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
   [ -e "$dir/state/.claude-autoarm.lock" ] || fail "the live stop-ignoring owner's lock was removed"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
   [ -z "$out" ] || fail "a refused legacy reclaim produced a wake: $out"
-  [ "$delivered" -eq 1 ] \
-    || fail "the legacy retirement bound exceeded one second and delivered $delivered stop(s)"
+  [ "$delivered" -ge 2 ] \
+    || fail "the bounded legacy retirement did not redeliver before expiry: $delivered stop(s)"
   unset -f write_stop_recording_owner
-  pass "auto-arm: legacy retirement preserves the one-second bound"
+  pass "auto-arm: legacy retirement redelivers within the one-second bound"
 }
 
 test_first_unverifiable_live_legacy_owner_retains_lock() {
@@ -1343,7 +1338,7 @@ test_identity_matched_arming_claim_is_never_reclaimed
 test_terminal_check_claim_is_never_reclaimed
 test_stuck_live_legacy_owner_is_retired_and_reclaimed
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
-test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence
+test_legacy_owner_retirement_clamps_redelivery_cadence
 test_first_unverifiable_live_legacy_owner_retains_lock
 test_missing_live_legacy_owner_identity_retains_lock
 test_dead_autoarm_owner_reclaims_without_identity_comparison

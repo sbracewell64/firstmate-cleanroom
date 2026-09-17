@@ -166,7 +166,7 @@ fm_programme_relay_diagnostic() {  # <diagnostic>
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
   if fm_programme_resolver_capture "$resolver" render fm-programme-present; then
@@ -177,6 +177,7 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     out=''
     rc=$FM_PROGRAMME_RESOLVER_RC
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    captured=0
   fi
   fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
@@ -199,7 +200,7 @@ $diagnostic_reason"
       # exit code from another, so this REFUSES TO DEDUPE rather than falling back
       # to a value every such failure shares: presenting the same failure twice is
       # harmless, suppressing a genuinely new one is not.
-      [ -n "$diag" ] || dedupe=0
+      [ "$captured" -eq 1 ] || dedupe=0
       ;;
   esac
   if [ "$dedupe" -eq 1 ]; then

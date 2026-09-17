@@ -962,7 +962,7 @@ test_consumers_survive_a_noisy_resolver() {
 }
 
 test_shared_capture_reports_read_and_cleanup_failures() {
-  local case_dir fake resolver result
+  local case_dir fake resolver result home first second
   case_dir="$TMP_ROOT/capture-failures"
   fake="$case_dir/fakebin"
   resolver="$case_dir/resolver"
@@ -977,7 +977,7 @@ SH
   cat > "$fake/cat" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
-  *capture-read.*) exit 1 ;;
+  *capture-read.*|*fm-programme-present.*) exit 1 ;;
   *) exec /bin/cat "$@" ;;
 esac
 SH
@@ -990,6 +990,16 @@ SH
   ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$resolver")
   assert_contains "$result" 'rc=125' "unreadable capture file must fail the shared owner"
   assert_contains "$result" 'capture file could not be read' "unreadable capture file must remain visible"
+
+  home=$(make_home capture-present)
+  first=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    bash -c '. "$1"; fm_programme_present "$2" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state")
+  second=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    bash -c '. "$1"; fm_programme_present "$2" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state")
+  assert_contains "$first" 'capture file could not be read' "presenter lost the shared capture failure diagnostic"
+  assert_contains "$second" 'capture file could not be read' "presenter deduped a repeated capture failure"
 
   cat > "$fake/cat" <<'SH'
 #!/usr/bin/env bash

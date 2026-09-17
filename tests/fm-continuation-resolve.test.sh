@@ -1259,6 +1259,13 @@ write_local_abd_programme() {  # <home>
 make_local_delivery_candidate() {  # <home>
   local home=$1 repo="$1/projects/exchange-work"
   printf '%s\n' '- exchange-work [local-only] - governed fixture owner (added 2026-09-17)' > "$home/data/projects.md"
+  mkdir -p "$home/cleanroom/exchange/bin" "$home/cleanroom/artifacts/synthesis/bin"
+  printf 'print("slice-a")\n' > "$home/cleanroom/exchange/bin/slice-a.py"
+  printf 'print("slice-b")\n' > "$home/cleanroom/exchange/bin/slice-b.py"
+  printf 'print("slice-d")\n' > "$home/cleanroom/artifacts/synthesis/bin/slice-d.py"
+  git -C "$home/cleanroom" init -q -b main
+  git -C "$home/cleanroom" add exchange/bin/slice-a.py exchange/bin/slice-b.py artifacts/synthesis/bin/slice-d.py
+  git -C "$home/cleanroom" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m 'tracked delivery destinations'
   mkdir -p "$repo/exchange/bin" "$repo/artifacts/synthesis/bin"
   git -C "$repo" init -q -b main
   printf 'print("slice-a")\n' > "$repo/exchange/bin/slice-a.py"
@@ -1361,8 +1368,14 @@ test_af_private_local_delivery_owner() {
   write_local_delivery_evidence "$home" slice-b exchange/bin/slice-b.py exchange/bin/slice-b.py slice-b.json
   out=$(run_resolve "$home" resolve) || fail "local delivery B resolve failed: $out"
   expect_cno_refusal "$out" slice-d REQUIRED_BINDING_MISSING "local delivery keeps D separate"
-  [ "$(jq -r '.outcome' "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")" = CNO_AT_B-S9 ] || fail "local delivery changed Proof-B"
   [ "$(field "$out" '.next_action')" != pilot-f ] || fail "local delivery launched F before D qualified"
+  write_local_delivery_evidence "$home" slice-d exchange/bin/slice-a.py exchange/bin/slice-a.py slice-d.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice D resolve failed: $out"
+  expect_cno_refusal "$out" slice-d OWNER_EVIDENCE_PRIVACY_EXPOSURE "D refuses an exchange deliverable"
+  write_local_delivery_evidence "$home" slice-d artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-d.json
+  out=$(run_resolve "$home" resolve) || fail "local delivery D resolve failed: $out"
+  [ "$(field "$out" '.next_action')" = pilot-f ] || fail "right D family did not leave F as next action"
+  [ "$(jq -r '.outcome' "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")" = CNO_AT_B-S9 ] || fail "local delivery changed Proof-B"
   pass "private local delivery qualifies only the exact owner-produced A/B units, projection advances idempotently, Proof-B stays CNO_AT_B-S9, and F stays unlaunched behind D"
 
   # Every mutation below starts from the accepted A record and changes one

@@ -270,13 +270,15 @@ fail() {
 }
 
 sha256_file() {  # <path>
+  local digest
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    digest=$(shasum -a 256 "$1" 2>/dev/null) || return 1
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    digest=$(sha256sum "$1" 2>/dev/null) || return 1
   else
     fail "shasum or sha256sum is required"
   fi
+  printf '%s\n' "$digest" | awk '{print $1}'
 }
 
 sha256_text() {  # <text>
@@ -540,6 +542,24 @@ local_owner_relative_path() {  # <path> <data|content>
   case "$class:$path" in data:data/*.json|content:*) return 0 ;; *) return 1 ;; esac
 }
 
+local_owner_deliverable_prefix() {  # <step-id>
+  case "$1" in
+    slice-a|slice-b) printf 'exchange/' ;;
+    slice-d) printf 'artifacts/synthesis/' ;;
+    *) return 1 ;;
+  esac
+}
+
+local_owner_path_has_no_symlinks() {  # <root> <relative-path>
+  local root=$1 path=$2 part current=$1
+  local -a parts
+  IFS='/' read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    current="$current/$part"
+    [ ! -L "$current" ] || return 1
+  done
+}
+
 local_owner_private_file() {  # <path>
   local mode links owner data_real parent_real
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
@@ -569,7 +589,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode
-  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent
+  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid
   local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 
@@ -724,6 +744,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
     return 0
   }
   root_real=$(CDPATH='' cd -- "$ROOT" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root is unavailable for delivery read-back"; return 0; }
+  family=$(local_owner_deliverable_prefix "$sid") || { local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery is governed only for A, B, and D steps"; return 0; }
   n=$(printf '%s' "$manifest" | jq -r 'length'); j=0
   while [ "$j" -lt "$n" ]; do
     row=$(printf '%s' "$manifest" | jq -c ".[$j]"); j=$((j + 1))
@@ -732,7 +753,8 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
       local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest entry $j is not an exact source/destination/sha256 object"; return 0
     fi
     source=$(printf '%s' "$row" | jq -r '.source'); destination=$(printf '%s' "$row" | jq -r '.destination'); expected=$(printf '%s' "$row" | jq -r '.sha256')
-    if ! local_owner_relative_path "$source" content || ! local_owner_relative_path "$destination" content || ! local_owner_sha256 "$expected"; then
+    if ! local_owner_relative_path "$source" content || ! local_owner_relative_path "$destination" content || ! local_owner_sha256 "$expected" \
+      || [[ "$source" != "$family"* ]] || [[ "$destination" != "$family"* ]]; then
       local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery manifest entry $j contains an unsafe path or non-digest identity"
       return 0
     fi
@@ -741,10 +763,17 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
     [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
     [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
     destination_file="$ROOT/$destination"
+    local_owner_path_has_no_symlinks "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
     destination_parent=$(CDPATH='' cd -- "$(dirname "$destination_file")" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination parent for $destination is unavailable"; return 0; }
     case "$destination_parent/" in "$root_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination resolves outside the programme root"; return 0 ;; esac
     [ -f "$destination_file" ] && [ ! -L "$destination_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"; return 0; }
-    destination_sha=$(sha256_file "$destination_file")
+    git -C "$ROOT" ls-files --error-unmatch -- "$destination" >/dev/null 2>&1 || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a tracked repository path"; return 0; }
+    source_oid=$(git -C "$repo" rev-parse "$head:$source" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source object identity is unavailable"; return 0; }
+    destination_oid=$(git -C "$ROOT" hash-object -- "$destination_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination object identity is unavailable"; return 0; }
+    [ "$destination_oid" = "$source_oid" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not the exact tracked candidate object"; return 0; }
+    if ! destination_sha=$(sha256_file "$destination_file"); then
+      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination cannot be read back or hashed"; return 0
+    fi
     [ "$destination_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_READBACK_MISMATCH "delivery destination $destination does not match the exact candidate bytes"; return 0; }
   done
   [ "$(printf '%s' "$receipt" | jq -r '.read_back.status')" = MATCH ] && [ "$(printf '%s' "$receipt" | jq -r '.read_back.observer')" = "$checker" ] || {

@@ -25,6 +25,7 @@ for fn in console_profile_default console_profile_menu console_profile_harness c
           console_profile_model_ok console_profile_qualify console_profile_qualified_set \
           console_profile_builtin_qualified_set \
           console_profile_gate console_profile_resolve console_profile_native_harness \
+          console_profile_pinned_codex_path \
           console_argv_subscription_only console_harness_argv \
           read_scalar resolve_host_path; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
@@ -164,8 +165,12 @@ pass "gate: the built-in set keeps fable-5.1 launchable and opus-4-8 PENDING"
   case "$(console_profile_gate codex-luna)" in "PENDING: exact native Codex grant"*) ;; *) exit 1 ;; esac ) || fail "an ungranted home must leave the Codex profile PENDING, never auto-qualified"
 home_luna=$TMP/home-luna; mkdir -p "$home_luna/config"; printf 'codex-luna\n' > "$home_luna/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in PENDING:*) ;; *) exit 1 ;; esac ) || fail "a bare native Codex grant must stay PENDING"
+printf '{"path":"%s"}\n' "$TMP/bin/codex" > "$home_luna/config/console-codex-client.json"
 printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$home_luna/config/console-qualified-profiles"
 ( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; [ "$(console_profile_gate codex-luna)" = QUALIFIED ] || exit 1 ) || fail "an exact native Codex grant -> QUALIFIED"
+printf '{"path":"%s"}\n' "$TMP/other-codex" > "$home_luna/config/console-codex-client.json"
+( PATH=$TMP/bin:$PATH; FM_HOME=$home_luna; case "$(console_profile_gate codex-luna)" in "PENDING: native Codex client is not the pinned launch client"*) ;; *) exit 1 ;; esac ) || fail "PATH Codex must not qualify against a different pinned launch client"
+printf '{"path":"%s"}\n' "$TMP/bin/codex" > "$home_luna/config/console-codex-client.json"
 native_grant='codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only'
 native_refuse() {
   printf '%s\n' "$1" > "$home_luna/config/console-qualified-profiles"

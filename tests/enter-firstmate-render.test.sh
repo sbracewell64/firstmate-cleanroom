@@ -232,15 +232,16 @@ pass "(vi-b) the staged consumer reaches the exact Pi route checker in its adopt
 # the grant file, including a mixed record that previously re-enabled the route.
 home=$(mk_home codex-route-consumer shim "$ROOT_A")
 printf '%s\n' 'codex-luna@codex@0.81.1@openai/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only codex-luna' > "$home/config/console-qualified-profiles"
-run_fast_render "$home" "$HERE/.." --console-profile codex-luna
-[ "$RC" -eq 0 ] || fail "(vi-c) native consumer staging must succeed (rc=$RC, out: $OUT)"
-stg="$home/state/launcher-staging"
 mkdir -p "$TMP/codex-route-bin"
 cat > "$TMP/codex-route-bin/codex" <<'CODEX'
 #!/usr/bin/env bash
 [ "${1:-}" = --version ] && printf 'codex-cli 0.81.1\n'
 CODEX
 chmod 0755 "$TMP/codex-route-bin/codex"
+printf '{"path":"%s"}\n' "$TMP/codex-route-bin/codex" > "$home/config/console-codex-client.json"
+run_fast_render "$home" "$HERE/.." --console-profile codex-luna
+[ "$RC" -eq 0 ] || fail "(vi-c) native consumer staging must succeed (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
 native_menu=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_ENTRY_LIB \
   FM_HOME="$stg" PATH="$TMP/codex-route-bin:$PATH" bash "$LAUNCHER" --print-console-menu 2>&1) \
   || fail '(vi-c) staged native config menu must render'

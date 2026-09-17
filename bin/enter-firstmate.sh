@@ -629,6 +629,13 @@ console_profile_grant_matches() {  # <profile> <expected-token> -> 0 for one exa
   done
   [ "$count" = 1 ]
 }
+console_profile_pinned_codex_path() {  # -> the launch owner's pinned client path
+  local f="$FM_HOME/config/console-codex-client.json" path
+  [ -f "$f" ] || return 1
+  path=$(jq -r '.path // empty' "$f" 2>/dev/null) || return 1
+  [ -n "$path" ] && [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || return 1
+  printf '%s' "$path"
+}
 # The profiles any home qualifies with no config of its own. Deliberately NOT
 # derived from console_profile_default: which profile is selected by default and
 # which profiles are qualified are separate facts, so changing the default never
@@ -687,6 +694,7 @@ console_profile_gate() {  # <profile> -> QUALIFIED | PENDING: <gate>
     [ -n "$version" ] || { printf 'PENDING: installed Codex version is unavailable'; return; }
     grant=$(console_profile_grant_token "$p" "$version")
     console_profile_grant_matches "$p" "$grant" || { printf 'PENDING: exact native Codex grant %s is absent or malformed; bare and duplicate grants do not qualify' "$grant"; return; }
+    [ "$(command -v codex)" = "$(console_profile_pinned_codex_path)" ] || { printf 'PENDING: native Codex client is not the pinned launch client'; return; }
     allowed=1
   fi
   if [ "$h" != codex ]; then

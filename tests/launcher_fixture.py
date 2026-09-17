@@ -35,6 +35,7 @@ class LauncherFixture:
         self.script(self.tools/'tool-policy.sh', "echo '{\"tools\":[{\"tool\":\"no-mistakes\",\"state\":\"QUALIFIED\"}]}'\n")
         self.script(self.code/'bin/fm-tool-profile.sh', 'exit 0\n')
         self.script(self.user/'.local/bin/codex', 'if [ "${1:-}" = --version ]; then echo 0.81.1; else echo UNGUARDED_LAUNCH >&2; exit 91; fi\n')
+        (self.home/'config/console-codex-client.json').write_text(json.dumps({'path': str(self.user/'.local/bin/codex')}))
         for owner in self.entry.parent.glob('*.sh'):
             if owner.name != 'fm-tool-profile.sh':
                 shutil.copy2(owner, self.code/'bin'/owner.name)

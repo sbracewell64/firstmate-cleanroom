@@ -5,7 +5,7 @@ Client pin: FM_HOME/config/console-codex-client.json. No paid fallback is provid
 """
 import hashlib, json, os, selectors, subprocess, sys, time
 from pathlib import Path
-MODELS={'gpt-6-astra','gpt-5.6-sol'}
+MODELS={'gpt-5.6-luna'}
 POSTURE='--dangerously-bypass-approvals-and-sandbox'
 class Refused(Exception): pass
 

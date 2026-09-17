@@ -32,7 +32,7 @@
 #   --control-resolver <path> config/control-resolver           (recorded if given)
 #   --retired-home <path>     config/retired-home               (recorded if given)
 #   --exchange-owner <path>   config/exchange-owner             (recorded if given)
-#   --console-profile <name>  config/console-profile            (default: fable-5.1)
+#   --console-profile <name>  config/console-profile            (default: pi-sol)
 #   --staging <dir>           output dir (default: <fm-home>/state/launcher-staging)
 #   --lnk <file>              a Windows .lnk to snapshot for rollback (repeatable; bytes only)
 #   --require-complete-config refuse activation staging with missing isolation inputs
@@ -52,7 +52,7 @@ TOOLS_ROOT=''
 CONTROL_RESOLVER=''
 RETIRED_HOME=''
 EXCHANGE_OWNER=''
-CONSOLE_PROFILE=fable-5.1
+CONSOLE_PROFILE=pi-sol
 STAGING=''
 ALLOW_SAME=0
 REQUIRE_COMPLETE=0
@@ -237,28 +237,28 @@ if command -v shellcheck >/dev/null 2>&1; then
   qual "source: shellcheck"            shellcheck "$SOURCE_LAUNCHER"
   qual "consumer shim: shellcheck"     shellcheck "$STAGE_CONSUMER"
 fi
-for t in arm launch profile; do
+for t in arm launch profile pi-route; do
   qual "test: enter-firstmate-$t"      bash "$REPO_ROOT/tests/enter-firstmate-$t.test.sh"
 done
 # The staged source must resolve the staged config and compose the profile menu.
 # --print-console-menu renders ONLY the menu and exits 0 before every mandatory
 # environment gate, so it needs no usable tools root and touches no live home: run
 # it against a scratch home holding the staged config and assert the heading plus
-# all four profiles appear, proving the composed menu renders offline.
+# all six profiles appear, proving the composed menu renders offline.
 scratch=$(mktemp -d)
 cp -a "$STAGE_CONFIG/." "$scratch/config/" 2>/dev/null || { mkdir -p "$scratch/config"; cp -a "$STAGE_CONFIG/." "$scratch/config/"; }
 menu_out=$(FM_HOME="$scratch" FM_TOOLS_ROOT="${TOOLS_ROOT:-/nonexistent}" bash "$SOURCE_LAUNCHER" --print-console-menu 2>&1) && menu_rc=0 || menu_rc=$?
 menu_ok=0
 if [ "$menu_rc" = 0 ] && printf '%s' "$menu_out" | grep -q 'primary console profile menu'; then
   menu_ok=1
-  for _prof in fable-5.1 opus-4-8 codex-astra codex-sol; do
+  for _prof in fable-5.1 opus-4-8 codex-luna pi-sol pi-astra pi-luna-max; do
     printf '%s' "$menu_out" | grep -q "$_prof" || menu_ok=0
   done
 fi
 if [ "$menu_ok" = 1 ]; then
-  q_pass+=("print-console-menu: renders the four-profile menu")
+  q_pass+=("print-console-menu: renders the six-profile menu")
 else
-  q_fail+=("print-console-menu: renders the four-profile menu")
+  q_fail+=("print-console-menu: renders the six-profile menu")
 fi
 rm -rf "$scratch"
 
@@ -285,8 +285,9 @@ rm -rf "$scratch"
   echo "Each item is verified live at cutover, not by this staging run:"
   echo "- Windows .lnk -> wsl.exe -> Ubuntu -> cwd -> launcher (repoint --cd off the donor to the adopted release)"
   echo "- firstmate-cleanroom Herdr session/socket continuity"
-  echo "- Claude primary composition (fable-5.1 default)"
-  echo "- Codex primary composition (codex-astra / codex-sol)"
+  echo "- Claude primary composition (fable-5.1 / opus-4-8)"
+  echo "- Codex primary composition (codex-luna, gpt-5.6-luna)"
+  echo "- Pi primary composition (pi-luna-max=openai-codex/gpt-5.6-luna:max, pi-sol=openai-codex/gpt-5.6-sol:xhigh, pi-astra=openai-codex/gpt-6-astra:max)"
   echo "- Selected profile native auth / provider / model / permission AFTER composition"
   echo "- Zero-dollar / subscription boundary (no API/gateway fallback, no overage, no budget flag)"
   echo "- Attach/resume vs fresh-relaunch"

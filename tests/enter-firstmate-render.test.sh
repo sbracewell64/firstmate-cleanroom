@@ -18,7 +18,7 @@
 #
 # Every staging that passes the donor guard runs the tool's full qualification,
 # which includes the whole launcher test family (enter-firstmate-{arm,launch,
-# profile}.test.sh, about two CI minutes) from the repo the tool lives in. That
+# profile,pi-route}.test.sh, about two CI minutes) from the repo the tool lives in. That
 # family is already a separate script of the same CI lane, so re-running it on
 # every staging here measured ~14 minutes of pure repetition and timed the lane
 # out. Exactly ONE staging below ((vi)) keeps the real repo and asserts those
@@ -76,14 +76,14 @@ SRC
 # tests that exit 0, and a launcher of the requested kind: `real` copies the real
 # source (its menu and shellcheck qualification then run for real), while
 # `menu:complete` / `menu:incomplete` write a stub whose --print-console-menu
-# renders all four profiles or omits one. Echoes the copied tool's path; the tool
+# renders all six profiles or omits one. Echoes the copied tool's path; the tool
 # resolves its repo root from its own location, so this is the seam that keeps a
 # staging from re-running the whole real launcher family.
 mk_repo() {  # <dir> <real|menu:complete|menu:incomplete>
   local d=$1 kind=$2 t
   mkdir -p "$d/bin" "$d/tests"
   cp "$RENDER" "$d/bin/fm-render-launcher.sh"
-  for t in arm launch profile; do
+  for t in arm launch profile pi-route; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tests/enter-firstmate-$t.test.sh"
   done
   case "$kind" in
@@ -94,8 +94,9 @@ mk_repo() {  # <dir> <real|menu:complete|menu:incomplete>
         printf '%s\n' '#!/usr/bin/env bash'
         printf '%s\n' 'if [ "${1:-}" = --print-console-menu ]; then'
         printf '%s\n' '  echo "-- primary console profile menu (stub)"'
-        printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"; echo "  codex-astra"'
-        [ "$kind" = menu:complete ] && printf '%s\n' '  echo "  codex-sol"'
+        printf '%s\n' '  echo "  fable-5.1"; echo "  opus-4-8"'
+        printf '%s\n' '  echo "  codex-luna"; echo "  pi-sol"; echo "  pi-astra"'
+        [ "$kind" = menu:complete ] && printf '%s\n' '  echo "  pi-luna-max"'
         printf '%s\n' '  exit 0'
         printf '%s\n' 'fi'
         printf '%s\n' 'exit 0'
@@ -169,6 +170,7 @@ run_fast_render "$home" "$ROOT_B"
 printf '%s' "$OUT" | grep -Eq "$REFUSE_RE" && fail "(v) a genuine different code root must not be refused (got: $OUT)"
 [ -f "$home/state/launcher-staging/config/code-root" ] || fail "(v) a genuine move must proceed past the guard into staging"
 [ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/code-root")" = "$ROOT_B" ] || fail "(v) staging must record the adopted (different) code root"
+[ "$(tr -d '[:space:]' < "$home/state/launcher-staging/config/console-profile")" = pi-sol ] || fail "(v) default staging must retain the accepted pi-sol selection"
 pass "(v) a genuine move to a different code root passes the guard and stages"
 
 # --- caller-level --print-console-menu qualification ---------------------------
@@ -187,20 +189,44 @@ ADOPTED="$TMP/adopted-release"; mkdir -p "$ADOPTED/bin"
 #      one staging that keeps the REAL repo, so it also proves the tool ran the
 #      real launcher test family and recorded every member PASS.
 home=$(mk_home altprofile shim "$ROOT_A")
-run_render "$home" "$ADOPTED" --console-profile codex-astra
+run_render "$home" "$ADOPTED" --console-profile opus-4-8
 [ "$RC" -eq 0 ] || fail "(vi) alternate-profile staging must succeed (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
-[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-astra ] || fail "(vi) staging must record the non-default console profile"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = opus-4-8 ] || fail "(vi) staging must record the non-default console profile"
 grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vi) the menu qualification must PASS for a staged alternate profile"
-for t in arm launch profile; do   # the ONE real-repo staging: the real launcher family ran and passed
+for t in arm launch profile pi-route; do   # the ONE real-repo staging: the real launcher family ran and passed
   grep -q "^- PASS test: enter-firstmate-$t\$" "$stg/qualification-report.md" || fail "(vi) the real repo's enter-firstmate-$t test must be run and recorded PASS"
 done
 grep -q '^- FAIL ' "$stg/qualification-report.md" && fail "(vi) a clean real-repo staging must record no FAIL line"
 menu=$(unset FM_CONSOLE_PROFILE FM_HARNESS FM_CODE_ROOT FM_TOOLS_ROOT FM_RETIRED_HOME
        FM_HOME="$stg" FM_TOOLS_ROOT=/nonexistent bash "$LAUNCHER" --print-console-menu 2>&1) || fail "(vi) offline staged menu must render"
-case "$menu" in *'active profile:    codex-astra'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
-case "$menu" in *'codex-astra'*'<- active'*) ;; *) fail "(vi) the active row must carry the active marker (got: $menu)" ;; esac
+case "$menu" in *'active profile:    opus-4-8'*) ;; *) fail "(vi) the staged alternate profile must render as active (got: $menu)" ;; esac
+case "$menu" in *'opus-4-8'*'<- active'*) ;; *) fail "(vi) the active row must carry the active marker (got: $menu)" ;; esac
 pass "(vi) a non-default --console-profile stages and renders that profile as active"
+
+# The installed consumer executes the adopted code root's launcher, whose Pi
+# checker lives beside that source. Exercise the rendered shim with an exact
+# route grant; a missing checker would render "route check unavailable" instead.
+home=$(mk_home pi-route-consumer shim "$ROOT_A")
+printf '%s\n' 'pi-sol@pi@0.81.1@openai-codex/gpt-5.6-sol:xhigh@chatgpt-oauth' > "$home/config/console-qualified-profiles"
+run_fast_render "$home" "$HERE/.."
+[ "$RC" -eq 0 ] || fail "(vi-b) Pi consumer staging must succeed (rc=$RC, out: $OUT)"
+stg="$home/state/launcher-staging"
+mkdir -p "$TMP/pi-route-bin"
+cat > "$TMP/pi-route-bin/pi" <<'PI'
+#!/usr/bin/env bash
+[ "${1:-}" = --version ] && printf '0.81.1\n'
+PI
+chmod 0755 "$TMP/pi-route-bin/pi"
+route_menu=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_ENTRY_LIB \
+  OPENCODE_API_KEY=synthetic PATH="$TMP/pi-route-bin:$PATH" \
+  bash "$stg/enter-firstmate.sh" --print-console-menu 2>&1) \
+  || fail '(vi-b) staged Pi consumer menu must render'
+case "$route_menu" in
+  *'pi-sol'*'model=openai-codex/gpt-5.6-sol:xhigh'*'PENDING: API, provider or endpoint environment override is present: OPENCODE_API_KEY'*) ;;
+  *) fail "(vi-b) staged consumer must reach the adopted code root's Pi checker (got: $route_menu)" ;;
+esac
+pass "(vi-b) the staged consumer reaches the exact Pi route checker in its adopted code root"
 
 # (vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks
 #       into the report: the staged code root and profile come from the flags,
@@ -211,11 +237,11 @@ RC=0
 OUT=$(FM_CODE_ROOT=/polluted/donor FM_CONSOLE_PROFILE=opus-4-8 FM_HARNESS=bash \
       FM_RETIRED_HOME=/polluted/retired FM_TOOLS_ROOT=/polluted/tools \
       bash "$FAST" --fm-home "$home" --code-root "$ADOPTED" \
-      --console-profile codex-sol --staging "$home/state/launcher-staging" 2>&1) || RC=$?
+      --console-profile fable-5.1 --staging "$home/state/launcher-staging" 2>&1) || RC=$?
 [ "$RC" -eq 0 ] || fail "(vii) pollution must not break staging (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"
 [ "$(tr -d '[:space:]' < "$stg/config/code-root")" = "$ADOPTED" ] || fail "(vii) the staged code root must come from --code-root, not ambient FM_CODE_ROOT"
-[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = codex-sol ] || fail "(vii) the staged profile must come from --console-profile, not ambient FM_CONSOLE_PROFILE"
+[ "$(tr -d '[:space:]' < "$stg/config/console-profile")" = fable-5.1 ] || fail "(vii) the staged profile must come from --console-profile, not ambient FM_CONSOLE_PROFILE"
 grep -q '^- PASS print-console-menu' "$stg/qualification-report.md" || fail "(vii) the menu qualification must PASS despite ambient pollution"
 grep -Eq '/polluted/(donor|retired|tools)' "$stg/qualification-report.md" && fail "(vii) no ambient polluted path may leak into the qualification report"
 pass "(vii) inherited FM_* pollution neither corrupts the staged artifacts nor leaks into the report"

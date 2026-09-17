@@ -115,7 +115,8 @@ fm_test_cleanup() {
 # have handed it to someone else, and a KILL then lands on a stranger.
 # FM_REAP_GRACE_POLLS (tenths of a second, default 100) bounds the confirmation.
 reap() {  # <pid> [signal]
-  local pid=$1 sig=${2:-TERM} limit=${FM_REAP_GRACE_POLLS:-100} stopped=0
+  local pid=$1 sig=${2:-TERM} limit=${FM_REAP_GRACE_POLLS:-100} stopped=0 identity
+  identity=$(fm_test_pid_identity "$pid") || return 1
   if [ -z "${_FM_REAP_SCRATCH:-}" ]; then
     # fm-wake-lib.sh creates its STATE directory at source time; the subshell
     # below needs only its pure helpers, so it gets a throwaway one.
@@ -124,8 +125,8 @@ reap() {  # <pid> [signal]
   FM_STATE_OVERRIDE="$_FM_REAP_SCRATCH" bash -c '
     # shellcheck disable=SC1090,SC1091
     . "$1"
-    fm_stop_process_confirmed "$2" "" "$3" "$4"
-  ' _ "$ROOT/bin/fm-wake-lib.sh" "$pid" "$limit" "$sig" && stopped=1
+    fm_stop_process_confirmed "$2" "$5" "$3" "$4"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$pid" "$limit" "$sig" "$identity" && stopped=1
   [ "$stopped" -eq 1 ] || kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 }

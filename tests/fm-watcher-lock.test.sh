@@ -23,12 +23,12 @@ ARM_FAIL_EXIT_POLLS=400
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
 drain_and_ack() {  # <state>
-  local state=$1 err sequence generation
-  err="$state/.test-drain.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
-  rm -f "$err"
+  local state=$1 out sequence generation
+  out="$state/.test-drain.out"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$state/.test-drain.err" || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out")
+  rm -f "$out" "$state/.test-drain.err"
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
@@ -1019,15 +1019,33 @@ test_live_unverifiable_identity_does_not_confirm_stop() {
   pass "live unverifiable identity blocks confirmed collection"
 }
 
+test_live_missing_identity_does_not_signal() {
+  local status=0 signal_file
+  signal_file=$(mktemp "${TMPDIR:-/tmp}/fm-watcher-missing-identity.XXXXXX") || fail "could not create signal fixture"
+  SIGNAL_FILE="$signal_file" bash -c '
+    . "$1"
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() { printf "%s\n" current; }
+    kill() { printf "%s\n" signal >> "$SIGNAL_FILE"; return 0; }
+    sleep() { :; }
+    fm_stop_process_confirmed 123 "" 1
+  ' _ "$LIB" || status=$?
+  [ "$status" -eq 4 ] || fail "a live target with missing identity returned $status instead of refusal"
+  [ ! -s "$signal_file" ] || fail "a live target with missing identity was signalled"
+  rm -f "$signal_file"
+  pass "live missing identity blocks signaling"
+}
+
 test_zero_redelivery_polls_use_default_cadence() {
   local status=0
   FM_STOP_REDELIVER_POLLS=0 bash -c '
     . "$1"
     stop_checks=0
     fm_pid_alive() { stop_checks=$((stop_checks + 1)); [ "$stop_checks" -lt 2 ]; }
+    fm_pid_identity() { printf "%s\n" recorded; }
     kill() { return 0; }
     sleep() { :; }
-    fm_stop_process_confirmed 123 "" 1
+    fm_stop_process_confirmed 123 recorded 1
   ' _ "$LIB" || status=$?
   [ "$status" -eq 0 ] || fail "zero redelivery cadence failed stop confirmation with status $status"
   pass "zero redelivery cadence falls back before modulo arithmetic"
@@ -1864,6 +1882,7 @@ test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
 test_a_zombie_is_dead_and_does_not_block_successor
 test_live_unverifiable_identity_does_not_confirm_stop
+test_live_missing_identity_does_not_signal
 test_zero_redelivery_polls_use_default_cadence
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse

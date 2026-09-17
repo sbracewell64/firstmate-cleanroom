@@ -115,10 +115,10 @@ fm_pid_identity() {
 # target's own pending-trap bookkeeping ("warning: run_pending_traps: bad value
 # in trap_list[...]", pinned by tests/fm-remote-job.test.sh).
 #
-# <recorded-identity>, when given, is re-verified through fm_pid_identity before
-# every delivery, so a pid recycled between polls is read as "the recorded
-# process is gone" and is never signalled. With an empty identity the check is
-# liveness only, which is safe for a process the caller launched and still owns.
+# <recorded-identity> is re-verified through fm_pid_identity before every
+# delivery, so a pid recycled between polls is read as "the recorded process is
+# gone" and is never signalled. A live target without identity evidence is
+# refused.
 # Returns 0 once the target is gone, 1 when the deadline elapses with it alive
 # AFTER at least one delivery, 2 for every shape in which NOTHING WAS ASKED of
 # the target - a pid that is not a number, a deadline that is not a number, and
@@ -169,6 +169,7 @@ fm_stop_process_confirmed() {
   [ "$every" != 0 ] || every=20
   while :; do
     fm_pid_alive "$pid" || return 0
+    [ -n "$recorded" ] || return 4
     if [ -n "$recorded" ]; then
       if ! current=$(fm_pid_identity "$pid" 2>/dev/null); then
         fm_pid_alive "$pid" && return 4

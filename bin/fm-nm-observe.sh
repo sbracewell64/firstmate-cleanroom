@@ -1239,7 +1239,7 @@ reconcile_bound_run() {  # <durable bound-run ledger>
 }
 
 reconcile_bound_run_locked() {  # <durable bound-run ledger>
-  local ledger=$1 rid id dir branch rows row rhead last_head status out rc=0 class t
+  local ledger=$1 rid id dir branch rows row rhead last_head status out rc=0 class t remaining exact_read=0
   rid=$(basename "$ledger" .record)
   id=$(record_get "$ledger" task)
   dir=$(record_get "$ledger" project)
@@ -1258,11 +1258,27 @@ reconcile_bound_run_locked() {  # <durable bound-run ledger>
   fi
   rows=${INVENTORY_BY_DIR[$dir]}
   row=$(printf '%s\n' "$rows" | awk -F '\t' -v r="$rid" '$1 == r { print; exit }')
-  [ -n "$row" ] || return 0
-  [ "$(printf '%s' "$row" | cut -f2)" = "$branch" ] || return 0
+  if [ -z "$row" ]; then
+    [ "$peek" -eq 0 ] || return 0
+    remaining=$(( deadline - $(now_epoch) ))
+    [ "$remaining" -gt 0 ] || return 0
+    t=$CALL_TIMEOUT
+    [ "$t" -le "$remaining" ] || t=$remaining
+    out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$rid") || rc=$?
+    [ "$rc" -eq 0 ] && [ -n "$out" ] \
+      && [ "$(run_field "$out" id)" = "$rid" ] \
+      && [ "$(run_field "$out" branch)" = "$branch" ] || return 0
+    status=$(run_field "$out" status)
+    class=$(outcome_class_of "$status" "$(run_field "$out" outcome)")
+    terminal_class "$class" || return 0
+    exact_read=1
+  else
+    [ "$(printf '%s' "$row" | cut -f2)" = "$branch" ] || return 0
+  fi
   BOUND_RUNS[$rid]=$branch
   [ -n "$(record_get "$ledger" finalized_epoch)" ] || return 0
   rhead=$(printf '%s' "$row" | cut -f4)
+  [ -n "$row" ] || rhead=$(run_field "$out" head)
   last_head=$(record_get "$ledger" inventory_head)
   [ -n "$last_head" ] || last_head=$(record_get "$ledger" run_head)
   if [ -n "$rhead" ] \
@@ -1273,21 +1289,23 @@ reconcile_bound_run_locked() {  # <durable bound-run ledger>
       render_run_receipt "$ledger"
     fi
   fi
-  status=$(printf '%s' "$row" | cut -f3)
+  [ -n "$row" ] && status=$(printf '%s' "$row" | cut -f3)
   [ "$status" != "$(record_get "$ledger" run_status)" ] || return 0
   case "$status" in completed|failed|cancelled) ;; *) return 0 ;; esac
   if [ "$peek" -eq 1 ]; then
     recon_emit "retired:$rid" "NM_OBSERVE: RETIRED_TERMINAL_PENDING task=$id run=$rid status=$status (run table changed; reconcile --now for the exact canonical outcome)"
     return 0
   fi
-  t=$(( deadline - $(now_epoch) ))
-  [ "$t" -gt 0 ] || return 0
-  [ "$t" -le "$CALL_TIMEOUT" ] || t=$CALL_TIMEOUT
-  out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$rid") || rc=$?
-  [ "$rc" -eq 0 ] && [ "$(run_field "$out" id)" = "$rid" ] \
-    && [ "$(run_field "$out" branch)" = "$branch" ] || return 0
-  class=$(outcome_class_of "$(run_field "$out" status)" "$(run_field "$out" outcome)")
-  terminal_class "$class" || return 0
+  if [ "$exact_read" -eq 0 ]; then
+    t=$(( deadline - $(now_epoch) ))
+    [ "$t" -gt 0 ] || return 0
+    [ "$t" -le "$CALL_TIMEOUT" ] || t=$CALL_TIMEOUT
+    out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$rid") || rc=$?
+    [ "$rc" -eq 0 ] && [ "$(run_field "$out" id)" = "$rid" ] \
+      && [ "$(run_field "$out" branch)" = "$branch" ] || return 0
+    class=$(outcome_class_of "$(run_field "$out" status)" "$(run_field "$out" outcome)")
+    terminal_class "$class" || return 0
+  fi
   recon_emit "retired:$rid" "NM_OBSERVE: RETIRED_OUTCOME task=$id run=$rid status=$(run_field "$out" status) class=$class (canonical terminal result observed after task retirement)"
   if [ "$peek" -eq 0 ]; then
     ledger_set "$ledger" "run_status=$(run_field "$out" status)" \

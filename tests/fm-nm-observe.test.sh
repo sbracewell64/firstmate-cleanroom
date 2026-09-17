@@ -824,10 +824,11 @@ FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01CANCELRUN fm/cancelled cancelled "$CANCE
 ret_observe bind cancelled --run 01CANCELRUN >/dev/null || fail "cancelled bind"
 ret_observe finalize cancelled >/dev/null || fail "cancelled finalize"
 rm -f "$RET/state/cancelled.nm-observe" "$RET/state/cancelled.meta"
-FM_FAKE_AXI_STATUS=$(axi_status_toon fm/cancelled "$(printf '01CANCELRUN\tfm/cancelled\tcancelled\t%s\t' "$CANCELH")")
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/cancelled '')
 out=$(ret_observe reconcile --now 2>&1)
 assert_not_contains "$out" 'ORPHAN_RUN run=01CANCELRUN ' "cancelled current run retains exact admission after cleanup"
 assert_contains "$(cat "$RET/data/cancelled/nm-run-01CANCELRUN-observation-receipt.md")" 'Canonical status cancelled, outcome cancelled, class cancelled' "real cancellation stays readable"
+assert_contains "$(cat "$NM_LOG")" 'axi status --run 01CANCELRUN' "retired reconciliation falls back to an exact run read when inventory omits the bound run"
 pass "retirement: exact current and predecessor runs remain owned, later terminal observed, unrelated run orphaned"
 
 # --- negative: the observer never sent a mutating verb --------------------------

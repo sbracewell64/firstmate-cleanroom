@@ -223,7 +223,7 @@ route_menu=$(env -u FM_CONSOLE_PROFILE -u FM_HARNESS -u FM_ENTRY_LIB \
   bash "$stg/enter-firstmate.sh" --print-console-menu 2>&1) \
   || fail '(vi-b) staged Pi consumer menu must render'
 case "$route_menu" in
-  *'pi-sol'*'model=openai-codex/gpt-5.6-sol:xhigh'*'PENDING: API, provider or endpoint environment override is present: OPENCODE_API_KEY'*) ;;
+  *'pi-sol'*'model=openai-codex/gpt-5.6-sol'*'effort=xhigh'*'PENDING: API, provider or endpoint environment override is present: OPENCODE_API_KEY'*) ;;
   *) fail "(vi-b) staged consumer must reach the adopted code root's Pi checker (got: $route_menu)" ;;
 esac
 pass "(vi-b) the staged consumer reaches the exact Pi route checker in its adopted code root"

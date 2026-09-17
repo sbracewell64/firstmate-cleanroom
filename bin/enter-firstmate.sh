@@ -760,8 +760,9 @@ doctor_path_leak() {  # -> "YES - <dir> is on PATH" | none | none (no retired ho
 # console_harness_argv <harness> <model|""> <effort|""> <settings-file|""> <resume-id|""> [passthrough...]
 # prints the console argv one element per line. Claude and Codex lead with their
 # captain-authorized permission posture; all profile harnesses pass their pinned
-# model selector, then (claude only) the private style settings and the validated
-# resume target, then the captain's own arguments. bash (the evidence harness)
+# model selector and (for Pi) its separate pinned effort flag, then (claude only)
+# the private style settings and the validated resume target, then the captain's
+# own arguments. bash (the evidence harness)
 # and any non-profile harness get only the passthrough.
 console_harness_argv() {
   local harness=$1 model=$2 effort=$3 settings=$4 resume=$5

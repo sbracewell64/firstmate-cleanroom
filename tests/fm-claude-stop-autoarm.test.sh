@@ -720,7 +720,7 @@ snapshot_autoarm_surfaces() {
         type=directory
         target=
       else
-        type=file
+        type='file'
         target=
       fi
       mode=$(stat -c '%a' "$item" 2>/dev/null || stat -f '%Lp' "$item")
@@ -1059,10 +1059,8 @@ test_legacy_owner_retirement_sends_one_term() {
   record_autoarm_epoch "$dir" 466 "$pid" arming
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
 
-  export FM_AUTOARM_RETIRE_POLLS=100
   export FM_STOP_REDELIVER_POLLS=11
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  unset FM_AUTOARM_RETIRE_POLLS
   unset FM_STOP_REDELIVER_POLLS
   delivered=$(grep -c . "$log" 2>/dev/null || true)
   kill -KILL "$pid" 2>/dev/null || true

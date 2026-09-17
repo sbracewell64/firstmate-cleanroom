@@ -123,7 +123,6 @@
 # `summary` prints the one-line token a digest can embed.
 set -eu
 
-INVOKED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _fm_projection_script_path() {
   local path=$1 dir base target hops=0
   dir=$(CDPATH='' cd -- "$(dirname -- "$path")" 2>/dev/null && pwd -P) || return 1

@@ -9,7 +9,6 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
-FM_AUTOARM_RETIRE_POLLS=10
 # Polls between successive stop-signal deliveries in fm_stop_process_confirmed.
 # Two seconds: long enough that a target already running its close path is not
 # interrupted by the next delivery, short enough that a dropped stop is
@@ -1489,7 +1488,7 @@ fm_autoarm_confirm_stop_bounded() {
   (
     # shellcheck source=bin/fm-timeout-lib.sh
     . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
-    fm_run_timed 1 bash -c '
+    fm_run_timed 1 bash -s -- "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded" <<'EOF'
       set -u
       lib=$1
       pid=$2
@@ -1505,7 +1504,7 @@ fm_autoarm_confirm_stop_bounded() {
         sleep 0.1
       done
       exit 0
-    ' _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded"
+EOF
   )
 }
 

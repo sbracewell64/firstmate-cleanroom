@@ -88,10 +88,16 @@ fm_programme_pending_identity() {  # <state>
   _fm_programme_record_identity "$(fm_programme_pending_path "$1")"
 }
 
-# The full material identity carried by a `render` text (its last line), or
-# nothing when the text carries none.
+# The full material identity carried by a `render` text (its last line), with a
+# deterministic fallback for successful renders that omit the identity line.
 fm_programme_identity_from_render() {  # <render-text>
-  printf '%s\n' "$1" | sed -n 's/^Material identity \([0-9a-f]\{64\}\) .*/\1/p' | head -1
+  local identity
+  identity=$(printf '%s\n' "$1" | sed -n 's/^Material identity \([0-9a-f]\{64\}\) .*/\1/p' | head -1)
+  if [ -n "$identity" ]; then
+    printf '%s\n' "$identity"
+  else
+    _fm_programme_sha256 "render-without-identity:$1"
+  fi
 }
 
 _fm_programme_sha256() {  # <text>
@@ -219,7 +225,6 @@ fm_programme_present() {  # <state> <mode: pending|commit>
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")
-      [ -n "$identity" ] || { identity=$(_fm_programme_sha256 "render-without-identity:$out"); }
       summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)
       ;;
     3) return 3 ;;
@@ -260,7 +265,6 @@ $diagnostic_reason"
     else
       revalidate_out=$FM_PROGRAMME_RESOLVER_OUT
       revalidate_identity=$(fm_programme_identity_from_render "$revalidate_out")
-      [ -n "$revalidate_identity" ] || revalidate_identity=$(_fm_programme_sha256 "render-without-identity:$revalidate_out")
       identity=$revalidate_identity
       out=$revalidate_out
       summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)

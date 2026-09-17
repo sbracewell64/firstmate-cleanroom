@@ -1662,6 +1662,21 @@ test_programme_ack_waits_for_presentation_lock() {
   pass "programme acknowledgement waits for presentation serialization"
 }
 
+test_identityless_render_shares_presenter_reader_identity() {
+  local home render identity reader_state
+  home=$(make_af_home identityless-render)
+  render='Programme without an identity line.'
+  identity=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_programme_identity_from_render "$2"' \
+    _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$render")
+  [ -n "$identity" ] || fail "identity-less render did not receive a deterministic identity"
+  jq -n --arg id "$identity" '{schema:"fm-programme-presented/v1", material_identity:$id, summary:"identityless", presented_at:"2026-09-04T00:00:00Z"}' \
+    > "$home/state/.programme-presented"
+  reader_state=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_programme_presentation_state "$2" "$(fm_programme_identity_from_render "$3")"' \
+    _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state" "$render")
+  [ "$reader_state" = unchanged ] || fail "reader did not reuse the presenter fallback identity: $reader_state"
+  pass "identity-less renders share one presenter and reader identity owner"
+}
+
 test_programme_present_waits_for_presentation_lock() {
   local home lock holder presenter
   home=$(make_af_home present-lock)
@@ -1855,6 +1870,7 @@ timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno
 timed test_programme_ack_waits_for_presentation_lock
+timed test_identityless_render_shares_presenter_reader_identity
 timed test_programme_present_waits_for_presentation_lock
 timed test_programme_revalidates_stale_resolver_snapshot
 timed test_unreadable_inputs_are_cno

@@ -553,7 +553,6 @@ if [ "$ACTOR" = main ]; then
   if [ ! -s "$MAIN_ROWS_FILE" ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     DRAIN_LOCK_HELD=false
-    close_ack_report_fd
     (print_status_presentation) || true
     assert_watcher_liveness
     exit 0

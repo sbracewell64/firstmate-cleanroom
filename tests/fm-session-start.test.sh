@@ -2009,9 +2009,8 @@ SH
   TMPDIR="$home/tmp" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest_file" 2>/dev/null
   digest=$(cat "$digest_file")
   unset FM_TEST_SESSION_START_PATH
-  digest_hex=$(od -An -v -tx1 "$digest_file" | tr -d ' \n')
-  assert_contains "$digest_hex" "647261696e2d6f75747075742d7072657365727665640a0a" \
-    "a staged stderr read failure discarded already captured drain stdout"
+  assert_not_contains "$digest" "drain-output-preserved" \
+    "a failed drain exposed captured stdout after staged stderr read failure"
   assert_contains "$digest" "wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred" \
     "a staged stderr read failure was not reported as non-actionable capture failure"
   assert_contains "$digest" "wake drain failed (exit 7)" \

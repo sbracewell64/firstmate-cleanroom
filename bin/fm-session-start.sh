@@ -947,7 +947,7 @@ else
     if ! cat "$DRAIN_OUTFILE" >"$DRAIN_RELAYFILE"; then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_CAPTURE_NOTE='wake drain output unavailable: staged stdout could not be read; no actionable authority was inferred'
-    elif ! cat "$DRAIN_RELAYFILE"; then
+    elif [ "$DRAIN_RC" -eq 0 ] && ! cat "$DRAIN_RELAYFILE"; then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_CAPTURE_NOTE='wake drain output unavailable: session stdout could not be written; no actionable authority was inferred'
     fi

@@ -149,16 +149,9 @@ ROWS
 }
 
 fm_work_context_engineering_render() { # <data> <id> <worker|reviewer|all> <stage|all>
-  local data=$1 id=$2 role=$3 stage=$4 row skill_role skill_stage discipline_rc
+  local data=$1 id=$2 role=$3 stage=$4 row skill_role skill_stage
   fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
-    FM_DISCIPLINE_DESCRIPTOR_REUSE=1
-    fm_discipline_render "$data" "$id" ship implementation; discipline_rc=$?
-    FM_DISCIPLINE_DESCRIPTOR_REUSE=0
-    [ "$discipline_rc" -eq 0 ] || return 3
-    printf '\n\n'
-  fi
   printf '# Engineering context\n'
   printf 'Task %s; generation %s; engineering SHA256 %s.\n' "$id" \
     "$(printf '%s' "$FM_WC_ENGINEERING" | jq -r .generation)" "$FM_WC_ENGINEERING_DIGEST"
@@ -183,6 +176,20 @@ ROWS
   printf '%s' "$FM_WC_ENGINEERING" | jq -c --arg role "$role" --arg stage "$stage" '
     . as $e | .verification[] | . as $v | select(any($e.skills[];
       .id == $v.skill and ($role == "all" or .role == $role) and ($stage == "all" or .stage == $stage)))'
+}
+
+fm_work_context_engineering_prompt() { # <data> <id> <role> <stage>
+  local data=$1 id=$2 role=$3 stage=$4 discipline_rc
+  fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  [ -n "$FM_WC_ENGINEERING" ] || return 0
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=1
+    fm_discipline_envelope_render "$data" "$id"; discipline_rc=$?
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+    [ "$discipline_rc" -eq 0 ] || return 3
+    printf '\n\n'
+  fi
+  fm_work_context_engineering_render "$data" "$id" "$role" "$stage"
 }
 
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>

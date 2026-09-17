@@ -529,6 +529,11 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
 fm_discipline_render() { # <data> <task> <ship> <implementation>
   local data=$1 task=$2 role=$3 stage=$4 block first rest tail
   fm_discipline_load "$data" "$task" "$role" "$stage" || return 3
+  fm_discipline_render_loaded "$data" "$task" "$role" "$stage"
+}
+
+fm_discipline_render_loaded() { # <data> <task> <ship> <implementation>
+  local data=$1 task=$2 role=$3 stage=$4 block first rest tail
   local args=() shared
   shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. == "shared-api" or . == "schema" or . == "persisted-state" or . == "authority" or . == "lifecycle" or . == "identity" or . == "provenance" or . == "sibling-invariant")] | length')
   [ "$shared" -eq 0 ] || args+=(--shared-boundary)
@@ -611,7 +616,7 @@ fm_discipline_envelope_render() { # <data> <task>
   begin="<!-- firstmate-discipline:v1 begin generation=$FM_DISCIPLINE_GENERATION fragment=$FM_DISCIPLINE_FRAGMENT_SHA256 -->"
   end="<!-- firstmate-discipline:v1 end generation=$FM_DISCIPLINE_GENERATION fragment=$FM_DISCIPLINE_FRAGMENT_SHA256 -->"
   printf '%s\n' "$begin"
-  fm_discipline_render "$data" "$task" ship implementation
+  fm_discipline_render_loaded "$data" "$task" ship implementation
   printf '\n%s\n' "$end"
 }
 

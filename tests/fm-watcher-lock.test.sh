@@ -994,6 +994,20 @@ test_live_unverifiable_identity_does_not_confirm_stop() {
   pass "live unverifiable identity blocks confirmed collection"
 }
 
+test_zero_redelivery_polls_use_default_cadence() {
+  local status=0
+  FM_STOP_REDELIVER_POLLS=0 bash -c '
+    . "$1"
+    stop_checks=0
+    fm_pid_alive() { stop_checks=$((stop_checks + 1)); [ "$stop_checks" -lt 2 ]; }
+    kill() { return 0; }
+    sleep() { :; }
+    fm_stop_process_confirmed 123 "" 1
+  ' _ "$LIB" || status=$?
+  [ "$status" -eq 0 ] || fail "zero redelivery cadence failed stop confirmation with status $status"
+  pass "zero redelivery cadence falls back before modulo arithmetic"
+}
+
 test_pid_identity_is_locale_invariant() {
   # The portable fallback records its process identity under one locale, then
   # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
@@ -1825,6 +1839,7 @@ test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
 test_a_zombie_reads_live_but_yields_no_identity
 test_live_unverifiable_identity_does_not_confirm_stop
+test_zero_redelivery_polls_use_default_cadence
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc

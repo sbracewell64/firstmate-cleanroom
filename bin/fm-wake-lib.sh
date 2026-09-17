@@ -161,6 +161,7 @@ fm_stop_process_confirmed() {
   esac
   every=${every#"${every%%[!0]*}"}
   [ -n "$every" ] || every=20
+  [ "$every" != 0 ] || every=20
   while :; do
     fm_pid_alive "$pid" || return 0
     if [ -n "$recorded" ]; then
@@ -1444,6 +1445,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
+  current=
   if fm_pid_alive "$lock_pid"; then
     current=$(fm_pid_identity "$lock_pid" 2>/dev/null) || {
       fm_lock_release "$steal"

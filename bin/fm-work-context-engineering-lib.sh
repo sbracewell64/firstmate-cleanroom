@@ -165,6 +165,7 @@ ROWS
 
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill index_json
+  FM_WC_ENGINEERING_EVIDENCE_DIGEST=
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
@@ -185,6 +186,7 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
     _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
   }
   index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
   fm_discipline_capture_cleanup
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg id "$id" --arg gen "$generation" --arg run "$run" --arg head "$head" '

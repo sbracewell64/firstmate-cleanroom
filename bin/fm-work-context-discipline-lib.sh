@@ -576,11 +576,8 @@ fm_discipline_envelope_render() { # <data> <task>
 }
 
 fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix>
-  local data=$1 task=$2 artifact=$3 successor=$4 bytes tmp_dir
+  local data=$1 task=$2 artifact=$3 successor=$4 bytes tmp_dir captured_artifact
   local expected_file actual_file combined_file
-  [ -f "$artifact" ] && [ ! -L "$artifact" ] && [ -r "$artifact" ] || {
-    fm_discipline_gap "discipline-artifact: unsafe or missing $artifact"; return 3;
-  }
   tmp_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-discipline-envelope.XXXXXX") || {
     fm_discipline_gap 'discipline-artifact: temporary directory creation failed'; return 3;
   }
@@ -612,13 +609,22 @@ fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix
   bytes=$(wc -c < "$combined_file") || {
     rm -f "$expected_file" "$actual_file" "$combined_file"; rmdir "$tmp_dir" 2>/dev/null || true; return 3;
   }
-  head -c "$bytes" "$artifact" > "$actual_file" 2>/dev/null || true
+  fm_discipline_capture "$artifact" || {
+    rm -f "$expected_file" "$actual_file" "$combined_file"
+    rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap "discipline-artifact: unsafe or unreadable $artifact"
+    return 3
+  }
+  captured_artifact=$FM_DISCIPLINE_CAPTURE_PATH
+  head -c "$bytes" "$captured_artifact" > "$actual_file" 2>/dev/null || true
   if ! cmp -s "$combined_file" "$actual_file"; then
+    fm_discipline_capture_cleanup
     rm -f "$expected_file" "$actual_file" "$combined_file"
     rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-artifact: fixed envelope slot or successor prefix changed'
     return 3
   fi
+  fm_discipline_capture_cleanup
   rm -f "$expected_file" "$actual_file" "$combined_file"
   rmdir "$tmp_dir" 2>/dev/null || true
   return 0

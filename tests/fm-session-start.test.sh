@@ -1195,7 +1195,9 @@ EOF
     chmod 0500 "$home/state"
   fi
   status=0
-  out=$(FM_FAKE_LIVE_HOLDER_PID="${holder:-}" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  out=$(FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    FM_FAKE_LIVE_HOLDER_PID="${holder:-}" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
   if [ "$kind" = live ]; then
     kill "$holder" 2>/dev/null || true
     wait "$holder" 2>/dev/null || true

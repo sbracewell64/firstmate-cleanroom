@@ -940,7 +940,7 @@ test_a_zombie_is_dead_and_does_not_block_successor() {
   # A forked child that exited while its parent has not reaped it is a zombie.
   # Linux exposes that state through /proc, and the lock owner must treat it as
   # dead: it cannot authorize signalling or keep a stale lock from succession.
-  local dir state lockdir zpid go i successor_pid
+  local dir state lockdir zpid go i successor_pid proc_state stat_line
   dir=$(make_case zombie-predicates)
   state="$dir/state"
   lockdir="$state/.zombie.lock"
@@ -969,6 +969,23 @@ PYZ
   case "$zpid" in
     ''|*[!0-9]*) : > "$go"; wait; fail "the zombie fixture never published a pid" ;;
   esac
+  # Synchronize on the kernel-observable state, not merely on the fixture's
+  # PID publication. A fast or supervised runner can otherwise let the
+  # predicate checks race the child's transition to (or away from) Z.
+  i=0
+  proc_state=
+  while [ "$i" -lt 100 ]; do
+    stat_line=$(cat "/proc/$zpid/stat" 2>/dev/null || true)
+    proc_state=
+    if [ -n "$stat_line" ]; then
+      read -r proc_state _ <<< "${stat_line##*)}"
+    fi
+    [ "$proc_state" = Z ] && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ "$proc_state" = Z ] \
+    || { : > "$go"; wait; fail "the zombie fixture did not reach the observable Z state"; }
 
   if FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$zpid"; then
     : > "$go"; wait

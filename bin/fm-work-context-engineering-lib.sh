@@ -36,6 +36,9 @@
 FM_WC_ENGINEERING=
 FM_WC_ENGINEERING_DIGEST=
 FM_WC_ENGINEERING_SKILLS=
+FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
+FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
+FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
 
 _fm_wc_engineering_gap() {
   # shellcheck disable=SC2034 # Result consumed by work-context, stage and generator callers.
@@ -61,7 +64,12 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
   FM_WC_ENGINEERING_DIGEST=
   FM_WC_ENGINEERING_SKILLS=
   desc="$data/$id/work-context.json"
-  [ -e "$desc" ] || return 0
+  if [ ! -e "$desc" ] && [ ! -L "$desc" ]; then
+    return 0
+  fi
+  fm_discipline_regular_file "$desc" || {
+    _fm_wc_engineering_gap "unsafe-work-context: $desc"; return 3;
+  }
   command -v jq >/dev/null 2>&1 || { _fm_wc_engineering_gap 'engineering-capability: jq required'; return 3; }
   jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
     _fm_wc_engineering_gap "malformed-work-context: $desc"; return 3;
@@ -166,11 +174,11 @@ ROWS
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill index_json
   FM_WC_ENGINEERING_EVIDENCE_DIGEST=
+  FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
+  FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
+  FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
-    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
-  fi
   required=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c '.verification[] | select(.scope == "component" or .scope == "composition")')
   if ! printf '%s' "$FM_WC_ENGINEERING" | jq -e '
     . as $e | all(.triggers[]; . as $t |
@@ -179,15 +187,24 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
         any($e.skills[]; .trigger == $t and .id == $v.skill)))' >/dev/null; then
     _fm_wc_engineering_gap 'engineering-evidence-undeclared: every applicable skill needs independent behavioral verification owner=nmf-completion-residual-carry'; return 3
   fi
-  [ -n "$required" ] || return 0
   index="$data/$id/engineering-evidence.json"
   generation=$(printf '%s' "$FM_WC_ENGINEERING" | jq -r .generation)
-  fm_discipline_capture "$index" || {
-    _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
-  }
-  index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
-  FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
-  fm_discipline_capture_cleanup
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ] || [ -n "$required" ] || [ -e "$index" ] || [ -L "$index" ]; then
+    fm_discipline_capture "$index" || {
+      _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
+    }
+    index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    FM_DISCIPLINE_EVIDENCE_INDEX_JSON=$index_json
+    FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    FM_DISCIPLINE_EVIDENCE_INDEX_PATH=$index
+    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
+    fm_discipline_capture_cleanup
+  fi
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
+  fi
+  [ -n "$required" ] || return 0
+  index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg id "$id" --arg gen "$generation" --arg run "$run" --arg head "$head" '
       length == 1 and (.[0] | .task == $id and .generation == $gen and .run == $run and .head == $head and

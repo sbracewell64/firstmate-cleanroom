@@ -149,6 +149,9 @@ FM_DISCIPLINE_GENERATION=
 FM_DISCIPLINE_FRAGMENT_SHA256=
 FM_DISCIPLINE_PROOF_SURFACE=
 FM_DISCIPLINE_PROOF_OUTCOME=
+FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
+FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
+FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
 
 fm_discipline_gap() {
   # shellcheck disable=SC2034 # Typed result consumed by sourcing work-context callers.
@@ -514,9 +517,16 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   FM_DISCIPLINE_PROOF_OUTCOME=
   fm_discipline_load "$data" "$task" ship implementation || return 3
   index="$data/$task/engineering-evidence.json"
-  fm_discipline_capture "$index" || { fm_discipline_gap "discipline-evidence-unreadable: $index"; return 3; }
-  index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
-  fm_discipline_capture_cleanup
+  if [ "$FM_DISCIPLINE_EVIDENCE_INDEX_PATH" = "$index" ] && [ -n "$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST" ]; then
+    index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
+  else
+    fm_discipline_capture "$index" || { fm_discipline_gap "discipline-evidence-unreadable: $index"; return 3; }
+    index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    FM_DISCIPLINE_EVIDENCE_INDEX_JSON=$index_json
+    FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    FM_DISCIPLINE_EVIDENCE_INDEX_PATH=$index
+    fm_discipline_capture_cleanup
+  fi
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg task "$task" --arg run "$run" --arg head "$head" '
       length == 1 and (.[0] | .task == $task and .run == $run and .head == $head and

@@ -773,8 +773,10 @@ engineering_result() {
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
     || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
-  [ -n "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-}" ] \
-    || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-unreadable: index capture unavailable during admission'
+  if [ -e "$DATA/$ID/engineering-evidence.json" ] || [ -L "$DATA/$ID/engineering-evidence.json" ]; then
+    [ -n "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-}" ] \
+      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-unreadable: index capture unavailable during admission'
+  fi
 }
 
 # --- transitions ------------------------------------------------------------

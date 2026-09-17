@@ -219,9 +219,13 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
+if [ "$KIND" = secondmate ]; then
+  mkdir -p "$DATA/$ID" || { echo "error: could not create task data directory: $DATA/$ID" >&2; exit 1; }
+  [ ! -L "$DATA/$ID" ] || { echo "error: task data directory is a symlink: $DATA/$ID" >&2; exit 1; }
+fi
+
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
-mkdir -p "$DATA/$ID"
 
 shell_quote() {
   printf "'"
@@ -403,6 +407,12 @@ if [ "$KIND" != secondmate ]; then
     exit 3
   }
 fi
+
+[ -d "$DATA/$ID" ] || mkdir -p "$DATA/$ID" || {
+  echo "error: could not create task data directory: $DATA/$ID" >&2
+  exit 1
+}
+[ ! -L "$DATA/$ID" ] || { echo "error: task data directory is a symlink: $DATA/$ID" >&2; exit 1; }
 
 if [ "$KIND" = scout ]; then
 DISCIPLINE=$(fm_discipline_block scout) || exit 1

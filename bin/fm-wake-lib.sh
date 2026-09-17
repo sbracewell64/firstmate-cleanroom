@@ -1437,14 +1437,12 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # which code came back. A live identity-matched owner may only be reclaimed past
 # if a stop was actually delivered to it. So every confirmation outcome where
 # NOTHING WAS ASKED refuses: the steal mutex is released and this returns 1.
-# Every outcome where the owner was asked, and either stopped or outlived the
-# bound, proceeds and removes the lock - an owner that outlives a bounded
-# retirement is the documented upgrade-window residual, and refusing there would
-# deadlock the next claimant forever, which is the worse failure. An owner that
-# is provably gone, whether stopped or no longer answering to its identity, is
-# likewise reclaimed. Missing identity evidence never blocks the reclaim of a
+# Every outcome where the owner was asked but remains live after the bound
+# refuses to remove the lock and leaves the claim for a later firing. An owner
+# that is provably gone, whether stopped or no longer answering to its identity,
+# is likewise reclaimed. Missing identity evidence never blocks the reclaim of a
 # proven-abandoned claim either - it only disables the TERM and the ledger graft
-# below, leaving that same bounded residual.
+# below.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
   lock="$state/.claude-autoarm.lock"
@@ -1470,7 +1468,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     # gone or was never provably this process.
     retire_rc=0
     fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
-    if ! fm_stop_was_delivered "$retire_rc"; then
+    if [ "$retire_rc" -ne 0 ]; then
       fm_lock_release "$steal"
       return 1
     fi

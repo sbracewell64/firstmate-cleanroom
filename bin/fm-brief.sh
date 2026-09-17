@@ -386,7 +386,12 @@ EOF
 WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
 
 DISCIPLINE=
+DISCIPLINE_DESCRIPTOR_PREEXISTED=0
+DISCIPLINE_DESCRIPTOR_DIGEST=
 if [ "$KIND" = ship ]; then
+  if [ -e "$DATA/$ID/work-context.json" ] || [ -L "$DATA/$ID/work-context.json" ]; then
+    DISCIPLINE_DESCRIPTOR_PREEXISTED=1
+  fi
   DISCIPLINE_ARGS=("${DISCIPLINE_FACTS[@]+"${DISCIPLINE_FACTS[@]}"}")
   [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
   [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
@@ -394,6 +399,11 @@ if [ "$KIND" = ship ]; then
     echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
     exit 3
   }
+  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ]; then
+    fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
+    DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    fm_discipline_capture_cleanup
+  fi
 fi
 
 ENGINEERING=
@@ -403,6 +413,15 @@ if [ "$KIND" != secondmate ]; then
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
   if [ "$KIND" = ship ]; then
     ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+      if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] && [ -n "$DISCIPLINE_DESCRIPTOR_DIGEST" ] &&
+        fm_discipline_capture "$DATA/$ID/work-context.json" &&
+        [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
+        fm_discipline_capture_cleanup
+        rm -f -- "$DATA/$ID/work-context.json"
+        rmdir "$DATA/$ID" 2>/dev/null || true
+      else
+        fm_discipline_capture_cleanup
+      fi
       echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
       exit 3
     }

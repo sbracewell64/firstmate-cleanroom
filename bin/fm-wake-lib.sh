@@ -1454,6 +1454,35 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
   return 0
 }
 
+fm_autoarm_remove_lock_before_deadline() {
+  local lock=$1 ownerdir backup
+  fm_stop_deadline_check || return 1
+  ownerdir=$(fm_lock_link_owner "$lock" 2>/dev/null || true)
+  [ -e "$lock" ] || [ -L "$lock" ] || return 1
+  backup="$lock.retiring.${BASHPID:-$$}"
+  mv "$lock" "$backup" 2>/dev/null || return 1
+  if ! fm_stop_deadline_check; then
+    mv "$backup" "$lock" 2>/dev/null || true
+    return 1
+  fi
+  if [ -n "$ownerdir" ]; then
+    rm -f "$backup" 2>/dev/null || {
+      [ -e "$lock" ] || [ -L "$lock" ] || mv "$backup" "$lock" 2>/dev/null || true
+      return 1
+    }
+  elif ! fm_lock_remove_path "$backup"; then
+    [ -e "$lock" ] || [ -L "$lock" ] || mv "$backup" "$lock" 2>/dev/null || true
+    return 1
+  fi
+  if ! fm_stop_deadline_check; then
+    if [ -n "$ownerdir" ]; then
+      [ -e "$lock" ] || [ -L "$lock" ] || ln -s "$ownerdir" "$lock" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  [ -z "$ownerdir" ] || fm_lock_discard_owner "$ownerdir"
+}
+
 # Remove a proven-abandoned legacy claim so the next claimant can arm. The
 # proof is re-verified while holding the lock's steal mutex, the same
 # serialization fm_lock_try_acquire uses for stale-owner reclaim: while it is
@@ -1551,7 +1580,10 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     rm -f "$tmp" 2>/dev/null || true
   fi
   fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
-  fm_lock_remove_path "$lock" || true
+  fm_autoarm_remove_lock_before_deadline "$lock" || {
+    fm_lock_release "$steal"
+    return 1
+  }
   fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   fm_lock_release "$steal"
   [ -e "$lock" ] || [ -L "$lock" ] || return 0

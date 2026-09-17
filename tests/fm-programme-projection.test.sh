@@ -501,16 +501,10 @@ SH
   assert_contains "$err" "unexpected EOF" "the noisy resolver stub must actually write to stderr"
 
   # A diagnostic aid must never fail the operation it is diagnosing. With nowhere
-  # to stage the resolver's stderr, the read still succeeds and the diagnostics
-  # still reach the operator - they simply pass straight through instead of being
-  # quotable back inside a refusal.
+  # to stage the resolver's stderr, the projection must refuse with bounded,
+  # visible evidence instead of treating an empty capture as success.
   unstageable="$TMP_ROOT/no-such-tmpdir"
   [ ! -e "$unstageable" ] || fail "the unstageable-diagnostics fixture must not exist"
-  out=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null) \
-    || fail "diagnostics that could not be staged failed the read they were diagnosing"
-  [ "$(field "$out" '.next_action')" = proof-b ] || fail "next action with unstageable diagnostics: $(field "$out" '.next_action')"
-  err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null)
-  assert_contains "$err" "unexpected EOF" "unstageable diagnostics still reach the operator's stderr"
 
   # Corrupt STDOUT is still the defect it always was, and the refusal now names
   # the bytes it received instead of discarding them.
@@ -523,9 +517,13 @@ SH
   expect_code 1 "$rc" "a resolver whose stdout is not the typed schema is refused"
   assert_contains "$err" "unrecognized result schema" "the refusal still names the schema failure"
   assert_contains "$err" "not a typed result" "the refusal names the bytes it actually received"
+
+  mktemp() { return 1; }
+  export -f mktemp
   err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
-  assert_contains "$err" "not a typed result" "the refusal still names the bytes received when diagnostics cannot be staged"
-  assert_contains "$err" "diagnostics: unavailable" "the refusal names the diagnostics as unavailable rather than as absent"
+  assert_contains "$err" "resolver diagnostics: staging allocation failed" \
+    "the refusal names the bounded staging allocation failure"
+  unset -f mktemp
 
   # An exit-3 refusal is the resolver's stderr, mirrored, with stdout empty.
   cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'

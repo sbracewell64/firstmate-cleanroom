@@ -107,7 +107,8 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 
 Stopping a watcher is CONFIRMED by observing the process gone, never assumed from a queued signal, because the target's shell can consume a trapped signal without running its handler and carry on with its close path unrun; [`fm_stop_process_confirmed`](../bin/fm-wake-lib.sh) owns that fact and the re-delivery it requires.
 The arm layer's `--restart` stop and the legacy auto-arm reclaim in that same library go through it, and so does the test suites' `reap`.
-The legacy auto-arm reclaim removes a live owner's lock only after that stop is confirmed; if the bounded confirmation window ends while the owner remains live, reclamation refuses and leaves the lock for a later firing.
+The legacy auto-arm reclaim removes a live owner's lock only after that stop is confirmed; an unreadable live-owner identity or a confirmation window that ends while the owner remains live makes reclamation refuse and leave the lock for a later firing.
+That reclaim confirmation ceiling is fixed at ten tenth-second polls, preserving the legacy one-second bound rather than widening with an environment override.
 That close path is also uninterruptible: it ignores stop signals for its own duration, because a later stop would otherwise re-enter the exit handler and abandon it part way through.
 The one exception is its wait for the downtime marker lock, which runs with the ordinary stop disposition still in force, because that wait has no deadline of its own and a holder that never releases would otherwise make the watcher unkillable.
 The watcher takes that lock and holds it across the marker mutation and the singleton-lock release, so the uninterruptible region contains no unbounded wait: the transition it calls is the already-held variant and performs no acquire of its own, and the waits that do run inside it are bounded ones with deadlines of their own.

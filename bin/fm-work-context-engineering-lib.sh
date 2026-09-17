@@ -59,24 +59,30 @@ _fm_wc_engineering_sha() { # <readable-file>
 }
 
 fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
-  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual generation
+  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual generation descriptor_rc
   FM_WC_ENGINEERING=
   FM_WC_ENGINEERING_DIGEST=
   FM_WC_ENGINEERING_SKILLS=
+  FM_DISCIPLINE_DESCRIPTOR_JSON=
+  FM_DISCIPLINE_DESCRIPTOR_DIGEST=
+  FM_DISCIPLINE_DESCRIPTOR_PATH=
   desc="$data/$id/work-context.json"
   if [ ! -e "$desc" ] && [ ! -L "$desc" ]; then
     return 0
   fi
-  fm_discipline_regular_file "$desc" || {
+  fm_discipline_descriptor_capture "$desc" || {
     _fm_wc_engineering_gap "unsafe-work-context: $desc"; return 3;
   }
   command -v jq >/dev/null 2>&1 || { _fm_wc_engineering_gap 'engineering-capability: jq required'; return 3; }
-  jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
+  printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -se 'length == 1 and (.[0]|type == "object")' >/dev/null 2>&1 || {
     _fm_wc_engineering_gap "malformed-work-context: $desc"; return 3;
   }
-  jq -e 'has("engineering")' "$desc" >/dev/null || return 0
-  if jq -e '.engineering.discipline != null' "$desc" >/dev/null 2>&1; then
-    fm_discipline_load "$data" "$id" ship implementation || return 3
+  printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e 'has("engineering")' >/dev/null || return 0
+  if printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e '.engineering.discipline != null' >/dev/null 2>&1; then
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=1
+    fm_discipline_load "$data" "$id" ship implementation; descriptor_rc=$?
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+    [ "$descriptor_rc" -eq 0 ] || return 3
   fi
   case "$role:$stage" in
     all:all|worker:all|reviewer:all|worker:implementation|worker:test|worker:diagnosis|reviewer:review) ;;
@@ -105,14 +111,14 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
         .source_identity,.caller_identity,.command,.negative,.owner,.next_gate][]; text) and
       (["component","composition","provisioned-runtime","deployed-consumer"]|index($v.scope)) != null and
       any($e.skills[]; .id == $v.skill and (.trigger as $t | $e.triggers|index($t)) != null))
-  ' "$desc" >/dev/null 2>&1; then
+  ' <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON") >/dev/null 2>&1; then
     _fm_wc_engineering_gap "engineering-schema: invalid source/trigger/role/stage/evidence declaration in $desc"; return 3
   fi
-  if ! jq -c '.engineering.generation' "$desc" | fm_discipline_generation_json_valid; then
+  if ! printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -c '.engineering.generation' | fm_discipline_generation_json_valid; then
     _fm_wc_engineering_gap "engineering-schema: invalid generation in $desc"; return 3;
   fi
-  generation=$(jq -r '.engineering.generation' "$desc")
-  FM_WC_ENGINEERING=$(jq -cS '.engineering' "$desc") || return 3
+  generation=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -r '.engineering.generation')
+  FM_WC_ENGINEERING=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -cS '.engineering') || return 3
   FM_WC_ENGINEERING_DIGEST=$(printf '%s\n' "$FM_WC_ENGINEERING" | _fm_wc_engineering_sha /dev/stdin) || {
     _fm_wc_engineering_gap 'engineering-capability: SHA256 unavailable'; return 3;
   }
@@ -120,7 +126,7 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
     .engineering as $e | $e.skills[] |
     select(.trigger as $t | $e.triggers|index($t)) |
     select($role == "all" or .role == $role) |
-    select($stage == "all" or .stage == $stage)' "$desc") || return 3
+    select($stage == "all" or .stage == $stage)' <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON")) || return 3
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     path=$(printf '%s' "$row" | jq -r .path)

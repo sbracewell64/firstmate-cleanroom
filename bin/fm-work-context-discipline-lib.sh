@@ -152,6 +152,22 @@ FM_DISCIPLINE_PROOF_OUTCOME=
 FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
 FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
 FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
+FM_DISCIPLINE_DESCRIPTOR_JSON=
+FM_DISCIPLINE_DESCRIPTOR_DIGEST=
+FM_DISCIPLINE_DESCRIPTOR_PATH=
+FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+
+fm_discipline_descriptor_capture() { # <path>
+  local path=$1
+  if [ "$FM_DISCIPLINE_DESCRIPTOR_PATH" = "$path" ] && [ -n "$FM_DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
+    return 0
+  fi
+  fm_discipline_capture "$path" || return 1
+  FM_DISCIPLINE_DESCRIPTOR_JSON=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  FM_DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+  FM_DISCIPLINE_DESCRIPTOR_PATH=$path
+  fm_discipline_capture_cleanup
+}
 
 fm_discipline_gap() {
   # shellcheck disable=SC2034 # Typed result consumed by sourcing work-context callers.
@@ -389,14 +405,20 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
   }
   desc="$data/$task/work-context.json"
   [ -f "$desc" ] && [ ! -L "$desc" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
-  receipt=$(jq -cS '.engineering.discipline // empty' "$desc" 2>/dev/null) || {
+  if [ "$FM_DISCIPLINE_DESCRIPTOR_REUSE" -ne 1 ]; then
+    FM_DISCIPLINE_DESCRIPTOR_JSON=
+    FM_DISCIPLINE_DESCRIPTOR_DIGEST=
+    FM_DISCIPLINE_DESCRIPTOR_PATH=
+    fm_discipline_descriptor_capture "$desc" || { fm_discipline_gap "discipline-context: unreadable $desc"; return 3; }
+  fi
+  receipt=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -cS '.engineering.discipline // empty' 2>/dev/null) || {
     fm_discipline_gap "discipline-context: malformed $desc"; return 3;
   }
   [ -n "$receipt" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
-  if ! jq -c '.engineering.generation' "$desc" | fm_discipline_generation_json_valid; then
+  if ! printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -c '.engineering.generation' | fm_discipline_generation_json_valid; then
     fm_discipline_gap "discipline-context: malformed engineering generation in $desc"; return 3
   fi
-  outer_generation=$(jq -r '.engineering.generation' "$desc")
+  outer_generation=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -r '.engineering.generation')
   receipt_task=$(printf '%s' "$receipt" | jq -r '.task // empty')
   receipt_role=$(printf '%s' "$receipt" | jq -r '.role // empty')
   receipt_stage=$(printf '%s' "$receipt" | jq -r '.stage // empty')
@@ -444,13 +466,19 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
       fm_discipline_gap "discipline-artifact: unsafe descriptor $desc"; return 3;
     }
     desc_exists=1
-    jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
+    FM_DISCIPLINE_DESCRIPTOR_JSON=
+    FM_DISCIPLINE_DESCRIPTOR_DIGEST=
+    FM_DISCIPLINE_DESCRIPTOR_PATH=
+    fm_discipline_descriptor_capture "$desc" || {
+      fm_discipline_gap "discipline-context: unreadable $desc"; return 3;
+    }
+    printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -se 'length == 1 and (.[0]|type == "object")' >/dev/null 2>&1 || {
       fm_discipline_gap "discipline-context: malformed $desc"; return 3;
     }
-    existing=$(jq -cS '.engineering.discipline // empty' "$desc") || return 3
+    existing=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -cS '.engineering.discipline // empty') || return 3
   fi
   if [ "$desc_exists" -eq 1 ]; then
-    outer_generation=$(jq -r '.engineering.generation // empty' "$desc") || return 3
+    outer_generation=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -r '.engineering.generation // empty') || return 3
   else
     outer_generation=
   fi

@@ -246,7 +246,7 @@ exit 1 unless @after;
 for my $i (0, 1, 2, 7, 9, 10) {
   exit 1 unless $after[$i] == $before[$i];
 }
-sysseek($in, 0, 0) or exit 1;
+defined(sysseek($in, 0, 0)) or exit 1;
 my $recheck = '';
 my $recheck_sha = Digest::SHA->new(256);
 while (1) {

@@ -962,6 +962,8 @@ else
   DRAIN_ACK_SEQUENCE=
   DRAIN_ACK_GENERATION=
   DRAIN_ACK_RECORD=
+  DRAIN_FALLBACK_FIFO=
+  DRAIN_RELAY_PID=
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   DRAIN_ACKFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-ack.XXXXXX" 2>/dev/null) || DRAIN_ACKFILE=
   if [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_ACKFILE" ]; then
@@ -983,8 +985,17 @@ else
   else
     [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE"
     [ -z "$DRAIN_ACKFILE" ] || rm -f -- "$DRAIN_ACKFILE"
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" \
-      2> >(sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/' >&2)) || DRAIN_RC=$?
+    DRAIN_FALLBACK_FIFO="$STATE/.session-start-drain.${BASHPID:-$$}.fifo"
+    if mkfifo "$DRAIN_FALLBACK_FIFO" 2>/dev/null; then
+      _fm_programme_prefix_diagnostic <"$DRAIN_FALLBACK_FIFO" >&2 &
+      DRAIN_RELAY_PID=$!
+      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_FALLBACK_FIFO") || DRAIN_RC=$?
+      wait "$DRAIN_RELAY_PID" 2>/dev/null || true
+      rm -f -- "$DRAIN_FALLBACK_FIFO"
+    else
+      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>/dev/null) || DRAIN_RC=$?
+      printf '%s\n' 'wake drain diagnostics: staging was unavailable' >&2
+    fi
     DRAIN_DIAG=
     DRAIN_DIAG_STAGED=0
   fi
@@ -997,7 +1008,7 @@ else
     printf 'wake drain returned an invalid acknowledgement status; its result is not a usable wake-queue verdict.\n'
   elif [ "$DRAIN_RC" -eq 0 ]; then
     if [ -n "$DRAIN_OUT" ]; then
-      printf '%s\n' "$DRAIN_OUT" | sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/'
+      printf '%s\n' "$DRAIN_OUT"
     elif [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
       printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
     else
@@ -1008,7 +1019,7 @@ else
         "$DRAIN_ACK_SEQUENCE" "$DRAIN_ACK_GENERATION"
     fi
   fi
-  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG" | sed 's/^WAKE_ACK_REQUIRED:/wake drain diagnostic: WAKE_ACK_REQUIRED:/'
+  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG" | _fm_programme_prefix_diagnostic >&2
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

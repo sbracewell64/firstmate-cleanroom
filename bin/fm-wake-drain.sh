@@ -37,7 +37,7 @@ ACK_NOTICE_FINGERPRINTS=
 
 report_ack_required() {  # <sequence> <generation>
   printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-    "$1" "$2" >&2
+    "$1" "$2"
 }
 
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
@@ -482,6 +482,7 @@ if [ -n "$ACK_THROUGH" ]; then
       3) RECOVERY_ACK_MOVED=true ;;
       *)
         echo "wake drain: recovery episode could not be retired safely; re-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command" >&2
+        report_ack_required "$ACK_THROUGH" "$ACK_GENERATION" || true
         exit 1
         ;;
     esac
@@ -512,8 +513,9 @@ if [ -n "$ACK_THROUGH" ]; then
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_MOVED" = true ]; then
-    printf 'wake drain: acknowledged wakes through %s, but a newer recovery episode is pending; re-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command\n' \
+    printf 'wake drain: acknowledged wakes through %s, but a newer recovery episode is pending; re-run bin/fm-wake-drain.sh\n' \
       "$ACK_THROUGH" >&2
+    report_ack_required "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" || true
   fi
   exit 0
 fi

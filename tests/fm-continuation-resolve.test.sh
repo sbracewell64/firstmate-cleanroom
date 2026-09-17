@@ -1785,7 +1785,7 @@ test_af_presentation_quiet_and_ack_race() {
   assert_contains "$token" "next=pilot-f SELF_HANDLE/AUTHORIZED" "the away digest announces a material change"
   queue_wake "$home"
   out=$(run_drain "$home" 2>"$home/drain.err") || fail "wake drain failed"
-  ack=$(sed -n 's/^WAKE_ACK_REQUIRED: after handling completes run bin\/fm-wake-drain.sh //p' "$home/drain.err")
+  ack=$(sed -n 's/^WAKE_ACK_REQUIRED: after handling completes run bin\/fm-wake-drain.sh //p' <<< "$out")
   [ -n "$ack" ] || fail "the wake drain must print its acknowledgement command"
   assert_contains "$out" "next action pilot-f" "the changed state is presented with the wake"
   assert_contains "$out" "presented identity ${second:0:12}; it is acknowledged by the WAKE_ACK_REQUIRED command" "an ack turn records a pending identity"

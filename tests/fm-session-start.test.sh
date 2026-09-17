@@ -1879,9 +1879,8 @@ EOF
   assert_not_contains "$section" "still outstanding" "a quiet queue claimed an outstanding acknowledgement"
   assert_not_contains "$section" "wake drain failed" "a healthy drain was labelled failed"
 
-  # (2) nothing on stdout but an acknowledgement outstanding: the section must
-  # not claim the queue is empty, and the instruction the operator has to act on
-  # must reach the digest and still be usable.
+  # (2) an acknowledgement outstanding: the drain-owned stdout instruction
+  # must reach the digest unchanged and remain usable.
   rec=$(new_world wake-verdict-episode)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1891,8 +1890,8 @@ EOF
   seed_pending_downtime_episode "$home/state" || fail "could not publish the downtime episode fixture"
   [ ! -s "$home/state/.wake-queue" ] || fail "the pending-episode fixture must leave the wake queue empty"
   section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")
-  assert_contains "$section" "(no queued wakes)" \
-    "the digest did not relay the drain's empty stdout"
+  assert_not_contains "$section" "(no queued wakes)" \
+    "the digest claimed the queue was empty despite the drain instruction"
   assert_contains "$section" "WAKE_ACK_REQUIRED:" \
     "the acknowledgement instruction never reached the digest"
   sequence=$(printf '%s\n' "$section" | sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' | tail -1)
@@ -1903,7 +1902,7 @@ EOF
     --ack-through "$sequence" --recovery-generation "$generation" >/dev/null 2>&1 \
     || fail "the acknowledgement command the digest printed was refused"
 
-  # Direct callers still receive the drain's own stderr instruction.
+  # Direct callers still receive the drain's own stdout instruction.
   rec=$(new_world wake-verdict-direct-drain)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1911,7 +1910,7 @@ EOF
   seed_pending_downtime_episode "$home/state" || fail "could not publish the direct-drain downtime episode"
   FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-wake-drain.sh" >"$home/direct-drain.out" 2>"$home/direct-drain.err" \
     || fail "the direct drain refused the pending episode"
-  assert_contains "$(cat "$home/direct-drain.err")" 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation' \
+  assert_contains "$(cat "$home/direct-drain.out")" 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation' \
     "the direct drain stopped printing its owned acknowledgement instruction"
 
   # (3) rows presented: the drain's own output is the section, with no queue

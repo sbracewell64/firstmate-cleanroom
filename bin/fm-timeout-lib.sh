@@ -126,25 +126,46 @@ fm_run_external_timeout() {
 }
 
 fm_run_external_timeout_strict() {
-  local runner=$1 seconds=$2 status_file runner_pid runner_rc command_rc
+  local runner=$1 seconds=$2 status_file done_file expired_file runner_pid watchdog_pid runner_rc command_rc
   shift 2
   status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-strict-status.XXXXXX" 2>/dev/null) || return 124
+  done_file="${status_file}.done"
+  expired_file="${status_file}.expired"
   "$runner" -s KILL "$seconds" bash -c '
     status_file=$1
-    shift
+    done_file=$2
+    shift 2
     "$@"
     command_rc=$?
     printf "%s\n" "$command_rc" > "$status_file"
+    printf "done\n" > "$done_file"
     exit "$command_rc"
-  ' _ "$status_file" "$@" &
+  ' _ "$status_file" "$done_file" "$@" &
   runner_pid=$!
+  (
+    sleep "$seconds"
+    printf 'expired\n' > "$expired_file"
+    kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    exit 124
+  ) &
+  watchdog_pid=$!
   if wait "$runner_pid"; then
     runner_rc=0
   else
     runner_rc=$?
   fi
+  if [ -s "$done_file" ]; then
+    kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  else
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
   command_rc=$(cat "$status_file" 2>/dev/null || true)
-  rm -f "$status_file" 2>/dev/null || true
+  if [ -s "$expired_file" ]; then
+    rm -f "$status_file" "$done_file" "$expired_file" 2>/dev/null || true
+    return 124
+  fi
+  rm -f "$status_file" "$done_file" "$expired_file" 2>/dev/null || true
   case "$command_rc" in
     ''|*[!0-9]*) ;;
     *) [ "$command_rc" -le 255 ] && return "$command_rc" ;;

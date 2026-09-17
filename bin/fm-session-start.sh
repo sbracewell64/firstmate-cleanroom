@@ -932,8 +932,8 @@ else
     fi
   fi
   # The drain owns acknowledgement authority and emits its queue rows plus its
-  # exact acknowledgement instruction. Resolver diagnostics are already
-  # prefixed by the shared presentation owner before they reach it.
+  # exact acknowledgement instruction on stdout. Resolver diagnostics are
+  # already prefixed by the shared presentation owner before they reach stderr.
   DRAIN_RC=0
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   if [ -n "$DRAIN_ERRFILE" ]; then

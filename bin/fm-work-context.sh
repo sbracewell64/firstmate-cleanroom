@@ -91,13 +91,6 @@ case "${1:-}" in
     ;;
   engineering)
     [ "$#" -eq 4 ] || { echo 'usage: engineering <id> <worker|reviewer|all> <stage|all>' >&2; exit 2; }
-    if jq -e '.engineering.discipline != null' "$DATA/$2/work-context.json" >/dev/null 2>&1; then
-      if ! fm_discipline_render "$DATA" "$2" ship implementation; then
-        printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
-        exit 3
-      fi
-      printf '\n\n'
-    fi
     if ! fm_work_context_engineering_render "$DATA" "$2" "$3" "$4"; then
       printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
       exit 3

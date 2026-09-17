@@ -372,7 +372,7 @@ if [ "$KIND" = ship ]; then
     echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
     exit 3
   }
-  DISCIPLINE=$(fm_discipline_render "$DATA" "$ID" ship implementation) || exit 3
+  DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
 fi
 
 ENGINEERING=

@@ -36,6 +36,7 @@ generation() {
 extract_discipline() { # <brief> <output>
   awk '
     /^# Worker discipline$/ { on=1 }
+    on && /^<!-- firstmate-discipline:v1 end / { exit }
     on && /^# Engineering context$/ { exit }
     on && /^# Firstmate instruction inbox$/ { exit }
     on { print }

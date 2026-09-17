@@ -445,81 +445,57 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   return 0
 }
 
+fm_discipline_envelope_render() { # <data> <task>
+  local data=$1 task=$2 begin end
+  fm_discipline_load "$data" "$task" ship implementation || return 3
+  begin="<!-- firstmate-discipline:v1 begin generation=$FM_DISCIPLINE_GENERATION fragment=$FM_DISCIPLINE_FRAGMENT_SHA256 -->"
+  end="<!-- firstmate-discipline:v1 end generation=$FM_DISCIPLINE_GENERATION fragment=$FM_DISCIPLINE_FRAGMENT_SHA256 -->"
+  printf '%s\n' "$begin"
+  fm_discipline_render "$data" "$task" ship implementation
+  printf '\n%s\n' "$end"
+}
+
+fm_discipline_envelope_validate() { # <data> <task> <artifact>
+  local data=$1 task=$2 artifact=$3 begin end begin_count end_count
+  local expected_file actual_file
+  [ -f "$artifact" ] && [ ! -L "$artifact" ] && [ -r "$artifact" ] || {
+    fm_discipline_gap "discipline-artifact: unsafe or missing $artifact"; return 3;
+  }
+  expected_file="$artifact.discipline.expected.$$"
+  actual_file="$artifact.discipline.actual.$$"
+  fm_discipline_envelope_render "$data" "$task" > "$expected_file" || {
+    rm -f "$expected_file" "$actual_file" 2>/dev/null; return 3;
+  }
+  begin=$(sed -n '1p' "$expected_file")
+  end=$(sed -n '$p' "$expected_file")
+  begin_count=$(grep -Fxc "$begin" "$artifact" 2>/dev/null || true)
+  end_count=$(grep -Fxc "$end" "$artifact" 2>/dev/null || true)
+  if [ "$begin_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap 'discipline-artifact: expected one canonical envelope'
+    return 3
+  fi
+  LC_ALL=C awk -v begin="$begin" -v end="$end" '
+    $0 == begin { on=1; print; next }
+    on { print; if ($0 == end) { done=1; exit } }
+    END { exit !(done && on) }
+  ' "$artifact" > "$actual_file" 2>/dev/null || true
+  if ! cmp -s "$expected_file" "$actual_file"; then
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap 'discipline-artifact: envelope content or boundary changed'
+    return 3
+  fi
+  rm -f "$expected_file" "$actual_file" 2>/dev/null
+  return 0
+}
+
 fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
-  local data=$1 task=$2 kind=$3 brief=$4 expected_file boundary_file combined_file actual_file
-  local combined_bytes candidates line previous found=1 engineering_file
+  local data=$1 task=$2 kind=$3 brief=$4
   case "$kind" in
     secondmate) return 0 ;;
-    scout)
-      ! grep -Eq '^Discipline receipt:|^# Worker discipline$' "$brief" 2>/dev/null || {
-        fm_discipline_gap 'discipline-role: scout brief contains ship discipline'; return 3;
-      }
-      return 0 ;;
+    scout) return 0 ;;
     ship) ;;
     *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
   esac
-  expected_file="$brief.discipline.expected.$$"
-  boundary_file="$brief.discipline.boundary.$$"
-  combined_file="$brief.discipline.combined.$$"
-  engineering_file="$brief.discipline.engineering.$$"
-  actual_file="$brief.discipline.actual.$$"
-  fm_discipline_render "$data" "$task" ship implementation > "$expected_file" || {
-    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-    return 3
-  }
-  fm_work_context_engineering_render "$data" "$task" all all > "$engineering_file" || {
-    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-    return 3
-  }
-  {
-    printf '\n\n'
-    cat "$engineering_file"
-    printf '\n\n# Firstmate instruction inbox\n'
-  } > "$boundary_file" || {
-    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-    fm_discipline_gap "discipline-brief: unreadable $brief"
-    return 3
-  }
-  cat "$expected_file" "$boundary_file" > "$combined_file" || {
-    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-    fm_discipline_gap "discipline-brief: unreadable $brief"
-    return 3
-  }
-  combined_bytes=$(wc -c < "$combined_file") || {
-    rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-    fm_discipline_gap "discipline-brief: unreadable $brief"
-    return 3
-  }
-  candidates=$(grep -n '^# Worker discipline$' "$brief" 2>/dev/null || true)
-  while IFS=: read -r line _; do
-    [ -n "$line" ] || continue
-    [ "$line" -gt 1 ] || continue
-    previous=$(sed -n "$((line - 1))p" "$brief" 2>/dev/null || true)
-    case "$previous" in
-      *'daemon error, append '* ) : ;;
-      *) continue ;;
-    esac
-    LC_ALL=C awk -v start="$line" -v wanted="$combined_bytes" '
-      NR >= start && copied < wanted {
-        line=$0 "\n"
-        remaining=wanted-copied
-        if (length(line) <= remaining) printf "%s", line
-        else printf "%s", substr(line, 1, remaining)
-        copied += length(line)
-      }
-      copied >= wanted { exit }
-    ' "$brief" > "$actual_file" 2>/dev/null || continue
-    if cmp -s "$combined_file" "$actual_file"; then
-      found=0
-      break
-    fi
-  done <<CANDIDATES
-$candidates
-CANDIDATES
-  rm -f "$expected_file" "$boundary_file" "$combined_file" "$engineering_file" "$actual_file" 2>/dev/null
-  if [ "$found" -ne 0 ]; then
-    fm_discipline_gap 'discipline-brief: rendered selection does not match the canonical receipt'
-    return 3
-  fi
-  return 0
+  fm_discipline_envelope_validate "$data" "$task" "$brief"
 }

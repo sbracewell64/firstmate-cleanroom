@@ -238,10 +238,20 @@ fm_work_context_engineering_residuals() { # <descriptor>
 }
 
 fm_work_context_engineering_brief() { # <data> <id> <ship|scout|secondmate>
-  local data=$1 id=$2 kind=$3 line expected brief
+  local data=$1 id=$2 kind=$3 line expected brief instructions
   brief="$data/$id/brief.md"
-  if [ "$kind" != ship ] || jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1 \
-      || grep -Eq '^Discipline receipt:|^# Worker discipline$' "$brief" 2>/dev/null; then
+  instructions="$data/$id/ship-instructions.md"
+  if [ "$kind" = ship ]; then
+    if [ -e "$instructions" ] || [ -L "$instructions" ]; then
+      [ -f "$instructions" ] && [ ! -L "$instructions" ] || {
+        _fm_wc_engineering_gap 'discipline-artifact: promoted instructions path is unsafe'; return 3;
+      }
+      brief="$instructions"
+    fi
+    if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
+      fm_discipline_brief "$data" "$id" ship "$brief" || return 3
+    fi
+  elif [ "$kind" = scout ] || [ "$kind" = secondmate ]; then
     fm_discipline_brief "$data" "$id" "$kind" "$brief" || return 3
   fi
   line=$(grep -F 'engineering SHA256 ' "$brief" 2>/dev/null || true)

@@ -1979,6 +1979,36 @@ EOF
   assert_contains "$section" "wake drain failed (exit 7)" \
     "a failed drain omitted its explicit failure verdict"
 
+  rec=$(new_world wake-verdict-stderr-read-failure)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  install_drain_fixture "$root" "drain-output-preserved" "diagnostic-lost-by-reader" 0
+  mkdir -p "$home/tmp"
+  cat > "$fakebin/cat" <<SH
+#!/usr/bin/env bash
+case "${1:-}" in
+  "$home/tmp"/fm-session-start-drain.*)
+    exit 1
+    ;;
+esac
+exec /bin/cat "$@"
+SH
+  chmod +x "$fakebin/cat"
+  FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
+  digest=$(TMPDIR="$home/tmp" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)
+  unset FM_TEST_SESSION_START_PATH
+  assert_contains "$digest" "drain-output-preserved" \
+    "a staged stderr read failure discarded already captured drain stdout"
+  assert_contains "$digest" "wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred" \
+    "a staged stderr read failure was not reported as non-actionable capture failure"
+  assert_contains "$digest" "wake drain failed (exit 125)" \
+    "a staged stderr read failure did not fail the drain capture"
+  assert_not_contains "$digest" "diagnostic-lost-by-reader" \
+    "a staged stderr read failure unexpectedly exposed unavailable diagnostics"
+
   # A diagnostic that merely mentions the protocol marker is not an outstanding
   # acknowledgement instruction.
   rec=$(new_world wake-verdict-marker-diagnostic)

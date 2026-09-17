@@ -938,8 +938,15 @@ else
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   if [ -n "$DRAIN_ERRFILE" ]; then
     DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
-    DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null) || DRAIN_ERR=
+    DRAIN_CAPTURE_FAILED=0
+    if ! DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null); then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_ERR='wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred'
+    fi
     rm -f -- "$DRAIN_ERRFILE"
+    if [ "$DRAIN_CAPTURE_FAILED" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then
+      DRAIN_RC=125
+    fi
   else
     DRAIN_OUT=
     DRAIN_ERR='wake drain skipped: diagnostic staging could not be secured'

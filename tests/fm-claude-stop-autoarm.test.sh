@@ -920,9 +920,8 @@ test_stuck_live_legacy_owner_is_retired_and_reclaimed() {
 }
 
 # The SIGSTOP counterfactual: a stopped legacy owner survives the bounded
-# retirement wait with TERM queued, and the reclaim must proceed anyway - a
-# pending TERM on the verified owner is retirement-safe because delivery
-# precedes any further user code when the process continues.
+# retirement wait with TERM queued, so the reclaim must wait for confirmed
+# termination rather than treating the pending signal as success.
 test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   local dir out status pid i
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term-stopped")
@@ -936,9 +935,9 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   kill -STOP "$pid" 2>/dev/null || fail "could not stop the legacy owner fixture"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "a stopped legacy owner with TERM queued must not block the reclaim forever"
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm past the stopped owner"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the stopped owner's lock behind"
+  expect_code 0 "$status" "a stopped legacy owner with TERM queued must block reclamation"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the stopped owner was reclaimed before termination was confirmed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "reclaim removed the stopped owner's lock"
   kill -CONT "$pid" 2>/dev/null || true
   i=0
   while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
@@ -947,7 +946,7 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   done
   kill -0 "$pid" 2>/dev/null && fail "the queued TERM did not retire the owner on continue"
   wait "$pid" 2>/dev/null || true
-  pass "auto-arm: a SIGSTOPped legacy owner is reclaimed with TERM pending and dies on continue"
+  pass "auto-arm: a SIGSTOPped legacy owner blocks until TERM termination is confirmed"
 }
 
 # Retirement is a CONFIRMED stop, so the window it spends must outlast the
@@ -1012,11 +1011,11 @@ test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 
-  expect_code 2 "$status" "a legacy owner that outlives its bounded retirement must still be reclaimed"
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm past the stop-ignoring owner"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the stop-ignoring owner's lock behind"
+  expect_code 0 "$status" "a legacy owner that outlives its bounded retirement must block reclamation"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the stop-ignoring owner was reclaimed after the retirement timeout"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "the live stop-ignoring owner's lock was removed"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  [ -z "$out" ] || fail "a refused legacy reclaim produced a wake: $out"
   [ "$delivered" -ge 2 ] \
     || fail "retirement delivered $delivered stop(s) with a re-delivery interval equal to its own window, so a consumed first stop would never be re-sent"
   unset -f write_stop_recording_owner

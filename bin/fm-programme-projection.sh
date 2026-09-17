@@ -262,10 +262,10 @@ read_resolution() {
   [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"
   projection_cleanup
   case "$rc" in
-    0) fm_programme_relay_diagnostic "$diag" ;;
-    3) fm_programme_relay_diagnostic "$diag"; exit 3 ;;
+    0) fm_programme_relay_diagnostic "$diag" >&2 ;;
+    3) fm_programme_relay_diagnostic "$diag" >&2; exit 3 ;;
     *)
-      fm_programme_relay_diagnostic "$diag"
+      fm_programme_relay_diagnostic "$diag" >&2
       fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}"
       ;;
   esac

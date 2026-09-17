@@ -660,7 +660,7 @@ test_single_flight_admits_exactly_one_owner() {
 # leaves behind, so this section pins the legacy shim: a live legacy owner
 # still defers the gate, and an abandoned one is reclaimed once so the home
 # re-arms - with an identity-verified live owner retired via TERM first, and
-# an identityless one reclaimed without any signalling. The generation-claim
+# a pid-reused one reclaimed without signalling the unrelated process. The generation-claim
 # section below pins the current contract.
 
 # Fabricate a held owner lock: <dir> <pid> <role>. Plain-dir shape on purpose -
@@ -706,9 +706,10 @@ test_abandoned_owner_claim_is_reclaimed_and_rearms() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$$" || fail "could not record the reused claimant identity"
   record_autoarm_epoch "$dir" 464 "$pid" rewake
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill -0 "$pid" 2>/dev/null || fail "an identityless abandoned owner must be reclaimed without being signalled"
+  kill -0 "$pid" 2>/dev/null || fail "a pid-reused owner must be reclaimed without signalling the unrelated process"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   expect_code 2 "$status" "a claim whose ledger outcome is already terminal must be reclaimed, not deferred to forever"

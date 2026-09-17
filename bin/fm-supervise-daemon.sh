@@ -714,7 +714,7 @@ programme_digest_token() {  # [<state>]
   # captured stderr is relayed here rather than dropped on a successful
   # resolve; bin/fm-programme-projection.sh states that policy in full,
   # including why exit 3 is the one deliberate exception.
-  [ "$rc" = 3 ] || fm_programme_relay_diagnostic "$diag"
+  [ "$rc" = 3 ] || fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)
       if [ -n "$state" ]; then

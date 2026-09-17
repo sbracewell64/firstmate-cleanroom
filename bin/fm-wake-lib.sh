@@ -1386,9 +1386,11 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
     ''|*[!0-9]*) return 1 ;;
   esac
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  if [ -n "$recorded" ] && current=$(fm_pid_identity "$pid" 2>/dev/null) \
-    && [ -n "$current" ] && [ "$current" != "$recorded" ]; then
-    return 0
+  if fm_pid_alive "$pid"; then
+    [ -n "$recorded" ] || return 1
+    current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+    [ -n "$current" ] || return 1
+    [ "$current" = "$recorded" ] || return 0
   fi
   owner=$(_fm_autoarm_epoch_field "$epoch" owner_pid) || return 1
   [ "$owner" = "$pid" ] || return 1

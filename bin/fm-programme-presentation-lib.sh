@@ -128,7 +128,9 @@ _fm_programme_prefix_diagnostic() {
 fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]
   local resolver=$1 operation=$2 prefix=$3 errfile out rc=0
   shift 3
-  errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) || return 125
+  errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) \
+    || errfile=$(mktemp "/tmp/$prefix.XXXXXX" 2>/dev/null) \
+    || return 125
   out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
   FM_PROGRAMME_RESOLVER_OUT=$out
   FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile" 2>/dev/null || true)
@@ -143,35 +145,19 @@ fm_programme_relay_diagnostic() {  # <diagnostic>
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 fallback_fifo relay_pid
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) \
-    || errfile=$(mktemp "$state/.programme-present-resolve.XXXXXX" 2>/dev/null) \
-    || errfile=
-  if [ -n "$errfile" ]; then
-    out=$("$resolver" render 2>"$errfile") || rc=$?
-    diag=$(cat "$errfile" 2>/dev/null || true)
-    rm -f -- "$errfile"
+  if fm_programme_resolver_capture "$resolver" render fm-programme-present; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    fallback_fifo="$state/.programme-present-resolve.${BASHPID:-$$}.fifo"
-    if mkfifo "$fallback_fifo" 2>/dev/null; then
-      _fm_programme_prefix_diagnostic <"$fallback_fifo" >&2 &
-      relay_pid=$!
-      out=$("$resolver" render 2>"$fallback_fifo") || rc=$?
-      wait "$relay_pid" 2>/dev/null || true
-      rm -f -- "$fallback_fifo"
-    else
-      out=
-      rc=1
-      diag_note='resolver diagnostics: staging was unavailable'
-    fi
+    out=''
+    rc=1
+    diag_note='resolver diagnostics: staging was unavailable'
   fi
-  if [ -n "$diag" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      printf 'resolver diagnostic: %s\n' "$line" >&2
-    done <<< "$diag"
-  fi
+  fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")

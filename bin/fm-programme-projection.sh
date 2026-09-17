@@ -124,7 +124,23 @@
 set -eu
 
 INVOKED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+_fm_projection_script_path() {
+  local path=$1 dir base target hops=0
+  dir=$(CDPATH='' cd -- "$(dirname -- "$path")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename -- "$path")
+  while [ -L "$dir/$base" ] && [ "$hops" -lt 16 ]; do
+    target=$(readlink -- "$dir/$base") || break
+    case "$target" in
+      /*) dir=$(CDPATH='' cd -- "$(dirname -- "$target")" 2>/dev/null && pwd -P) || break
+          base=$(basename -- "$target") ;;
+      *)  dir=$(CDPATH='' cd -- "$dir/$(dirname -- "$target")" 2>/dev/null && pwd -P) || break
+          base=$(basename -- "$target") ;;
+    esac
+    hops=$((hops + 1))
+  done
+  printf '%s/%s\n' "$dir" "$base"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_fm_projection_script_path "${BASH_SOURCE[0]}")")" && pwd -P)"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"

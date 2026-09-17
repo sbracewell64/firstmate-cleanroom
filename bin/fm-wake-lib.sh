@@ -88,6 +88,33 @@ fm_pid_identity() {
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
 }
 
+fm_stop_monotonic_ms() {
+  local raw sec frac
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+      'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'
+    return
+  fi
+  raw=${EPOCHREALTIME:-}
+  case "$raw" in
+    *[0-9][.,][0-9]*)
+      sec=${raw%%[.,]*}
+      frac=${raw#*[.,]}
+      frac="${frac}000"
+      frac=${frac:0:3}
+      case "$sec$frac" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s\n' "$(( sec * 1000 + 10#$frac ))"; return ;;
+      esac
+      ;;
+  esac
+  raw=$(date +%s%N 2>/dev/null || true)
+  case "$raw" in
+    ''|*[!0-9]*) raw=$(date +%s 2>/dev/null || printf '0'); printf '%s000\n' "$raw" ;;
+    *) [ "${#raw}" -gt 13 ] && raw=${raw:0:${#raw}-6}; printf '%s\n' "$raw" ;;
+  esac
+}
+
 # fm_stop_process_confirmed <pid> [recorded-identity] [deadline-tenths] [signal]
 # Stop <pid> and CONFIRM it stopped, instead of treating a queued signal as a
 # stop. A trapped signal is not self-evidently a stop: on bash 5.2 (the
@@ -146,8 +173,9 @@ fm_stop_was_delivered() {  # <fm_stop_process_confirmed return code>
 }
 
 fm_stop_process_confirmed() {
-  local pid=$1 recorded=${2:-} limit=${3:-100} sig=${4:-TERM} i=0 current
+  local pid=$1 recorded=${2:-} limit=${3:-100} sig=${4:-TERM} i=0 current now remaining_ms sleep_for
   local every=${FM_STOP_REDELIVER_POLLS:-20}
+  local deadline_ms=${FM_STOP_DEADLINE_MS:-}
   case "$pid" in
     ''|*[!0-9]*) return 2 ;;
   esac
@@ -163,13 +191,28 @@ fm_stop_process_confirmed() {
   [ -n "$every" ] || every=20
   [ "$every" != 0 ] || every=20
   while :; do
+    if [ -n "$deadline_ms" ]; then
+      now=$(fm_stop_monotonic_ms)
+      case "$now" in ''|*[!0-9]*) return 1 ;; esac
+      [ "$now" -lt "$deadline_ms" ] || return 1
+    fi
     fm_pid_alive "$pid" || return 0
+    if [ -n "$deadline_ms" ]; then
+      now=$(fm_stop_monotonic_ms)
+      case "$now" in ''|*[!0-9]*) return 1 ;; esac
+      [ "$now" -lt "$deadline_ms" ] || return 1
+    fi
     if [ -n "$recorded" ]; then
       if ! current=$(fm_pid_identity "$pid" 2>/dev/null); then
         fm_pid_alive "$pid" && return 4
         return 0
       fi
       [ "$current" = "$recorded" ] || return 0
+    fi
+    if [ -n "$deadline_ms" ]; then
+      now=$(fm_stop_monotonic_ms)
+      case "$now" in ''|*[!0-9]*) return 1 ;; esac
+      [ "$now" -lt "$deadline_ms" ] || return 1
     fi
     [ "$i" -lt "$limit" ] || return 1
     if [ $(( i % every )) -eq 0 ] && ! kill "-$sig" "$pid" 2>/dev/null; then
@@ -178,7 +221,17 @@ fm_stop_process_confirmed() {
         return 3
       fi
     fi
-    sleep 0.1
+    sleep_for=0.1
+    if [ -n "$deadline_ms" ]; then
+      now=$(fm_stop_monotonic_ms)
+      case "$now" in ''|*[!0-9]*) return 1 ;; esac
+      remaining_ms=$((deadline_ms - now))
+      [ "$remaining_ms" -gt 0 ] || return 1
+      if [ "$remaining_ms" -lt 100 ]; then
+        sleep_for="0.$(printf '%03d' "$remaining_ms")"
+      fi
+    fi
+    sleep "$sleep_for"
     i=$((i + 1))
   done
 }
@@ -1436,7 +1489,7 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # below.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
-  local FM_STOP_REDELIVER_POLLS=2
+  local FM_STOP_REDELIVER_POLLS=2 FM_STOP_DEADLINE_MS
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"
@@ -1470,6 +1523,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     # generations. A pid the recorded identity does NOT verify is never
     # signalled; a positive mismatch is reclaimed as a reused pid.
     retire_rc=0
+    FM_STOP_DEADLINE_MS=$(( $(fm_stop_monotonic_ms) + 1000 ))
     fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
     if [ "$retire_rc" -ne 0 ]; then
       fm_lock_release "$steal"

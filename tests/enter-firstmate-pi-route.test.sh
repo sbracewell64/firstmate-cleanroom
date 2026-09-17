@@ -80,14 +80,14 @@ printf 'pi-sol\n' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(console_profile_gate pi-sol) == PENDING:* ]] || { echo 'not ok - stale name grant became qualified' >&2; exit 1; }
 printf '%s\n' 'pi-sol@pi@0.81.1@opencode/gpt-5.6-sol:xhigh@chatgpt-oauth' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(console_profile_gate pi-sol) == PENDING:* ]] || { echo 'not ok - alias provider grant became qualified' >&2; exit 1; }
-printf '%s\n' 'pi-sol@pi@0.81.1@openai-codex/gpt-5.6-sol:xhigh@chatgpt-oauth' > "$FM_HOME/config/console-qualified-profiles"
+printf '%s\n' 'pi-sol@pi@0.81.1@openai-codex/gpt-5.6-sol:xhigh@chatgpt-oauth@included-allowance-only' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(FAKE_MODEL=gpt-5.6-sol console_profile_gate pi-sol) == 'PENDING: exact Pi OAuth route verified; included-allowance-only spend is CNO'* ]]
 [[ $(FAKE_MODEL=gpt-5.6-luna console_profile_gate pi-sol) == PENDING:* ]]
 [[ $(console_profile_gate pi-luna-max) == PENDING:* ]] || { echo 'not ok - Sol grant qualified Luna' >&2; exit 1; }
 [[ $(console_profile_gate pi-astra) == PENDING:* ]] || { echo 'not ok - Sol grant qualified Astra' >&2; exit 1; }
-printf '%s\n' 'pi-luna-max@pi@0.81.1@openai-codex/gpt-5.6-luna:max@chatgpt-oauth' > "$FM_HOME/config/console-qualified-profiles"
+printf '%s\n' 'pi-luna-max@pi@0.81.1@openai-codex/gpt-5.6-luna:max@chatgpt-oauth@included-allowance-only' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(FAKE_MODEL=gpt-5.6-luna console_profile_gate pi-luna-max) == 'PENDING: exact Pi OAuth route verified; included-allowance-only spend is CNO'* ]]
-printf '%s\n' 'pi-astra@pi@0.81.1@openai-codex/gpt-6-astra:max@chatgpt-oauth' > "$FM_HOME/config/console-qualified-profiles"
+printf '%s\n' 'pi-astra@pi@0.81.1@openai-codex/gpt-6-astra:max@chatgpt-oauth@included-allowance-only' > "$FM_HOME/config/console-qualified-profiles"
 [[ $(FAKE_MODEL=gpt-6-astra console_profile_gate pi-astra) == 'PENDING: exact Pi OAuth route verified; included-allowance-only spend is CNO'* ]]
 [ "$(console_profile_resolve)" = pi-sol ]
 [[ $(console_harness_argv pi "$(console_profile_model pi-sol)" '' '' | tr '\n' ' ') == '--model openai-codex/gpt-5.6-sol:xhigh ' ]]

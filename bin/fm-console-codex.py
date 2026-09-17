@@ -6,13 +6,14 @@ Client pin: FM_HOME/config/console-codex-client.json. No paid fallback is provid
 import hashlib, json, os, selectors, subprocess, sys, time
 from pathlib import Path
 MODELS={'gpt-5.6-luna'}
+EFFORT='xhigh'
 POSTURE='--dangerously-bypass-approvals-and-sandbox'
 class Refused(Exception): pass
 
 def launch_args(argv):
     if len(argv)!=3 or argv[0]!=POSTURE or argv[1]!='--model' or argv[2] not in MODELS:
         raise Refused('primary Codex arguments must match the selected profile exactly')
-    return ['-c','forced_login_method="chatgpt"','-c','model_provider="openai"',*argv]
+    return ['-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c',f'model_reasoning_effort="{EFFORT}"',*argv]
 
 def subscription_environment(environ):
     env=dict(environ)
@@ -26,7 +27,7 @@ def subscription_environment(environ):
     return env
 
 def check_config(config,model):
-    if config.get('forced_login_method')!='chatgpt' or config.get('model_provider')!='openai' or config.get('model')!=model:
+    if config.get('forced_login_method')!='chatgpt' or config.get('model_provider')!='openai' or config.get('model')!=model or config.get('model_reasoning_effort')!=EFFORT:
         raise Refused('effective model/auth/provider does not match the selected subscription profile')
     if (config.get('model_providers') or {}).get('openai'):
         raise Refused('built-in OpenAI provider has an override')
@@ -62,7 +63,7 @@ def checked_pin(home):
 
 class Rpc:
     def __init__(self,client,env,model):
-        self.p=subprocess.Popen([str(client),'-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','model='+json.dumps(model),'app-server','--listen','stdio://'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        self.p=subprocess.Popen([str(client),'-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c',f'model_reasoning_effort="{EFFORT}"','-c','model='+json.dumps(model),'app-server','--listen','stdio://'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
         self.s=selectors.DefaultSelector();self.s.register(self.p.stdout,selectors.EVENT_READ);self.buf=b'';self.i=0
     def call(self,method,params):
         self.i+=1;i=self.i

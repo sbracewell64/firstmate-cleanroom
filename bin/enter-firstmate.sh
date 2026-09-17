@@ -613,7 +613,7 @@ console_profile_qualify() {
   printf 'QUALIFIED'
 }
 console_profile_grant_token() {  # <profile> <pi-version>
-  printf '%s@pi@%s@%s@chatgpt-oauth' "$1" "$2" "$(console_profile_model "$1")"
+  printf '%s@pi@%s@%s@chatgpt-oauth@included-allowance-only' "$1" "$2" "$(console_profile_model "$1")"
 }
 # The profiles any home qualifies with no config of its own. Deliberately NOT
 # derived from console_profile_default: which profile is selected by default and

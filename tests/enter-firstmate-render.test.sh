@@ -208,7 +208,7 @@ pass "(vi) a non-default --console-profile stages and renders that profile as ac
 # checker lives beside that source. Exercise the rendered shim with an exact
 # route grant; a missing checker would render "route check unavailable" instead.
 home=$(mk_home pi-route-consumer shim "$ROOT_A")
-printf '%s\n' 'pi-sol@pi@0.81.1@openai-codex/gpt-5.6-sol:xhigh@chatgpt-oauth' > "$home/config/console-qualified-profiles"
+printf '%s\n' 'pi-sol@pi@0.81.1@openai-codex/gpt-5.6-sol:xhigh@chatgpt-oauth@included-allowance-only' > "$home/config/console-qualified-profiles"
 run_fast_render "$home" "$HERE/.."
 [ "$RC" -eq 0 ] || fail "(vi-b) Pi consumer staging must succeed (rc=$RC, out: $OUT)"
 stg="$home/state/launcher-staging"

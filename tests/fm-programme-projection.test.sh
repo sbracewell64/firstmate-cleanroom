@@ -519,6 +519,9 @@ SH
   assert_contains "$err" "not a typed result" "the refusal names the bytes it actually received"
 
   mktemp() { return 1; }
+  if mktemp >/dev/null 2>&1; then
+    fail "the mktemp interception fixture must fail allocation"
+  fi
   export -f mktemp
   err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
   assert_contains "$err" "resolver diagnostics: staging allocation failed" \

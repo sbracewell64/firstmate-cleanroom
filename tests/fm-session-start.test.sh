@@ -1794,7 +1794,9 @@ install_drain_fixture() {  # <root> <stdout> <stderr> <status>
 if [ -n "\${FM_TEST_DRAIN_MARKER:-}" ]; then
   : > "\$FM_TEST_DRAIN_MARKER"
 fi
-printf '%s\\n' '$stdout'
+if [ -n '$stdout' ]; then
+  printf '%s\\n' '$stdout'
+fi
 printf '%s\\n' '$stderr' >&2
 exit $status
 SH
@@ -1996,12 +1998,12 @@ SH
   mkdir -p "$home/tmp"
   cat > "$fakebin/cat" <<SH
 #!/usr/bin/env bash
-case "${1:-}" in
+case "\${1:-}" in
   "$home/tmp"/fm-session-start-drain-err.*)
     exit 1
     ;;
 esac
-exec /bin/cat "$@"
+exec /bin/cat "\$@"
 SH
   chmod +x "$fakebin/cat"
   FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"

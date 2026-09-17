@@ -988,7 +988,11 @@ else
   if [ "$DRAIN_RC" -ne 0 ]; then
     printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"
   fi
-  [ -z "$DRAIN_ERR" ] || printf '%s\n' "$DRAIN_ERR"
+  [ -z "$DRAIN_CAPTURE_NOTE" ] || printf '%s\n' "$DRAIN_CAPTURE_NOTE"
+  case "$DRAIN_ERR" in
+    'wake drain diagnostics unavailable:'*) printf '%s\n' "$DRAIN_ERR" ;;
+  esac
+  [ -z "$DRAIN_ERR" ] || printf '%s\n' "$DRAIN_ERR" >&2
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

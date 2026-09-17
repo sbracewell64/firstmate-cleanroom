@@ -1579,6 +1579,7 @@ make_recording_watcher_bin() {  # <dir>
   mkdir -p "$armbin"
   ln -sf "$ROOT/bin/fm-watch-arm.sh" "$armbin/fm-watch-arm.sh"
   ln -sf "$ROOT/bin/fm-wake-lib.sh" "$armbin/fm-wake-lib.sh"
+  ln -sf "$ROOT/bin/fm-timeout-lib.sh" "$armbin/fm-timeout-lib.sh"
   cat > "$armbin/fm-watch.sh" <<'STUB'
 #!/usr/bin/env bash
 set -u

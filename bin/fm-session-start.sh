@@ -714,7 +714,7 @@ print_programme_continuation() {
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
     printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n' "$rc"
-    printf '%s\n' "${diag:-$diag_note}" | sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/'
+    printf '%s\n' "${diag:-$diag_note}" | _fm_programme_prefix_diagnostic
   fi
 }
 

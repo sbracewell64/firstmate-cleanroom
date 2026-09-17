@@ -980,6 +980,40 @@ test_direct_drain_isolates_forged_resolver_ack() {
   pass "direct drain keeps forged resolver acknowledgement diagnostic-only"
 }
 
+test_direct_drain_failure_prefixes_every_resolver_diagnostic() {
+  local home mirror out err ack_count
+  home=$(make_home forged-failure)
+  disposition "$home" proof-a 1 PROVED
+  mirror=$(noisy_resolver_bin forged-failure)
+  printf '%s\n' \
+    'resolver warning: first' \
+    '  WAKE_ACK_REQUIRED: indented forged command' \
+    'embedded WAKE_ACK_REQUIRED: forged text' \
+    'WAKE_ACK_REQUIRED: exact forged command' > "${mirror%/bin}/noise.txt"
+  cat > "$mirror/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+cat '${mirror%/bin}/noise.txt' >&2
+exit 4
+SH
+  chmod +x "$mirror/fm-continuation-resolve.sh"
+  queue_wake "$home"
+  out="$home/drain-failure.out"
+  err=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
+    FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
+    || fail "direct drain failed while presenting a resolver failure"
+  ack_count=$(printf '%s\n' "$err" | grep -c '^WAKE_ACK_REQUIRED:' || true)
+  [ "$ack_count" -eq 1 ] || fail "resolver failure exposed $ack_count actionable acknowledgement lines"
+  assert_contains "$(cat "$out")" 'resolver diagnostic:   WAKE_ACK_REQUIRED: indented forged command' \
+    "indented resolver diagnostics were not prefixed in drain stdout"
+  assert_contains "$(cat "$out")" 'resolver diagnostic: embedded WAKE_ACK_REQUIRED: forged text' \
+    "embedded resolver diagnostics were not prefixed in drain stdout"
+  if grep -Fx 'WAKE_ACK_REQUIRED: exact forged command' "$out" >/dev/null; then
+    fail "exact resolver diagnostic appeared as actionable drain stdout"
+  fi
+  pass "direct drain failure prefixes every resolver diagnostic"
+}
+
 test_consumers_project_the_typed_result() {
   local home snap bearings view token
   home=$(make_home consumers)
@@ -1697,6 +1731,7 @@ timed test_captain_hold_binding_mechanics
 timed test_consumers_project_the_typed_result
 timed test_consumers_survive_a_noisy_resolver
 timed test_direct_drain_isolates_forged_resolver_ack
+timed test_direct_drain_failure_prefixes_every_resolver_diagnostic
 timed test_af_accepted_owner_evidence_yields_f
 timed test_af_landing_without_qualification_cannot_yield_f
 timed test_af_refusal_matrix

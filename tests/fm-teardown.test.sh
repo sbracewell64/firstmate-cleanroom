@@ -741,6 +741,61 @@ test_squash_merged_branch_deleted_allows() {
   pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix); receipt keeps the publication"
 }
 
+test_observation_survives_real_teardown_and_late_terminal_read() {
+  local case_dir head profile out rc=0
+  case_dir=$(make_case observation-retirement)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "admitted work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf 'running\n' > "$case_dir/run-state"
+  export FM_FAKE_RUN_STATE_FILE="$case_dir/run-state" FM_FAKE_RUN_HEAD="$head"
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+status=$(cat "${FM_FAKE_RUN_STATE_FILE:?}")
+case "${1:-} ${2:-}" in
+  'axi status') ;;
+  *) exit 3 ;;
+esac
+if [ "${3:-}" = --run ]; then
+  printf 'other_branch_run:\n  id: "01TEARDOWNRUN"\n  branch: fm/task-x1\n  status: %s\n  head: %s\n' "$status" "${FM_FAKE_RUN_HEAD:?}"
+  [ "$status" != completed ] || printf 'outcome: passed\n'
+else
+  printf 'current_branch: fm/task-x1\nruns[2]{id,branch,status,head,pr}:\n'
+  printf ' "01TEARDOWNRUN",fm/task-x1,%s,%s,""\n' "$status" "${FM_FAKE_RUN_HEAD:?}"
+  [ "$status" != completed ] || printf ' "01MANUALRUN",fm/task-x1,completed,%s,""\n' "${FM_FAKE_RUN_HEAD:?}"
+fi
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+  mkdir -p "$case_dir/nm-home"
+  printf '{"pid":4242,"started_at":"2026-09-17T00:00:00Z"}\n' > "$case_dir/nm-home/daemon.pid"
+  profile="$case_dir/profile.json"
+  printf '{"profile":{"nm_home":"%s","path0":"/opt/tools/bin"},"tools":[{"tool":"no-mistakes","state":"QUALIFIED","version":"1.61.0","detail":"build test"}],"ready":true}\n' "$case_dir/nm-home" > "$profile"
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" PATH="$case_dir/fakebin:$PATH" \
+    "$OBSERVE" launch task-x1 --profile-json "$profile" >/dev/null || fail "teardown observation launch"
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" PATH="$case_dir/fakebin:$PATH" \
+    "$OBSERVE" bind task-x1 --run 01TEARDOWNRUN >/dev/null || fail "teardown observation bind"
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" PATH="$case_dir/fakebin:$PATH" \
+    "$OBSERVE" reconcile --now >/dev/null || fail "teardown observation baseline"
+  FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "the admitted run's task tears down"
+  assert_absent "$case_dir/state/task-x1.nm-observe" "runtime observation retires"
+  assert_present "$case_dir/data/nm-observation-runs/01TEARDOWNRUN.record" "exact run custody survives actual teardown"
+  assert_grep 'A terminal outcome has not been observed' "$case_dir/data/task-x1/nm-run-01TEARDOWNRUN-observation-receipt.md" \
+    "teardown did not invent a terminal result"
+  printf 'completed\n' > "$case_dir/run-state"
+  out=$(FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" PATH="$case_dir/fakebin:$PATH" \
+    "$OBSERVE" reconcile --now 2>&1)
+  assert_contains "$out" 'RETIRED_OUTCOME task=task-x1 run=01TEARDOWNRUN status=completed class=successful' \
+    "later canonical terminal outcome is observed"
+  assert_contains "$out" 'ORPHAN_RUN run=01MANUALRUN ' "unrelated same-branch run is still orphaned"
+  assert_grep 'Canonical status completed, outcome passed' "$case_dir/data/task-x1/nm-run-01TEARDOWNRUN-observation-receipt.md" \
+    "later terminal result remains readable"
+  unset FM_FAKE_RUN_STATE_FILE FM_FAKE_RUN_HEAD
+  pass "real teardown preserves exact run custody for later terminal reconciliation"
+}
+
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {
   local case_dir rc local_head pr_head
   case_dir=$(make_case squash-ancestor)
@@ -2620,6 +2675,7 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+test_observation_survives_real_teardown_and_late_terminal_read
 test_local_only_fork_remote_allows
 test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator

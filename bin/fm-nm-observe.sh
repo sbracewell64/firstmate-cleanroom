@@ -33,6 +33,14 @@
 #   data/<id>/nm-observation-receipt.md  the honest per-task coverage receipt,
 #                                    rewritten from the obligation on every
 #                                    mutation and by finalize; survives teardown
+#   data/nm-observation-runs/<run>.record  exact per-run identity and last
+#                                    canonical result; written at bind and
+#                                    updated after retirement, never inferred
+#                                    from the task receipt or branch alone;
+#                                    candidate_head, run_head, and later
+#                                    inventory_head remain distinct
+#   data/<id>/nm-run-<run>-observation-receipt.md  readable per-run result,
+#                                    including a terminal read after teardown
 #   state/.nm-observe-watermark      reconcile's presentation cursor (what was
 #                                    already reported); safe to delete, which
 #                                    re-reports the current state once
@@ -123,11 +131,14 @@
 #   finalize  Best-effort refresh plus receipt, marking stage=finalized; called
 #             by bin/fm-teardown.sh before it removes the runtime record. Exit
 #             0 even when the daemon is unreachable, so cleanup never blocks on
-#             observation; the receipt then states what was not observed.
-#   reconcile Read-only comparison of the canonical inventory (`axi status`
+#             observation; the receipt then states what was not observed. The
+#             per-run ledger survives and may record a later terminal read.
+#   reconcile Comparison of the read-only canonical inventory (`axi status`
 #             from each obligation's worktree, or its project checkout when the
-#             worktree is gone) against every obligation and every managed task
-#             record in this home. Prints one typed line per NEW or CHANGED
+#             worktree is gone) against every obligation, surviving bound-run
+#             ledger, and managed task record in this home. A consuming pass
+#             records a later canonical terminal result in its run ledger.
+#             Prints one typed line per NEW or CHANGED
 #             finding and nothing for unchanged state (the watermark owns that
 #             memory). Finding classes:
 #               UNENROLLED        managed task record with no obligation
@@ -157,10 +168,14 @@
 #                                 managed no-mistakes task (a direct-PR ship, a
 #                                 scout, a hand-run): an uncovered entrypoint,
 #                                 explicit coverage gap, never adopted
-#               ORPHAN_RUN        an inventory run whose branch no task record
-#                                 in this home owns (another home, a manual
-#                                 launch, or an entrypoint this census does not
-#                                 cover): an explicit coverage gap, never adopted
+#               ORPHAN_RUN        an inventory run with no exact bound-run or
+#                                 pending launch identity in this home, even
+#                                 when it shares a managed task's branch: an
+#                                 explicit coverage gap, never adopted
+#               RETIRED_OUTCOME   canonical terminal result read by exact run
+#                                 id after its task metadata was retired
+#               RETIRED_HEAD_CHANGED  later inventory head of an exact bound
+#                                 run, with no acceptance or outcome inference
 #               INVENTORY_UNAVAILABLE  the read-only query failed, timed out,
 #                                 or exceeded the budget; obligations stay
 #                                 pending with their recorded class, and the
@@ -185,8 +200,9 @@
 #             home unless --startup or --now; aggregate budget
 #             FM_NM_OBSERVE_BUDGET_SECS (default 10) across every query, each
 #             bounded by FM_NM_OBSERVE_TIMEOUT (default 8).
-#             --peek computes and prints exactly what --now would against the
-#             current watermark but never rewrites it (no baseline seeding, no
+#             --peek computes and prints the live-obligation findings that
+#             --now would against the current watermark but never rewrites it
+#             (no baseline seeding, no
 #             mark advanced; only the cursor's timestamp is refreshed so the
 #             cadence gate keeps spacing the queries), so the findings are
 #             still there for the consuming pass. A home's first pass belongs
@@ -198,8 +214,12 @@
 #             the watcher's poll loop (bin/fm-watch.sh) beside the
 #             inactive-outcome scan as the non-consuming `reconcile --peek`,
 #             which raises `check: nm-observe` when a line is printed; the
-#             `reconcile --now` firstmate then runs prints the identical lines
-#             and commits the cursor.
+#             `reconcile --now` firstmate then runs resolves any pending
+#             retired terminal result and commits the cursor.
+#             Retired ledgers are queried by --startup or --now, not by a new
+#             watcher poll. A peek may notice a changed retired row only when
+#             a live obligation already caused that project's inventory read;
+#             it then requests --now for the canonical terminal read.
 #
 # Exit codes: 0 done; 1 typed refusal (NOT_MANAGED, MISSING_BINDING,
 # PREFLIGHT_REFUSED, DAEMON_RESET, RUN_BOUND); 2 usage or an unreadable record.
@@ -255,6 +275,9 @@ valid_task_id() {
 
 record_path() { printf '%s/%s.nm-observe\n' "$STATE" "$1"; }
 receipt_path() { printf '%s/%s/nm-observation-receipt.md\n' "$DATA" "$1"; }
+run_ledger_path() { printf '%s/nm-observation-runs/%s.record\n' "$DATA" "$1"; }
+run_receipt_path() { printf '%s/%s/nm-run-%s-observation-receipt.md\n' "$DATA" "$1" "$2"; }
+run_lock_path() { printf '%s/.nm-observe-run-%s.lock\n' "$STATE" "$1"; }
 lock_path() { printf '%s/.nm-observe-%s.lock\n' "$STATE" "$1"; }
 
 record_get() {  # <record> <key>
@@ -283,6 +306,18 @@ record_set() {  # <record> <key=value>...
   mv -f -- "$tmp" "$record"
 }
 
+# A ledger update is one publication, even when several fields change. A crash
+# during the temporary record_set leaves the previous complete ledger intact.
+ledger_set() {  # <ledger> <key=value>...
+  local ledger=$1 tmp
+  shift
+  tmp="$ledger.new.$$"
+  if [ -f "$ledger" ]; then cp -- "$ledger" "$tmp"; else : > "$tmp"; fi
+  record_set "$tmp" "$@"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$ledger"
+}
+
 record_load_or_die() {  # <task-id> -> sets RECORD, requires readable record
   RECORD=$(record_path "$1")
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || { echo "error: no observation obligation for $1 ($RECORD); run: bin/fm-nm-observe.sh enrol $1" >&2; exit 2; }
@@ -294,6 +329,16 @@ with_lock() {  # <task-id> <fn> [args...]
   shift
   lock=$(lock_path "$id")
   local rc=0
+  fm_lock_acquire_wait "$lock"
+  "$@" || rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
+}
+
+with_run_lock() {  # <run-id> <fn> [args...]
+  local run=$1 lock rc=0
+  shift
+  lock=$(run_lock_path "$run")
   fm_lock_acquire_wait "$lock"
   "$@" || rc=$?
   fm_lock_release "$lock"
@@ -493,9 +538,88 @@ render_receipt() {  # <task-id>
     [ -z "$reset" ] || printf -- '- daemon identity changed after launch (observed %s); outcomes were read by run id, not rebound\n' "$reset"
     [ -z "$superseded" ] || printf -- '- superseding run %s is unlinked: bin/fm-nm-observe.sh launch %s --retry, then bind\n' "$superseded" "$id"
     if [ "$stage" = finalized ]; then
-      printf -- '- finalized at %s; nothing after this point is observed for this task\n' "$(record_get "$record" finalized_epoch)"
+      printf -- '- task receipt finalized at %s; later canonical terminal reads are kept in the per-run receipt\n' "$(record_get "$record" finalized_epoch)"
     fi
     printf -- '- captured eval cases are review evidence, never launch coverage, and are not counted here\n'
+  } > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$out"
+}
+
+# A bound run keeps its own identity after the task endpoint is retired. The
+# human-readable task receipt is never used as authority: it may be stale or
+# replaced when a task id is reused. Each run ledger is written only from the
+# live obligation while the observer holds its task lock.
+sync_run_ledger() {  # <task-id> <obligation>
+  local run
+  run=$(record_get "$2" run_id)
+  [ -n "$run" ] || return 0
+  with_run_lock "$run" sync_run_ledger_locked "$@"
+}
+
+sync_run_ledger_locked() {  # <task-id> <obligation>
+  local id=$1 record=$2 run ledger old
+  run=$(record_get "$record" run_id)
+  [ -n "$run" ] || return 0
+  ledger=$(run_ledger_path "$run")
+  if [ -f "$ledger" ]; then
+    [ ! -L "$ledger" ] || return 1
+    for old in task home project repo_remote attempt_id candidate_head run_branch; do
+      [ "$(record_get "$ledger" "$old")" = "$(record_get "$record" "$old")" ] || return 1
+    done
+    # A crash after a retired terminal read can leave the old task record in
+    # place. Retrying finalize must never replace that later canonical result
+    # with the earlier running snapshot.
+    if terminal_class "$(record_get "$ledger" outcome_class)"; then
+      [ -z "$(record_get "$record" finalized_epoch)" ] \
+        || ledger_set "$ledger" "finalized_epoch=$(record_get "$record" finalized_epoch)"
+      render_run_receipt "$ledger"
+      return 0
+    fi
+  else
+    mkdir -p "$DATA/nm-observation-runs"
+  fi
+  ledger_set "$ledger" \
+    "schema=fm-nm-bound-run/v1" "task=$id" "home=$(record_get "$record" home)" \
+    "project=$(record_get "$record" project)" "repo_remote=$(record_get "$record" repo_remote)" \
+    "attempt_id=$(record_get "$record" attempt_id)" \
+    "candidate_head=$(record_get "$record" candidate_head)" \
+    "predecessor_run_id=$(record_get "$record" predecessor_run_id)" \
+    "run_id=$run" "run_branch=$(record_get "$record" run_branch)" \
+    "run_head=$(record_get "$record" run_head)" \
+    "run_status=$(record_get "$record" run_status)" \
+    "run_outcome=$(record_get "$record" run_outcome)" \
+    "outcome_class=$(record_get "$record" outcome_class)" \
+    "outcome_epoch=$(record_get "$record" outcome_epoch)" \
+    "finalized_epoch=$(record_get "$record" finalized_epoch)"
+  render_run_receipt "$ledger"
+}
+
+render_run_receipt() {  # <ledger>
+  local ledger=$1 id run out tmp
+  id=$(record_get "$ledger" task)
+  run=$(record_get "$ledger" run_id)
+  out=$(run_receipt_path "$id" "$run")
+  mkdir -p "$DATA/$id"
+  tmp="$out.tmp.$$"
+  {
+    printf '# no-mistakes run observation: %s\n\n' "$run"
+    printf 'Bound by bin/fm-nm-observe.sh to task %s, attempt %s, predecessor run %s.\n' \
+      "$id" "$(record_get "$ledger" attempt_id)" "$(record_get "$ledger" predecessor_run_id)"
+    printf 'Repository %s; branch %s; accepted source head %s; binding head %s.\n' \
+      "$(record_get "$ledger" repo_remote)" "$(record_get "$ledger" run_branch)" \
+      "$(record_get "$ledger" candidate_head)" "$(record_get "$ledger" run_head)"
+    [ -z "$(record_get "$ledger" inventory_head)" ] \
+      || printf 'Later inventory head %s (no acceptance, landing, or terminal proof).\n' \
+        "$(record_get "$ledger" inventory_head)"
+    [ -z "$(record_get "$ledger" observed_head)" ] \
+      || printf 'Last canonical head %s.\n' "$(record_get "$ledger" observed_head)"
+    printf 'Canonical status %s, outcome %s, class %s (read at %s).\n' \
+      "$(record_get "$ledger" run_status)" "$(record_get "$ledger" run_outcome)" \
+      "$(record_get "$ledger" outcome_class)" "$(record_get "$ledger" outcome_epoch)"
+    if ! terminal_class "$(record_get "$ledger" outcome_class)"; then
+      printf 'A terminal outcome has not been observed.\n'
+    fi
   } > "$tmp"
   chmod 0600 "$tmp"
   mv -f -- "$tmp" "$out"
@@ -745,6 +869,7 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   out=$ATTR_TOON
   run=$(run_field "$out" id)
   [ -n "$run" ] || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=canonical record carries no run id\n' "$id"; return 1; }
+  valid_task_id "$run" || { printf 'NM_OBSERVE: MISSING_BINDING task=%s reason=canonical run id is not a safe record name\n' "$id"; return 1; }
   if [ -z "$have" ] && run_bound_by_earlier_attempt "$record" "$run"; then
     printf 'NM_OBSERVE: MISSING_BINDING task=%s branch=%s run=%s reason=predecessor run %s is not a new run (an earlier attempt of this task bound it; this attempt binds only a run created after it; nothing recorded)\n' "$id" "$branch" "$run" "$run"
     return 1
@@ -776,6 +901,7 @@ do_bind() {  # <task-id> <run-id-or-empty> <accept-reset 0|1>
   record_set "$record" "run_status=$status" "run_outcome=$outcome" "outcome_class=$class" "outcome_epoch=$(now_epoch)"
   refresh_side_facts "$id" "$meta" "$record" "$dir" "$out"
   render_receipt "$id"
+  sync_run_ledger "$id" "$record" || { echo "error: bound-run identity conflict for $run" >&2; return 2; }
   assess_hook "$id"
   printf 'NM_OBSERVE: %s task=%s run=%s status=%s class=%s\n' "$([ -z "$have" ] && printf 'RUN_BOUND' || printf 'REFRESHED')" "$id" "$run" "$status" "$class"
 }
@@ -868,6 +994,7 @@ do_refresh() {  # <task-id> <accept-reset 0|1>
   record_set "$record" "run_status=$status" "run_outcome=$outcome" "outcome_class=$class" "outcome_epoch=$(now_epoch)"
   refresh_side_facts "$id" "$meta" "$record" "$dir" "$out"
   render_receipt "$id"
+  sync_run_ledger "$id" "$record" || { echo "error: bound-run identity conflict for $run" >&2; return 2; }
   assess_hook "$id"
   printf 'NM_OBSERVE: REFRESHED task=%s run=%s status=%s class=%s\n' "$id" "$run" "$status" "$class"
 }
@@ -879,6 +1006,7 @@ do_finalize() {  # <task-id>
   do_refresh "$id" 0 || true
   record_set "$record" "stage=finalized" "finalized_epoch=$(now_epoch)"
   render_receipt "$id"
+  sync_run_ledger "$id" "$record" || return 2
   printf 'NM_OBSERVE: FINALIZED task=%s receipt=%s\n' "$id" "$(receipt_path "$id")"
 }
 
@@ -927,7 +1055,7 @@ worker_alive() {  # <meta> -> alive|dead|unknown
 
 do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
   local startup=$1 force=$2 peek=$3 deadline meta id record dir wt rows line first=0 rid rbranch rstatus rhead rpr n owner branch key keys
-  local any=0 reads_ok=0
+  local any=0 live_any=0 reads_ok=0
   for record in "$STATE"/*.nm-observe; do
     [ -f "$record" ] || continue
     any=1
@@ -941,6 +1069,18 @@ do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
       break
     done
   fi
+  live_any=$any
+  if [ "$any" -eq 0 ]; then
+    for record in "$DATA"/nm-observation-runs/*.record; do
+      [ -f "$record" ] || continue
+      any=1
+      break
+    done
+  fi
+  # Retired ledgers are read by the consuming startup or explicit reconcile.
+  # The watcher's periodic peek never starts a new project inventory poll for
+  # retired work, including in a home with no live task left.
+  if [ "$peek" -eq 1 ] && [ "$live_any" -eq 0 ]; then return 0; fi
   [ "$any" -eq 1 ] || return 0
   # A home's first pass belongs to a consuming owner (--startup or --now):
   # the watcher's peek only starts the cadence clock with an empty cursor (no
@@ -993,7 +1133,14 @@ do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
     fi
     branch=$(record_get "$record" candidate_branch)
     [ -z "$branch" ] || TASK_BRANCHES[$branch]="managed $id"
+    for rid in $(record_get "$record" bound_runs); do BOUND_RUNS[$rid]=$branch; done
     reconcile_task "$id" "$meta" "$record" "$dir"
+  done
+  # Exact run identity survives endpoint retirement. The receipt is deliberately
+  # absent from this authority check: it is prose and may be stale or forged.
+  for record in "$DATA"/nm-observation-runs/*.record; do
+    [ -f "$record" ] && [ ! -L "$record" ] || continue
+    reconcile_bound_run "$record"
   done
   # Pass 2: inventory rows no obligation covers, and the daemon identity.
   for dir in "${!INVENTORY_BY_DIR[@]}"; do
@@ -1003,10 +1150,13 @@ do_reconcile() {  # <startup 0|1> <now 0|1> <peek 0|1>
     [ -n "$rows" ] || continue
     while IFS=$'\t' read -r rid rbranch rstatus rhead rpr; do
       [ -n "$rid" ] || continue
+      [ "${BOUND_RUNS[$rid]:-}" != "$rbranch" ] || continue
+      [ -z "${PENDING_RUNS[$rid]:-}" ] || continue
       owner=
       [ -z "$rbranch" ] || owner=${TASK_BRANCHES[$rbranch]:-}
       case "$owner" in
-        managed*) continue ;;
+        managed*)
+          line="NM_OBSERVE: ORPHAN_RUN run=$rid branch=$rbranch status=$rstatus head=$rhead pr=${rpr:-none} (this run is not bound to the managed task owning the branch; exact run custody is missing)" ;;
         unmanaged*)
           line="NM_OBSERVE: UNMANAGED_RUN run=$rid branch=$rbranch status=$rstatus head=$rhead pr=${rpr:-none} task=${owner#unmanaged } (this branch belongs to a task record in this home that is not a managed no-mistakes task: an uncovered entrypoint; explicit coverage gap, not adopted)" ;;
         *)
@@ -1078,8 +1228,74 @@ inventory_for_dir() {  # <dir>
   INVENTORY_BY_DIR[$dir]=
   return 1
 }
-declare -A INVENTORY_BY_DIR=() INV_OK_BY_DIR=() TASK_BRANCHES=()
+declare -A INVENTORY_BY_DIR=() INV_OK_BY_DIR=() TASK_BRANCHES=() BOUND_RUNS=() PENDING_RUNS=()
 INV_FAILED=0
+
+reconcile_bound_run() {  # <durable bound-run ledger>
+  local rid
+  rid=$(basename "$1" .record)
+  valid_task_id "$rid" || return 0
+  with_run_lock "$rid" reconcile_bound_run_locked "$1"
+}
+
+reconcile_bound_run_locked() {  # <durable bound-run ledger>
+  local ledger=$1 rid id dir branch rows row rhead last_head status out rc=0 class t
+  rid=$(basename "$ledger" .record)
+  id=$(record_get "$ledger" task)
+  dir=$(record_get "$ledger" project)
+  branch=$(record_get "$ledger" run_branch)
+  [ "$(record_get "$ledger" schema)" = fm-nm-bound-run/v1 ] || return 0
+  [ "$(record_get "$ledger" run_id)" = "$rid" ] || return 0
+  valid_task_id "$id" && [ "$(record_get "$ledger" home)" = "$FM_HOME" ] \
+    && [ -n "$(record_get "$ledger" attempt_id)" ] && [ -n "$branch" ] \
+    && [ -n "$(record_get "$ledger" candidate_head)" ] \
+    && [ -n "$(record_get "$ledger" run_head)" ] || return 0
+  [ -d "$dir" ] && [ "$(repo_remote "$dir")" = "$(record_get "$ledger" repo_remote)" ] || return 0
+  if [ "$peek" -eq 1 ]; then
+    [ "${INV_OK_BY_DIR[$dir]:-}" = 1 ] || return 0
+  else
+    inventory_for_dir "$dir" || return 0
+  fi
+  rows=${INVENTORY_BY_DIR[$dir]}
+  row=$(printf '%s\n' "$rows" | awk -F '\t' -v r="$rid" '$1 == r { print; exit }')
+  [ -n "$row" ] || return 0
+  [ "$(printf '%s' "$row" | cut -f2)" = "$branch" ] || return 0
+  BOUND_RUNS[$rid]=$branch
+  [ -n "$(record_get "$ledger" finalized_epoch)" ] || return 0
+  rhead=$(printf '%s' "$row" | cut -f4)
+  last_head=$(record_get "$ledger" inventory_head)
+  [ -n "$last_head" ] || last_head=$(record_get "$ledger" run_head)
+  if [ -n "$rhead" ] \
+      && [ "$rhead" != "$last_head" ]; then
+    recon_emit "retired-head:$rid" "NM_OBSERVE: RETIRED_HEAD_CHANGED task=$id run=$rid inventory_head=$rhead (head observed after retirement; not accepted or landed)"
+    if [ "$peek" -eq 0 ]; then
+      ledger_set "$ledger" "inventory_head=$rhead"
+      render_run_receipt "$ledger"
+    fi
+  fi
+  status=$(printf '%s' "$row" | cut -f3)
+  [ "$status" != "$(record_get "$ledger" run_status)" ] || return 0
+  case "$status" in completed|failed|cancelled) ;; *) return 0 ;; esac
+  if [ "$peek" -eq 1 ]; then
+    recon_emit "retired:$rid" "NM_OBSERVE: RETIRED_TERMINAL_PENDING task=$id run=$rid status=$status (run table changed; reconcile --now for the exact canonical outcome)"
+    return 0
+  fi
+  t=$(( deadline - $(now_epoch) ))
+  [ "$t" -gt 0 ] || return 0
+  [ "$t" -le "$CALL_TIMEOUT" ] || t=$CALL_TIMEOUT
+  out=$(fm_nm_run_checked "$dir" "$t" axi status --run "$rid") || rc=$?
+  [ "$rc" -eq 0 ] && [ "$(run_field "$out" id)" = "$rid" ] \
+    && [ "$(run_field "$out" branch)" = "$branch" ] || return 0
+  class=$(outcome_class_of "$(run_field "$out" status)" "$(run_field "$out" outcome)")
+  terminal_class "$class" || return 0
+  recon_emit "retired:$rid" "NM_OBSERVE: RETIRED_OUTCOME task=$id run=$rid status=$(run_field "$out" status) class=$class (canonical terminal result observed after task retirement)"
+  if [ "$peek" -eq 0 ]; then
+    ledger_set "$ledger" "run_status=$(run_field "$out" status)" \
+      "run_outcome=$(run_field "$out" outcome)" "outcome_class=$class" \
+      "outcome_epoch=$(now_epoch)" "observed_head=$(run_field "$out" head)"
+    render_run_receipt "$ledger"
+  fi
+}
 
 reconcile_task() {  # <id> <meta> <record> <dir>
   local id=$1 meta=$2 record=$3 dir=$4 stage run branch rows row rid rhead rstatus class age alive newer out status now_class remaining rc
@@ -1110,6 +1326,7 @@ reconcile_task() {  # <id> <meta> <record> <dir>
       rhead=$(printf '%s' "$row" | cut -f4)
       rstatus=$(printf '%s' "$row" | cut -f3)
       if fm_nm_head_matches_worktree "$dir" "$rhead" || [ "$rstatus" = running ]; then
+        PENDING_RUNS[$rid]=1
         recon_emit "task:$id" "NM_OBSERVE: UNBOUND_RUN task=$id run=$rid status=$rstatus head=$rhead (run exists for the accepted branch but the obligation holds no run id; heal: bin/fm-nm-observe.sh bind $id --run $rid)"
         return 0
       fi

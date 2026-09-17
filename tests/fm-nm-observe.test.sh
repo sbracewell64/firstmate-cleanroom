@@ -714,6 +714,122 @@ out=$(multi_observe reconcile --now 2>&1)
 assert_not_contains "$out" "ORPHAN_RUN run=01FOREIGN " "the baseline row stays quiet"
 pass "reconcile: rows served to several worktrees of one repository are reported once per run id"
 
+# --- retirement retains exact run ownership across a later terminal result ---
+RET="$TMP_ROOT/retired-home"
+mkdir -p "$RET/state" "$RET/data"
+WTR="$TMP_ROOT/wt-retired"
+make_worktree "$WTR" fm/retired
+RETH=$(git -C "$WTR" rev-parse HEAD)
+ret_observe() { FM_HOME="$RET" FM_STATE_OVERRIDE="$RET/state" FM_DATA_OVERRIDE="$RET/data" "$OBSERVE" "$@"; }
+fm_write_meta "$RET/state/ret.meta" "window=firstmate:fm-ret" "endpoint_task_id=ret" "worktree=$WTR" "project=$WTR" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired '')
+ret_observe launch ret --profile-json "$PROFILE_OK" >/dev/null || fail "retired launch"
+ret_observe reconcile --now >/dev/null || fail "retired baseline"
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01RETOLD fm/retired cancelled "$RETH" cancelled)
+ret_observe bind ret --run 01RETOLD >/dev/null || fail "retired predecessor bind"
+ret_observe launch ret --retry --profile-json "$PROFILE_OK" >/dev/null || fail "retired retry"
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01RETNEW fm/retired running "$RETH" '')
+ret_observe bind ret --run 01RETNEW >/dev/null || fail "retired current bind"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/retired\trunning\t%s\t\n01RETOLD\tfm/retired\tcancelled\t%s\t\n01FOREIGNRET\tfm/retired\trunning\t%s\t' "$RETH" "$RETH" "$RETH")")
+live_out=$(ret_observe reconcile --now 2>&1)
+assert_contains "$live_out" 'ORPHAN_RUN run=01FOREIGNRET ' "a shared branch does not cover a manual run"
+assert_not_contains "$live_out" 'ORPHAN_RUN run=01RETNEW ' "live current binding covers its exact run"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/replaced-branch\trunning\t%s\t' "$RETH")")
+live_swapped=$(ret_observe reconcile --now 2>&1)
+assert_contains "$live_swapped" 'ORPHAN_RUN run=01RETNEW branch=fm/replaced-branch' "live bound id does not own a replaced branch"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/retired\trunning\t%s\t\n01RETOLD\tfm/retired\tcancelled\t%s\t\n01FOREIGNRET\tfm/retired\trunning\t%s\t' "$RETH" "$RETH" "$RETH")")
+printf 'pr=https://github.com/example/repo/pull/58\npr_head=%s\n' "$RETH" >> "$RET/state/ret.meta"
+fm_pr_poll_merge_mark_notified "$RET/state" ret github github.com example/repo 58 || fail "retired merge marker"
+ret_observe finalize ret >/dev/null || fail "retired finalize"
+assert_contains "$(cat "$RET/data/ret/nm-observation-receipt.md")" "a terminal outcome" "cleanup did not invent terminal proof"
+assert_contains "$(cat "$RET/data/ret/nm-observation-receipt.md")" 'publication: merged:github:github.com:example/repo:58' "merge attribution and terminal outcome remain separate"
+rm -f "$RET/state/ret.nm-observe" "$RET/state/ret.meta"
+: > "$NM_LOG"
+peek_out=$(ret_observe reconcile --peek 2>&1)
+[ -z "$peek_out" ] && [ ! -s "$NM_LOG" ] || fail "retired ledger broadened periodic watcher polling"
+printf 'forged coverage for 01FOREIGNRET\n' > "$RET/data/ret/nm-run-01FOREIGNRET-observation-receipt.md"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/retired\tcompleted\t%s\t\n01RETOLD\tfm/retired\tcancelled\t%s\t\n01FOREIGNRET\tfm/retired\tcompleted\t%s\t' deadbeef "$RETH" "$RETH")")
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01RETNEW fm/retired completed deadbeef passed)
+out=$(ret_observe reconcile --now 2>&1)
+assert_not_contains "$out" 'ORPHAN_RUN run=01RETNEW ' "retired current run remains attributable"
+assert_not_contains "$out" 'ORPHAN_RUN run=01RETOLD ' "retired predecessor remains attributable"
+assert_contains "$out" 'ORPHAN_RUN run=01FOREIGNRET ' "unrelated same-branch run remains an orphan"
+assert_contains "$(cat "$RET/data/ret/nm-run-01RETNEW-observation-receipt.md")" 'Canonical status completed' "later terminal read is retained"
+assert_contains "$(cat "$RET/data/ret/nm-run-01RETNEW-observation-receipt.md")" "binding head $RETH" "a changed run head did not replace binding identity"
+assert_contains "$(cat "$RET/data/ret/nm-run-01RETNEW-observation-receipt.md")" 'Last canonical head deadbeef' "changed canonical head is disclosed"
+again=$(ret_observe reconcile --now 2>&1)
+assert_not_contains "$again" 'RETIRED_OUTCOME' "terminal reconcile is idempotent"
+assert_not_contains "$again" 'ORPHAN_RUN run=01RETNEW ' "idempotent reconcile keeps custody"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/replaced-branch\tcompleted\t%s\t' deadbeef)")
+out=$(ret_observe reconcile --now 2>&1)
+assert_contains "$out" 'ORPHAN_RUN run=01RETNEW branch=fm/replaced-branch' "same run id on a replaced branch cannot inherit custody"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/retired "$(printf '01RETNEW\tfm/retired\tcompleted\t%s\t' deadbeef)")
+# Reusing the task id with a different branch does not replace the old run's
+# authority. A stale task receipt and an unrelated same-branch run prove neither.
+WTREUSE="$TMP_ROOT/wt-reused"
+make_worktree "$WTREUSE" fm/reused
+fm_write_meta "$RET/state/ret.meta" "window=firstmate:fm-ret" "endpoint_task_id=ret" "worktree=$WTREUSE" "project=$WTREUSE" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+ret_observe launch ret --profile-json "$PROFILE_OK" >/dev/null || fail "task id reuse launch"
+out=$(ret_observe reconcile --now 2>&1)
+assert_not_contains "$out" 'ORPHAN_RUN run=01RETNEW ' "task reuse does not erase old run identity"
+assert_contains "$(cat "$RET/data/ret/nm-run-01RETNEW-observation-receipt.md")" 'Canonical status completed' "task reuse preserves per-run terminal receipt"
+# A live run can keep running after cleanup even when its pipeline head is
+# explicitly rejected. Candidate, bound head, and later inventory head are
+# three independent facts; neither the rejected head nor retirement is PASS.
+WTREJECT="$TMP_ROOT/wt-rejected"
+make_worktree "$WTREJECT" fm/rejected
+SOURCEH=$(git -C "$WTREJECT" rev-parse HEAD)
+fm_write_meta "$RET/state/rejected.meta" "window=firstmate:fm-rejected" "endpoint_task_id=rejected" "worktree=$WTREJECT" "project=$WTREJECT" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+ret_observe launch rejected --profile-json "$PROFILE_OK" >/dev/null || fail "rejected-head launch"
+git -C "$WTREJECT" commit -q --allow-empty -m 'pipeline binding head'
+BOUNDH=$(git -C "$WTREJECT" rev-parse HEAD)
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01REJECTRUN fm/rejected running "$BOUNDH" '')
+ret_observe bind rejected --run 01REJECTRUN >/dev/null || fail "rejected-head bind"
+git -C "$WTREJECT" commit -q --allow-empty -m 'unpublished pipeline head'
+REJECTH=$(git -C "$WTREJECT" rev-parse HEAD)
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01REJECTRUN fm/rejected running "$REJECTH" '')
+ret_observe finalize rejected >/dev/null || fail "rejected-head finalize"
+rm -f "$RET/state/rejected.nm-observe" "$RET/state/rejected.meta"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/rejected "$(printf '01REJECTRUN\tfm/rejected\trunning\t%s\t' "$REJECTH")")
+out=$(ret_observe reconcile --now 2>&1)
+assert_not_contains "$out" 'ORPHAN_RUN run=01REJECTRUN ' "nonterminal rejected-head run keeps exact admission"
+assert_contains "$out" "RETIRED_HEAD_CHANGED task=rejected run=01REJECTRUN inventory_head=$REJECTH" "later head is observed without adoption"
+reject_receipt=$(cat "$RET/data/rejected/nm-run-01REJECTRUN-observation-receipt.md")
+assert_contains "$reject_receipt" "accepted source head $SOURCEH; binding head $BOUNDH" "candidate and bound head remain distinct"
+assert_contains "$reject_receipt" "Later inventory head $REJECTH (no acceptance, landing, or terminal proof)" "rejected head has no publication authority"
+assert_contains "$reject_receipt" 'A terminal outcome has not been observed' "running after cleanup stays nonterminal"
+WTCRASH="$TMP_ROOT/wt-crash"
+make_worktree "$WTCRASH" fm/crash
+CRASHH=$(git -C "$WTCRASH" rev-parse HEAD)
+fm_write_meta "$RET/state/crash.meta" "window=firstmate:fm-crash" "endpoint_task_id=crash" "worktree=$WTCRASH" "project=$WTCRASH" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+ret_observe launch crash --profile-json "$PROFILE_OK" >/dev/null || fail "crash launch"
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01CRASHRUN fm/crash running "$CRASHH" '')
+ret_observe bind crash --run 01CRASHRUN >/dev/null || fail "crash bind"
+ret_observe finalize crash >/dev/null || fail "crash finalize before cleanup"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/crash "$(printf '01CRASHRUN\tfm/crash\tfailed\t%s\t' "$CRASHH")")
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01CRASHRUN fm/crash failed "$CRASHH" failed)
+out=$(ret_observe reconcile --now 2>&1)
+assert_contains "$out" 'RETIRED_OUTCOME task=crash run=01CRASHRUN status=failed class=failed' "terminal read between finalization and cleanup"
+# A resumed cleanup can see an older running snapshot; it must not overwrite
+# the later failed result already committed by reconciliation.
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01CRASHRUN fm/crash running "$CRASHH" '')
+ret_observe finalize crash >/dev/null || fail "crash retry finalize"
+assert_contains "$(cat "$RET/data/crash/nm-run-01CRASHRUN-observation-receipt.md")" 'Canonical status failed' "retry cannot regress terminal evidence"
+WTCANCEL="$TMP_ROOT/wt-cancelled"
+make_worktree "$WTCANCEL" fm/cancelled
+CANCELH=$(git -C "$WTCANCEL" rev-parse HEAD)
+fm_write_meta "$RET/state/cancelled.meta" "window=firstmate:fm-cancelled" "endpoint_task_id=cancelled" "worktree=$WTCANCEL" "project=$WTCANCEL" "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+ret_observe launch cancelled --profile-json "$PROFILE_OK" >/dev/null || fail "cancelled launch"
+FM_FAKE_AXI_STATUS_RUN=$(axi_run_toon 01CANCELRUN fm/cancelled cancelled "$CANCELH" cancelled)
+ret_observe bind cancelled --run 01CANCELRUN >/dev/null || fail "cancelled bind"
+ret_observe finalize cancelled >/dev/null || fail "cancelled finalize"
+rm -f "$RET/state/cancelled.nm-observe" "$RET/state/cancelled.meta"
+FM_FAKE_AXI_STATUS=$(axi_status_toon fm/cancelled "$(printf '01CANCELRUN\tfm/cancelled\tcancelled\t%s\t' "$CANCELH")")
+out=$(ret_observe reconcile --now 2>&1)
+assert_not_contains "$out" 'ORPHAN_RUN run=01CANCELRUN ' "cancelled current run retains exact admission after cleanup"
+assert_contains "$(cat "$RET/data/cancelled/nm-run-01CANCELRUN-observation-receipt.md")" 'Canonical status cancelled, outcome cancelled, class cancelled' "real cancellation stays readable"
+pass "retirement: exact current and predecessor runs remain owned, later terminal observed, unrelated run orphaned"
+
 # --- negative: the observer never sent a mutating verb --------------------------
 
 for f in "$TMP_ROOT"/*.argv; do :; done

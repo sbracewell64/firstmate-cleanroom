@@ -12,7 +12,10 @@ A managed launch is a task whose record says `kind=ship` and `mode=no-mistakes`.
 The obligation is bound before the launch is admitted, the actual run id is bound only after the daemon created the run, a preflight refusal keeps a launch-attempt identity and never a fabricated run id, a resumed run keeps its identity, and a retry links to its predecessor attempt and run.
 The canonical inventory is the daemon's own structured answer (`no-mistakes axi status` and `axi status --run <id>`); narration, activity logs, and the daemon's SQLite are never read.
 IPC run, step, and CI-readiness events are refresh hints only, and no owner in this repository subscribes to them today, so every recorded fact comes from a canonical read at a reconciliation moment.
-Unchanged state stays quiet: a reconciliation prints a line only for a new or changed finding, and a home that holds neither an obligation nor a managed task record prints nothing and queries nothing.
+Unchanged state stays quiet: a reconciliation prints a line only for a new or changed finding, and a home that holds neither an obligation, a bound-run ledger, nor a managed task record prints nothing and queries nothing.
+An admitted bound run retains exact per-run attribution after task retirement; later terminal reads update its per-run receipt without treating a merge, PR closure, or cleanup as terminal proof.
+The receipt keeps the accepted source candidate, binding head, and later inventory head as separate facts; a later head can remain unpublished and rejected while the run is still active.
+The human-readable task receipt never grants run custody, including when it is stale or forged, and a shared branch never grants custody to an unrelated run.
 A home whose only managed tasks carry no obligation reports each of them as `UNENROLLED` without querying the inventory, so an enrolment that failed for the first task in a home is still reported.
 A transient inventory outage is reported once as `INVENTORY_UNAVAILABLE` and carries the previous pass's run memory forward, so recovery never re-reports the baseline or an already-reported row.
 
@@ -31,7 +34,7 @@ COVERED means the obligation is created or advanced by the path's own owner befo
 | Current-state attribution | `bin/fm-crew-state.sh` via `bin/fm-nm-run-lib.sh` | COVERED (shared rules, no change) | The obligation binds runs under the same branch, head, and pipeline-owned rules the state helper uses, so the two never disagree about which run is the task's. |
 | PR ready and merge poll | `bin/fm-pr-check.sh`, `bin/fm-pr-poll.sh` | PENDING, reconciled after | `refresh` and `finalize` bind `pr=` and `pr_head=` from the task record; the PR owners are not changed. |
 | Merge outcome publication | `bin/fm-pr-merge.sh`, `bin/fm-merge-outcome-lib.sh` | PENDING, reconciled after | `refresh` records `publication=merged:<provider>:<host>:<path>:<number>` from the PR identity carried by the merge-notification marker `bin/fm-pr-lib.sh` owns; a marker without that identity binds nothing, and the merge owners are not changed. |
-| Teardown | `bin/fm-teardown.sh` | COVERED (finalization) | Teardown finalizes the durable receipt (which also produces the terminal assessment) before retiring the runtime obligation and assessment records with the task's other state; both the observation and assessment receipts survive in `data/<id>/`. |
+| Teardown | `bin/fm-teardown.sh` | COVERED (finalization) | Teardown finalizes the task receipt before retiring the runtime obligation and assessment records; each bound run's ledger and receipt survive in `data/`, so a later canonical terminal read remains attributable. |
 | Runs from another home on the shared daemon | none in this home | COVERAGE GAP | The daemon serves every home, so another home's runs appear in this home's inventory; they are reported once as `ORPHAN_RUN` and never adopted. |
 | A run on the branch of a task record that is not a managed no-mistakes task (a direct-PR ship, a scout, or a hand-run `no-mistakes` from that worktree) | the task's own worker | COVERAGE GAP | Reported once as `UNMANAGED_RUN` naming the owning task id, kind, and mode: an uncovered entrypoint, never adopted, because only `kind=ship mode=no-mistakes` tasks carry an obligation. |
 | Manual `no-mistakes` invocations in a project clone, and the daemon's own nested gate-agent runs | none | COVERAGE GAP | Same `ORPHAN_RUN` report; nothing else can observe them here. |
@@ -40,8 +43,9 @@ COVERED means the obligation is created or advanced by the path's own owner befo
 ## Reconciliation seams
 
 - `bin/fm-session-start.sh` runs `reconcile --startup` on the locked path immediately after the inactive-outcome scan and prints any findings under a labeled line; a read-only session runs nothing.
-- Both seams scan every task record, so `UNENROLLED` is raised for a managed task with no obligation even before the home holds its first obligation, while a home with neither stays silent and never queries.
-- `bin/fm-watch.sh` runs the non-consuming `reconcile --peek` on every poll beside the inactive-outcome scan; the owner's cadence and budget keep quiet cycles free, the peek never advances the presentation cursor (in a home with no cursor it only creates an empty one to start the cadence clock, leaving the first pass to `--startup` or `--now`), and a printed finding raises `check: nm-observe`, which AGENTS.md section 8 routes to `reconcile --now`, the pass that prints the identical lines, commits the cursor, and names the heals.
+- Both seams scan every task record and surviving bound-run ledger, so `UNENROLLED` is raised for a managed task with no obligation even before the home holds its first obligation, while a home with neither stays silent and never queries.
+- `bin/fm-watch.sh` runs the non-consuming `reconcile --peek` on every poll beside the inactive-outcome scan; the owner's cadence and budget keep quiet cycles free, the peek never advances the presentation cursor (in a home with no cursor it only creates an empty one to start the cadence clock, leaving the first pass to `--startup` or `--now`), and a printed finding raises `check: nm-observe`, which AGENTS.md section 8 routes to `reconcile --now`, the pass that resolves a pending retired terminal result, commits the cursor, and names the heals.
+- A retired ledger alone never extends the watcher's periodic inventory polling; consuming startup and explicit reconcile reads provide its later canonical outcome.
 - Rows the daemon's repository-wide table serves to several worktrees of one repository are reported once per run id.
 - The captured eval corpus (`eval.capture_provenance`, `eval.auto_capture`) is review evidence and is never counted as launch coverage; every receipt says so.
 
@@ -63,7 +67,8 @@ The existing observation owner produces the assessment at its own `bind` and `re
 
 ## Records
 
-The obligation lives at `state/<id>.nm-observe` and its receipt at `data/<id>/nm-observation-receipt.md`; `state/.nm-observe-watermark` is the reconciliation's presentation cursor.
+The live obligation lives at `state/<id>.nm-observe` and its task receipt at `data/<id>/nm-observation-receipt.md`; exact bound-run identity and later canonical outcomes live at `data/nm-observation-runs/<run>.record` and `data/<id>/nm-run-<run>-observation-receipt.md`.
+`state/.nm-observe-watermark` is the reconciliation's presentation cursor.
 The assessment lives at `state/<id>.nm-assessment` and its receipt at `data/<id>/nm-assessment-receipt.md`; finding families live under `data/nm-finding-families/`, one durable file per family with append-only occurrence lines.
 [`configuration.md`](configuration.md) routes the home layout, and each script header owns its field inventory and the receipt's sections.
 

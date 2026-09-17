@@ -938,9 +938,10 @@ else
   # Empty stdout alone does not mean nothing is queued: a downtime episode can
   # need acknowledgement even when the drain presents no rows.
   #
-  # If either channel cannot be staged, keep stdout separate and let stderr
-  # reach the caller. Without the typed record this section claims no queue
-  # verdict or acknowledgement; the direct drain remains available to inspect.
+  # If either channel cannot be staged, do not run the drain without a trusted
+  # separation boundary. Emit the bounded setup diagnostic directly instead of
+  # claiming a queue verdict or acknowledgement; the direct drain remains
+  # available to inspect separately.
   DRAIN_RC=0
   DRAIN_DIAG_STAGED=1
   DRAIN_ACK_VALID=1

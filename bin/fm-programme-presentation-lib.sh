@@ -29,8 +29,9 @@
 # the current state once.
 #
 # CONTRACT (fm_programme_present <state> <mode>):
-#   1. Run the resolver's `render`; exit 3 (no programme) prints nothing and
-#      returns 3; a resolver failure is itself material state, keyed by a
+#   1. Run the resolver's `render`; exit 3 (no programme) prints no presentation
+#      on stdout and returns 3, while captured diagnostics remain visible on
+#      stderr; a resolver failure is itself material state, keyed by a
 #      digest of its exit code and the diagnostic it wrote, so a broken pin
 #      surfaces once and then stays quiet until it changes. When NO diagnostic
 #      was captured - whether because it could not be staged or because the

@@ -23,7 +23,7 @@
 #     that document. The classification tables and hold-effect law are never
 #     reimplemented here, and `--materialize` is refused because this layer has
 #     no authority to create a hold. Its exit 3 (no programme configured) is
-#     "not applicable" and is mirrored as exit 3 with nothing on stdout.
+#     "not applicable" and is mirrored as exit 3 with no projection on stdout.
 #   - bin/fm-captain-hold.sh owns hold durability and effect; the resolver
 #     already consumed them, so this script reads only the resolver's gating
 #     hold rows and answered-fact identities.
@@ -45,9 +45,10 @@
 # continuation"), and the file and artifact root this run used are read back
 # from its result's `programme.path` / `programme.root`, never re-located.
 #
-# Exit codes: 0 projected; 3 no programme is configured (silent, mirrors the
-# resolver); 2 usage; 1 any other error, including malformed delegation
-# configuration, which is refused rather than selected around.
+# Exit codes: 0 projected; 3 no programme is configured (no projection on
+# stdout, while any resolver diagnostic is still relayed on stderr); 2 usage; 1
+# any other error, including malformed delegation configuration, which is
+# refused rather than selected around.
 #
 # CANONICAL INPUTS, read only:
 #   1. The resolver's typed result (schema fm-continuation-resolution/v1).
@@ -213,38 +214,16 @@ RESOLUTION=''
 # the refusal discarded the bytes, so no CI log names an injector, and 60
 # back-to-back resolves under that suite's fixture produced clean JSON locally.
 # The failure stays UNATTRIBUTED. A recurrence reopens the investigation rather
-# than reading as already fixed. Nothing is swallowed in exchange: whatever the resolver wrote to stderr is relayed to this
-# script's stderr on every path, so a real diagnostic still reaches an operator
-# while stdout stays exactly the typed document. An unparseable stdout names what
-# it actually received, and exit 3 is still mirrored with stdout left empty.
+# than reading as already fixed. Nothing is swallowed in exchange: whatever the
+# resolver wrote to stderr is relayed to this script's stderr on every path, so a
+# real diagnostic still reaches an operator while stdout stays exactly the typed
+# document. An unparseable stdout names what it actually received, and exit 3 is
+# still mirrored with stdout left empty.
 #
-# THIS SCRIPT IS THE ONLY ONE OF THE FIVE RESOLVER CALL SITES THAT RELAYS ON EXIT
-# 3, and that difference is deliberate rather than an oversight: exit 3 is the
-# ordinary "no programme configured" state, which the four embedding sites
-# (bin/fm-fleet-snapshot.sh, bin/fm-session-start.sh, bin/fm-supervise-daemon.sh,
-# bin/fm-programme-presentation-lib.sh) report typed and silently, while this
-# script mirrors the refusal to its own caller and so must carry its reason.
-# Every other rule is identical at all five: stdout is the typed result, stderr is
-# captured separately, it is relayed on exit 0 as well as on any other failure -
-# separating the streams means routing both, not discarding one - the reason for
-# a failure is read from stderr and never from stdout, and an unstageable
-# diagnostic degrades to the same "unavailable" text everywhere. Do not unify the
-# exit-3 difference away.
-#
-# Exit 3 is also why the UNSTAGEABLE path differs. This script leaves the
-# resolver's stderr unredirected there, so the diagnostic still reaches the
-# caller; the four embedding sites cannot, because an unredirected stream is
-# delivered before the exit code is known and so cannot be withheld on exit 3,
-# which would put "no programme configured" in front of an operator on every
-# ordinary call from a home that has none. They discard it instead and say so
-# through the "unavailable" text. That is a real trade between routing the
-# diagnostic and honouring the exit-3 silence, not an oversight.
-# Bash cannot separate the two streams in memory without a redirection trick, and
-# a trick in the very code whose output corruption is under investigation is not
-# worth the cleverness, so the diagnostics are staged through a file - but a
-# DIAGNOSTIC AID MUST NEVER FAIL THE OPERATION IT IS DIAGNOSING, so an
-# unstageable diagnostic degrades to "unavailable" and the resolve still runs,
-# with the resolver's stderr passing straight through to this script's stderr.
+# The shared capture owner stages resolver stderr separately, relays it for every
+# resolver exit including exit 3, and refuses with a bounded diagnostic when
+# staging, reading, or cleanup fails. It never runs the projection without a
+# trustworthy capture boundary.
 read_resolution() {
   local out diag='' diag_note='' diag_suffix='' reason='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"

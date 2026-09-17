@@ -1004,7 +1004,7 @@ test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
   record_autoarm_epoch "$dir" 466 "$pid" arming
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
 
-  export FM_STOP_REDELIVER_POLLS=30
+  export FM_STOP_REDELIVER_POLLS=15
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   unset FM_STOP_REDELIVER_POLLS
   delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
@@ -1016,10 +1016,38 @@ test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
   [ -e "$dir/state/.claude-autoarm.lock" ] || fail "the live stop-ignoring owner's lock was removed"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
   [ -z "$out" ] || fail "a refused legacy reclaim produced a wake: $out"
-  [ "$delivered" -ge 2 ] \
-    || fail "retirement delivered $delivered stop(s) with a re-delivery interval equal to its own window, so a consumed first stop would never be re-sent"
+  [ "$delivered" -eq 1 ] \
+    || fail "the legacy retirement bound exceeded one second and delivered $delivered stop(s)"
   unset -f write_stop_recording_owner
-  pass "auto-arm: legacy retirement keeps a window wide enough to re-deliver before it retires the lock"
+  pass "auto-arm: legacy retirement preserves the one-second bound"
+}
+
+test_unverifiable_live_legacy_owner_retains_lock() {
+  local dir status=0
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-unverifiable")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' expected-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
+  IDENTITY_MARKER="$dir/state/identity-called" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_abandoned() { return 0; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { :; }
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() {
+      if [ ! -e "$IDENTITY_MARKER" ]; then
+        : > "$IDENTITY_MARKER"
+        printf "%s\\n" expected-identity
+      else
+        return 1
+      fi
+    }
+    fm_autoarm_release_abandoned "$2" 0
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "unverifiable live legacy owner was reclaimed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "unverifiable live legacy owner lost its lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "unverifiable reclaim left its mutex behind"
+  pass "auto-arm: unverifiable live legacy owner retains its lock"
 }
 
 # --- generation claims: optimistic single-flight and supersession --------------
@@ -1252,6 +1280,7 @@ test_terminal_check_claim_is_never_reclaimed
 test_stuck_live_legacy_owner_is_retired_and_reclaimed
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
 test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence
+test_unverifiable_live_legacy_owner_retains_lock
 test_open_generation_claim_defers_without_any_lock
 test_stuck_generation_claim_is_superseded_and_rearms
 test_identityless_ledger_never_defers

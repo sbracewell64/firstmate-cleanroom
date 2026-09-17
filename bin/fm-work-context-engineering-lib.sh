@@ -230,6 +230,7 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   fi
   if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
     fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
+    index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
   fi
   [ -n "$required" ] || return 0
   index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON

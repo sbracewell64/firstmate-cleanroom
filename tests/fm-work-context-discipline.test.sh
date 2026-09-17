@@ -297,7 +297,7 @@ SH
 }
 
 test_candidate_evidence_is_bound_but_not_authority() {
-  local home desc receipt head run artifact evidence out rc mutation surface
+  local home desc receipt engineering_generation head run artifact evidence out rc mutation surface
   home="$TMP_ROOT/evidence"
   make_home "$home"
   surface=$'bin/example --status\n'
@@ -306,18 +306,19 @@ test_candidate_evidence_is_bound_but_not_authority() {
     || fail "evidence fixture did not compile"
   desc="$home/data/evidence/work-context.json"
   receipt=$(jq -c '.engineering.discipline' "$desc")
+  engineering_generation=$(jq -r '.engineering.generation' "$desc")
   head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   run=01DISCIPLINE
   artifact="$home/data/evidence/discipline-proof.txt"
   printf 'observed command output; safety fact: schema reader rejects unknown state\n' > "$artifact"
   evidence="$home/data/evidence/engineering-evidence.json"
-  jq -n --arg task evidence --arg run "$run" --arg head "$head" \
-    --arg generation "$(printf '%s' "$receipt" | jq -r .generation)" \
+  jq -n --arg task evidence --arg generation "$engineering_generation" --arg run "$run" --arg head "$head" \
+    --arg discipline_generation "$(printf '%s' "$receipt" | jq -r .generation)" \
     --arg level "$(printf '%s' "$receipt" | jq -r .level)" \
     --arg fragment "$(printf '%s' "$receipt" | jq -r .fragment_sha256)" \
     --arg surface "$surface" \
     --arg path "$artifact" --arg sha "$(sha256sum < "$artifact" | cut -d' ' -f1)" \
-    '{task:$task,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$generation,level:$level,fragment_sha256:$fragment,producer:"worker-candidate",outcome:"OBSERVED",surface:$surface,command:$surface,oracle:"exit zero and expected status",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' > "$evidence"
+    '{task:$task,generation:$generation,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$discipline_generation,level:$level,fragment_sha256:$fragment,producer:"worker-candidate",outcome:"OBSERVED",surface:$surface,command:$surface,oracle:"exit zero and expected status",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' > "$evidence"
   cp "$evidence" "$home/valid-evidence.json"
   out=$(FM_HOME="$home" "$CONTEXT" discipline-evidence evidence "$run" "$head") \
     || fail "bound observed evidence was refused"

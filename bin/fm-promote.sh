@@ -17,11 +17,11 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# The same instructions render the ship worker-discipline section from
-# bin/fm-work-context-discipline-lib.sh, the single owner an ordinary ship brief uses, and
-# accept its --shared-boundary and --proof-surface fragments, so a promoted worker
-# receives the same engineering contract as a briefed one.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--shared-boundary] [--proof-surface <text>]
+# The same instructions compile and render ship worker discipline from
+# bin/fm-work-context-discipline-lib.sh, the single owner an ordinary ship brief
+# uses. Typed task facts select the fragments, so a promoted worker receives the
+# same engineering contract as a freshly briefed one.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +56,8 @@ YOLO=
 MODE_SET=0
 YOLO_SET=0
 DISCIPLINE_ARGS=()
+PROOF_KIND=
+PROOF_SURFACE=
 POS=()
 want_value=
 for a in "$@"; do
@@ -66,7 +68,9 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
-      proof-surface) DISCIPLINE_ARGS+=(--proof-surface "$a") ;;
+      discipline-fact) DISCIPLINE_ARGS+=(--fact "$a") ;;
+      proof-kind) PROOF_KIND=$a ;;
+      proof-surface) PROOF_SURFACE=$a ;;
     esac
     want_value=
     continue
@@ -76,14 +80,18 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
-    --shared-boundary) DISCIPLINE_ARGS+=(--shared-boundary) ;;
+    --discipline-fact) want_value="discipline-fact" ;;
+    --discipline-fact=*) DISCIPLINE_ARGS+=(--fact "${a#--discipline-fact=}") ;;
+    --proof-kind) want_value="proof-kind" ;;
+    --proof-kind=*) PROOF_KIND=${a#--proof-kind=} ;;
     --proof-surface) want_value="proof-surface" ;;
-    --proof-surface=*) DISCIPLINE_ARGS+=(--proof-surface "${a#--proof-surface=}") ;;
+    --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--shared-boundary] [--proof-surface <text>]" >&2; exit 1; }
+[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>]" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
   exit 1
@@ -150,6 +158,13 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 mkdir -p "$DATA/$ID"
 [ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
+[ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
+[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+  echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+  exit 3
+}
+DISCIPLINE=$(fm_discipline_render "$DATA" "$ID" ship implementation) || exit 3
 ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" all all) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
@@ -169,7 +184,7 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 The worker discipline below replaces the scout evidence subset. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
 
 EOF
-  fm_discipline_block ship "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || exit 1
+  printf '%s' "$DISCIPLINE"
   printf '\n\n'
   printf '%s\n\n' "$ENGINEERING"
   fm_dod_block "$MODE" "$ID"

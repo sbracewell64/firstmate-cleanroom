@@ -320,11 +320,22 @@ fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [conf
   esac
   FM_WORK_CONTEXT_VERDICT=proceed
   case "$kind" in
-    scout) fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+    scout)
+      if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
+        fm_discipline_gap 'discipline-role: a knowledge-only scout cannot carry ship discipline'
+        return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      fi
+      fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      ;;
     secondmate) return "$FM_WORK_CONTEXT_PASS_EXIT" ;;
-    *) fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT" ;;
+    *)
+      if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
+        fm_discipline_load "$data" "$id" ship implementation || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      fi
+      fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      ;;
   esac
-  fm_work_context_engineering_brief "$data" "$id" || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+  fm_work_context_engineering_brief "$data" "$id" "$kind" || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
   FM_WORK_CONTEXT_DETAIL="dispatch authority satisfied (classes=$FM_WORK_CONTEXT_CLASSES)"
   return "$FM_WORK_CONTEXT_PASS_EXIT"
 }
@@ -827,6 +838,7 @@ fm_work_context_reconcile() {  # <state> <data> <id> <transition>
     printf 'roadmap_refresh=%s\n' "$roadmap_status"
     printf 'currentness=%s\n' "$currentness"
     printf 'engineering_context=%s\n' "$(fm_meta_get "$state/$id.meta" stage_context)"
+    printf 'engineering_discipline=%s\n' "$(fm_meta_get "$state/$id.meta" stage_discipline)"
     printf 'engineering_evidence=%s\n' "$(fm_meta_get "$state/$id.meta" stage_evidence)"
     fm_work_context_engineering_residuals "$desc" | while IFS= read -r obligation; do
       printf 'engineering_residual=%s\n' "$obligation"

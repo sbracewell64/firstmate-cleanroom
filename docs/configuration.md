@@ -431,14 +431,20 @@ Secondmate homes inherit this file from the primary, so a secondmate's own crewm
 
 ## Engineering work context
 
-The optional `engineering` object in `data/<id>/work-context.json` binds an accepted task's applicable skill sources and verification obligations; `bin/fm-work-context-engineering-lib.sh` owns its exact schema, trigger mapping, evidence-index fields and scope rules.
-Use `bin/fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>` to read the checked current context before applicable work and after resume.
-Ship briefs and promotion instructions deliver all applicable source pointers; scout generation and dispatch select only worker diagnosis sources, and secondmate charters omit engineering context.
+The optional `engineering` object in `data/<id>/work-context.json` binds an accepted task's worker-discipline selection, applicable skill sources and verification obligations; `bin/fm-work-context-engineering-lib.sh` owns the skill schema, trigger mapping, evidence-index fields and scope rules, while `bin/fm-work-context-discipline-lib.sh` owns the exact discipline receipt and candidate-evidence fields.
+At ship intake, `bin/fm-brief.sh` or `bin/fm-promote.sh` passes typed task facts to that one discipline compiler: ordinary/local work selects `base`; a declared shared API, schema, persisted-state, authority, lifecycle, identity, provenance or sibling invariant selects `shared-boundary`; and an accepted runtime/product surface or repeated verification lever selects `proof-surface`.
+The compiler, not the caller, derives the selected level, selection generation and canonical fragment digest, then persists them under the existing engineering context.
+Unknown or contradictory facts, a proof surface without its accepted proof kind, and attempts to rewrite an existing task selection are refused.
+Fresh ship and promoted-scout instructions render the checked canonical ship fragment from that receipt, knowledge-only scouts receive only the evidence subset, and secondmate charters receive none.
+Use `bin/fm-work-context.sh discipline <id> ship implementation` to read the checked selection, `bin/fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>` to read the complete checked context before applicable work and after resume, and `discipline-evidence <id> <run> <exact-head>` to integrity-check candidate evidence without changing qualification or landing.
+Dispatch compares the generated prompt to the receipt before endpoint effects, and the stage owner binds the complete engineering context to its existing branch/head/tree identity across resume and retry.
+The shared `engineering-evidence.json` index binds discipline evidence to the current task, run, head, generation, selected level and fragment; its only outcomes are `OBSERVED` and `CNO`, both candidate evidence assessed by the existing validator rather than authority tokens.
+Ship briefs and promotion instructions also deliver all applicable source pointers; scout generation and dispatch select only worker diagnosis sources.
 Dispatch rejects stale selected sources or a stale generated context.
-The stage owner pins the engineering context and requires current-run behavioral artifacts before CI-ready; the worker carries reviewer obligations into the existing no-mistakes intent.
+The stage owner requires current-run behavioral artifacts before CI-ready; the worker carries reviewer obligations into the existing no-mistakes intent, and no worker proof can replace its canonical verdict.
 A native/tool read records source delivery; the existing review owner assesses the independent behavioral evidence.
-The existing parent-currentness receipt retains runtime and deployed-consumer obligations after source landing, including a consumer obligation for every applicable skill.
-Absent engineering declarations leave unrelated work unchanged; an installed skill, copied heading, successful source merge or self-report never establishes actual consumption.
+The existing parent-currentness receipt retains runtime and deployed-consumer obligations after source landing, including a consumer obligation for every applicable skill and explicit `ACTIVE=CNO` and fresh-production `CONSUMED=CNO` worker-discipline residuals for `runtime-pin-adoption-gap`.
+Absent engineering declarations leave legacy unrelated work unchanged; an installed skill, copied heading, successful source merge or self-report never establishes actual consumption.
 
 ## Work-context authority gate (config/work-context-ruling-verifier)
 

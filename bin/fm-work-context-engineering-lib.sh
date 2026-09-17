@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Engineering extension of fm-work-context-lib.sh; no independent task/authority
 # store. The optional work-context.json engineering object owns generation,
-# triggers[], skills[] and verification[]. No declaration means no new duty.
+# discipline, triggers[], skills[] and verification[]. The discipline field is
+# compiled and checked by fm-work-context-discipline-lib.sh; this owner includes
+# it in the context identity without duplicating its schema. No declaration
+# means no new duty.
 # Trigger mapping is closed and model-invoked: test-change -> tdd/worker/test,
 # diagnosis -> diagnosing-bugs/worker/diagnosis, instruction-change ->
 # writing-for-agents/worker/implementation, review -> code-review/reviewer/review.
@@ -11,9 +14,10 @@
 # verification[] rows bind id, skill, scope (component|composition|
 # provisioned-runtime|deployed-consumer), public_seam, inputs, environment, oracle,
 # allowed_effects, source_identity, caller_identity, command, negative, owner,
-# next_gate. All are nonempty strings. Component/composition evidence is owed at
-# CI-ready; runtime/consumer obligations survive landing in the existing
-# currentness receipt until their existing owner qualifies them.
+# next_gate. All are nonempty strings. Component/composition evidence and
+# selected-discipline candidate evidence are owed at CI-ready; runtime/consumer
+# obligations survive landing in the existing currentness receipt until their
+# existing owner qualifies them.
 # data/<id>/engineering-evidence.json is the evidence index, not a success token:
 # {task,generation,run,head,results:[{id,
 # load:{kind,path,sha256,source_sha256,role,stage},
@@ -25,6 +29,9 @@
 # and descriptor generation. The existing no-mistakes review still assesses the
 # behavioral evidence; integrity/read delivery never establishes good reasoning.
 # No recorded command is executed. No source/receipt is mutated by this library.
+
+# shellcheck source=bin/fm-work-context-discipline-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-work-context-discipline-lib.sh"
 
 FM_WC_ENGINEERING=
 FM_WC_ENGINEERING_DIGEST=
@@ -60,6 +67,9 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
     _fm_wc_engineering_gap "malformed-work-context: $desc"; return 3;
   }
   jq -e 'has("engineering")' "$desc" >/dev/null || return 0
+  if jq -e '.engineering.discipline != null' "$desc" >/dev/null 2>&1; then
+    fm_discipline_load "$data" "$id" ship implementation || return 3
+  fi
   case "$role:$stage" in
     all:all|worker:all|reviewer:all|worker:implementation|worker:test|worker:diagnosis|reviewer:review) ;;
     *) _fm_wc_engineering_gap "engineering-role-stage: $role/$stage"; return 3 ;;
@@ -140,6 +150,9 @@ $FM_WC_ENGINEERING_SKILLS
 ROWS
   printf 'The worker carries reviewer obligations into the existing no-mistakes intent; only its review owner performs that review.\n'
   printf 'Load/read, self-report, behavior, qualification and deployed consumption remain separate; these sources grant no routing, merge or phase authority.\n'
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    printf 'Candidate discipline evidence uses the existing engineering-evidence.json results[] row id=worker-discipline. Its discipline object binds task, role=ship, stage=implementation, generation, level, fragment_sha256, producer=worker-candidate, outcome=OBSERVED|CNO, the selected surface, command, oracle, absolute artifact path/SHA256 and safety_facts[]. Bind the index to the current task/run/head. OBSERVED and CNO remain candidate evidence, never qualification or landing authority.\n'
+  fi
   printf 'Required proof (JSON; scopes do not substitute for each other):\n'
   printf '%s' "$FM_WC_ENGINEERING" | jq -c --arg role "$role" --arg stage "$stage" '
     . as $e | .verification[] | . as $v | select(any($e.skills[];
@@ -150,6 +163,9 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
+  fi
   required=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c '.verification[] | select(.scope == "component" or .scope == "composition")')
   if ! printf '%s' "$FM_WC_ENGINEERING" | jq -e '
     . as $e | all(.triggers[]; . as $t |
@@ -205,15 +221,25 @@ fm_work_context_engineering_residuals() { # <descriptor>
     .engineering as $e | if $e == null then empty else
     ($e.verification[]? | select(.scope == "provisioned-runtime" or .scope == "deployed-consumer") |
       {id,scope,owner,next_gate,source_identity,caller_identity,status:"open"}),
+    ($e.discipline? | {id:"worker-discipline:active",scope:"provisioned-runtime",
+      owner:"runtime-pin-adoption-gap",next_gate:"qualified release deployment and read-back",
+      source_identity:.fragment_sha256,caller_identity:"pending",claim:"ACTIVE",evidence:"CNO",status:"open"}),
+    ($e.discipline? | {id:"worker-discipline:fresh-production-consumed",scope:"deployed-consumer",
+      owner:"runtime-pin-adoption-gap",next_gate:"fresh production worker receipt",
+      source_identity:.fragment_sha256,caller_identity:"pending",claim:"CONSUMED",evidence:"CNO",status:"open"}),
     ($e.skills[] | select(.trigger as $t | $e.triggers|index($t)) |
       {id:("skill:" + .id + ":consumer"),scope:"deployed-consumer",
        owner:"pocock-seven-skill-adoption",next_gate:"qualified actual consumer evidence",
        source_identity:.sha256,caller_identity:"pending",status:"open"}) end' "$1"
 }
 
-fm_work_context_engineering_brief() { # <data> <id>
-  local data=$1 id=$2 line expected brief
+fm_work_context_engineering_brief() { # <data> <id> <ship|scout|secondmate>
+  local data=$1 id=$2 kind=$3 line expected brief
   brief="$data/$id/brief.md"
+  if [ "$kind" != ship ] || jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1 \
+      || grep -Eq '^Discipline receipt:|^# Worker discipline$' "$brief" 2>/dev/null; then
+    fm_discipline_brief "$data" "$id" "$kind" "$brief" || return 3
+  fi
   line=$(grep -F 'engineering SHA256 ' "$brief" 2>/dev/null || true)
   [ -n "$FM_WC_ENGINEERING" ] || {
     [ -z "$line" ] || { _fm_wc_engineering_gap 'stale-engineering-brief: declaration removed'; return 3; }

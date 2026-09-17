@@ -177,3 +177,20 @@ OUT=$(CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$
 expect_code 0 "$STATUS" "scout dispatch uses the generated diagnosis subset: $OUT"
 assert_present "$HOME_DIR/state/$ID.meta" "scout did not dispatch with irrelevant missing TDD"
 pass "scout generation and dispatch agree on applicable skill sources"
+
+# A persisted selection and its rendered prompt are one dispatch identity. A
+# worker cannot receive locally edited stronger or weaker prose under the same
+# receipt, even when every source byte and authority prerequisite is otherwise
+# current.
+ID=wcgate-discipline-render-z8
+REC=$(make_case wcgate-discipline-render "$ID"); read_case "$REC"
+rm "$HOME_DIR/data/$ID/brief.md"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$ID" receiver --mode no-mistakes \
+  --discipline-fact identity >/dev/null || fail "discipline render fixture failed"
+sed -i.bak 's/Trace the path through that seam/Skip the path through that seam/' "$HOME_DIR/data/$ID/brief.md"
+OUT=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$ID" "$PROJ_DIR"); STATUS=$?
+expect_code 1 "$STATUS" "tampered rendered discipline must refuse actual dispatch"
+assert_contains "$OUT" 'discipline-brief' "render tampering refusal was not typed"
+assert_absent "$HOME_DIR/state/$ID.meta" "tampered discipline created a task record"
+[ ! -s "$LAUNCH_LOG" ] || fail "tampered discipline reached the harness"
+pass "discipline persistence and rendering are checked together at actual dispatch before endpoint effects"

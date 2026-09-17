@@ -7,9 +7,12 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Worker discipline is owned by bin/fm-work-context-discipline-lib.sh.
-# --shared-boundary and --proof-surface <text> add ship-only evidence requirements.
+# Ship intake accepts repeatable typed --discipline-fact values; --proof-kind
+# plus --proof-surface declares an accepted real surface or verification lever.
+# The compiler persists and renders the resulting base, shared-boundary or
+# proof-surface selection through the existing work-context descriptor.
 # Scouts receive its evidence subset; secondmate charters receive neither.
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -121,7 +124,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
-SHARED_BOUNDARY=0
+DISCIPLINE_FACTS=()
+PROOF_KIND=
 PROOF_SURFACE=
 POS=()
 want_value=
@@ -132,6 +136,8 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      discipline-fact) DISCIPLINE_FACTS+=(--fact "$a") ;;
+      proof-kind) PROOF_KIND=$a ;;
       proof-surface) PROOF_SURFACE=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -145,9 +151,13 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
-    --shared-boundary) SHARED_BOUNDARY=1 ;;
+    --discipline-fact) want_value="discipline-fact" ;;
+    --discipline-fact=*) DISCIPLINE_FACTS+=(--fact "${a#--discipline-fact=}") ;;
+    --proof-kind) want_value="proof-kind" ;;
+    --proof-kind=*) PROOF_KIND=${a#--proof-kind=} ;;
     --proof-surface) want_value="proof-surface" ;;
     --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     # yolo never reaches the worker: it is recorded posture, not authority or a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -175,8 +185,8 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
-if [ "$KIND" != ship ] && { [ "$SHARED_BOUNDARY" -eq 1 ] || [ -n "$PROOF_SURFACE" ]; }; then
-  echo "error: --shared-boundary and --proof-surface apply only to ship briefs" >&2
+if [ "$KIND" != ship ] && { [ "${#DISCIPLINE_FACTS[@]}" -gt 0 ] || [ -n "$PROOF_KIND" ] || [ -n "$PROOF_SURFACE" ]; }; then
+  echo "error: --discipline-fact, --proof-kind and --proof-surface apply only to ship briefs" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -353,6 +363,18 @@ For a reported malfunction or causal review, read \`$FM_ROOT/.agents/skills/diag
 EOF
 WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
 
+DISCIPLINE=
+if [ "$KIND" = ship ]; then
+  DISCIPLINE_ARGS=("${DISCIPLINE_FACTS[@]+"${DISCIPLINE_FACTS[@]}"}")
+  [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
+  [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+  fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+    echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+    exit 3
+  }
+  DISCIPLINE=$(fm_discipline_render "$DATA" "$ID" ship implementation) || exit 3
+fi
+
 ENGINEERING=
 if [ "$KIND" != secondmate ]; then
   ENGINEERING_ROLE=all
@@ -444,10 +466,6 @@ case "$MODE" in
     ;;
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
-DISCIPLINE_ARGS=()
-[ "$SHARED_BOUNDARY" -eq 0 ] || DISCIPLINE_ARGS+=(--shared-boundary)
-[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
-DISCIPLINE=$(fm_discipline_block ship "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}") || exit 1
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.

@@ -6,19 +6,45 @@
 # engineering contract as a briefed one (the same single-owner reason
 # bin/fm-dod-lib.sh exists). Worker engineering discipline lives here; the
 # delivery definition of done stays in bin/fm-dod-lib.sh, a different owner.
-# fm_discipline_block ship [--shared-boundary] [--proof-surface <text>] prints
-# the compact "# Worker discipline" section, followed by one narrowly scoped
-# fragment per flag, on stdout with no trailing newline (callers add their own
-# separator, so a brief and a promotion render byte-identical sections).
+# fm_discipline_block ship [--shared-boundary] [--proof-surface <text>] is the
+# private fragment renderer.
+# fm_discipline_prepare compiles accepted typed task facts into the optional
+# engineering.discipline object in the existing work-context descriptor.
+# fm_discipline_render reloads and checks that immutable receipt before printing
+# the compact "# Worker discipline" section and its selected fragments.
+# The receipt, engineering-context digest and ordinary stage identity together
+# bind task, role, stage, selection generation, branch/head/tree when those exist,
+# and the canonical fragment bytes without adding another registry.
 # fm_discipline_block scout prints the epistemic, read-only subset only
 # ("# Evidence discipline"): a scout gains no code-writing inner loop.
 # A secondmate charter renders nothing from here, and neither firstmate nor a
 # secondmate ever loads this text as an operating mode.
+#
+# PERSISTED CONTRACT. engineering.discipline is the one selection receipt:
+# {schema,task,role,stage,level,facts[],proof_kind,proof_surface,
+# fragment_sha256,generation}. Levels are base, shared-boundary and
+# proof-surface. Facts are local, shared-api, schema, persisted-state, authority,
+# lifecycle, identity, provenance or sibling-invariant. Proof kinds are
+# accepted-surface and verification-lever. The compiler derives level,
+# generation and fragment identity; callers cannot supply those conclusions.
+# The existing engineering-context hash and stage record bind the receipt to the
+# admitted branch/head/tree and retry. The existing engineering-evidence.json
+# index carries one worker-discipline result whose discipline object binds the
+# receipt plus producer=worker-candidate, outcome=OBSERVED|CNO, selected surface,
+# command, oracle, artifact path/SHA256 and safety_facts[]. OBSERVED is candidate
+# evidence, not PASS. CNO is never promoted. The independent no-mistakes result
+# still owns qualification, and the guarded landing owner still owns landing.
+# Runtime ACTIVE and fresh-production CONSUMED remain CNO residuals owned by
+# runtime-pin-adoption-gap after source landing.
+#
 # Every block grants no authority: it never lets a worker spawn or steer other
 # workers, choose a model or provider route, change fleet state, reinterpret the
 # delivery mode or acceptance, or merge. The Rules and Definition of done in the
 # brief own those boundaries; this text only shapes how the worker engineers
-# and proves the change inside them.
+# and proves the change inside them. Selection is D1 engineering judgment only:
+# it grants no sequencing, capacity, acceptance, qualification, retry, landing,
+# finalization, protected effect, privacy relaxation or reserved decision, and
+# concurrency remains separately owned.
 # The one machine-readable outcome token is `could-not-observe (CNO)`: an
 # unobservable fact is recorded as CNO, never as a pass and never as safe.
 # There is deliberately no second token for "not proven".
@@ -52,7 +78,7 @@ fm_discipline_block() {  # <ship|scout> [--shared-boundary] [--proof-surface <te
     fi
     case "$a" in
       --shared-boundary) shared=1 ;;
-      --proof-surface) want=proof-surface ;;
+      --proof-surface) want='proof-surface' ;;
       --proof-surface=*) surface=${a#--proof-surface=} ;;
       *) echo "error: fm_discipline_block: unknown argument '$a'" >&2; return 1 ;;
     esac
@@ -109,5 +135,280 @@ Passing tests alone do not satisfy it: drive the surface, record the observed re
 EOF
     printf '%s' "${block%$'\n'}"
   fi
+  return 0
+}
+
+FM_DISCIPLINE_RECEIPT=
+FM_DISCIPLINE_LEVEL=
+FM_DISCIPLINE_GENERATION=
+FM_DISCIPLINE_FRAGMENT_SHA256=
+FM_DISCIPLINE_PROOF_OUTCOME=
+
+fm_discipline_gap() {
+  # shellcheck disable=SC2034 # Typed result consumed by sourcing work-context callers.
+  FM_WORK_CONTEXT_DETAIL=$1
+  # shellcheck disable=SC2034 # Typed result consumed by sourcing work-context callers.
+  FM_WORK_CONTEXT_VERDICT=refuse
+  return 3
+}
+
+fm_discipline_sha() { # <readable-file>
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum < "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 < "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>]
+  local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' local_fact=0 shared=0
+  local facts='[]' fact level block fragment preimage selection generation
+  shift 3
+  command -v jq >/dev/null 2>&1 || { fm_discipline_gap 'discipline-capability: jq required'; return 3; }
+  for a in "$@"; do
+    if [ -n "$want" ]; then
+      case "$want" in
+        fact) fact=$a ;;
+        proof-kind) proof_kind=$a ;;
+        proof-surface) proof_surface=$a ;;
+      esac
+      want=
+      if [ "${fact:-}" != '' ]; then
+        case "$fact" in
+          local) local_fact=1 ;;
+          shared-api|schema|persisted-state|authority|lifecycle|identity|provenance|sibling-invariant) shared=1 ;;
+          *) fm_discipline_gap "unknown-discipline-fact: $fact"; return 3 ;;
+        esac
+        facts=$(printf '%s' "$facts" | jq -c --arg fact "$fact" '. + [$fact] | unique') || return 3
+        fact=
+      fi
+      continue
+    fi
+    case "$a" in
+      --fact) want=fact ;;
+      --proof-kind) want='proof-kind' ;;
+      --proof-surface) want='proof-surface' ;;
+      *) fm_discipline_gap "discipline-argument: unknown argument '$a'"; return 3 ;;
+    esac
+  done
+  [ -z "$want" ] || { fm_discipline_gap "discipline-argument: --$want requires a value"; return 3; }
+  [ "$role" = ship ] && [ "$stage" = implementation ] || {
+    fm_discipline_gap "discipline-applicability: $role/$stage"; return 3;
+  }
+  [ "$(printf '%s' "$facts" | jq 'length')" -gt 0 ] || {
+    facts='["local"]'; local_fact=1;
+  }
+  if [ "$local_fact" -eq 1 ] && [ "$shared" -eq 1 ]; then
+    fm_discipline_gap 'contradictory-discipline-facts: local cannot be combined with a shared seam fact'
+    return 3
+  fi
+  case "$proof_kind" in
+    '')
+      [ -z "$proof_surface" ] || { fm_discipline_gap 'proof-kind-required: --proof-surface needs accepted-surface or verification-lever'; return 3; }
+      ;;
+    accepted-surface|verification-lever)
+      [ -n "$proof_surface" ] || { fm_discipline_gap "proof-surface-required: $proof_kind needs a concrete surface"; return 3; }
+      ;;
+    *) fm_discipline_gap "unknown-proof-kind: $proof_kind"; return 3 ;;
+  esac
+  if ! jq -e -n --arg text "$proof_surface$task" '$text | test("[\u0000-\u001f\u007f]") | not' >/dev/null; then
+    fm_discipline_gap 'discipline-text: task and proof surface must be single-line text'
+    return 3
+  fi
+  if [ -n "$proof_kind" ]; then
+    level='proof-surface'
+  elif [ "$shared" -eq 1 ]; then
+    level='shared-boundary'
+  else
+    level=base
+  fi
+  local args=()
+  [ "$shared" -eq 0 ] || args+=(--shared-boundary)
+  [ -z "$proof_kind" ] || args+=(--proof-surface "$proof_surface")
+  block=$(fm_discipline_block ship "${args[@]+"${args[@]}"}") || return 3
+  fragment=$(printf '%s' "$block" | fm_discipline_sha /dev/stdin) || {
+    fm_discipline_gap 'discipline-capability: SHA256 unavailable'; return 3;
+  }
+  preimage=$(jq -cS -n --arg task "$task" --arg role "$role" --arg stage "$stage" \
+    --arg level "$level" --arg proof_kind "$proof_kind" --arg proof_surface "$proof_surface" \
+    --arg fragment "$fragment" --argjson facts "$facts" \
+    '{schema:"fm-worker-discipline.v1",task:$task,role:$role,stage:$stage,level:$level,
+      facts:$facts,proof_kind:$proof_kind,proof_surface:$proof_surface,fragment_sha256:$fragment}') || return 3
+  selection=$(printf '%s' "$preimage" | fm_discipline_sha /dev/stdin) || return 3
+  generation="d1-$selection"
+  FM_DISCIPLINE_RECEIPT=$(printf '%s' "$preimage" | jq -cS --arg generation "$generation" '. + {generation:$generation}') || return 3
+  FM_DISCIPLINE_LEVEL=$level
+  FM_DISCIPLINE_GENERATION=$generation
+  FM_DISCIPLINE_FRAGMENT_SHA256=$fragment
+  return 0
+}
+
+fm_discipline_load() { # <data> <task> <ship> <implementation>
+  local data=$1 task=$2 role=$3 stage=$4 desc receipt receipt_task receipt_role receipt_stage
+  local proof_kind proof_surface fact compiled args=()
+  FM_DISCIPLINE_RECEIPT=
+  FM_DISCIPLINE_LEVEL=
+  FM_DISCIPLINE_GENERATION=
+  FM_DISCIPLINE_FRAGMENT_SHA256=
+  desc="$data/$task/work-context.json"
+  [ -f "$desc" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
+  receipt=$(jq -cS '.engineering.discipline // empty' "$desc" 2>/dev/null) || {
+    fm_discipline_gap "discipline-context: malformed $desc"; return 3;
+  }
+  [ -n "$receipt" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
+  receipt_task=$(printf '%s' "$receipt" | jq -r '.task // empty')
+  receipt_role=$(printf '%s' "$receipt" | jq -r '.role // empty')
+  receipt_stage=$(printf '%s' "$receipt" | jq -r '.stage // empty')
+  [ "$receipt_task" = "$task" ] || { fm_discipline_gap "discipline-task: receipt=$receipt_task caller=$task"; return 3; }
+  [ "$receipt_role" = "$role" ] && [ "$receipt_stage" = "$stage" ] || {
+    fm_discipline_gap "discipline-applicability: receipt=$receipt_role/$receipt_stage caller=$role/$stage"; return 3;
+  }
+  while IFS= read -r fact; do
+    [ -n "$fact" ] && args+=(--fact "$fact")
+  done <<EOF
+$(printf '%s' "$receipt" | jq -r '.facts[]?')
+EOF
+  proof_kind=$(printf '%s' "$receipt" | jq -r '.proof_kind // empty')
+  proof_surface=$(printf '%s' "$receipt" | jq -r '.proof_surface // empty')
+  [ -z "$proof_kind" ] || args+=(--proof-kind "$proof_kind" --proof-surface "$proof_surface")
+  fm_discipline_compile "$task" "$role" "$stage" "${args[@]+"${args[@]}"}" || return 3
+  compiled=$FM_DISCIPLINE_RECEIPT
+  [ "$receipt" = "$compiled" ] || {
+    fm_discipline_gap 'discipline-identity: selection, generation or fragment identity changed or was tampered'
+    return 3
+  }
+  return 0
+}
+
+fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
+  local data=$1 task=$2 desc tmp current existing outer_generation
+  shift 2
+  fm_discipline_compile "$task" ship implementation "$@" || return 3
+  current=$FM_DISCIPLINE_RECEIPT
+  desc="$data/$task/work-context.json"
+  mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
+  if [ -e "$desc" ]; then
+    jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
+      fm_discipline_gap "discipline-context: malformed $desc"; return 3;
+    }
+    existing=$(jq -cS '.engineering.discipline // empty' "$desc") || return 3
+    if [ -n "$existing" ]; then
+      [ "$existing" = "$current" ] || {
+        fm_discipline_gap 'discipline-selection-immutable: an existing task selection cannot be rewritten'
+        return 3
+      }
+      return 0
+    fi
+  else
+    printf '{}\n' > "$desc"
+  fi
+  outer_generation=$(jq -r '.engineering.generation // empty' "$desc") || return 3
+  [ -n "$outer_generation" ] || outer_generation=$FM_DISCIPLINE_GENERATION
+  tmp="$data/$task/.work-context.json.${BASHPID:-$$}"
+  jq --argjson discipline "$current" --arg generation "$outer_generation" '
+    .engineering = ((.engineering // {triggers:[],skills:[],verification:[]}) +
+      {generation:$generation,discipline:$discipline}) |
+    .engineering.triggers = (.engineering.triggers // []) |
+    .engineering.skills = (.engineering.skills // []) |
+    .engineering.verification = (.engineering.verification // [])
+  ' "$desc" > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+  mv -f "$tmp" "$desc" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  return 0
+}
+
+fm_discipline_render() { # <data> <task> <ship> <implementation>
+  local data=$1 task=$2 role=$3 stage=$4 block first rest
+  fm_discipline_load "$data" "$task" "$role" "$stage" || return 3
+  local args=() shared
+  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. != "local")] | length')
+  [ "$shared" -eq 0 ] || args+=(--shared-boundary)
+  [ "$FM_DISCIPLINE_LEVEL" != proof-surface ] || args+=(--proof-surface "$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r .proof_surface)")
+  block=$(fm_discipline_block ship "${args[@]+"${args[@]}"}") || return 3
+  first=${block%%$'\n'*}
+  rest=${block#*$'\n'}
+  printf '%s\n' "$first"
+  printf 'Discipline receipt: task=%s role=%s stage=%s level=%s generation=%s fragment-sha256=%s. Candidate proof is validator evidence, never qualification or landing authority.\n' \
+    "$task" "$role" "$stage" "$FM_DISCIPLINE_LEVEL" "$FM_DISCIPLINE_GENERATION" "$FM_DISCIPLINE_FRAGMENT_SHA256"
+  printf '%s' "$rest"
+}
+
+fm_discipline_evidence() { # <data> <task> <run> <exact-head>
+  local data=$1 task=$2 run=$3 head=$4 index proof path expected actual shared
+  FM_DISCIPLINE_PROOF_OUTCOME=
+  fm_discipline_load "$data" "$task" ship implementation || return 3
+  index="$data/$task/engineering-evidence.json"
+  if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
+    ! jq -se --arg task "$task" --arg run "$run" --arg head "$head" '
+      length == 1 and (.[0] | .task == $task and .run == $run and .head == $head and
+      (.results|type == "array") and (.results|map(.id)|length == (unique|length)))
+    ' "$index" >/dev/null 2>&1; then
+    fm_discipline_gap "discipline-evidence-identity: $index requires current task/run/head"
+    return 3
+  fi
+  proof=$(jq -c '.results[] | select(.id == "worker-discipline")' "$index" 2>/dev/null) || return 3
+  [ -n "$proof" ] || { fm_discipline_gap 'discipline-evidence-missing: worker-discipline candidate evidence is required'; return 3; }
+  if ! printf '%s' "$proof" | jq -e --arg task "$task" --arg generation "$FM_DISCIPLINE_GENERATION" \
+      --arg level "$FM_DISCIPLINE_LEVEL" --arg fragment "$FM_DISCIPLINE_FRAGMENT_SHA256" \
+      --arg surface "$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r .proof_surface)" '
+    (keys|sort) == ["discipline","id"] and
+    (.discipline|type == "object") and
+    (.discipline|keys|sort) == ["command","fragment_sha256","generation","level","oracle","outcome","path","producer","role","safety_facts","sha256","stage","surface","task"] and
+    .discipline.task == $task and .discipline.role == "ship" and .discipline.stage == "implementation" and
+    .discipline.generation == $generation and .discipline.level == $level and
+    .discipline.fragment_sha256 == $fragment and .discipline.producer == "worker-candidate" and
+    (.discipline.outcome == "OBSERVED" or .discipline.outcome == "CNO") and
+    .discipline.surface == $surface and
+    ($level != "proof-surface" or .discipline.command == $surface) and
+    all([.discipline.command,.discipline.oracle,.discipline.path,.discipline.sha256][];
+      type == "string" and length > 0) and
+    (.discipline.path|startswith("/")) and
+    (.discipline.sha256|test("^[0-9a-f]{64}$")) and
+    (.discipline.safety_facts|type == "array") and
+    (.discipline.safety_facts|all(type == "string" and length > 0))
+  ' >/dev/null 2>&1; then
+    fm_discipline_gap 'discipline-evidence-invalid: candidate evidence identity, outcome or artifact binding does not match the selected discipline'
+    return 3
+  fi
+  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq '[.facts[] | select(. != "local")] | length')
+  if [ "$shared" -gt 0 ] && [ "$(printf '%s' "$proof" | jq '.discipline.safety_facts | length')" -eq 0 ]; then
+    fm_discipline_gap 'discipline-evidence-safety-facts: shared-boundary evidence requires at least one explicit safety fact'
+    return 3
+  fi
+  path=$(printf '%s' "$proof" | jq -r .discipline.path)
+  expected=$(printf '%s' "$proof" | jq -r .discipline.sha256)
+  [ -f "$path" ] && [ -r "$path" ] || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
+  actual=$(fm_discipline_sha "$path") || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
+  [ "$actual" = "$expected" ] || { fm_discipline_gap "discipline-evidence-stale: $path"; return 3; }
+  # shellcheck disable=SC2034 # Result consumed by work-context and stage callers.
+  FM_DISCIPLINE_PROOF_OUTCOME=$(printf '%s' "$proof" | jq -r .discipline.outcome)
+  return 0
+}
+
+fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
+  local data=$1 task=$2 kind=$3 brief=$4 expected actual count
+  case "$kind" in
+    secondmate) return 0 ;;
+    scout)
+      ! grep -Eq '^Discipline receipt:|^# Worker discipline$' "$brief" 2>/dev/null || {
+        fm_discipline_gap 'discipline-role: scout brief contains ship discipline'; return 3;
+      }
+      return 0 ;;
+    ship) ;;
+    *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
+  esac
+  expected=$(fm_discipline_render "$data" "$task" ship implementation) || return 3
+  count=$(grep -c '^Discipline receipt:' "$brief" 2>/dev/null || true)
+  [ "$count" -eq 1 ] || { fm_discipline_gap "discipline-brief: expected one receipt, found $count"; return 3; }
+  actual=$(awk '
+    /^# Worker discipline$/ { on=1 }
+    on && (/^# Engineering context$/ || /^# Firstmate instruction inbox$/) { exit }
+    on { print }
+  ' "$brief" 2>/dev/null) || { fm_discipline_gap "discipline-brief: unreadable $brief"; return 3; }
+  [ "$actual" = "$expected" ] || {
+    fm_discipline_gap 'discipline-brief: rendered selection does not match the canonical receipt'
+    return 3
+  }
   return 0
 }

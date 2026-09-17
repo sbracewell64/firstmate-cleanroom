@@ -743,13 +743,13 @@ test_worker_kernel_roles_and_promotion() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-promote.sh" kernel-scout --mode no-mistakes --yolo off 2>&1); rc=$?
   expect_code 0 "$rc" "promotion did not render: $out"
   promoted="$home/data/kernel-scout/ship-instructions.md"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" > "$home/ship-kernel"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" > "$home/promoted-kernel"
-  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" | grep -v '^Discipline receipt:' > "$home/ship-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" | grep -v '^Discipline receipt:' > "$home/promoted-kernel"
+  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different canonical kernel"
   [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "ship-only fragment accepted for scout"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --shared-boundary --proof-surface 'receiver CLI' >/dev/null \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --discipline-fact schema --proof-kind accepted-surface --proof-surface 'receiver CLI' >/dev/null \
     || fail "shared-boundary ship did not render"
   assert_grep '# Shared boundary' "$home/data/kernel-shared/brief.md" "explicit shared seam was lost"
   assert_grep 'receiver CLI' "$home/data/kernel-shared/brief.md" "explicit proof surface was lost"
@@ -778,7 +778,7 @@ EOF
   out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer test 2>&1); rc=$?
   expect_code 3 "$rc" "reviewer/test role conflict must refuse"
   mkdir -p "$home/data/engineering-scout"
-  cp "$desc" "$home/data/engineering-scout/work-context.json"
+  jq 'del(.engineering.discipline)' "$desc" > "$home/data/engineering-scout/work-context.json"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering-scout alpha --scout >/dev/null || fail "scout source fixture failed"
   if grep -q 'fixture-r1' "$home/data/engineering-scout/brief.md"; then
     fail "scout received the test-writing skill instead of its evidence subset"

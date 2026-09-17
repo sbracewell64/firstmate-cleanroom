@@ -735,6 +735,36 @@ snapshot_autoarm_surfaces() {
   done
 }
 
+make_timeout_fixture_path() {
+  local dir=$1 mechanism=$2 command source
+  mkdir -p "$dir"
+  for command in bash cat date dirname env mkdir mktemp od ps readlink rm sed sleep stat tr uname; do
+    source=$(command -v "$command") || continue
+    ln -s "$source" "$dir/$command"
+  done
+  case "$mechanism" in
+    timeout|gtimeout)
+      source=$(command -v "$mechanism") || return 2
+      cat > "$dir/$mechanism" <<SH
+#!/bin/bash
+printf '%s\\n' '$mechanism' >> "\${FM_TEST_TIMEOUT_MARKER:?}"
+exec '$source' "\$@"
+SH
+      chmod +x "$dir/$mechanism"
+      ;;
+    perl)
+      source=$(command -v perl) || return 2
+      cat > "$dir/perl" <<SH
+#!/bin/bash
+printf '%s\\n' perl >> "\${FM_TEST_TIMEOUT_MARKER:?}"
+exec '$source' "\$@"
+SH
+      chmod +x "$dir/perl"
+      ;;
+    *) return 0 ;;
+  esac
+}
+
 test_abandoned_owner_claim_defers_reconciliation() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/abandoned-claim")
@@ -1036,7 +1066,7 @@ test_legacy_owner_retirement_sends_one_term() {
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   unset FM_AUTOARM_RETIRE_POLLS
   unset FM_STOP_REDELIVER_POLLS
-  delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
+  delivered=$(grep -c . "$log" 2>/dev/null || true)
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 
@@ -1092,6 +1122,114 @@ test_bounded_retirement_preserves_surfaces_and_deadline() {
   [ "$delivered" -eq 1 ] || fail "bounded retirement delivered $delivered TERM signals"
   cmp -s "$before" "$after" || fail "bounded retirement changed lock or ledger surfaces"
   pass "auto-arm: bounded retirement preserves surfaces and deadline"
+}
+
+run_bounded_mechanism_case() {
+  local mechanism=$1 dir pid log ready recorded before after started elapsed status=0 delivered path
+  dir=$(make_primary_dir "$TMP_ROOT/bounded-mechanism-$mechanism")
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$ready" ] && break
+    sleep 0.01
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; fail "$mechanism target never became ready"; }
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "$mechanism target identity was unavailable"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  recorded=$(fm_test_pid_identity "$pid") || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "$mechanism target identity could not be read"
+  }
+  before="$dir/state/surfaces-before"
+  after="$dir/state/surfaces-after"
+  snapshot_autoarm_surfaces "$dir/state" "$before"
+  path="$dir/timeout-path"
+  if [ "$mechanism" = bash ]; then
+    path="$PATH"
+  else
+    make_timeout_fixture_path "$path" "$mechanism" || {
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      pass "auto-arm: CNO $mechanism timeout mechanism unavailable on this host"
+      return 0
+    }
+  fi
+  started=$(monotonic_ms)
+  FM_TIMEOUT_MECHANISM_OVERRIDE=$([ "$mechanism" = bash ] && printf bash || true) \
+    FM_TEST_TIMEOUT_MARKER="$dir/mechanism-used" FM_STATE_OVERRIDE="$dir/state" PATH="$path" \
+    bash -c '
+      . "$1"
+      fm_autoarm_confirm_stop_bounded "$2" "$3"
+    ' _ "$dir/bin/fm-wake-lib.sh" "$pid" "$recorded" || status=$?
+  elapsed=$(( $(monotonic_ms) - started ))
+  snapshot_autoarm_surfaces "$dir/state" "$after"
+  delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$status" -ne 0 ] || fail "$mechanism reported a stubborn target stopped"
+  [ "$elapsed" -le 1500 ] || fail "$mechanism exceeded the one-second owner: ${elapsed}ms"
+  [ "${delivered:-0}" -eq 1 ] || fail "$mechanism delivered ${delivered:-0} TERM signals"
+  cmp -s "$before" "$after" || fail "$mechanism changed lock or ledger surfaces"
+  if [ "$mechanism" != bash ]; then
+    [ "$(cat "$dir/mechanism-used" 2>/dev/null)" = "$mechanism" ] \
+      || fail "$mechanism was not selected by the timeout owner"
+  fi
+  pass "auto-arm: bounded retirement covers $mechanism timeout selection"
+}
+
+test_bounded_retirement_refuses_unproven_identity() {
+  local dir pid log ready before after status=0 dead_pid
+  dir=$(make_primary_dir "$TMP_ROOT/bounded-identity-refusal")
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$ready" ] && break
+    sleep 0.01
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; fail "identity refusal target never became ready"; }
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "identity refusal target identity was unavailable"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  before="$dir/state/surfaces-before"
+  after="$dir/state/surfaces-after"
+  snapshot_autoarm_surfaces "$dir/state" "$before"
+  FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_confirm_stop_bounded "$2" wrong-identity
+  ' _ "$dir/bin/fm-wake-lib.sh" "$pid" || status=$?
+  snapshot_autoarm_surfaces "$dir/state" "$after"
+  [ "$status" -ne 0 ] || fail "changed identity was treated as safe to signal"
+  [ ! -s "$log" ] || fail "changed identity received a TERM"
+  cmp -s "$before" "$after" || fail "changed identity changed durable surfaces"
+  sleep 0.1 &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  status=0
+  FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_confirm_stop_bounded "$2" unknown-identity
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dead_pid" || status=$?
+  [ "$status" -ne 0 ] || fail "unknown identity was treated as safe to signal"
+  delivered=$(grep -c . "$log" 2>/dev/null || true)
+  [ "${delivered:-0}" -eq 0 ] || fail "unknown identity received a TERM"
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pass "auto-arm: changed and unknown identities refuse retirement"
 }
 
 test_first_unverifiable_live_legacy_owner_retains_lock() {
@@ -1461,6 +1599,11 @@ test_stuck_live_legacy_owner_is_retired_and_deferred
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
 test_legacy_owner_retirement_sends_one_term
 test_bounded_retirement_preserves_surfaces_and_deadline
+test_bounded_retirement_refuses_unproven_identity
+run_bounded_mechanism_case bash
+run_bounded_mechanism_case timeout
+run_bounded_mechanism_case gtimeout
+run_bounded_mechanism_case perl
 test_first_unverifiable_live_legacy_owner_retains_lock
 test_missing_live_legacy_owner_identity_retains_lock
 test_dead_autoarm_owner_reclaims_without_identity_comparison

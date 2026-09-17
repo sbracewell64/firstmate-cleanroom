@@ -164,9 +164,34 @@ fm_programme_relay_diagnostic() {  # <diagnostic>
   [ -z "$1" ] || _fm_programme_prefix_diagnostic <<< "$1"
 }
 
+_fm_programme_present_locked() {
+  local state=$1 mode=$2 identity=$3 summary=$4 out=$5 dedupe=$6 verdict
+  if [ "$dedupe" -eq 1 ]; then
+    verdict=$(fm_programme_presentation_state "$state" "$identity")
+    case "$verdict" in
+      unchanged) return 0 ;;
+      pending-ack)
+        [ "$mode" = commit ] || return 0
+        _fm_programme_ack_pending_locked "$state"
+        return $?
+        ;;
+    esac
+  fi
+  printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
+  printf '%s\n' "$out" | fm_programme_render_non_actionable
+  if [ "$mode" = pending ]; then
+    printf 'PROGRAMME CONTINUATION: presented identity %s; it is acknowledged by the WAKE_ACK_REQUIRED command below, and state that changes before then surfaces again.\n' "${identity:0:12}"
+    _fm_programme_write_record "$(fm_programme_pending_path "$state")" "$identity" "$summary" || return 1
+  else
+    printf 'PROGRAMME CONTINUATION: presented identity %s (acknowledged with this presentation; nothing is pending).\n' "${identity:0:12}"
+    _fm_programme_write_record "$(fm_programme_presented_path "$state")" "$identity" "$summary" || return 1
+    rm -f -- "$(fm_programme_pending_path "$state")"
+  fi
+}
+
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1
+  local state=$1 mode=$2 resolver out rc=0 identity summary diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1 lock present_rc
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
   if fm_programme_resolver_capture "$resolver" render fm-programme-present; then
@@ -204,27 +229,12 @@ $diagnostic_reason"
       [ "$captured" -eq 1 ] || dedupe=0
       ;;
   esac
-  if [ "$dedupe" -eq 1 ]; then
-    verdict=$(fm_programme_presentation_state "$state" "$identity")
-    case "$verdict" in
-      unchanged) return 0 ;;
-      pending-ack)
-        [ "$mode" = commit ] || return 0
-        _fm_programme_ack_pending_locked "$state"
-        return $?
-        ;;
-    esac
-  fi
-  printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
-  printf '%s\n' "$out" | fm_programme_render_non_actionable
-  if [ "$mode" = pending ]; then
-    printf 'PROGRAMME CONTINUATION: presented identity %s; it is acknowledged by the WAKE_ACK_REQUIRED command below, and state that changes before then surfaces again.\n' "${identity:0:12}"
-    _fm_programme_write_record "$(fm_programme_pending_path "$state")" "$identity" "$summary" || return 1
-  else
-    printf 'PROGRAMME CONTINUATION: presented identity %s (acknowledged with this presentation; nothing is pending).\n' "${identity:0:12}"
-    _fm_programme_write_record "$(fm_programme_presented_path "$state")" "$identity" "$summary" || return 1
-    rm -f -- "$(fm_programme_pending_path "$state")"
-  fi
+  lock="$state/.status-presentation-lock"
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_programme_present_locked "$state" "$mode" "$identity" "$summary" "$out" "$dedupe"
+  present_rc=$?
+  fm_lock_release "$lock" || [ "$present_rc" -ne 0 ] || present_rc=1
+  return "$present_rc"
 }
 
 # Acknowledge exactly the identity the drain presented; never re-resolve here.

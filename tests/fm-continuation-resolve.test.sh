@@ -950,8 +950,9 @@ test_consumers_survive_a_noisy_resolver() {
     bash -c '
       # shellcheck disable=SC1090,SC1091
       . "$1"
-      fm_programme_present "$2" commit
-    ' _ "$mirror/fm-programme-presentation-lib.sh" "$home/state" 2>/dev/null) \
+      . "$2"
+      fm_programme_present "$3" commit
+    ' _ "$mirror/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state" 2>/dev/null) \
     || fail "the presenter failed under a noisy resolver"
   assert_contains "$out" "next action proof-b" "the presentation is corrupted by the resolver's stderr"
   assert_not_contains "$out" "resolver failed" "a healthy resolve was presented as a resolver failure"
@@ -993,11 +994,11 @@ SH
 
   home=$(make_home capture-present)
   first=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
-    bash -c '. "$1"; fm_programme_present "$2" commit 2>&1' _ \
-    "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state")
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state")
   second=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
-    bash -c '. "$1"; fm_programme_present "$2" commit 2>&1' _ \
-    "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state")
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state")
   assert_contains "$first" 'capture file could not be read' "presenter lost the shared capture failure diagnostic"
   assert_contains "$second" 'capture file could not be read' "presenter deduped a repeated capture failure"
 
@@ -1621,8 +1622,9 @@ present_pending() {  # <home>
   FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$1" FM_CONFIG_OVERRIDE="$1/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
     # shellcheck disable=SC1090,SC1091
     . "$1"
-    fm_programme_present "$2" pending
-  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$1/state"
+    . "$2"
+    fm_programme_present "$3" pending
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$1/state"
 }
 
 test_programme_ack_waits_for_presentation_lock() {
@@ -1658,6 +1660,34 @@ test_programme_ack_waits_for_presentation_lock() {
     || fail "ack promoted the wrong programme identity"
   [ ! -e "$home/state/.programme-presented.pending" ] || fail "ack left the pending programme record behind"
   pass "programme acknowledgement waits for presentation serialization"
+}
+
+test_programme_present_waits_for_presentation_lock() {
+  local home lock holder presenter
+  home=$(make_af_home present-lock)
+  mkdir -p "$home/tangle-root"
+  write_af_accepted_evidence "$home"
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  lock="$home/state/.status-presentation-lock"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$2.ready"
+    while [ ! -e "$2.release" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" &
+  holder=$!
+  while [ ! -e "$lock.ready" ]; do sleep 0.05; done
+  present_pending "$home" > "$home/presenter.out" 2>&1 &
+  presenter=$!
+  sleep 0.2
+  kill -0 "$presenter" 2>/dev/null || fail "presentation returned before acquiring the serialization lock"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "presentation mutated state before acquiring the serialization lock"
+  : > "$lock.release"
+  wait "$presenter" || fail "presentation failed after the serialization lock released"
+  wait "$holder" || fail "presentation lock holder failed"
+  [ -e "$home/state/.programme-presented.pending" ] || fail "presentation did not publish after the lock released"
+  pass "programme presentation serializes its state transaction"
 }
 
 test_af_presentation_quiet_and_ack_race() {
@@ -1787,6 +1817,7 @@ timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno
 timed test_programme_ack_waits_for_presentation_lock
+timed test_programme_present_waits_for_presentation_lock
 timed test_unreadable_inputs_are_cno
 timed test_completion_and_configuration
 timed test_render_and_check_prose

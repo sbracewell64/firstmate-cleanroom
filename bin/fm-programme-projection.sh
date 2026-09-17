@@ -123,6 +123,7 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -247,23 +248,24 @@ read_resolution() {
   local out diag='' diag_note='' diag_suffix='' reason='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX" 2>/dev/null) \
-    || RESOLVER_ERRFILE=
-  if [ -n "$RESOLVER_ERRFILE" ]; then
-    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
-    diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
+  if fm_programme_resolver_capture "$RESOLVER" resolve fm-programme-projection \
+      ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
+    out=''
+    rc=1
   fi
   reason=${diag:-$diag_note}
   [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"
   projection_cleanup
   case "$rc" in
-    0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;
-    3) [ -z "$diag" ] || printf '%s\n' "$diag" >&2; exit 3 ;;
+    0) fm_programme_relay_diagnostic "$diag" ;;
+    3) fm_programme_relay_diagnostic "$diag"; exit 3 ;;
     *)
-      [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+      fm_programme_relay_diagnostic "$diag"
       fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}"
       ;;
   esac

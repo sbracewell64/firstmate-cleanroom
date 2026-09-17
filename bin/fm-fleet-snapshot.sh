@@ -1469,19 +1469,20 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 programme_continuation_json() {
   local out rc=0 identity verdict errfile diag='' diag_note=''
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-fleet-snapshot-resolve.XXXXXX" 2>/dev/null) || errfile=
-  if [ -n "$errfile" ]; then
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>"$errfile") || rc=$?
-    diag=$(cat "$errfile" 2>/dev/null || true)
-    rm -f -- "$errfile"
+  if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" resolve fm-fleet-snapshot; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve) || rc=$?
+    out=''
+    rc=1
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful
   # resolve; bin/fm-programme-projection.sh states that policy in full,
   # including why exit 3 is the one deliberate exception.
-  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+  [ "$rc" = 3 ] || fm_programme_relay_diagnostic "$diag"
   case "$rc" in
     0)
       identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')

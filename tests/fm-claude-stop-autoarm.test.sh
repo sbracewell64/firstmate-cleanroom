@@ -1045,6 +1045,27 @@ test_first_unverifiable_live_legacy_owner_retains_lock() {
   pass "auto-arm: first unreadable live identity retains its lock"
 }
 
+test_missing_live_legacy_owner_identity_retains_lock() {
+  local dir status=0
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-missing-identity")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  : > "$dir/state/.claude-autoarm.lock/pid-identity"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_abandoned() { return 0; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { :; }
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() { printf "%s\\n" current-identity; }
+    fm_autoarm_release_abandoned "$2" 0
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "live owner with missing identity was reclaimed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "live owner with missing identity lost its lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "missing-identity reclaim left its mutex behind"
+  pass "auto-arm: missing live owner identity retains the lock"
+}
+
 test_dead_autoarm_owner_reclaims_without_identity_comparison() {
   local dir status=0
   dir=$(make_primary_dir "$TMP_ROOT/dead-autoarm-owner")
@@ -1323,6 +1344,7 @@ test_stuck_live_legacy_owner_is_retired_and_reclaimed
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
 test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence
 test_first_unverifiable_live_legacy_owner_retains_lock
+test_missing_live_legacy_owner_identity_retains_lock
 test_dead_autoarm_owner_reclaims_without_identity_comparison
 test_unverifiable_live_legacy_owner_retains_lock
 test_open_generation_claim_defers_without_any_lock

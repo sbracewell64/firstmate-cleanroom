@@ -701,19 +701,20 @@ escalate_add() {  # <state> <distilled-item>
 programme_digest_token() {  # [<state>]
   local out rc=0 state=${1:-} token presented pending errfile diag='' diag_note=''
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-supervise-daemon-resolve.XXXXXX" 2>/dev/null) || errfile=
-  if [ -n "$errfile" ]; then
-    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>"$errfile") || rc=$?
-    diag=$(cat "$errfile" 2>/dev/null || true)
-    rm -f -- "$errfile"
+  if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary) || rc=$?
+    out=''
+    rc=1
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful
   # resolve; bin/fm-programme-projection.sh states that policy in full,
   # including why exit 3 is the one deliberate exception.
-  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+  [ "$rc" = 3 ] || fm_programme_relay_diagnostic "$diag"
   case "$rc" in
     0)
       if [ -n "$state" ]; then

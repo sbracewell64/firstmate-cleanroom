@@ -125,6 +125,22 @@ _fm_programme_prefix_diagnostic() {
   done
 }
 
+fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]
+  local resolver=$1 operation=$2 prefix=$3 errfile out rc=0
+  shift 3
+  errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) || return 125
+  out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  FM_PROGRAMME_RESOLVER_OUT=$out
+  FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile" 2>/dev/null || true)
+  rm -f -- "$errfile"
+  FM_PROGRAMME_RESOLVER_RC=$rc
+  return 0
+}
+
+fm_programme_relay_diagnostic() {  # <diagnostic>
+  [ -z "$1" ] || _fm_programme_prefix_diagnostic <<< "$1"
+}
+
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
   local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 fallback_fifo relay_pid

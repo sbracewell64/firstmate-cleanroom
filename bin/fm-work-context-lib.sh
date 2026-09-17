@@ -321,17 +321,14 @@ fm_work_context_dispatch_authority_gate() {  # <state-dir> <data-dir> <id> [conf
   FM_WORK_CONTEXT_VERDICT=proceed
   case "$kind" in
     scout)
-      if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
+      fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
+      if printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e '.engineering.discipline != null' >/dev/null 2>&1; then
         fm_discipline_gap 'discipline-role: a knowledge-only scout cannot carry ship discipline'
         return "$FM_WORK_CONTEXT_REFUSE_EXIT"
       fi
-      fm_work_context_engineering "$data" "$id" worker diagnosis || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
       ;;
     secondmate) return "$FM_WORK_CONTEXT_PASS_EXIT" ;;
     *)
-      if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
-        fm_discipline_load "$data" "$id" ship implementation || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
-      fi
       fm_work_context_engineering "$data" "$id" all all || return "$FM_WORK_CONTEXT_REFUSE_EXIT"
       ;;
   esac

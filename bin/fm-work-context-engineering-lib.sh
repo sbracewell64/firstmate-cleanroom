@@ -66,6 +66,8 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
   FM_DISCIPLINE_DESCRIPTOR_JSON=
   FM_DISCIPLINE_DESCRIPTOR_DIGEST=
   FM_DISCIPLINE_DESCRIPTOR_PATH=
+  FM_DISCIPLINE_ARTIFACT_BYTES=
+  FM_DISCIPLINE_ARTIFACT_DIGEST=
   desc="$data/$id/work-context.json"
   if [ ! -e "$desc" ] && [ ! -L "$desc" ]; then
     return 0
@@ -251,6 +253,7 @@ ROWS
 fm_work_context_engineering_residuals() { # <descriptor>
   # Source completion never discharges runtime/deployed scope. Its existing
   # owner supplies later acceptance; this receipt preserves each obligation.
+  fm_discipline_descriptor_capture "$1" || return 3
   jq -c '
     .engineering as $e | if $e == null then empty else
     ($e.verification[]? | select(.scope == "provisioned-runtime" or .scope == "deployed-consumer") |
@@ -264,7 +267,8 @@ fm_work_context_engineering_residuals() { # <descriptor>
     ($e.skills[] | select(.trigger as $t | $e.triggers|index($t)) |
       {id:("skill:" + .id + ":consumer"),scope:"deployed-consumer",
        owner:"pocock-seven-skill-adoption",next_gate:"qualified actual consumer evidence",
-       source_identity:.sha256,caller_identity:"pending",status:"open"}) end' "$1"
+       source_identity:.sha256,caller_identity:"pending",status:"open"}) end' \
+    <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON")
 }
 
 fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
@@ -287,7 +291,7 @@ fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
       }
       brief="$instructions"
     fi
-    if jq -e '.engineering.discipline != null' "$data/$id/work-context.json" >/dev/null 2>&1; then
+    if printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e '.engineering.discipline != null' >/dev/null 2>&1; then
       if [ "$origin" = scout-to-ship ]; then
         mode=$(fm_meta_get "$state/$id.meta" mode)
         fm_discipline_envelope_validate "$data" "$id" "$brief" \
@@ -298,16 +302,25 @@ fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
     fi
   elif [ "$kind" = scout ] || [ "$kind" = secondmate ]; then
     if [ "$kind" = scout ]; then
-      [ -f "$brief" ] && [ ! -L "$brief" ] || {
+      fm_discipline_capture "$brief" || {
         _fm_wc_engineering_gap 'discipline-artifact: unsafe or missing scout brief'; return 3;
       }
-      [ "$(head -n 1 "$brief" 2>/dev/null)" = 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' ] || {
+      FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+      FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+      fm_discipline_capture_cleanup
+      [ "$(printf '%s' "$FM_DISCIPLINE_ARTIFACT_BYTES" | head -n 1)" = 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' ] || {
         _fm_wc_engineering_gap 'discipline-role: scout brief has an unexpected generated prefix'; return 3;
       }
     fi
     fm_discipline_brief "$data" "$id" "$kind" "$brief" || return 3
   fi
-  line=$(grep -F 'engineering SHA256 ' "$brief" 2>/dev/null || true)
+  if [ -z "$FM_DISCIPLINE_ARTIFACT_DIGEST" ]; then
+    fm_discipline_capture "$brief" || { _fm_wc_engineering_gap "discipline-artifact: unsafe or unreadable $brief"; return 3; }
+    FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    fm_discipline_capture_cleanup
+  fi
+  line=$(printf '%s' "$FM_DISCIPLINE_ARTIFACT_BYTES" | grep -F 'engineering SHA256 ' 2>/dev/null || true)
   [ -n "$FM_WC_ENGINEERING" ] || {
     [ -z "$line" ] || { _fm_wc_engineering_gap 'stale-engineering-brief: declaration removed'; return 3; }
     return 0

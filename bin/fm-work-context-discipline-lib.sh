@@ -156,6 +156,8 @@ FM_DISCIPLINE_DESCRIPTOR_JSON=
 FM_DISCIPLINE_DESCRIPTOR_DIGEST=
 FM_DISCIPLINE_DESCRIPTOR_PATH=
 FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+FM_DISCIPLINE_ARTIFACT_BYTES=
+FM_DISCIPLINE_ARTIFACT_DIGEST=
 
 fm_discipline_descriptor_capture() { # <path>
   local path=$1
@@ -513,7 +515,7 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     .engineering.triggers = (.engineering.triggers // []) |
     .engineering.skills = (.engineering.skills // []) |
     .engineering.verification = (.engineering.verification // [])
-    ' "$desc" > "$tmp" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+    ' <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON") > "$tmp" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
   else
     printf '%s\n' '{}' | jq --argjson discipline "$current" --arg generation "$outer_generation" '
       {engineering:{triggers:[],skills:[],verification:[],generation:$generation,discipline:$discipline}}
@@ -654,6 +656,8 @@ fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix
     return 3
   }
   captured_artifact=$FM_DISCIPLINE_CAPTURE_PATH
+  FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$captured_artifact")
+  FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
   head -c "$bytes" "$captured_artifact" > "$actual_file" 2>/dev/null || true
   if ! cmp -s "$combined_file" "$actual_file"; then
     fm_discipline_capture_cleanup

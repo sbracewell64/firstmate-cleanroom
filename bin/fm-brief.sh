@@ -394,7 +394,6 @@ if [ "$KIND" = ship ]; then
     echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
     exit 3
   }
-  DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
 fi
 
 ENGINEERING=
@@ -402,10 +401,18 @@ if [ "$KIND" != secondmate ]; then
   ENGINEERING_ROLE=all
   ENGINEERING_STAGE=all
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
-  ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
-    echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
-    exit 3
-  }
+  if [ "$KIND" = ship ]; then
+    ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+      echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
+      exit 3
+    }
+    DISCIPLINE=
+  else
+    ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+      echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
+      exit 3
+    }
+  fi
 fi
 
 [ -d "$DATA/$ID" ] || mkdir -p "$DATA/$ID" || {

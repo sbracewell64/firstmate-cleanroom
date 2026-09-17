@@ -36,6 +36,7 @@
 FM_WC_ENGINEERING=
 FM_WC_ENGINEERING_DIGEST=
 FM_WC_ENGINEERING_SKILLS=
+FM_WC_ENGINEERING_REUSE=0
 FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
 FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
 FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
@@ -150,7 +151,9 @@ ROWS
 
 fm_work_context_engineering_render() { # <data> <id> <worker|reviewer|all> <stage|all>
   local data=$1 id=$2 role=$3 stage=$4 row skill_role skill_stage
-  fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  if [ "$FM_WC_ENGINEERING_REUSE" -ne 1 ]; then
+    fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  fi
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   printf '# Engineering context\n'
   printf 'Task %s; generation %s; engineering SHA256 %s.\n' "$id" \
@@ -189,7 +192,11 @@ fm_work_context_engineering_prompt() { # <data> <id> <role> <stage>
     [ "$discipline_rc" -eq 0 ] || return 3
     printf '\n\n'
   fi
+  FM_WC_ENGINEERING_REUSE=1
   fm_work_context_engineering_render "$data" "$id" "$role" "$stage"
+  discipline_rc=$?
+  FM_WC_ENGINEERING_REUSE=0
+  return "$discipline_rc"
 }
 
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>

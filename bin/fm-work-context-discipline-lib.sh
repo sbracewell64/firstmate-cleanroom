@@ -580,7 +580,12 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-write: descriptor appeared during preparation'; return 3;
   fi
-  mv -f "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  if [ "$desc_exists" -eq 1 ]; then
+    mv -f "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  else
+    ln "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish raced or failed'; return 3; }
+  fi
+  rm -f "$tmp"
   fm_discipline_capture "$desc" || {
     rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-write: published descriptor verification failed'; return 3;

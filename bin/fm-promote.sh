@@ -272,11 +272,11 @@ fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}
   echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
   exit 3
 }
-DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
-ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" all all) || {
+ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" all all) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
 }
+DISCIPLINE=
 TMP=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
 [ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe ship instructions staging file" >&2; exit 1; }
 {

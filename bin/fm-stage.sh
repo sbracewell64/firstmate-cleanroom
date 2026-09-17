@@ -703,7 +703,7 @@ crew_state() {
 # may accept a changed context, after custody returns to the worker.
 engineering_context() { # <transition>
   local transition=$1 pin recorded_head recorded_tree actual_tree recorded_branch actual_branch observed_head
-  local recorded_discipline current_discipline
+  local recorded_discipline current_discipline output successor=0
   fm_work_context_engineering "$DATA" "$ID" all all || refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   pin=$(meta stage_context)
   if [ -n "$pin" ] && [ "$pin" != "$FM_WC_ENGINEERING_DIGEST" ]; then
@@ -728,12 +728,21 @@ engineering_context() { # <transition>
     if [ -z "$recorded_head" ] || [ -z "$recorded_tree" ] || [ -z "$recorded_branch" ]; then
       refuse "$transition" DISCIPLINE_IDENTITY 'admitted discipline requires branch/head/tree in the stage receipt'
     fi
-    actual_tree=$(git -C "$WT" rev-parse "${recorded_head}^{tree}" 2>/dev/null || true)
-    [ -n "$actual_tree" ] && [ "$actual_tree" = "$recorded_tree" ] || \
-      refuse "$transition" DISCIPLINE_IDENTITY 'recorded discipline candidate head/tree no longer agree'
     actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-    [ -z "$actual_branch" ] || [ "$actual_branch" = "$recorded_branch" ] || \
+    [ "$actual_branch" = "$recorded_branch" ] || \
       refuse "$transition" DISCIPLINE_IDENTITY "recorded branch $recorded_branch does not match current branch $actual_branch"
+    actual_tree=$(git -C "$WT" rev-parse 'HEAD^{tree}' 2>/dev/null || true)
+    observed_head=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
+    if [ "$observed_head" != "$recorded_head" ] || [ "$actual_tree" != "$recorded_tree" ]; then
+      if [ -n "$(meta stage_run)" ] && [ "$(meta stage_run)" = "$(obs run_id)" ]; then
+        output=$(bound_run_status 2>/dev/null || true)
+        if [ -n "$output" ] && completed_successor_current "$output" "$observed_head"; then
+          successor=1
+        fi
+      fi
+      [ "$successor" -eq 1 ] || \
+        refuse "$transition" DISCIPLINE_IDENTITY 'live task worktree must remain at the admitted candidate or a verified custody-returned successor'
+    fi
     observed_head=$(obs candidate_head)
     [ -z "$observed_head" ] || [ "$observed_head" = "$recorded_head" ] || \
       refuse "$transition" DISCIPLINE_IDENTITY 'observer candidate does not match the admitted discipline candidate'

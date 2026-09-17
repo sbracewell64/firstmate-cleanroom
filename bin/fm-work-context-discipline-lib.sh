@@ -127,12 +127,17 @@ EOF
     printf '%s' "${block%$'\n'}"
   fi
   if [ -n "$surface" ]; then
-    IFS= read -r -d '' block <<EOF || true
+    IFS= read -r -d '' block <<'EOF' || true
 
 # Proof surface
-Completion requires exercising this real surface: $surface
+Completion requires exercising this real surface:
+EOF
+    block="${block}"$'\n'
+    block="${block}${surface}"$'\n'
+    IFS= read -r -d '' tail <<'EOF' || true
 Passing tests alone do not satisfy it: drive the surface, record the observed result with your evidence, and if it cannot be reached record CNO rather than a pass.
 EOF
+    block="${block}${tail%$'\n'}"
     printf '%s' "${block%$'\n'}"
   fi
   return 0
@@ -267,9 +272,7 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
   }
   while IFS= read -r fact; do
     [ -n "$fact" ] && args+=(--fact "$fact")
-  done <<EOF
-$(printf '%s' "$receipt" | jq -r '.facts[]?')
-EOF
+  done < <(printf '%s' "$receipt" | jq -r '.facts[]?')
   proof_kind=$(printf '%s' "$receipt" | jq -r '.proof_kind // empty')
   proof_surface=$(printf '%s' "$receipt" | jq -r '.proof_surface // empty')
   [ -z "$proof_kind" ] || args+=(--proof-kind "$proof_kind" --proof-surface "$proof_surface")
@@ -319,7 +322,7 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
 }
 
 fm_discipline_render() { # <data> <task> <ship> <implementation>
-  local data=$1 task=$2 role=$3 stage=$4 block first rest
+  local data=$1 task=$2 role=$3 stage=$4 block first rest tail
   fm_discipline_load "$data" "$task" "$role" "$stage" || return 3
   local args=() shared
   shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. != "local")] | length')

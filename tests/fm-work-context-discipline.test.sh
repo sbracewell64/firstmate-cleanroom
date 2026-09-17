@@ -51,7 +51,7 @@ extract_engineering() { # <brief> <output>
 }
 
 test_compiler_selects_three_levels() {
-  local home desc out rc
+  local home desc out rc marker surface
   home="$TMP_ROOT/levels"
   make_home "$home"
 
@@ -76,6 +76,15 @@ test_compiler_selects_three_levels() {
   [ "$(level "$desc")" = proof-surface ] || fail "accepted surface did not select proof-surface"
   assert_grep '# Proof surface' "$home/data/proof/brief.md" "proof fragment was not rendered"
   assert_grep 'bin/example --status' "$home/data/proof/brief.md" "proof surface was not preserved"
+
+  marker="$home/proof-surface-side-effect"
+  surface='$(touch '
+  surface="${surface}${marker}) \`uname\` \${PATH} \"quoted\" \\\\"
+  FM_HOME="$home" "$BRIEF" literal repo --mode local-only --discipline-fact local \
+    --proof-kind accepted-surface --proof-surface "$surface" >/dev/null \
+    || fail "literal proof surface did not compile"
+  [ ! -e "$marker" ] || fail "proof surface executed command substitution"
+  assert_grep "$surface" "$home/data/literal/brief.md" "proof surface bytes were not preserved literally"
   pass "discipline compiler: accepted typed facts independently select base, shared-boundary and proof-surface"
 
   out=$(FM_HOME="$home" "$BRIEF" legacy repo --mode local-only --shared-boundary 2>&1); rc=$?

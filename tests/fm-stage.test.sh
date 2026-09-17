@@ -760,6 +760,17 @@ branch_sync:
   assert_contains "$out" 'DISCIPLINE_IDENTITY' "wrong tree refusal was not typed"
   mv "$STATE/discipline-stage.meta.valid" "$STATE/discipline-stage.meta"
 
+  git -C "$wt" commit -q --allow-empty -m 'unverified same-branch successor'
+  out=$($STAGE discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "same-branch descendant must refuse resume"
+  assert_contains "$out" 'DISCIPLINE_IDENTITY' "same-branch descendant refusal was not typed"
+  git -C "$wt" reset -q --hard "$head"
+  git -C "$wt" checkout -q --detach "$head"
+  out=$($STAGE discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "detached task worktree must refuse resume"
+  assert_contains "$out" 'DISCIPLINE_IDENTITY' "detached worktree refusal was not typed"
+  git -C "$wt" checkout -q fm/discipline-stage
+
   jq '.engineering.discipline.generation="changed"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
   out=$("$STAGE" discipline-stage show 2>&1); rc=$?
   expect_code 1 "$rc" "changed discipline identity must refuse resume"

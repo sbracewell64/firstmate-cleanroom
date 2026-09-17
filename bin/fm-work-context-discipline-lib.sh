@@ -178,11 +178,12 @@ fm_discipline_generation_json_valid() {
 fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>] [--outer-generation <generation>]
   local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' outer_generation='' local_fact=0 shared=0
   local runtime_surface=0 product_surface=0 repeated_verification=0
-  local facts='[]' fact level block fragment preimage selection generation
+  local facts='[]' fact level block fragment preimage selection generation arg_kind
   shift 3
   command -v jq >/dev/null 2>&1 || { fm_discipline_gap 'discipline-capability: jq required'; return 3; }
   for a in "$@"; do
     if [ -n "$want" ]; then
+      arg_kind=$want
       case "$want" in
         fact) fact=$a ;;
         proof-kind) proof_kind=$a ;;
@@ -190,6 +191,9 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
         outer-generation) outer_generation=$a ;;
       esac
       want=
+      if [ "$arg_kind" = fact ] && [ -z "${fact:-}" ]; then
+        fm_discipline_gap 'empty-discipline-fact: --fact requires a non-empty typed value'; return 3;
+      fi
       if [ "${fact:-}" != '' ]; then
         case "$fact" in
           local) local_fact=1 ;;

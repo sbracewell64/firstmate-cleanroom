@@ -63,6 +63,13 @@ test_compiler_selects_three_levels() {
   assert_grep 'level=base' "$home/data/base/brief.md" "base receipt was not rendered"
   assert_no_grep '# Shared boundary' "$home/data/base/brief.md" "base rendered shared-boundary"
   assert_no_grep '# Proof surface' "$home/data/base/brief.md" "base rendered proof-surface"
+  out=$(FM_HOME="$home" "$BRIEF" empty-only repo --mode local-only --discipline-fact '' 2>&1); rc=$?
+  expect_code 3 "$rc" "an explicitly empty discipline fact must refuse"
+  assert_contains "$out" 'empty-discipline-fact' "empty fact refusal was not typed"
+  out=$(FM_HOME="$home" "$BRIEF" empty-plus-valid repo --mode local-only --discipline-fact '' \
+    --discipline-fact local 2>&1); rc=$?
+  expect_code 3 "$rc" "an empty fact beside a valid fact must refuse"
+  assert_contains "$out" 'empty-discipline-fact' "mixed empty fact refusal was not typed"
 
   FM_HOME="$home" "$BRIEF" shared repo --mode local-only --discipline-fact schema >/dev/null \
     || fail "shared discipline did not compile"

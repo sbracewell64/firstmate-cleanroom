@@ -122,13 +122,14 @@
 # `summary` prints the one-line token a digest can embed.
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INVOKED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
-RESOLVER="$SCRIPT_DIR/fm-continuation-resolve.sh"
+RESOLVER="$INVOKED_DIR/fm-continuation-resolve.sh"
 
 PROJECTION_SCHEMA='fm-programme-projection/v1'
 # The measured concurrency ladder and its hard maximum. This script reports a

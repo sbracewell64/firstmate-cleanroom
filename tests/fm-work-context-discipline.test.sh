@@ -81,6 +81,15 @@ test_compiler_selects_three_levels() {
     --proof-surface one --proof-surface=two 2>&1); rc=$?
   expect_code 1 "$rc" "duplicate proof surfaces must refuse before compilation"
   assert_contains "$out" 'duplicate --proof-surface' "duplicate proof-surface refusal was not typed"
+  out=$(FM_ROOT="$ROOT" bash -c '. "$1/bin/fm-work-context-discipline-lib.sh"; fm_discipline_compile task ship implementation --proof-kind ""; rc=$?; printf "%s" "$FM_WORK_CONTEXT_DETAIL"; exit "$rc"' _ "$ROOT" 2>&1); rc=$?
+  expect_code 3 "$rc" "the canonical compiler must reject an empty proof kind"
+  assert_contains "$out" 'empty-discipline-proof-kind' "compiler empty proof-kind refusal was not typed"
+  out=$(FM_ROOT="$ROOT" bash -c '. "$1/bin/fm-work-context-discipline-lib.sh"; fm_discipline_compile task ship implementation --proof-surface ""; rc=$?; printf "%s" "$FM_WORK_CONTEXT_DETAIL"; exit "$rc"' _ "$ROOT" 2>&1); rc=$?
+  expect_code 3 "$rc" "the canonical compiler must reject an empty proof surface"
+  assert_contains "$out" 'empty-discipline-proof-surface' "compiler empty proof-surface refusal was not typed"
+  out=$(FM_ROOT="$ROOT" bash -c '. "$1/bin/fm-work-context-discipline-lib.sh"; fm_discipline_compile task ship implementation --outer-generation ""; rc=$?; printf "%s" "$FM_WORK_CONTEXT_DETAIL"; exit "$rc"' _ "$ROOT" 2>&1); rc=$?
+  expect_code 3 "$rc" "the canonical compiler must reject an empty generation"
+  assert_contains "$out" 'empty-discipline-generation' "compiler empty generation refusal was not typed"
 
   FM_HOME="$home" "$BRIEF" shared repo --mode local-only --discipline-fact schema >/dev/null \
     || fail "shared discipline did not compile"

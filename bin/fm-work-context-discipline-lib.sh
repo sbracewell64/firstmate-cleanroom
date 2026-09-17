@@ -207,6 +207,15 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
       if [ "$arg_kind" = fact ] && [ -z "${fact:-}" ]; then
         fm_discipline_gap 'empty-discipline-fact: --fact requires a non-empty typed value'; return 3;
       fi
+      if [ "$arg_kind" = proof-kind ] && [ -z "$proof_kind" ]; then
+        fm_discipline_gap 'empty-discipline-proof-kind: --proof-kind requires a non-empty value'; return 3;
+      fi
+      if [ "$arg_kind" = proof-surface ] && [ -z "$proof_surface" ]; then
+        fm_discipline_gap 'empty-discipline-proof-surface: --proof-surface requires a non-empty value'; return 3;
+      fi
+      if [ "$arg_kind" = outer-generation ] && [ -z "$outer_generation" ]; then
+        fm_discipline_gap 'empty-discipline-generation: --outer-generation requires a non-empty value'; return 3;
+      fi
       if [ "${fact:-}" != '' ]; then
         case "$fact" in
           local) local_fact=1 ;;
@@ -473,30 +482,51 @@ fm_discipline_envelope_render() { # <data> <task>
 }
 
 fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix>
-  local data=$1 task=$2 artifact=$3 successor=$4 bytes
+  local data=$1 task=$2 artifact=$3 successor=$4 bytes tmp_dir
   local expected_file actual_file combined_file
   [ -f "$artifact" ] && [ ! -L "$artifact" ] && [ -r "$artifact" ] || {
     fm_discipline_gap "discipline-artifact: unsafe or missing $artifact"; return 3;
   }
-  expected_file="$artifact.discipline.expected.$$"
-  actual_file="$artifact.discipline.actual.$$"
-  combined_file="$artifact.discipline.combined.$$"
+  tmp_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-discipline-envelope.XXXXXX") || {
+    fm_discipline_gap 'discipline-artifact: temporary directory creation failed'; return 3;
+  }
+  chmod 700 "$tmp_dir" 2>/dev/null || {
+    rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-artifact: temporary directory permission failed'; return 3;
+  }
+  [ -d "$tmp_dir" ] && [ ! -L "$tmp_dir" ] || {
+    rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-artifact: unsafe temporary directory'; return 3;
+  }
+  expected_file=$(umask 077; mktemp "$tmp_dir/expected.XXXXXX") || { rmdir "$tmp_dir"; return 3; }
+  actual_file=$(umask 077; mktemp "$tmp_dir/actual.XXXXXX") || { rm -f "$expected_file"; rmdir "$tmp_dir"; return 3; }
+  combined_file=$(umask 077; mktemp "$tmp_dir/combined.XXXXXX") || { rm -f "$expected_file" "$actual_file"; rmdir "$tmp_dir"; return 3; }
+  [ -f "$expected_file" ] && [ ! -L "$expected_file" ] &&
+    [ -f "$actual_file" ] && [ ! -L "$actual_file" ] &&
+    [ -f "$combined_file" ] && [ ! -L "$combined_file" ] || {
+      rm -f "$expected_file" "$actual_file" "$combined_file"
+      rmdir "$tmp_dir" 2>/dev/null || true
+      fm_discipline_gap 'discipline-artifact: unsafe temporary comparison file'
+      return 3
+    }
   fm_discipline_envelope_render "$data" "$task" > "$expected_file" || {
-    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
+    rm -f "$expected_file" "$actual_file" "$combined_file"; rmdir "$tmp_dir" 2>/dev/null || true; return 3;
   }
   { cat "$expected_file"; printf '%s\n' "$successor"; } > "$combined_file" || {
-    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
+    rm -f "$expected_file" "$actual_file" "$combined_file"; rmdir "$tmp_dir" 2>/dev/null || true; return 3;
   }
   bytes=$(wc -c < "$combined_file") || {
-    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null; return 3;
+    rm -f "$expected_file" "$actual_file" "$combined_file"; rmdir "$tmp_dir" 2>/dev/null || true; return 3;
   }
   head -c "$bytes" "$artifact" > "$actual_file" 2>/dev/null || true
   if ! cmp -s "$expected_file" "$actual_file"; then
-    rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null
+    rm -f "$expected_file" "$actual_file" "$combined_file"
+    rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-artifact: fixed envelope slot or successor prefix changed'
     return 3
   fi
-  rm -f "$expected_file" "$actual_file" "$combined_file" 2>/dev/null
+  rm -f "$expected_file" "$actual_file" "$combined_file"
+  rmdir "$tmp_dir" 2>/dev/null || true
   return 0
 }
 

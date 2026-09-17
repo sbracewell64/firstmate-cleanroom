@@ -81,7 +81,7 @@ FM_CONTINUATION_BINDING_KEY='Continuation-binding:'
 FM_CONTINUATION_EVIDENCE_KINDS='latest_attempt_disposition_outcome_in accepted_owner_evidence'
 # shellcheck disable=SC2034  # consumed by fm-continuation-resolve.sh's evidence adapter
 FM_CONTINUATION_EVIDENCE_SCHEMA='fm-accepted-owner-evidence/v1'
-FM_CONTINUATION_OWNER_KINDS='control_ruling control_report pull_request_merge'
+FM_CONTINUATION_OWNER_KINDS='control_ruling control_report pull_request_merge local_project_delivery'
 
 # Phrases that assert a captain gate. Matched case-insensitively against
 # captain-facing prose by check-prose; a match is refused unless the typed
@@ -120,11 +120,18 @@ fm_continuation_is_owner_kind() {  # <owner.kind>
 #   pull_request_merge  a forge pull-request record; MERGED_QUALIFIED requires
 #                       the record to bind its qualification evidence, else the
 #                       resolver refuses it as malformed
+#   local_project_delivery
+#                       the existing local project owner delivered one exact
+#                       committed unit to its private/local destination and the
+#                       resolver independently reproduced its bound checker and
+#                       read-back receipt; no private candidate bytes appear in
+#                       the programme record
 fm_continuation_owner_outcomes() {  # <owner.kind>
   case "$1" in
     control_ruling) printf 'PROCEED_WITH_CONDITIONS ADOPT_OPTION REFUSED OUT_OF_SCOPE_CAPTAIN_RESERVED NO_ANSWER' ;;
     control_report) printf 'REPORTED REPORTED_SELF_TESTED' ;;
     pull_request_merge) printf 'OPEN CLOSED_UNMERGED MERGED MERGED_QUALIFIED' ;;
+    local_project_delivery) printf 'DELIVERED_UNQUALIFIED DELIVERED_QUALIFIED DELIVERY_FAILED' ;;
     *) return 1 ;;
   esac
 }

@@ -142,6 +142,8 @@ DESC_SNAPSHOT=
 DESC_EXISTED=0
 INSTRUCTIONS_SNAPSHOT=
 INSTRUCTIONS_EXISTED=0
+META_SNAPSHOT=
+META_EXISTED=0
 promote_cleanup() {
   local status=$?
   if [ "$status" -ne 0 ]; then
@@ -160,10 +162,19 @@ promote_cleanup() {
         rm -f -- "$INSTRUCTIONS" 2>/dev/null || true
       fi
     fi
+    if [ -n "$META_SNAPSHOT" ]; then
+      if [ "$META_EXISTED" -eq 1 ]; then
+        rm -f -- "$META" 2>/dev/null || true
+        cp -p -- "$META_SNAPSHOT" "$META" 2>/dev/null || true
+      else
+        rm -f -- "$META" 2>/dev/null || true
+      fi
+    fi
   fi
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
   [ -z "$DESC_SNAPSHOT" ] || rm -f -- "$DESC_SNAPSHOT" 2>/dev/null || true
   [ -z "$INSTRUCTIONS_SNAPSHOT" ] || rm -f -- "$INSTRUCTIONS_SNAPSHOT" 2>/dev/null || true
+  [ -z "$META_SNAPSHOT" ] || rm -f -- "$META_SNAPSHOT" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -191,6 +202,9 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   exit 1
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+META_EXISTED=1
+META_SNAPSHOT=$(mktemp "$STATE/.${ID}.meta.promote.XXXXXX") || { echo "error: could not stage task metadata" >&2; exit 1; }
+cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task metadata" >&2; exit 1; }
 
 # The promoted worker must receive the same delivery contract an ordinary ship
 # brief carries, so the mode-specific Definition of done is rendered from its

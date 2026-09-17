@@ -363,20 +363,22 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
-  local data=$1 task=$2 desc tmp current existing='' outer_generation
+  local data=$1 task=$2 desc tmp current existing='' outer_generation desc_exists=0
   local compile_args=()
   shift 2
   desc="$data/$task/work-context.json"
-  mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
   if [ -e "$desc" ]; then
+    desc_exists=1
     jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
       fm_discipline_gap "discipline-context: malformed $desc"; return 3;
     }
     existing=$(jq -cS '.engineering.discipline // empty' "$desc") || return 3
-  else
-    printf '{}\n' > "$desc"
   fi
-  outer_generation=$(jq -r '.engineering.generation // empty' "$desc") || return 3
+  if [ "$desc_exists" -eq 1 ]; then
+    outer_generation=$(jq -r '.engineering.generation // empty' "$desc") || return 3
+  else
+    outer_generation=
+  fi
   if [ -z "$outer_generation" ]; then
     fm_discipline_compile "$task" ship implementation "$@" || return 3
     outer_generation=$FM_DISCIPLINE_GENERATION
@@ -391,14 +393,21 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     }
     return 0
   fi
+  mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
   tmp="$data/$task/.work-context.json.${BASHPID:-$$}"
-  jq --argjson discipline "$current" --arg generation "$outer_generation" '
+  if [ "$desc_exists" -eq 1 ]; then
+    jq --argjson discipline "$current" --arg generation "$outer_generation" '
     .engineering = ((.engineering // {triggers:[],skills:[],verification:[]}) +
       {generation:$generation,discipline:$discipline}) |
     .engineering.triggers = (.engineering.triggers // []) |
     .engineering.skills = (.engineering.skills // []) |
     .engineering.verification = (.engineering.verification // [])
-  ' "$desc" > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+    ' "$desc" > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+  else
+    printf '%s\n' '{}' | jq --argjson discipline "$current" --arg generation "$outer_generation" '
+      {engineering:{triggers:[],skills:[],verification:[],generation:$generation,discipline:$discipline}}
+    ' > "$tmp" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
+  fi
   mv -f "$tmp" "$desc" || { rm -f "$tmp"; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
   return 0
 }
@@ -519,7 +528,7 @@ fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix
     rm -f "$expected_file" "$actual_file" "$combined_file"; rmdir "$tmp_dir" 2>/dev/null || true; return 3;
   }
   head -c "$bytes" "$artifact" > "$actual_file" 2>/dev/null || true
-  if ! cmp -s "$expected_file" "$actual_file"; then
+  if ! cmp -s "$combined_file" "$actual_file"; then
     rm -f "$expected_file" "$actual_file" "$combined_file"
     rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-artifact: fixed envelope slot or successor prefix changed'

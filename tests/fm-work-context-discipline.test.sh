@@ -66,10 +66,12 @@ test_compiler_selects_three_levels() {
   out=$(FM_HOME="$home" "$BRIEF" empty-only repo --mode local-only --discipline-fact '' 2>&1); rc=$?
   expect_code 3 "$rc" "an explicitly empty discipline fact must refuse"
   assert_contains "$out" 'empty-discipline-fact' "empty fact refusal was not typed"
+  [ ! -e "$home/data/empty-only/work-context.json" ] || fail "empty fact refusal left a descriptor behind"
   out=$(FM_HOME="$home" "$BRIEF" empty-plus-valid repo --mode local-only --discipline-fact '' \
     --discipline-fact local 2>&1); rc=$?
   expect_code 3 "$rc" "an empty fact beside a valid fact must refuse"
   assert_contains "$out" 'empty-discipline-fact' "mixed empty fact refusal was not typed"
+  [ ! -e "$home/data/empty-plus-valid/work-context.json" ] || fail "mixed empty fact refusal left a descriptor behind"
 
   out=$(FM_HOME="$home" "$BRIEF" duplicate-kind repo --mode local-only \
     --discipline-fact real-runtime-surface --proof-kind accepted-surface \

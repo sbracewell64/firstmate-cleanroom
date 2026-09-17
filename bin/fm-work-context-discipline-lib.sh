@@ -196,6 +196,7 @@ fm_discipline_regular_file() { # <path>
 FM_DISCIPLINE_CAPTURE_DIR=
 FM_DISCIPLINE_CAPTURE_PATH=
 FM_DISCIPLINE_CAPTURE_SHA256=
+FM_DISCIPLINE_CAPTURE_MODE=
 
 fm_discipline_capture_cleanup() {
   [ -z "$FM_DISCIPLINE_CAPTURE_PATH" ] || rm -f -- "$FM_DISCIPLINE_CAPTURE_PATH" 2>/dev/null || true
@@ -203,10 +204,11 @@ fm_discipline_capture_cleanup() {
   FM_DISCIPLINE_CAPTURE_DIR=
   FM_DISCIPLINE_CAPTURE_PATH=
   FM_DISCIPLINE_CAPTURE_SHA256=
+  FM_DISCIPLINE_CAPTURE_MODE=
 }
 
 fm_discipline_capture() { # <path>
-  local path=$1 digest
+  local path=$1 digest mode capture_result
   fm_discipline_capture_cleanup
   FM_DISCIPLINE_CAPTURE_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-discipline-capture.XXXXXX") || return 1
   FM_DISCIPLINE_CAPTURE_PATH=$(umask 077; mktemp "$FM_DISCIPLINE_CAPTURE_DIR/bytes.XXXXXX") || {
@@ -223,12 +225,15 @@ my @before = stat($in);
 exit 1 unless @before && (($before[2] & 0170000) == 0100000);
 sysopen(my $out, $output, O_WRONLY | O_TRUNC | O_NOFOLLOW) or exit 1;
 my $sha = Digest::SHA->new(256);
+my $captured = '';
 my $buffer;
 while (1) {
   my $read = sysread($in, $buffer, 65536);
   exit 1 unless defined $read;
   last if $read == 0;
-  $sha->add(substr($buffer, 0, $read));
+  my $chunk = substr($buffer, 0, $read);
+  $captured .= $chunk;
+  $sha->add($chunk);
   my $offset = 0;
   while ($offset < $read) {
     my $written = syswrite($out, $buffer, $read - $offset, $offset);
@@ -237,15 +242,42 @@ while (1) {
   }
 }
 my @after = stat($in);
-exit 1 unless @after && $after[0] == $before[0] && $after[1] == $before[1] && $after[7] == $before[7];
-print $sha->hexdigest;
+exit 1 unless @after;
+for my $i (0, 1, 2, 7, 9, 10) {
+  exit 1 unless $after[$i] == $before[$i];
+}
+sysseek($in, 0, 0) or exit 1;
+my $recheck = '';
+my $recheck_sha = Digest::SHA->new(256);
+while (1) {
+  my $read = sysread($in, $buffer, 65536);
+  exit 1 unless defined $read;
+  last if $read == 0;
+  my $chunk = substr($buffer, 0, $read);
+  $recheck .= $chunk;
+  $recheck_sha->add($chunk);
+}
+my @final = stat($in);
+exit 1 unless @final;
+for my $i (0, 1, 2, 7, 9, 10) {
+  exit 1 unless $final[$i] == $before[$i];
+}
+my $first_digest = $sha->hexdigest;
+my $second_digest = $recheck_sha->hexdigest;
+exit 1 unless $recheck eq $captured && $second_digest eq $first_digest;
+print $first_digest . "\t" . sprintf("%04o", $before[2] & 07777);
 PERL
   ) || { fm_discipline_capture_cleanup; return 1; }
+  capture_result=$digest
+  digest=${capture_result%%$'\t'*}
+  mode=${capture_result#*$'\t'}
   case "$digest" in
     [0-9a-f][0-9a-f]* ) [ "${#digest}" -eq 64 ] || { fm_discipline_capture_cleanup; return 1; } ;;
     * ) fm_discipline_capture_cleanup; return 1 ;;
   esac
+  [ -n "$mode" ] || { fm_discipline_capture_cleanup; return 1; }
   FM_DISCIPLINE_CAPTURE_SHA256=$digest
+  FM_DISCIPLINE_CAPTURE_MODE=$mode
 }
 
 fm_discipline_generation_json_valid() {
@@ -454,6 +486,7 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
   local data=$1 task=$2 task_dir desc tmp tmp_dir current existing='' outer_generation desc_exists=0
+  local original_descriptor_json='' original_descriptor_digest='' intended_descriptor_json='' intended_descriptor_digest='' intended_descriptor_mode=''
   local compile_args=()
   shift 2
   task_dir="$data/$task"
@@ -474,6 +507,8 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     fm_discipline_descriptor_capture "$desc" || {
       fm_discipline_gap "discipline-context: unreadable $desc"; return 3;
     }
+    original_descriptor_json=$FM_DISCIPLINE_DESCRIPTOR_JSON
+    original_descriptor_digest=$FM_DISCIPLINE_DESCRIPTOR_DIGEST
     printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -se 'length == 1 and (.[0]|type == "object")' >/dev/null 2>&1 || {
       fm_discipline_gap "discipline-context: malformed $desc"; return 3;
     }
@@ -521,7 +556,43 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
       {engineering:{triggers:[],skills:[],verification:[],generation:$generation,discipline:$discipline}}
     ' > "$tmp" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor merge failed'; return 3; }
   fi
+  fm_discipline_capture "$tmp" || {
+    rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-write: temporary descriptor verification failed'; return 3;
+  }
+  intended_descriptor_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  intended_descriptor_digest=$FM_DISCIPLINE_CAPTURE_SHA256
+  intended_descriptor_mode=$FM_DISCIPLINE_CAPTURE_MODE
+  fm_discipline_capture_cleanup
+  if [ "$desc_exists" -eq 1 ]; then
+    fm_discipline_capture "$desc" || {
+      rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+      fm_discipline_gap 'discipline-write: descriptor changed during preparation'; return 3;
+    }
+    if [ "$FM_DISCIPLINE_CAPTURE_SHA256" != "$original_descriptor_digest" ] ||
+      [ "$(<"$FM_DISCIPLINE_CAPTURE_PATH")" != "$original_descriptor_json" ]; then
+      fm_discipline_capture_cleanup
+      rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+      fm_discipline_gap 'discipline-write: descriptor changed during preparation'; return 3;
+    fi
+    fm_discipline_capture_cleanup
+  elif [ -e "$desc" ] || [ -L "$desc" ]; then
+    rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-write: descriptor appeared during preparation'; return 3;
+  fi
   mv -f "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+  fm_discipline_capture "$desc" || {
+    rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-write: published descriptor verification failed'; return 3;
+  }
+  if [ "$FM_DISCIPLINE_CAPTURE_SHA256" != "$intended_descriptor_digest" ] ||
+    [ "$FM_DISCIPLINE_CAPTURE_MODE" != "$intended_descriptor_mode" ] ||
+    [ "$(<"$FM_DISCIPLINE_CAPTURE_PATH")" != "$intended_descriptor_json" ]; then
+    fm_discipline_capture_cleanup
+    rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-write: published descriptor changed during verification'; return 3;
+  fi
+  fm_discipline_capture_cleanup
   rmdir "$tmp_dir" 2>/dev/null || true
   return 0
 }

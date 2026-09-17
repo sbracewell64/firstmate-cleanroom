@@ -122,7 +122,7 @@ test_compiler_selects_three_levels() {
 }
 
 test_roles_promotion_and_stable_identity() {
-  local home ship scout charter promoted desc first second
+  local home ship scout charter promoted desc first second original_generation malformed_generation
   home="$TMP_ROOT/roles"
   make_home "$home"
 
@@ -140,6 +140,17 @@ test_roles_promotion_and_stable_identity() {
   second=$(FM_HOME="$home" "$CONTEXT" discipline ship ship implementation) \
     || fail "checked discipline could not render after resume"
   [ "$first" = "$second" ] || fail "restart/resume changed the selected discipline identity"
+  original_generation=$(jq -r '.engineering.generation' "$desc")
+  malformed_generation=$'g1\nx'
+  jq --arg generation "$malformed_generation" \
+    '.engineering.generation=$generation | .engineering.discipline.outer_generation=$generation' \
+    "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$(FM_HOME="$home" "$CONTEXT" discipline ship ship implementation 2>&1); rc=$?
+  expect_code 3 "$rc" "malformed matching outer generation must refuse discipline rendering"
+  assert_contains "$out" 'malformed engineering generation' "malformed generation refusal was not typed"
+  jq --arg generation "$original_generation" \
+    '.engineering.generation=$generation | .engineering.discipline.outer_generation=$generation' \
+    "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
   jq '.engineering.generation="outer-generation-changed"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
   out=$(FM_HOME="$home" "$CONTEXT" discipline ship ship implementation 2>&1); rc=$?
   expect_code 3 "$rc" "changed outer generation must refuse discipline rendering"

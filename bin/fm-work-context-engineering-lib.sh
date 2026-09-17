@@ -56,7 +56,7 @@ _fm_wc_engineering_sha() { # <readable-file>
 }
 
 fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
-  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual
+  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual generation
   FM_WC_ENGINEERING=
   FM_WC_ENGINEERING_DIGEST=
   FM_WC_ENGINEERING_SKILLS=
@@ -82,7 +82,7 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
       "diagnosis":["diagnosing-bugs","worker","diagnosis"],
       "instruction-change":["writing-for-agents","worker","implementation"],
       "review":["code-review","reviewer","review"]};
-    .engineering as $e | ($e|type == "object") and ($e.generation|text) and
+    .engineering as $e | ($e|type == "object") and ($e.generation|type == "string") and
     ($e.triggers|type == "array") and ($e.triggers|length == (unique|length)) and
     all($e.triggers[]; . as $t | catalog|has($t)) and
     ($e.skills|type == "array") and ($e.skills|map(.id)|length == (unique|length)) and
@@ -100,6 +100,10 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
   ' "$desc" >/dev/null 2>&1; then
     _fm_wc_engineering_gap "engineering-schema: invalid source/trigger/role/stage/evidence declaration in $desc"; return 3
   fi
+  generation=$(jq -r '.engineering.generation' "$desc")
+  fm_discipline_generation_valid "$generation" || {
+    _fm_wc_engineering_gap "engineering-schema: invalid generation in $desc"; return 3;
+  }
   FM_WC_ENGINEERING=$(jq -cS '.engineering' "$desc") || return 3
   FM_WC_ENGINEERING_DIGEST=$(printf '%s\n' "$FM_WC_ENGINEERING" | _fm_wc_engineering_sha /dev/stdin) || {
     _fm_wc_engineering_gap 'engineering-capability: SHA256 unavailable'; return 3;

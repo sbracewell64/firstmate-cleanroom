@@ -221,10 +221,10 @@ fm_work_context_engineering_residuals() { # <descriptor>
     .engineering as $e | if $e == null then empty else
     ($e.verification[]? | select(.scope == "provisioned-runtime" or .scope == "deployed-consumer") |
       {id,scope,owner,next_gate,source_identity,caller_identity,status:"open"}),
-    ($e.discipline? | {id:"worker-discipline:active",scope:"provisioned-runtime",
+    ($e.discipline? | select(type == "object") | {id:"worker-discipline:active",scope:"provisioned-runtime",
       owner:"runtime-pin-adoption-gap",next_gate:"qualified release deployment and read-back",
       source_identity:.fragment_sha256,caller_identity:"pending",claim:"ACTIVE",evidence:"CNO",status:"open"}),
-    ($e.discipline? | {id:"worker-discipline:fresh-production-consumed",scope:"deployed-consumer",
+    ($e.discipline? | select(type == "object") | {id:"worker-discipline:fresh-production-consumed",scope:"deployed-consumer",
       owner:"runtime-pin-adoption-gap",next_gate:"fresh production worker receipt",
       source_identity:.fragment_sha256,caller_identity:"pending",claim:"CONSUMED",evidence:"CNO",status:"open"}),
     ($e.skills[] | select(.trigger as $t | $e.triggers|index($t)) |

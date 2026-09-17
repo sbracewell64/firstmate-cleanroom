@@ -381,10 +381,12 @@ test_landing_and_activated_need_readback() {
   if command -v jq >/dev/null 2>&1; then
     assert_not_contains "$out" "currentness:" "activated is inert for a task with no work-context descriptor"
     mkdir -p "$DATA/a1"
-    printf '{"reconcile":{"parent":"a1"}}\n' > "$DATA/a1/work-context.json"
+    printf '%s\n' '{"reconcile":{"parent":"a1"},"engineering":{"generation":"legacy-g1","triggers":[],"skills":[],"verification":[]}}' > "$DATA/a1/work-context.json"
     out=$("$STAGE" a1 activated 2>&1)
     assert_contains "$out" "currentness:" "activated reconciles currentness when the child declares a reconcile block"
     assert_present "$STATE/a1.parent-currentness" "the terminal transition writes the currentness receipt through the work-context owner"
+    assert_no_grep 'engineering_residual=.*worker-discipline:' "$STATE/a1.parent-currentness" \
+      "legacy engineering context without discipline has no discipline residuals"
     rm -f "$DATA/a1/work-context.json"
   fi
   pass "fm-stage landing/activated: landing records, activated needs read-back evidence and refreshes declared currentness"

@@ -463,6 +463,10 @@ if [ "$mode" = restart ]; then
       fi
     fi
   fi
+  if [ "$cycle_restart_stop" = unconfirmed ]; then
+    echo "watcher: FAILED - could not confirm the recorded watcher stopped; retaining ownership for later reconciliation" >&2
+    exit 1
+  fi
 fi
 
 # If a genuinely live+fresh watcher already holds the lock, do not start a second

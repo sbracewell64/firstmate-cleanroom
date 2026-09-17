@@ -1724,15 +1724,6 @@ test_forced_owned_child_stop_is_reaped_and_recorded() {
 }
 
 test_restart_records_whether_its_stop_was_confirmed() {
-  # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
-  # leaving the fleet with no watcher at all is worse than the duplicate a
-  # refusal would avoid, and an escape hatch that will not open when the evidence
-  # is missing is not a safety property. What the restart owes a consumer instead
-  # is the fact in a form it can act on, so the arm-layer lifecycle row carries
-  # restart_stop and names "could not confirm" as its own value rather than
-  # reading like a confirmed stop. This drives the real --restart against a real
-  # recorded holder in both dispositions, and pins the exclusion the unconfirmed
-  # case rests on - the singleton lock, not an assumption.
   local dir state fakebin arm_out restart_out restart_err second_out second_err
   local arm_pid holder_pid stopped_pid lock_pid status i
   dir=$(make_case restart-stop-disposition)
@@ -1802,25 +1793,20 @@ test_restart_records_whether_its_stop_was_confirmed() {
   # release. is_live_non_zombie already reads a stopped process as live.
   is_live_non_zombie "$stopped_pid" \
     || { resume_stopped_holder; reap "$arm_pid"; fail "the stop-proof holder was collected, so this case proves nothing about an unconfirmed stop"; }
-  grep -q 'restart_stop=unconfirmed' "$state/.watch-cycle-exits.log" \
-    || { resume_stopped_holder; reap "$arm_pid"; fail "a --restart that could not confirm its stop did not record the unconfirmed disposition"; }
   [ "$status" -ne 0 ] \
     || { resume_stopped_holder; reap "$arm_pid"; fail "--restart reported success while the watcher it never confirmed stopped still held the lock"; }
-
-  # The exclusion the unconfirmed case rests on, proven rather than assumed: the
-  # relaunched watcher stands down against the still-live recorded holder instead
-  # of running beside it, so one live watcher remains and it is still that holder.
+  ! grep -qF 'watcher: started pid=' "$second_out.restart" \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "--restart launched a successor after an unconfirmed stop"; }
+  grep -qF 'could not confirm the recorded watcher stopped' "$second_err" \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "--restart did not report its uncertain stop result"; }
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   [ "$lock_pid" = "$stopped_pid" ] \
     || { resume_stopped_holder; reap "$arm_pid"; fail "a second watcher took the singleton lock beside the one that was never confirmed stopped"; }
 
   resume_stopped_holder
-  grep -qF "lock held by live pid $stopped_pid" "$second_err" \
-    || { reap "$arm_pid"; fail "the relaunched watcher did not stand down against the live recorded holder"; }
-
   reap "$arm_pid"
   unset -f restart_case_arm resume_stopped_holder
-  pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
+  pass "--restart refuses uncertain stop and preserves the live recorded watcher"
 }
 
 test_restart_stop_bound_is_one_second_and_single_signal() {

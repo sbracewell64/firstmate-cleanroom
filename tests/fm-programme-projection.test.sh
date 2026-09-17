@@ -468,23 +468,26 @@ test_not_configured_and_summary() {
 # The same separation is what lets an exit-3 refusal still reach the caller: it
 # is the resolver's stderr, mirrored, with stdout left empty.
 test_resolver_stderr_is_not_the_typed_result() {
-  local home fakebin out err rc noise unstageable
+  local home fakebin realbin out err rc noise unstageable
   home=$(make_home noisy-stderr)
   disposition "$home" proof-a 1 PROVED
   noise="bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching \`)'"
   fakebin="$TMP_ROOT/noisy-resolver-bin"
-  mkdir -p "$fakebin"
-  ln -s "$PROJECT" "$fakebin/fm-programme-projection.sh"
+  realbin="$TMP_ROOT/noisy-resolver-real-bin"
+  mkdir -p "$fakebin" "$realbin"
+  cp "$PROJECT" "$realbin/fm-programme-projection.sh"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$realbin/fm-programme-presentation-lib.sh"
+  ln -s "$realbin/fm-programme-projection.sh" "$fakebin/fm-programme-projection.sh"
   # The noise is staged as a file, not interpolated into the stub: it carries a
   # backtick, which is exactly the shape that would otherwise be re-read as
   # syntax by the stub instead of written to its stderr.
   printf '%s\n' "$noise" > "$fakebin/noise.txt"
-  cat > "$fakebin/fm-continuation-resolve.sh" <<SH
+  cat > "$realbin/fm-continuation-resolve.sh" <<SH
 #!/usr/bin/env bash
 cat '$fakebin/noise.txt' >&2
 exec '$RESOLVE' "\$@"
 SH
-  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  chmod +x "$realbin/fm-continuation-resolve.sh"
 
   out=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null) \
     || fail "a diagnostic on the resolver's stderr must not refuse a healthy typed result"
@@ -508,11 +511,11 @@ SH
 
   # Corrupt STDOUT is still the defect it always was, and the refusal now names
   # the bytes it received instead of discarding them.
-  cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'
+  cat > "$realbin/fm-continuation-resolve.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'not a typed result\n'
 SH
-  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  chmod +x "$realbin/fm-continuation-resolve.sh"
   err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null); rc=$?
   expect_code 1 "$rc" "a resolver whose stdout is not the typed schema is refused"
   assert_contains "$err" "unrecognized result schema" "the refusal still names the schema failure"
@@ -529,12 +532,12 @@ SH
   unset -f mktemp
 
   # An exit-3 refusal is the resolver's stderr, mirrored, with stdout empty.
-  cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'
+  cat > "$realbin/fm-continuation-resolve.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'fm-continuation-resolve: no programme configured\n' >&2
 exit 3
 SH
-  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  chmod +x "$realbin/fm-continuation-resolve.sh"
   out=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null); rc=$?
   expect_code 3 "$rc" "the resolver's exit 3 is mirrored"
   [ -z "$out" ] || fail "exit 3 must print nothing on stdout: $out"

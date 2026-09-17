@@ -89,30 +89,24 @@ fm_pid_identity() {
 }
 
 fm_stop_monotonic_ms() {
-  local raw sec frac
   if command -v perl >/dev/null 2>&1; then
     perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
       'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'
     return
   fi
-  raw=${EPOCHREALTIME:-}
-  case "$raw" in
-    *[0-9][.,][0-9]*)
-      sec=${raw%%[.,]*}
-      frac=${raw#*[.,]}
-      frac="${frac}000"
-      frac=${frac:0:3}
-      case "$sec$frac" in
-        ''|*[!0-9]*) ;;
-        *) printf '%s\n' "$(( sec * 1000 + 10#$frac ))"; return ;;
-      esac
-      ;;
-  esac
-  raw=$(date +%s%N 2>/dev/null || true)
-  case "$raw" in
-    ''|*[!0-9]*) raw=$(date +%s 2>/dev/null || printf '0'); printf '%s000\n' "$raw" ;;
-    *) [ "${#raw}" -gt 13 ] && raw=${raw:0:${#raw}-6}; printf '%s\n' "$raw" ;;
-  esac
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(time.monotonic_ns() // 1000000)'
+    return
+  fi
+  return 1
+}
+
+fm_stop_deadline_check() {
+  local now
+  [ -n "${FM_STOP_DEADLINE_MS:-}" ] || return 0
+  now=$(fm_stop_monotonic_ms) || return 1
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$now" -lt "$FM_STOP_DEADLINE_MS" ]
 }
 
 # fm_stop_process_confirmed <pid> [recorded-identity] [deadline-tenths] [signal]
@@ -191,29 +185,25 @@ fm_stop_process_confirmed() {
   [ -n "$every" ] || every=20
   [ "$every" != 0 ] || every=20
   while :; do
-    if [ -n "$deadline_ms" ]; then
-      now=$(fm_stop_monotonic_ms)
-      case "$now" in ''|*[!0-9]*) return 1 ;; esac
-      [ "$now" -lt "$deadline_ms" ] || return 1
+    [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
+    if ! fm_pid_alive "$pid"; then
+      [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
+      return 0
     fi
-    fm_pid_alive "$pid" || return 0
-    if [ -n "$deadline_ms" ]; then
-      now=$(fm_stop_monotonic_ms)
-      case "$now" in ''|*[!0-9]*) return 1 ;; esac
-      [ "$now" -lt "$deadline_ms" ] || return 1
-    fi
+    [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
     if [ -n "$recorded" ]; then
       if ! current=$(fm_pid_identity "$pid" 2>/dev/null); then
-        fm_pid_alive "$pid" && return 4
+        if fm_pid_alive "$pid"; then
+          [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
+          return 4
+        fi
+        [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
         return 0
       fi
+      [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
       [ "$current" = "$recorded" ] || return 0
     fi
-    if [ -n "$deadline_ms" ]; then
-      now=$(fm_stop_monotonic_ms)
-      case "$now" in ''|*[!0-9]*) return 1 ;; esac
-      [ "$now" -lt "$deadline_ms" ] || return 1
-    fi
+    [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
     [ "$i" -lt "$limit" ] || return 1
     if [ $(( i % every )) -eq 0 ] && ! kill "-$sig" "$pid" 2>/dev/null; then
       if [ "$i" -eq 0 ]; then
@@ -232,6 +222,7 @@ fm_stop_process_confirmed() {
       fi
     fi
     sleep "$sleep_for"
+    [ -z "$deadline_ms" ] || fm_stop_deadline_check || return 1
     i=$((i + 1))
   done
 }
@@ -1426,6 +1417,7 @@ fm_autoarm_reset_owned() {  # <state-dir> <gen>
 #      proof as fm_autoarm_claim_open).
 fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} epoch lock role pid owner outcome recorded current
+  fm_stop_deadline_check || return 1
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
   case "$grace" in
@@ -1435,13 +1427,16 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
   role=$(fm_lock_role "$lock")
   [ "$role" = autoarm ] || return 1
   pid=$(cat "$lock/pid" 2>/dev/null || true)
+  fm_stop_deadline_check || return 1
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
+  fm_stop_deadline_check || return 1
   if fm_pid_alive "$pid"; then
     [ -n "$recorded" ] || return 1
     current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+    fm_stop_deadline_check || return 1
     [ -n "$current" ] || return 1
     [ "$current" = "$recorded" ] || return 0
   fi
@@ -1493,16 +1488,23 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"
+  FM_STOP_DEADLINE_MS=$(fm_stop_monotonic_ms) || return 1
+  FM_STOP_DEADLINE_MS=$((FM_STOP_DEADLINE_MS + 1000))
+  fm_stop_deadline_check || return 1
   fm_autoarm_claim_abandoned "$state" "$grace" || return 1
+  fm_stop_deadline_check || return 1
   fm_lock_try_acquire "$steal" || return 1
+  fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   if ! fm_autoarm_claim_abandoned "$state" "$grace"; then
     fm_lock_release "$steal"
     return 1
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
+  fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   current=
   if fm_pid_alive "$lock_pid"; then
+    fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
     [ -n "$recorded" ] || {
       fm_lock_release "$steal"
       return 1
@@ -1511,6 +1513,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       fm_lock_release "$steal"
       return 1
     }
+    fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
     [ -n "$current" ] || {
       fm_lock_release "$steal"
       return 1
@@ -1523,12 +1526,12 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     # generations. A pid the recorded identity does NOT verify is never
     # signalled; a positive mismatch is reclaimed as a reused pid.
     retire_rc=0
-    FM_STOP_DEADLINE_MS=$(( $(fm_stop_monotonic_ms) + 1000 ))
     fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
     if [ "$retire_rc" -ne 0 ]; then
       fm_lock_release "$steal"
       return 1
     fi
+    fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   fi
   # Preserve the legacy lock's identity evidence in the ledger before the lock
   # disappears, keeping the ledger's original mtime so the stuck proof's age
@@ -1547,7 +1550,9 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     fi
     rm -f "$tmp" 2>/dev/null || true
   fi
+  fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   fm_lock_remove_path "$lock" || true
+  fm_stop_deadline_check || { fm_lock_release "$steal"; return 1; }
   fm_lock_release "$steal"
   [ -e "$lock" ] || [ -L "$lock" ] || return 0
   return 1

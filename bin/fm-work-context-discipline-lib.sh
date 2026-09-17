@@ -168,11 +168,11 @@ fm_discipline_sha() { # <readable-file>
   fi
 }
 
-fm_discipline_generation_valid() { # <generation>
-  [ "$#" -eq 1 ] || return 1
-  case "$1" in
-    ''|*$'\r'*|*$'\n'*|*$'\t'*) return 1 ;;
-  esac
+fm_discipline_generation_json_valid() {
+  jq -e '
+    type == "string" and length > 0 and
+    (explode | all(.[]; (. < 32 or . == 127 or (. >= 128 and . <= 159)) | not))
+  ' >/dev/null 2>&1
 }
 
 fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>] [--outer-generation <generation>]
@@ -213,9 +213,9 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
     esac
   done
   [ -z "$want" ] || { fm_discipline_gap "discipline-argument: --$want requires a value"; return 3; }
-  [ -z "$outer_generation" ] || fm_discipline_generation_valid "$outer_generation" || {
-    fm_discipline_gap 'discipline-context: malformed engineering generation'; return 3;
-  }
+  if [ -n "$outer_generation" ] && ! printf '%s' "$outer_generation" | jq -R -s . | fm_discipline_generation_json_valid; then
+    fm_discipline_gap 'discipline-context: malformed engineering generation'; return 3
+  fi
   [ "$role" = ship ] && [ "$stage" = implementation ] || {
     fm_discipline_gap "discipline-applicability: $role/$stage"; return 3;
   }
@@ -301,13 +301,10 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
     fm_discipline_gap "discipline-context: malformed $desc"; return 3;
   }
   [ -n "$receipt" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
-  if ! jq -e '.engineering.generation | type == "string"' "$desc" >/dev/null 2>&1; then
+  if ! jq -c '.engineering.generation' "$desc" | fm_discipline_generation_json_valid; then
     fm_discipline_gap "discipline-context: malformed engineering generation in $desc"; return 3
   fi
   outer_generation=$(jq -r '.engineering.generation' "$desc")
-  fm_discipline_generation_valid "$outer_generation" || {
-    fm_discipline_gap "discipline-context: malformed engineering generation in $desc"; return 3;
-  }
   receipt_task=$(printf '%s' "$receipt" | jq -r '.task // empty')
   receipt_role=$(printf '%s' "$receipt" | jq -r '.role // empty')
   receipt_stage=$(printf '%s' "$receipt" | jq -r '.stage // empty')
@@ -315,13 +312,10 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
   [ "$receipt_role" = "$role" ] && [ "$receipt_stage" = "$stage" ] || {
     fm_discipline_gap "discipline-applicability: receipt=$receipt_role/$receipt_stage caller=$role/$stage"; return 3;
   }
-  if ! printf '%s' "$receipt" | jq -e '.outer_generation | type == "string"' >/dev/null 2>&1; then
+  if ! printf '%s' "$receipt" | jq -c '.outer_generation' | fm_discipline_generation_json_valid; then
     fm_discipline_gap 'discipline-identity: malformed receipt generation'; return 3
   fi
   receipt_outer_generation=$(printf '%s' "$receipt" | jq -r '.outer_generation')
-  fm_discipline_generation_valid "$receipt_outer_generation" || {
-    fm_discipline_gap 'discipline-identity: malformed receipt generation'; return 3;
-  }
   [ "$receipt_outer_generation" = "$outer_generation" ] || {
     fm_discipline_gap 'discipline-identity: outer engineering generation changed or is missing'
     return 3
@@ -452,7 +446,7 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
 }
 
 fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
-  local data=$1 task=$2 kind=$3 brief=$4 expected actual count
+  local data=$1 task=$2 kind=$3 brief=$4 expected_file actual_file expected_bytes
   case "$kind" in
     secondmate) return 0 ;;
     scout)
@@ -463,17 +457,37 @@ fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
     ship) ;;
     *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
   esac
-  expected=$(fm_discipline_render "$data" "$task" ship implementation) || return 3
-  count=$(grep -c '^Discipline receipt:' "$brief" 2>/dev/null || true)
-  [ "$count" -eq 1 ] || { fm_discipline_gap "discipline-brief: expected one receipt, found $count"; return 3; }
-  actual=$(awk '
-    /^# Worker discipline$/ { on=1 }
-    on && (/^# Engineering context$/ || /^# Firstmate instruction inbox$/) { exit }
-    on { print }
-  ' "$brief" 2>/dev/null) || { fm_discipline_gap "discipline-brief: unreadable $brief"; return 3; }
-  [ "$actual" = "$expected" ] || {
-    fm_discipline_gap 'discipline-brief: rendered selection does not match the canonical receipt'
+  expected_file="$brief.discipline.expected.$$"
+  actual_file="$brief.discipline.actual.$$"
+  fm_discipline_render "$data" "$task" ship implementation > "$expected_file" || {
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
     return 3
   }
+  expected_bytes=$(wc -c < "$expected_file") || {
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap "discipline-brief: unreadable $brief"
+    return 3
+  }
+  LC_ALL=C awk -v wanted="$expected_bytes" '
+    !started && /^# Worker discipline$/ { started=1 }
+    started && copied < wanted {
+      line=$0 "\n"
+      remaining=wanted-copied
+      if (length(line) <= remaining) printf "%s", line
+      else printf "%s", substr(line, 1, remaining)
+      copied += length(line)
+    }
+    copied >= wanted { exit }
+  ' "$brief" > "$actual_file" 2>/dev/null || {
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap "discipline-brief: unreadable $brief"
+    return 3
+  }
+  if ! cmp -s "$expected_file" "$actual_file"; then
+    rm -f "$expected_file" "$actual_file" 2>/dev/null
+    fm_discipline_gap 'discipline-brief: rendered selection does not match the canonical receipt'
+    return 3
+  fi
+  rm -f "$expected_file" "$actual_file" 2>/dev/null
   return 0
 }

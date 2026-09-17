@@ -86,7 +86,7 @@ test_compiler_selects_three_levels() {
   [ ! -e "$marker" ] || fail "proof surface executed command substitution"
   assert_grep "$surface" "$home/data/literal/brief.md" "proof surface bytes were not preserved literally"
   multiline=$'```sh\n$(touch '
-  multiline="${multiline}${home}/multiline-side-effect)"$'\n\tprintf '\''\"quoted\"'\''\n\n```\n'
+  multiline="${multiline}${home}/multiline-side-effect)"$'\n\tprintf '\''\"quoted\"'\''\n# Engineering context\n# Firstmate instruction inbox\n# Worker discipline\nDiscipline receipt: literal\n\n```\n'
   FM_HOME="$home" "$BRIEF" multiline repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface "$multiline" >/dev/null \
     || fail "multiline proof surface did not compile"

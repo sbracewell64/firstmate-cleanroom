@@ -149,6 +149,11 @@ PROMOTE_STATE_TMP_DIR=
 promote_cleanup() {
   local status=$?
   local rollback_failed=0 rollback_tmp
+  promote_snapshot_matches() {
+    local snapshot=$1 target=$2
+    [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$snapshot" "$target" &&
+      [ "$(stat -c %a "$snapshot" 2>/dev/null || stat -f %Lp "$snapshot")" = "$(stat -c %a "$target" 2>/dev/null || stat -f %Lp "$target")" ]
+  }
   promote_restore_regular() {
     local target=$1 snapshot=$2 existed=$3 directory
     directory=${target%/*}
@@ -163,8 +168,7 @@ promote_cleanup() {
     if [ "$existed" -eq 0 ]; then
       [ ! -e "$target" ] && [ ! -L "$target" ]
     else
-      [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$snapshot" "$target" &&
-        [ "$(stat -c %a "$snapshot" 2>/dev/null || stat -f %Lp "$snapshot")" = "$(stat -c %a "$target" 2>/dev/null || stat -f %Lp "$target")" ]
+      promote_snapshot_matches "$snapshot" "$target"
     fi
   }
   if [ "$status" -ne 0 ]; then
@@ -185,7 +189,7 @@ promote_cleanup() {
           fi
           [ "$rollback_failed" -eq 0 ] || rm -f -- "$rollback_tmp" 2>/dev/null || true
         fi
-        [ "$rollback_failed" -eq 0 ] && cmp -s "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
+        [ "$rollback_failed" -eq 0 ] && promote_snapshot_matches "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
       else
         rm -f -- "$META" || rollback_failed=1
       fi

@@ -92,6 +92,17 @@ test_compiler_selects_three_levels() {
   out=$(FM_ROOT="$ROOT" bash -c '. "$1/bin/fm-work-context-discipline-lib.sh"; fm_discipline_compile task ship implementation --outer-generation ""; rc=$?; printf "%s" "$FM_WORK_CONTEXT_DETAIL"; exit "$rc"' _ "$ROOT" 2>&1); rc=$?
   expect_code 3 "$rc" "the canonical compiler must reject an empty generation"
   assert_contains "$out" 'empty-discipline-generation' "compiler empty generation refusal was not typed"
+  mkdir -p "$home/redirect"
+  ln -s "$home/redirect" "$home/data/task-link"
+  out=$(FM_HOME="$home" "$BRIEF" task-link repo --mode local-only --discipline-fact local 2>&1); rc=$?
+  expect_code 3 "$rc" "a symlinked task directory must refuse"
+  [ ! -e "$home/redirect/work-context.json" ] || fail "task directory symlink was followed"
+  mkdir -p "$home/data/descriptor-link"
+  printf '%s\n' '{}' > "$home/redirect.json"
+  ln -s "$home/redirect.json" "$home/data/descriptor-link/work-context.json"
+  out=$(FM_HOME="$home" "$BRIEF" descriptor-link repo --mode local-only --discipline-fact local 2>&1); rc=$?
+  expect_code 3 "$rc" "a symlinked descriptor must refuse"
+  [ "$(cat "$home/redirect.json")" = '{}' ] || fail "descriptor symlink target was changed"
 
   FM_HOME="$home" "$BRIEF" shared repo --mode local-only --discipline-fact schema >/dev/null \
     || fail "shared discipline did not compile"

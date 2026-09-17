@@ -314,15 +314,19 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
 }
 
 fm_discipline_load() { # <data> <task> <ship> <implementation>
-  local data=$1 task=$2 role=$3 stage=$4 desc receipt receipt_task receipt_role receipt_stage
+  local data=$1 task=$2 role=$3 stage=$4 desc task_dir receipt receipt_task receipt_role receipt_stage
   local proof_kind proof_surface fact compiled args=() outer_generation receipt_outer_generation
   FM_DISCIPLINE_RECEIPT=
   FM_DISCIPLINE_LEVEL=
   FM_DISCIPLINE_GENERATION=
   FM_DISCIPLINE_FRAGMENT_SHA256=
   FM_DISCIPLINE_PROOF_SURFACE=
+  task_dir="$data/$task"
+  [ -d "$task_dir" ] && [ ! -L "$task_dir" ] || {
+    fm_discipline_gap "discipline-artifact: unsafe or missing task directory $task_dir"; return 3;
+  }
   desc="$data/$task/work-context.json"
-  [ -f "$desc" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
+  [ -f "$desc" ] && [ ! -L "$desc" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
   receipt=$(jq -cS '.engineering.discipline // empty' "$desc" 2>/dev/null) || {
     fm_discipline_gap "discipline-context: malformed $desc"; return 3;
   }
@@ -363,11 +367,20 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
-  local data=$1 task=$2 desc tmp tmp_dir current existing='' outer_generation desc_exists=0
+  local data=$1 task=$2 task_dir desc tmp tmp_dir current existing='' outer_generation desc_exists=0
   local compile_args=()
   shift 2
-  desc="$data/$task/work-context.json"
-  if [ -e "$desc" ]; then
+  task_dir="$data/$task"
+  if [ -e "$task_dir" ] || [ -L "$task_dir" ]; then
+    [ -d "$task_dir" ] && [ ! -L "$task_dir" ] || {
+      fm_discipline_gap "discipline-artifact: unsafe task directory $task_dir"; return 3;
+    }
+  fi
+  desc="$task_dir/work-context.json"
+  if [ -e "$desc" ] || [ -L "$desc" ]; then
+    [ -f "$desc" ] && [ ! -L "$desc" ] || {
+      fm_discipline_gap "discipline-artifact: unsafe descriptor $desc"; return 3;
+    }
     desc_exists=1
     jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
       fm_discipline_gap "discipline-context: malformed $desc"; return 3;
@@ -394,6 +407,9 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     return 0
   fi
   mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
+  [ -d "$task_dir" ] && [ ! -L "$task_dir" ] || {
+    fm_discipline_gap "discipline-artifact: task directory changed during preparation"; return 3;
+  }
   tmp_dir=$(umask 077; mktemp -d "$data/$task/.discipline-prepare.XXXXXX") || {
     fm_discipline_gap 'discipline-write: temporary directory creation failed'; return 3;
   }

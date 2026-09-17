@@ -25,8 +25,8 @@ class LauncherFixture:
         for path in [self.home/'config', self.home/'state', self.tools/'bin', self.code/'bin', self.user/'.local/bin']:
             path.mkdir(parents=True)
         for name, value in {'code-root': self.code, 'tools-root': self.tools, 'backend': 'herdr',
-                            'herdr-session': 'synthetic', 'console-profile': 'codex-astra',
-                            'console-qualified-profiles': 'codex-astra'}.items():
+                            'herdr-session': 'synthetic', 'console-profile': 'codex-luna',
+                            'console-qualified-profiles': 'codex-luna'}.items():
             (self.home/'config'/name).write_text(shellpath(value)+'\n')
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(('FM_', 'HERDR_', 'OPENAI_', 'CODEX_', 'AZURE_OPENAI_'))}
         self.env.update(FM_HOME=shellpath(self.home), HOME=shellpath(self.user),
@@ -131,7 +131,7 @@ print(json.dumps(out))
         path.chmod(0o755)
 
     def record(self, **changes):
-        data = dict(workspace_id='w7', pane_id='w7:p1', session='synthetic', harness='claude', profile='codex-astra', model='gpt-6-astra')
+        data = dict(workspace_id='w7', pane_id='w7:p1', session='synthetic', harness='claude', profile='codex-luna', model='gpt-5.6-luna')
         data.update(changes)
         (self.home/'state/captain-console.json').write_text(json.dumps(data))
 

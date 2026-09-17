@@ -6,7 +6,7 @@
 # functions and runs no identity check, so this file touches no home, no Herdr
 # session, no watcher, and starts no harness.
 #
-# The four-profile primary menu is covered by enter-firstmate-profile.test.sh;
+# The six-profile primary menu is covered by enter-firstmate-profile.test.sh;
 # this file proves the single-profile console composition still holds (the
 # regression proof for the pre-existing launch/console/resume path).
 #
@@ -21,7 +21,8 @@ pass() { printf 'ok - %s\n' "$1"; }
 [ -f "$LAUNCHER" ] || fail "launcher not found: $LAUNCHER"
 # shellcheck disable=SC1090 # the launcher path is resolved at run time
 FM_ENTRY_LIB=1 . "$LAUNCHER" || fail "FM_ENTRY_LIB=1 load failed"
-for fn in permission_policy_state permission_policy_posture permission_policy_spawn_token console_harness_argv \
+for fn in permission_policy_state permission_policy_posture permission_policy_spawn_token \
+          permission_policy_owner console_harness_argv \
           console_resume_id_valid console_session_store_dir console_resume_candidate console_launch_outcome \
           console_pane_classify console_converge_action; do
   command -v "$fn" >/dev/null || fail "$fn not defined by the library load"
@@ -48,6 +49,46 @@ for h in $(permission_policy_harnesses); do
   case "$(permission_policy_state "$h")" in QUALIFIED|NOT_APPLICABLE|CNO) ;; *) fail "$h state must be one of the three verdicts" ;; esac
 done
 pass "permission policy: claude exact flag, seven QUALIFIED equivalents, pi CNO, unknown CNO"
+
+# --- permission policy OWNER: who composes the posture that actually runs -------
+# Ownership follows POSTURE composition, not argv composition: a harness whose
+# permission posture console_harness_argv emits is owned here as well as by
+# fm-spawn, and every other harness's posture is fm-spawn's alone. Pi composes a
+# pinned model selector here but no posture (its posture is prose, not a flag),
+# so it legitimately reports no launcher ownership. Each harness is probed with
+# its real pinned selector so a harness cannot hide behind an empty model.
+profile_selector_for() {  # <harness> -> the first pinned selector of that harness ('' = not a profile harness)
+  local p
+  for p in $(console_profile_menu); do
+    [ "$(console_profile_harness "$p")" = "$1" ] || continue
+    console_profile_model "$p"; return 0
+  done
+  printf ''
+}
+for h in $(permission_policy_harnesses); do
+  posture=$(permission_policy_posture "$h")
+  selector=$(profile_selector_for "$h")
+  composes_posture=0
+  while IFS= read -r el; do
+    [ "$el" = "$posture" ] && composes_posture=1
+  done <<EOF
+$(console_harness_argv "$h" "$selector" '' '')
+EOF
+  case "$(permission_policy_owner "$h")" in
+    *'this launcher (primary console argv)'*)
+      [ "$composes_posture" = 1 ] || fail "$h is credited to this launcher but the launcher composes no permission posture for it" ;;
+    *)
+      [ "$composes_posture" = 0 ] || fail "this launcher composes $h's permission posture but the reported owner omits it" ;;
+  esac
+done
+[ -n "$(profile_selector_for pi)" ] || fail "pi must be probed with a real pinned selector, not an empty model"
+[ -n "$(console_harness_argv pi "$(profile_selector_for pi)" '' '')" ] || fail "pi's primary console argv must carry its pinned selector"
+[ "$(permission_policy_owner codex)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "codex is a primary console harness: the launcher must be named as an owner"
+[ "$(permission_policy_owner claude)" = 'this launcher (primary console argv) + fm-spawn (workers)' ] || fail "claude ownership is unchanged"
+[ "$(permission_policy_owner opencode)" = 'fm-spawn (workers and secondmates)' ] || fail "a worker-only harness stays fm-spawn's"
+[ "$(permission_policy_owner pi)" = none ] || fail "pi composes no permission posture here, so this launcher is not its posture owner"
+[ "$(permission_policy_owner made-up)" = none ] || fail "an unknown harness has no owner"
+pass "permission policy owner: every harness the launcher composes a permission posture for names it as owner"
 
 # --- console argv (launch-byte watched reds), new <harness> <model> signature ---
 # console_harness_argv <harness> <model|""> <settings|""> <resume|""> [passthrough...]

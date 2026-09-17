@@ -57,13 +57,38 @@ class StartupBoundaryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('firstmate native console refused', result.stderr)
         record = json.loads((self.f.home/'state/captain-console.json').read_text())
-        self.assertIn('--model gpt-6-astra', record['argv'])
+        self.assertIn('--model gpt-5.6-luna', record['argv'])
         self.assertEqual(record['exit_rc'], result.returncode)
         self.assertNotIn('UNGUARDED_LAUNCH', result.stderr)
     def test_nonlogin_primary_resolves_native_client_before_gate(self):
         result = self.console()
         self.assertIn('firstmate native console refused', result.stderr)
         self.assertNotIn('harness codex is not installed', result.stderr)
+    def test_api_key_backed_pi_grant_refuses_before_launch(self):
+        (self.f.home/'config/console-profile').write_text('pi-sol\n')
+        (self.f.home/'config/console-qualified-profiles').write_text('pi-sol\n')
+        auth = self.f.user/'.pi/agent/auth.json'
+        auth.parent.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({'opencode': {'type': 'api_key', 'key': 'SYNTHETIC'}}))
+        self.f.script(self.f.user/'.local/bin/pi', 'if [ "$1" = --version ]; then echo 0.81.1; exit 0; fi\nprintf "%s\\n" "$@" > "$FIXTURE_ROOT/pi-argv"; exit 91\n')
+        self.f.record(harness='pi', profile='pi-sol', model='openai-codex/gpt-5.6-sol:xhigh')
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock', FM_HARNESS='pi')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('exact route grant', result.stderr)
+        self.assertFalse((self.f.root/'pi-argv').exists())
+
+    def test_unqualified_inherited_pi_harness_refuses_before_launch(self):
+        (self.f.home/'config/console-profile').write_text('pi-sol\n')
+        (self.f.home/'config/console-qualified-profiles').write_text('opus-4-8\n')
+        self.f.script(self.f.user/'.local/bin/pi', 'if [ "$1" = --version ]; then echo 0.81.1; exit 0; fi\nprintf "%s\\n" "$@" > "$FIXTURE_ROOT/pi-argv"; exit 91\n')
+        self.f.record(harness='pi', profile='pi-sol', model='openai-codex/gpt-5.6-sol:xhigh')
+        result = self.f.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic',
+                            HERDR_SOCKET_PATH='/synthetic.sock', FM_HARNESS='pi')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('exact route grant', result.stderr)
+        self.assertFalse((self.f.root/'pi-argv').exists())
+
     def test_conflicting_native_harness_refuses(self):
         result = self.console(FM_HARNESS='claude')
         self.assertNotEqual(result.returncode, 0)

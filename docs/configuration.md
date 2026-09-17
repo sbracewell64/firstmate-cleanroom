@@ -9,6 +9,7 @@ The managed primary Codex client is selected by `FM_HOME/config/console-codex-cl
 The complete Linux native package, including the code-mode host, search, sandbox and shell resources, must match before launching.
 A standalone executable hash does not qualify an executable runtime.
 The separately qualified native Codex primary profile is `codex-luna`, using the built-in `openai` provider, model `gpt-5.6-luna`, ChatGPT authentication, and reasoning effort `max`.
+Native qualification also requires the resolved `codex` executable to be the same non-symlink executable recorded as the pinned launch client's `path`; a different or unverifiable launch identity remains pending.
 The guard verifies native ChatGPT authentication and the selected built-in OpenAI model before launch, refusing conflicting API/provider inputs.
 Its `--check` performs metadata qualification without inference; deployed primary and worker consumption require separate evidence.
 This primary pin does not configure worker or no-mistakes clients.

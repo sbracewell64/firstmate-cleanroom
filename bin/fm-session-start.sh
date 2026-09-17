@@ -948,8 +948,6 @@ else
   DRAIN_ACK_SEQUENCE=
   DRAIN_ACK_GENERATION=
   DRAIN_ACK_RECORD=
-  DRAIN_FALLBACK_FIFO=
-  DRAIN_RELAY_PID=
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
   DRAIN_ACKFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-ack.XXXXXX" 2>/dev/null) || DRAIN_ACKFILE=
   if [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_ACKFILE" ]; then
@@ -971,19 +969,13 @@ else
   else
     [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE"
     [ -z "$DRAIN_ACKFILE" ] || rm -f -- "$DRAIN_ACKFILE"
-    DRAIN_FALLBACK_FIFO="$STATE/.session-start-drain.${BASHPID:-$$}.fifo"
-    if mkfifo "$DRAIN_FALLBACK_FIFO" 2>/dev/null; then
-      _fm_programme_prefix_diagnostic <"$DRAIN_FALLBACK_FIFO" >&2 &
-      DRAIN_RELAY_PID=$!
-      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_FALLBACK_FIFO") || DRAIN_RC=$?
-      wait "$DRAIN_RELAY_PID" 2>/dev/null || true
-      rm -f -- "$DRAIN_FALLBACK_FIFO"
-    else
-      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>/dev/null) || DRAIN_RC=$?
-      printf '%s\n' 'wake drain diagnostics: staging was unavailable' >&2
-    fi
+    DRAIN_RC=125
+    DRAIN_OUT=
     DRAIN_DIAG=
     DRAIN_DIAG_STAGED=0
+    DRAIN_ACK_VALID=0
+    printf '%s\n' 'wake drain was not run: stdout, stderr, and acknowledgement channels could not be staged' \
+      | _fm_programme_prefix_diagnostic >&2
   fi
   if [ "$DRAIN_RC" -ne 0 ]; then
     printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"

@@ -984,6 +984,16 @@ PYZ
   pass "a zombie reads as live while yielding no identity, which is what the restart free-pid poll waits out"
 }
 
+test_live_unverifiable_identity_does_not_confirm_stop() {
+  local status=0
+  bash -c '. "$1"; fm_pid_alive() { return 0; }; fm_pid_identity() { return 1; }; fm_stop_process_confirmed 123 recorded 1' _ "$LIB" || status=$?
+  [ "$status" -eq 4 ] || fail "a live target with unverifiable identity returned $status instead of an unverifiable result"
+  if bash -c '. "$1"; fm_stop_was_delivered 4' _ "$LIB"; then
+    fail "an unverifiable stop result was treated as a delivered stop"
+  fi
+  pass "live unverifiable identity blocks confirmed collection"
+}
+
 test_pid_identity_is_locale_invariant() {
   # The portable fallback records its process identity under one locale, then
   # arm/guard/turn-end re-read it under the machine's ambient locale. ps's lstart
@@ -1814,6 +1824,7 @@ test_restart_records_whether_its_stop_was_confirmed
 test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
 test_a_zombie_reads_live_but_yields_no_identity
+test_live_unverifiable_identity_does_not_confirm_stop
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc

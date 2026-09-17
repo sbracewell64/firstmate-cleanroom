@@ -138,6 +138,8 @@ fm_pid_identity() {
 # a deadline of zero, which the bound check rejects before the first kill - and
 # 3 when the FIRST delivery could not be
 # sent at all to a target that is STILL THERE - the shape a caller refuses on,
+# and 4 when identity revalidation is unverifiable while the target is still
+# live - the shape a caller must not collect or reclaim on,
 # rather than delivering its own signal first and paying an immediate second
 # delivery to learn the same thing. A first delivery that fails because the
 # target disappeared between the liveness check and the kill is the outcome the
@@ -151,11 +153,12 @@ fm_pid_identity() {
 # somewhere to be added rather than being inferred from whichever codes happen
 # to exist. Today they are: a pid that is not a number, a deadline that is not a
 # number, a deadline of zero (rejected before the first kill), and a first
-# delivery that could not be sent at all. The first three report rc=2 and the
-# last rc=3. Everything else reached at least one delivery.
+# delivery that could not be sent at all. The first three report rc=2, the
+# delivery failure reports rc=3, and the unverifiable live target reports rc=4.
+# Everything else reached at least one delivery or proved the target gone.
 fm_stop_was_delivered() {  # <fm_stop_process_confirmed return code>
   case "$1" in
-    2|3) return 1 ;;
+    2|3|4) return 1 ;;
   esac
   return 0
 }
@@ -179,7 +182,10 @@ fm_stop_process_confirmed() {
   while :; do
     fm_pid_alive "$pid" || return 0
     if [ -n "$recorded" ]; then
-      current=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
+      if ! current=$(fm_pid_identity "$pid" 2>/dev/null); then
+        fm_pid_alive "$pid" && return 4
+        return 0
+      fi
       [ "$current" = "$recorded" ] || return 0
     fi
     [ "$i" -lt "$limit" ] || return 1

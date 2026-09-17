@@ -589,7 +589,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode
-  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid
+  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
   local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 
@@ -625,7 +625,11 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   receipt_file="$FM_HOME/$receipt_rel"
   [ -e "$receipt_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt $receipt_rel is unavailable"; return 0; }
   local_owner_private_file "$receipt_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel is not a private same-user single-link mode-0600 file"; return 0; }
-  [ "$(sha256_file "$receipt_file")" = "$receipt_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel no longer has its recorded sha256"; return 0; }
+  if ! receipt_actual=$(sha256_file "$receipt_file"); then
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt cannot be read or hashed"
+    return 0
+  fi
+  [ "$receipt_actual" = "$receipt_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel no longer has its recorded sha256"; return 0; }
   receipt=$(jq -c 'if type=="object" then . else error("not object") end' "$receipt_file" 2>/dev/null) || {
     local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not a readable JSON object"
     return 0
@@ -704,7 +708,11 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   check_file="$FM_HOME/$check_rel"
   [ -e "$check_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt $check_rel is unavailable"; return 0; }
   local_owner_private_file "$check_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel is not a private same-user single-link mode-0600 file"; return 0; }
-  [ "$(sha256_file "$check_file")" = "$check_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel no longer has its recorded sha256"; return 0; }
+  if ! check_actual=$(sha256_file "$check_file"); then
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt cannot be read or hashed"
+    return 0
+  fi
+  [ "$check_actual" = "$check_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel no longer has its recorded sha256"; return 0; }
   check_doc=$(jq -c 'if type=="object" then . else error("not object") end' "$check_file" 2>/dev/null) || {
     local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt is not a readable JSON object"; return 0; }
   if ! printf '%s' "$check_doc" | jq -e --arg head "$head" --arg tree "$tree" --arg maker "$maker" --arg checker "$checker" --arg pipeline "$(printf '%s' "$qualification" | jq -r '.pipeline')" '
@@ -762,15 +770,29 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
     source_sha=$(git -C "$repo" show "$head:$source" 2>/dev/null | sha256_stream) || source_sha=''
     [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
     [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
+    source_mode=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $1}')
+    source_type=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $2}')
+    case "$source_mode:$source_type" in 100644:blob|100755:blob) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a governed regular-file object"; return 0 ;; esac
     destination_file="$ROOT/$destination"
     local_owner_path_has_no_symlinks "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
     destination_parent=$(CDPATH='' cd -- "$(dirname "$destination_file")" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination parent for $destination is unavailable"; return 0; }
     case "$destination_parent/" in "$root_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination resolves outside the programme root"; return 0 ;; esac
     [ -f "$destination_file" ] && [ ! -L "$destination_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"; return 0; }
-    git -C "$ROOT" ls-files --error-unmatch -- "$destination" >/dev/null 2>&1 || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a tracked repository path"; return 0; }
+    destination_index_oid=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $2}')
+    destination_mode=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $1}')
+    case "$destination_mode" in 100644|100755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a governed regular-file object"; return 0 ;; esac
+    if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+      destination_fs_mode=$(stat -f %Lp "$destination_file" 2>/dev/null) || destination_fs_mode=''
+    else
+      destination_fs_mode=$(stat -c %a "$destination_file" 2>/dev/null) || destination_fs_mode=''
+    fi
+    case "$destination_mode:$destination_fs_mode" in 100644:644|100755:755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination mode differs from the tracked candidate"; return 0 ;; esac
     source_oid=$(git -C "$repo" rev-parse "$head:$source" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source object identity is unavailable"; return 0; }
     destination_oid=$(git -C "$ROOT" hash-object -- "$destination_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination object identity is unavailable"; return 0; }
-    [ "$destination_oid" = "$source_oid" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not the exact tracked candidate object"; return 0; }
+    [ "$source_mode" = "$destination_mode" ] && [ "$destination_index_oid" = "$destination_oid" ] && [ "$destination_oid" = "$source_oid" ] || {
+      local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not the exact tracked candidate object and mode"
+      return 0
+    }
     if ! destination_sha=$(sha256_file "$destination_file"); then
       local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination cannot be read back or hashed"; return 0
     fi

@@ -1344,7 +1344,7 @@ repin_local_delivery() {  # <home> <step> <evidence-file>
 }
 
 test_af_private_local_delivery_owner() {
-  local home out projection proof_sha receipt check dest tmp
+  local home out projection proof_sha receipt check dest tmp fakebin old_path
   home=$(make_af_home af-local-delivery)
   write_proof_b_adverse "$home"
   proof_sha=$(sha_of "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")
@@ -1362,6 +1362,10 @@ test_af_private_local_delivery_owner() {
   expect_cno_refusal "$out" slice-b REQUIRED_BINDING_MISSING "local delivery after A"
   [ "$(field "$out" '.completed | map(.id) | join(",")')" = "architecture-re-review-ruling,slice-c,slice-a" ] || fail "local delivery accepted only A: $(field "$out" '.completed')"
   [ "$(field "$out" '.completed[-1].outcome')" = DELIVERED_QUALIFIED ] || fail "local delivery outcome not projected"
+  write_local_delivery_evidence "$home" slice-a artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-a.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice A resolve failed: $out"
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "A refuses an artifacts/synthesis deliverable"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
   projection=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$PROJECTION" project) || fail "local delivery projection failed: $projection"
   [ "$(field "$projection" '.next_action')" = slice-b ] && [ "$(field "$projection" '.reason_code')" = REQUIRED_BINDING_MISSING ] || fail "projection did not consume the exact resolver result"
   [ "$projection" = "$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 "$PROJECTION" project)" ] || fail "unchanged local delivery projection is not idempotent"
@@ -1369,6 +1373,10 @@ test_af_private_local_delivery_owner() {
   out=$(run_resolve "$home" resolve) || fail "local delivery B resolve failed: $out"
   expect_cno_refusal "$out" slice-d REQUIRED_BINDING_MISSING "local delivery keeps D separate"
   [ "$(field "$out" '.next_action')" != pilot-f ] || fail "local delivery launched F before D qualified"
+  write_local_delivery_evidence "$home" slice-b artifacts/synthesis/bin/slice-d.py artifacts/synthesis/bin/slice-d.py slice-b.json
+  out=$(run_resolve "$home" resolve) || fail "cross-slice B resolve failed: $out"
+  expect_cno_refusal "$out" slice-b OWNER_EVIDENCE_PRIVACY_EXPOSURE "B refuses an artifacts/synthesis deliverable"
+  write_local_delivery_evidence "$home" slice-b exchange/bin/slice-b.py exchange/bin/slice-b.py slice-b.json
   write_local_delivery_evidence "$home" slice-d exchange/bin/slice-a.py exchange/bin/slice-a.py slice-d.json
   out=$(run_resolve "$home" resolve) || fail "cross-slice D resolve failed: $out"
   expect_cno_refusal "$out" slice-d OWNER_EVIDENCE_PRIVACY_EXPOSURE "D refuses an exchange deliverable"
@@ -1405,8 +1413,47 @@ test_af_private_local_delivery_owner() {
   out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "forged checker receipt"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
+  fakebin="$home/fake-bin"; mkdir -p "$fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *slice-a-delivery.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery receipt"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *slice-a-check.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable checker receipt"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/exchange/bin/slice-a.py*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery destination"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange//bin/slice-a.py"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "duplicate-separator path"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  mkdir -p "$home/escape-target"; ln -s "$home/escape-target" "$home/cleanroom/exchange/escape"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/escape/slice-a.py"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_PRIVACY_EXPOSURE "symlink escape path"
+  rm "$home/cleanroom/exchange/escape"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
   rm "$dest"
   out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unavailable read-back"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  chmod 755 "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "mode mutation"
+  chmod 644 "$dest"
+  printf 'tampered\n' > "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "tracked-object mutation"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].sha256="0000000000000000000000000000000000000000000000000000000000000000"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate digest mutation"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
   printf 'advance\n' > "$home/projects/exchange-work/advance.txt"; git -C "$home/projects/exchange-work" add advance.txt

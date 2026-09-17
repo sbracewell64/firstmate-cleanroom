@@ -1454,7 +1454,7 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   if [ -n "$recorded" ] && [ "$current" = "$recorded" ]; then
     retire_rc=0
-    fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
+    fm_autoarm_confirm_stop_bounded "$lock_pid" "$recorded" || retire_rc=$?
     if [ "$retire_rc" -ne 0 ]; then
       fm_lock_release "$steal"
       return 1
@@ -1462,6 +1462,31 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   fm_lock_release "$steal"
   return 1
+}
+
+fm_autoarm_confirm_stop_bounded() {
+  local pid=$1 recorded=$2
+  (
+    # shellcheck source=bin/fm-timeout-lib.sh
+    . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
+    fm_run_timed 1 bash -c '
+      set -u
+      lib=$1
+      pid=$2
+      recorded=$3
+      . "$lib"
+      current=$(fm_pid_identity "$pid" 2>/dev/null) || exit 4
+      [ "$current" = "$recorded" ] || exit 4
+      if ! kill -TERM "$pid" 2>/dev/null; then
+        fm_pid_alive "$pid" || exit 0
+        exit 3
+      fi
+      while fm_pid_alive "$pid"; do
+        sleep 0.1
+      done
+      exit 0
+    ' _ "$FM_WAKE_LIB_DIR/fm-wake-lib.sh" "$pid" "$recorded"
+  )
 }
 
 fm_wake_clean_field() {

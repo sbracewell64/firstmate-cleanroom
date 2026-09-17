@@ -43,15 +43,17 @@ fm_current_pid() {
 }
 
 fm_pid_alive() {
-  local pid=$1 proc_root stat_line state
+  local pid=$1 proc_root stat_line state ppid
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
-  if [ -r "$proc_root/$pid/stat" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    read -r state _ <<< "${stat_line##*)}"
-    [ "$state" != Z ] || return 1
+  if [ -e "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/stat" ] &&
+    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null); then
+    read -r state ppid _ <<< "${stat_line##*)}"
+    if [ "$ppid" -eq "$ppid" ] 2>/dev/null; then
+      [ "$state" != Z ] || return 1
+    fi
   fi
   kill -0 "$pid" 2>/dev/null
 }

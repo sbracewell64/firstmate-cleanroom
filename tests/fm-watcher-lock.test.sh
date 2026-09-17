@@ -1009,6 +1009,27 @@ PYZ
   pass "a zombie is dead for ownership and permits a successor claim without signalling"
 }
 
+test_unevaluable_proc_state_is_live_safe() {
+  local dir proc_root pid status=0
+  dir=$(make_case unevaluable-proc-state)
+  proc_root="$dir/proc"
+  pid=$$
+  mkdir -p "$proc_root/$pid"
+  for stat_line in '' '   ' 'not a proc stat' 'x (watcher) Q 1 2 3'; do
+    printf '%s\n' "$stat_line" > "$proc_root/$pid/stat"
+    status=0
+    FM_PROC_ROOT_OVERRIDE="$proc_root" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" || status=$?
+    [ "$status" -eq 0 ] || fail "unevaluable proc state was treated as dead: '$stat_line'"
+  done
+  printf '%s\n' 'x (watcher) R 1 2 3' > "$proc_root/$pid/stat"
+  FM_PROC_ROOT_OVERRIDE="$proc_root" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" \
+    || fail "a valid non-zombie proc state was treated as dead"
+  printf '%s\n' 'x (watcher) Z 1 2 3' > "$proc_root/$pid/stat"
+  FM_PROC_ROOT_OVERRIDE="$proc_root" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$pid" \
+    && fail "a positively observed zombie was treated as live"
+  pass "unevaluable proc state remains live-safe while exact zombies are dead"
+}
+
 test_live_unverifiable_identity_does_not_confirm_stop() {
   local status=0
   bash -c '. "$1"; fm_pid_alive() { return 0; }; fm_pid_identity() { return 1; }; fm_stop_process_confirmed 123 recorded 1' _ "$LIB" || status=$?
@@ -1881,6 +1902,7 @@ test_restart_records_whether_its_stop_was_confirmed
 test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
 test_a_zombie_is_dead_and_does_not_block_successor
+test_unevaluable_proc_state_is_live_safe
 test_live_unverifiable_identity_does_not_confirm_stop
 test_live_missing_identity_does_not_signal
 test_zero_redelivery_polls_use_default_cadence

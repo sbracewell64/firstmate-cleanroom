@@ -749,7 +749,7 @@ test_worker_kernel_roles_and_promotion() {
   [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "ship-only fragment accepted for scout"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --discipline-fact schema --proof-kind accepted-surface --proof-surface 'receiver CLI' >/dev/null \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --discipline-fact schema --discipline-fact real-runtime-surface --proof-kind accepted-surface --proof-surface 'receiver CLI' >/dev/null \
     || fail "shared-boundary ship did not render"
   assert_grep '# Shared boundary' "$home/data/kernel-shared/brief.md" "explicit shared seam was lost"
   assert_grep 'receiver CLI' "$home/data/kernel-shared/brief.md" "explicit proof surface was lost"

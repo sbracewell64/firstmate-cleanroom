@@ -170,6 +170,7 @@ fm_discipline_sha() { # <readable-file>
 
 fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>] [--outer-generation <generation>]
   local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' outer_generation='' local_fact=0 shared=0
+  local runtime_surface=0 product_surface=0 repeated_verification=0
   local facts='[]' fact level block fragment preimage selection generation
   shift 3
   command -v jq >/dev/null 2>&1 || { fm_discipline_gap 'discipline-capability: jq required'; return 3; }
@@ -186,6 +187,9 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
         case "$fact" in
           local) local_fact=1 ;;
           shared-api|schema|persisted-state|authority|lifecycle|identity|provenance|sibling-invariant) shared=1 ;;
+          real-runtime-surface) runtime_surface=1 ;;
+          real-product-surface) product_surface=1 ;;
+          repeated-verification) repeated_verification=1 ;;
           *) fm_discipline_gap "unknown-discipline-fact: $fact"; return 3 ;;
         esac
         facts=$(printf '%s' "$facts" | jq -c --arg fact "$fact" '. + [$fact] | unique') || return 3
@@ -215,9 +219,23 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
   case "$proof_kind" in
     '')
       [ -z "$proof_surface" ] || { fm_discipline_gap 'proof-kind-required: --proof-surface needs accepted-surface or verification-lever'; return 3; }
+      [ "$runtime_surface" -eq 0 ] && [ "$product_surface" -eq 0 ] && [ "$repeated_verification" -eq 0 ] || {
+        fm_discipline_gap 'proof-fact-required: accepted proof kind and concrete surface are required'; return 3;
+      }
       ;;
-    accepted-surface|verification-lever)
+    accepted-surface)
       [ -n "$proof_surface" ] || { fm_discipline_gap "proof-surface-required: $proof_kind needs a concrete surface"; return 3; }
+      [ "$runtime_surface" -eq 1 ] || [ "$product_surface" -eq 1 ] || {
+        fm_discipline_gap 'proof-authority-required: accepted-surface needs real-runtime-surface or real-product-surface'; return 3;
+      }
+      [ "$repeated_verification" -eq 0 ] || { fm_discipline_gap 'proof-authority-cross-pair: accepted-surface cannot use repeated-verification'; return 3; }
+      ;;
+    verification-lever)
+      [ -n "$proof_surface" ] || { fm_discipline_gap "proof-surface-required: $proof_kind needs a concrete surface"; return 3; }
+      [ "$repeated_verification" -eq 1 ] || {
+        fm_discipline_gap 'proof-authority-required: verification-lever needs repeated-verification'; return 3;
+      }
+      [ "$runtime_surface" -eq 0 ] && [ "$product_surface" -eq 0 ] || { fm_discipline_gap 'proof-authority-cross-pair: verification-lever cannot use a real surface fact'; return 3; }
       ;;
     *) fm_discipline_gap "unknown-proof-kind: $proof_kind"; return 3 ;;
   esac
@@ -348,7 +366,7 @@ fm_discipline_render() { # <data> <task> <ship> <implementation>
   local data=$1 task=$2 role=$3 stage=$4 block first rest tail
   fm_discipline_load "$data" "$task" "$role" "$stage" || return 3
   local args=() shared
-  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. != "local")] | length')
+  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. == "shared-api" or . == "schema" or . == "persisted-state" or . == "authority" or . == "lifecycle" or . == "identity" or . == "provenance" or . == "sibling-invariant")] | length')
   [ "$shared" -eq 0 ] || args+=(--shared-boundary)
   [ "$FM_DISCIPLINE_LEVEL" != proof-surface ] || args+=(--proof-surface "$FM_DISCIPLINE_PROOF_SURFACE")
   block=$(fm_discipline_block ship "${args[@]+"${args[@]}"}") || return 3
@@ -377,7 +395,7 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   [ -n "$proof" ] || { fm_discipline_gap 'discipline-evidence-missing: worker-discipline candidate evidence is required'; return 3; }
   if ! printf '%s' "$proof" | jq -e --arg task "$task" --arg generation "$FM_DISCIPLINE_GENERATION" \
       --arg level "$FM_DISCIPLINE_LEVEL" --arg fragment "$FM_DISCIPLINE_FRAGMENT_SHA256" \
-      --arg surface "$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r .proof_surface)" '
+      --argjson receipt "$FM_DISCIPLINE_RECEIPT" '
     (keys|sort) == ["discipline","id"] and
     (.discipline|type == "object") and
     (.discipline|keys|sort) == ["command","fragment_sha256","generation","level","oracle","outcome","path","producer","role","safety_facts","sha256","stage","surface","task"] and
@@ -385,8 +403,8 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
     .discipline.generation == $generation and .discipline.level == $level and
     .discipline.fragment_sha256 == $fragment and .discipline.producer == "worker-candidate" and
     (.discipline.outcome == "OBSERVED" or .discipline.outcome == "CNO") and
-    .discipline.surface == $surface and
-    ($level != "proof-surface" or .discipline.command == $surface) and
+    .discipline.surface == $receipt.proof_surface and
+    ($level != "proof-surface" or .discipline.command == $receipt.proof_surface) and
     all([.discipline.command,.discipline.oracle,.discipline.path,.discipline.sha256][];
       type == "string" and length > 0) and
     (.discipline.path|startswith("/")) and
@@ -397,7 +415,7 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
     fm_discipline_gap 'discipline-evidence-invalid: candidate evidence identity, outcome or artifact binding does not match the selected discipline'
     return 3
   fi
-  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq '[.facts[] | select(. != "local")] | length')
+  shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq '[.facts[] | select(. == "shared-api" or . == "schema" or . == "persisted-state" or . == "authority" or . == "lifecycle" or . == "identity" or . == "provenance" or . == "sibling-invariant")] | length')
   if [ "$shared" -gt 0 ] && [ "$(printf '%s' "$proof" | jq '.discipline.safety_facts | length')" -eq 0 ]; then
     fm_discipline_gap 'discipline-evidence-safety-facts: shared-boundary evidence requires at least one explicit safety fact'
     return 3

@@ -704,7 +704,7 @@ test_discipline_stage_identity_evidence_and_retry() {
   make_worktree "$wt" fm/discipline-stage
   head=$(git -C "$wt" rev-parse HEAD)
   FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" discipline-stage repo --mode no-mistakes \
-    --discipline-fact schema --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null \
+    --discipline-fact schema --discipline-fact real-runtime-surface --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null \
     || fail "discipline stage fixture did not compile"
   make_task discipline-stage no-mistakes "$wt"
   desc="$DATA/discipline-stage/work-context.json"

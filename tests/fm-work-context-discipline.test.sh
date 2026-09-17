@@ -69,7 +69,7 @@ test_compiler_selects_three_levels() {
   [ "$(level "$desc")" = shared-boundary ] || fail "schema fact did not select shared-boundary"
   assert_grep '# Shared boundary' "$home/data/shared/brief.md" "shared fragment was not rendered"
 
-  FM_HOME="$home" "$BRIEF" proof repo --mode local-only --discipline-fact local \
+  FM_HOME="$home" "$BRIEF" proof repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null \
     || fail "proof discipline did not compile"
   desc="$home/data/proof/work-context.json"
@@ -80,14 +80,14 @@ test_compiler_selects_three_levels() {
   marker="$home/proof-surface-side-effect"
   surface='$(touch '
   surface="${surface}${marker}) \`uname\` \${PATH} \"quoted\" \\\\"
-  FM_HOME="$home" "$BRIEF" literal repo --mode local-only --discipline-fact local \
+  FM_HOME="$home" "$BRIEF" literal repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface "$surface" >/dev/null \
     || fail "literal proof surface did not compile"
   [ ! -e "$marker" ] || fail "proof surface executed command substitution"
   assert_grep "$surface" "$home/data/literal/brief.md" "proof surface bytes were not preserved literally"
   multiline=$'```sh\n$(touch '
   multiline="${multiline}${home}/multiline-side-effect)"$'\n\tprintf '\''\"quoted\"'\''\n\n```\n'
-  FM_HOME="$home" "$BRIEF" multiline repo --mode local-only --discipline-fact local \
+  FM_HOME="$home" "$BRIEF" multiline repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface "$multiline" >/dev/null \
     || fail "multiline proof surface did not compile"
   [ ! -e "$home/multiline-side-effect" ] || fail "multiline proof surface executed command substitution"
@@ -110,6 +110,14 @@ test_compiler_selects_three_levels() {
     --discipline-fact local --proof-surface 'bin/example --status' 2>&1); rc=$?
   expect_code 3 "$rc" "proof surface without an accepted proof kind must refuse"
   assert_contains "$out" 'proof-kind-required' "unjustified proof surface refusal was not typed"
+  out=$(FM_HOME="$home" "$BRIEF" missing-authority repo --mode local-only --discipline-fact local \
+    --proof-kind accepted-surface --proof-surface 'bin/example --status' 2>&1); rc=$?
+  expect_code 3 "$rc" "accepted surface without authority fact must refuse"
+  assert_contains "$out" 'proof-authority-required' "missing accepted-surface authority was not typed"
+  out=$(FM_HOME="$home" "$BRIEF" cross-authority repo --mode local-only --discipline-fact real-runtime-surface --discipline-fact repeated-verification \
+    --proof-kind accepted-surface --proof-surface 'bin/example --status' 2>&1); rc=$?
+  expect_code 3 "$rc" "cross-paired authority fact must refuse"
+  assert_contains "$out" 'proof-authority-cross-pair' "cross-paired authority refusal was not typed"
   pass "discipline compiler: contradictory, unknown and unjustified stronger selections refuse"
 }
 
@@ -228,7 +236,7 @@ SH
 printf '{"status":"ready"}\n'
 SH
   chmod +x "$fixture/bin/example"
-  FM_HOME="$home" "$BRIEF" behavior-proof repo --mode local-only --discipline-fact local \
+  FM_HOME="$home" "$BRIEF" behavior-proof repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null
   (cd "$fixture" && bin/example --status) > "$home/proof-surface.txt"
   assert_grep '"status":"ready"' "$home/proof-surface.txt" "real proof surface was not exercised"
@@ -237,11 +245,12 @@ SH
 }
 
 test_candidate_evidence_is_bound_but_not_authority() {
-  local home desc receipt head run artifact evidence out rc mutation
+  local home desc receipt head run artifact evidence out rc mutation surface
   home="$TMP_ROOT/evidence"
   make_home "$home"
-  FM_HOME="$home" "$BRIEF" evidence repo --mode no-mistakes --discipline-fact schema \
-    --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null \
+  surface=$'bin/example --status\n'
+  FM_HOME="$home" "$BRIEF" evidence repo --mode no-mistakes --discipline-fact schema --discipline-fact real-runtime-surface \
+    --proof-kind accepted-surface --proof-surface "$surface" >/dev/null \
     || fail "evidence fixture did not compile"
   desc="$home/data/evidence/work-context.json"
   receipt=$(jq -c '.engineering.discipline' "$desc")
@@ -254,9 +263,9 @@ test_candidate_evidence_is_bound_but_not_authority() {
     --arg generation "$(printf '%s' "$receipt" | jq -r .generation)" \
     --arg level "$(printf '%s' "$receipt" | jq -r .level)" \
     --arg fragment "$(printf '%s' "$receipt" | jq -r .fragment_sha256)" \
-    --arg surface "$(printf '%s' "$receipt" | jq -r .proof_surface)" \
+    --arg surface "$surface" \
     --arg path "$artifact" --arg sha "$(sha256sum < "$artifact" | cut -d' ' -f1)" \
-    '{task:$task,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$generation,level:$level,fragment_sha256:$fragment,producer:"worker-candidate",outcome:"OBSERVED",surface:$surface,command:"bin/example --status",oracle:"exit zero and expected status",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' > "$evidence"
+    '{task:$task,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$generation,level:$level,fragment_sha256:$fragment,producer:"worker-candidate",outcome:"OBSERVED",surface:$surface,command:$surface,oracle:"exit zero and expected status",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' > "$evidence"
   cp "$evidence" "$home/valid-evidence.json"
   out=$(FM_HOME="$home" "$CONTEXT" discipline-evidence evidence "$run" "$head") \
     || fail "bound observed evidence was refused"
@@ -296,7 +305,7 @@ test_tampering_and_prompt_bounds() {
   local base_total shared_total proof_total
   home="$TMP_ROOT/tamper"
   make_home "$home"
-  FM_HOME="$home" "$BRIEF" task repo --mode no-mistakes --discipline-fact authority \
+  FM_HOME="$home" "$BRIEF" task repo --mode no-mistakes --discipline-fact authority --discipline-fact repeated-verification \
     --proof-kind verification-lever --proof-surface 'bin/fm-work-context.sh discipline-check' >/dev/null \
     || fail "tamper fixture did not compile"
   desc="$home/data/task/work-context.json"
@@ -322,7 +331,7 @@ test_tampering_and_prompt_bounds() {
   make_home "$home/bounds"
   FM_HOME="$home/bounds" "$BRIEF" base repo --mode local-only --discipline-fact local >/dev/null
   FM_HOME="$home/bounds" "$BRIEF" shared repo --mode local-only --discipline-fact identity >/dev/null
-  FM_HOME="$home/bounds" "$BRIEF" proof repo --mode local-only --discipline-fact local \
+  FM_HOME="$home/bounds" "$BRIEF" proof repo --mode local-only --discipline-fact real-runtime-surface \
     --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null
   extract_discipline "$home/bounds/data/base/brief.md" "$home/base.block"
   extract_discipline "$home/bounds/data/shared/brief.md" "$home/shared.block"

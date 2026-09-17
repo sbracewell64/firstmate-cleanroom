@@ -22,7 +22,7 @@
 #
 # PERSISTED CONTRACT. engineering.discipline is the one selection receipt:
 # {schema,task,role,stage,level,facts[],proof_kind,proof_surface,
-# fragment_sha256,generation}. Levels are base, shared-boundary and
+# outer_generation,fragment_sha256,generation}. Levels are base, shared-boundary and
 # proof-surface. Facts are local, shared-api, schema, persisted-state, authority,
 # lifecycle, identity, provenance or sibling-invariant. Proof kinds are
 # accepted-surface and verification-lever. The compiler derives level,
@@ -147,6 +147,7 @@ FM_DISCIPLINE_RECEIPT=
 FM_DISCIPLINE_LEVEL=
 FM_DISCIPLINE_GENERATION=
 FM_DISCIPLINE_FRAGMENT_SHA256=
+FM_DISCIPLINE_PROOF_SURFACE=
 FM_DISCIPLINE_PROOF_OUTCOME=
 
 fm_discipline_gap() {
@@ -167,8 +168,8 @@ fm_discipline_sha() { # <readable-file>
   fi
 }
 
-fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>]
-  local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' local_fact=0 shared=0
+fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--proof-kind <kind> --proof-surface <text>] [--outer-generation <generation>]
+  local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' outer_generation='' local_fact=0 shared=0
   local facts='[]' fact level block fragment preimage selection generation
   shift 3
   command -v jq >/dev/null 2>&1 || { fm_discipline_gap 'discipline-capability: jq required'; return 3; }
@@ -178,6 +179,7 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
         fact) fact=$a ;;
         proof-kind) proof_kind=$a ;;
         proof-surface) proof_surface=$a ;;
+        outer-generation) outer_generation=$a ;;
       esac
       want=
       if [ "${fact:-}" != '' ]; then
@@ -195,6 +197,7 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
       --fact) want=fact ;;
       --proof-kind) want='proof-kind' ;;
       --proof-surface) want='proof-surface' ;;
+      --outer-generation) want='outer-generation' ;;
       *) fm_discipline_gap "discipline-argument: unknown argument '$a'"; return 3 ;;
     esac
   done
@@ -218,8 +221,12 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
       ;;
     *) fm_discipline_gap "unknown-proof-kind: $proof_kind"; return 3 ;;
   esac
-  if ! jq -e -n --arg text "$proof_surface$task" '$text | test("[\u0000-\u001f\u007f]") | not' >/dev/null; then
-    fm_discipline_gap 'discipline-text: task and proof surface must be single-line text'
+  if ! jq -e -n --arg text "$task" '$text | test("[\u0000-\u001f\u007f]") | not' >/dev/null; then
+    fm_discipline_gap 'discipline-text: task must be single-line text'
+    return 3
+  fi
+  if ! jq -e -n --arg text "$proof_surface" '$text | test("[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]") | not' >/dev/null; then
+    fm_discipline_gap 'discipline-text: proof surface contains an unsupported control character'
     return 3
   fi
   if [ -n "$proof_kind" ]; then
@@ -238,31 +245,36 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
   }
   preimage=$(jq -cS -n --arg task "$task" --arg role "$role" --arg stage "$stage" \
     --arg level "$level" --arg proof_kind "$proof_kind" --arg proof_surface "$proof_surface" \
+    --arg outer_generation "$outer_generation" \
     --arg fragment "$fragment" --argjson facts "$facts" \
     '{schema:"fm-worker-discipline.v1",task:$task,role:$role,stage:$stage,level:$level,
-      facts:$facts,proof_kind:$proof_kind,proof_surface:$proof_surface,fragment_sha256:$fragment}') || return 3
+      facts:$facts,proof_kind:$proof_kind,proof_surface:$proof_surface,outer_generation:$outer_generation,fragment_sha256:$fragment}') || return 3
   selection=$(printf '%s' "$preimage" | fm_discipline_sha /dev/stdin) || return 3
   generation="d1-$selection"
   FM_DISCIPLINE_RECEIPT=$(printf '%s' "$preimage" | jq -cS --arg generation "$generation" '. + {generation:$generation}') || return 3
   FM_DISCIPLINE_LEVEL=$level
   FM_DISCIPLINE_GENERATION=$generation
   FM_DISCIPLINE_FRAGMENT_SHA256=$fragment
+  FM_DISCIPLINE_PROOF_SURFACE=$proof_surface
   return 0
 }
 
 fm_discipline_load() { # <data> <task> <ship> <implementation>
   local data=$1 task=$2 role=$3 stage=$4 desc receipt receipt_task receipt_role receipt_stage
-  local proof_kind proof_surface fact compiled args=()
+  local proof_kind proof_surface fact compiled args=() outer_generation receipt_outer_generation
   FM_DISCIPLINE_RECEIPT=
   FM_DISCIPLINE_LEVEL=
   FM_DISCIPLINE_GENERATION=
   FM_DISCIPLINE_FRAGMENT_SHA256=
+  FM_DISCIPLINE_PROOF_SURFACE=
   desc="$data/$task/work-context.json"
   [ -f "$desc" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
   receipt=$(jq -cS '.engineering.discipline // empty' "$desc" 2>/dev/null) || {
     fm_discipline_gap "discipline-context: malformed $desc"; return 3;
   }
   [ -n "$receipt" ] || { fm_discipline_gap "discipline-missing: $desc"; return 3; }
+  outer_generation=$(jq -r '.engineering.generation // empty' "$desc")
+  [ -n "$outer_generation" ] || { fm_discipline_gap "discipline-context: missing engineering generation in $desc"; return 3; }
   receipt_task=$(printf '%s' "$receipt" | jq -r '.task // empty')
   receipt_role=$(printf '%s' "$receipt" | jq -r '.role // empty')
   receipt_stage=$(printf '%s' "$receipt" | jq -r '.stage // empty')
@@ -270,13 +282,19 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
   [ "$receipt_role" = "$role" ] && [ "$receipt_stage" = "$stage" ] || {
     fm_discipline_gap "discipline-applicability: receipt=$receipt_role/$receipt_stage caller=$role/$stage"; return 3;
   }
+  receipt_outer_generation=$(printf '%s' "$receipt" | jq -r '.outer_generation // empty')
+  [ "$receipt_outer_generation" = "$outer_generation" ] || {
+    fm_discipline_gap 'discipline-identity: outer engineering generation changed or is missing'
+    return 3
+  }
   while IFS= read -r fact; do
     [ -n "$fact" ] && args+=(--fact "$fact")
   done < <(printf '%s' "$receipt" | jq -r '.facts[]?')
   proof_kind=$(printf '%s' "$receipt" | jq -r '.proof_kind // empty')
-  proof_surface=$(printf '%s' "$receipt" | jq -r '.proof_surface // empty')
+  proof_surface=$(printf '%s' "$receipt" | jq -j '.proof_surface // empty'; printf '\001')
+  proof_surface=${proof_surface%$'\001'}
   [ -z "$proof_kind" ] || args+=(--proof-kind "$proof_kind" --proof-surface "$proof_surface")
-  fm_discipline_compile "$task" "$role" "$stage" "${args[@]+"${args[@]}"}" || return 3
+  fm_discipline_compile "$task" "$role" "$stage" "${args[@]+"${args[@]}"}" --outer-generation "$outer_generation" || return 3
   compiled=$FM_DISCIPLINE_RECEIPT
   [ "$receipt" = "$compiled" ] || {
     fm_discipline_gap 'discipline-identity: selection, generation or fragment identity changed or was tampered'
@@ -286,10 +304,9 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
-  local data=$1 task=$2 desc tmp current existing outer_generation
+  local data=$1 task=$2 desc tmp current existing='' outer_generation
+  local compile_args=()
   shift 2
-  fm_discipline_compile "$task" ship implementation "$@" || return 3
-  current=$FM_DISCIPLINE_RECEIPT
   desc="$data/$task/work-context.json"
   mkdir -p "$data/$task" || { fm_discipline_gap "discipline-write: cannot create $data/$task"; return 3; }
   if [ -e "$desc" ]; then
@@ -297,18 +314,24 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
       fm_discipline_gap "discipline-context: malformed $desc"; return 3;
     }
     existing=$(jq -cS '.engineering.discipline // empty' "$desc") || return 3
-    if [ -n "$existing" ]; then
-      [ "$existing" = "$current" ] || {
-        fm_discipline_gap 'discipline-selection-immutable: an existing task selection cannot be rewritten'
-        return 3
-      }
-      return 0
-    fi
   else
     printf '{}\n' > "$desc"
   fi
   outer_generation=$(jq -r '.engineering.generation // empty' "$desc") || return 3
-  [ -n "$outer_generation" ] || outer_generation=$FM_DISCIPLINE_GENERATION
+  if [ -z "$outer_generation" ]; then
+    fm_discipline_compile "$task" ship implementation "$@" || return 3
+    outer_generation=$FM_DISCIPLINE_GENERATION
+  fi
+  compile_args=("$@" --outer-generation "$outer_generation")
+  fm_discipline_compile "$task" ship implementation "${compile_args[@]}" || return 3
+  current=$FM_DISCIPLINE_RECEIPT
+  if [ -n "$existing" ]; then
+    [ "$existing" = "$current" ] || {
+      fm_discipline_gap 'discipline-selection-immutable: an existing task selection cannot be rewritten'
+      return 3
+    }
+    return 0
+  fi
   tmp="$data/$task/.work-context.json.${BASHPID:-$$}"
   jq --argjson discipline "$current" --arg generation "$outer_generation" '
     .engineering = ((.engineering // {triggers:[],skills:[],verification:[]}) +
@@ -327,7 +350,7 @@ fm_discipline_render() { # <data> <task> <ship> <implementation>
   local args=() shared
   shared=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '[.facts[] | select(. != "local")] | length')
   [ "$shared" -eq 0 ] || args+=(--shared-boundary)
-  [ "$FM_DISCIPLINE_LEVEL" != proof-surface ] || args+=(--proof-surface "$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r .proof_surface)")
+  [ "$FM_DISCIPLINE_LEVEL" != proof-surface ] || args+=(--proof-surface "$FM_DISCIPLINE_PROOF_SURFACE")
   block=$(fm_discipline_block ship "${args[@]+"${args[@]}"}") || return 3
   first=${block%%$'\n'*}
   rest=${block#*$'\n'}

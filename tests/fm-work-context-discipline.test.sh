@@ -51,7 +51,7 @@ extract_engineering() { # <brief> <output>
 }
 
 test_compiler_selects_three_levels() {
-  local home desc out rc marker surface
+  local home desc out rc marker surface multiline
   home="$TMP_ROOT/levels"
   make_home "$home"
 
@@ -85,6 +85,15 @@ test_compiler_selects_three_levels() {
     || fail "literal proof surface did not compile"
   [ ! -e "$marker" ] || fail "proof surface executed command substitution"
   assert_grep "$surface" "$home/data/literal/brief.md" "proof surface bytes were not preserved literally"
+  multiline=$'```sh\n$(touch '
+  multiline="${multiline}${home}/multiline-side-effect)"$'\n\tprintf '\''\"quoted\"'\''\n\n```\n'
+  FM_HOME="$home" "$BRIEF" multiline repo --mode local-only --discipline-fact local \
+    --proof-kind accepted-surface --proof-surface "$multiline" >/dev/null \
+    || fail "multiline proof surface did not compile"
+  [ ! -e "$home/multiline-side-effect" ] || fail "multiline proof surface executed command substitution"
+  printf '%s' "$multiline" > "$home/multiline.expected"
+  jq -j '.engineering.discipline.proof_surface' "$home/data/multiline/work-context.json" > "$home/multiline.actual"
+  cmp -s "$home/multiline.expected" "$home/multiline.actual" || fail "multiline proof surface bytes changed in receipt"
   pass "discipline compiler: accepted typed facts independently select base, shared-boundary and proof-surface"
 
   out=$(FM_HOME="$home" "$BRIEF" legacy repo --mode local-only --shared-boundary 2>&1); rc=$?
@@ -123,6 +132,10 @@ test_roles_promotion_and_stable_identity() {
   second=$(FM_HOME="$home" "$CONTEXT" discipline ship ship implementation) \
     || fail "checked discipline could not render after resume"
   [ "$first" = "$second" ] || fail "restart/resume changed the selected discipline identity"
+  jq '.engineering.generation="outer-generation-changed"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$(FM_HOME="$home" "$CONTEXT" discipline ship ship implementation 2>&1); rc=$?
+  expect_code 3 "$rc" "changed outer generation must refuse discipline rendering"
+  assert_contains "$out" 'discipline-identity' "outer generation refusal was not typed"
 
   FM_HOME="$home" "$BRIEF" scout repo --scout >/dev/null || fail "scout fixture failed"
   scout="$home/data/scout/brief.md"

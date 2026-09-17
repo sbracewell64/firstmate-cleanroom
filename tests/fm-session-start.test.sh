@@ -1986,11 +1986,18 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   install_drain_fixture "$root" "drain-output-preserved" "diagnostic-lost-by-reader" 0
+  cat > "$root/bin/fm-wake-drain.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'drain-output-preserved\n\n'
+printf '%s\n' 'diagnostic-lost-by-reader' >&2
+exit 7
+SH
+  chmod +x "$root/bin/fm-wake-drain.sh"
   mkdir -p "$home/tmp"
   cat > "$fakebin/cat" <<SH
 #!/usr/bin/env bash
 case "${1:-}" in
-  "$home/tmp"/fm-session-start-drain.*)
+  "$home/tmp"/fm-session-start-drain-err.*)
     exit 1
     ;;
 esac
@@ -1998,14 +2005,17 @@ exec /bin/cat "$@"
 SH
   chmod +x "$fakebin/cat"
   FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
-  digest=$(TMPDIR="$home/tmp" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)
+  digest_file="$home/stderr-read-failure.digest"
+  TMPDIR="$home/tmp" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest_file" 2>/dev/null
+  digest=$(cat "$digest_file")
   unset FM_TEST_SESSION_START_PATH
-  assert_contains "$digest" "drain-output-preserved" \
+  digest_hex=$(od -An -v -tx1 "$digest_file" | tr -d ' \n')
+  assert_contains "$digest_hex" "647261696e2d6f75747075742d7072657365727665640a0a" \
     "a staged stderr read failure discarded already captured drain stdout"
   assert_contains "$digest" "wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred" \
     "a staged stderr read failure was not reported as non-actionable capture failure"
-  assert_contains "$digest" "wake drain failed (exit 125)" \
-    "a staged stderr read failure did not fail the drain capture"
+  assert_contains "$digest" "wake drain failed (exit 7)" \
+    "a staged stderr read failure did not preserve the drain failure status"
   assert_not_contains "$digest" "diagnostic-lost-by-reader" \
     "a staged stderr read failure unexpectedly exposed unavailable diagnostics"
 

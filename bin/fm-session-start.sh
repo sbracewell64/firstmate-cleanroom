@@ -935,26 +935,46 @@ else
   # exact acknowledgement instruction on stdout. Resolver diagnostics are
   # already prefixed by the shared presentation owner before they reach stderr.
   DRAIN_RC=0
-  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
-  if [ -n "$DRAIN_ERRFILE" ]; then
-    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
-    DRAIN_CAPTURE_FAILED=0
+  DRAIN_OUTFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-out.XXXXXX" 2>/dev/null) || DRAIN_OUTFILE=
+  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-err.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  DRAIN_CAPTURE_FAILED=0
+  DRAIN_CAPTURE_NOTE=
+  DRAIN_OUT_EMPTY=1
+  if [ -n "$DRAIN_OUTFILE" ] && [ -n "$DRAIN_ERRFILE" ]; then
+    "$SCRIPT_DIR/fm-wake-drain.sh" >"$DRAIN_OUTFILE" 2>"$DRAIN_ERRFILE" || DRAIN_RC=$?
+    [ -s "$DRAIN_OUTFILE" ] && DRAIN_OUT_EMPTY=0
+    if ! cat "$DRAIN_OUTFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain output unavailable: staged stdout could not be read; no actionable authority was inferred'
+    fi
     if ! DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null); then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_ERR='wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred'
     fi
-    rm -f -- "$DRAIN_ERRFILE"
+    if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain capture cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_CAPTURE_NOTE" ]; then
+      if [ -n "$DRAIN_ERR" ]; then
+        DRAIN_ERR="$DRAIN_ERR"$'\n'"$DRAIN_CAPTURE_NOTE"
+      else
+        DRAIN_ERR=$DRAIN_CAPTURE_NOTE
+      fi
+    fi
     if [ "$DRAIN_CAPTURE_FAILED" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then
       DRAIN_RC=125
     fi
   else
-    DRAIN_OUT=
-    DRAIN_ERR='wake drain skipped: diagnostic staging could not be secured'
+    DRAIN_ERR='wake drain skipped: stdout and stderr diagnostic staging could not be secured; no actionable authority was inferred'
     DRAIN_RC=125
+    if [ -n "$DRAIN_OUTFILE" ] || [ -n "$DRAIN_ERRFILE" ]; then
+      if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE"; then
+        DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+      fi
+    fi
   fi
-  if [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
-  elif [ "$DRAIN_RC" -eq 0 ]; then
+  if [ "$DRAIN_CAPTURE_FAILED" -eq 0 ] && [ "$DRAIN_OUT_EMPTY" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then
     printf '(no queued wakes)\n'
   fi
   if [ "$DRAIN_RC" -ne 0 ]; then

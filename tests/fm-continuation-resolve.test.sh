@@ -1690,6 +1690,44 @@ test_programme_present_waits_for_presentation_lock() {
   pass "programme presentation serializes its state transaction"
 }
 
+test_programme_revalidates_stale_resolver_snapshot() {
+  local home bin counter out old_identity new_identity
+  home=$(make_home stale-present)
+  bin="$home/presenter-bin"
+  mkdir -p "$bin"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$bin/fm-programme-presentation-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$bin/fm-wake-lib.sh"
+  counter="$home/resolver-count"
+  old_identity=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  new_identity=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  cat > "$bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+count=0
+[ -f '$counter' ] && count=\$(cat '$counter')
+count=\$((count + 1))
+printf '%s\\n' "\$count" > '$counter'
+if [ "\$count" -eq 1 ]; then
+  printf 'older snapshot\\nMaterial identity $old_identity older\\n'
+else
+  printf 'newer snapshot\\nMaterial identity $new_identity newer\\n'
+fi
+SH
+  chmod +x "$bin/fm-continuation-resolve.sh"
+  out=$(FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    . "$2"
+    fm_programme_present "$3" commit
+  ' _ "$bin/fm-programme-presentation-lib.sh" "$bin/fm-wake-lib.sh" "$home/state") \
+    || fail "stale snapshot presentation failed"
+  [ "$(cat "$counter")" -eq 2 ] || fail "presentation did not revalidate under the state lock"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$new_identity" ] \
+    || fail "an older resolver snapshot regressed the presented identity"
+  assert_contains "$out" "newer snapshot" "presentation did not publish the revalidated snapshot"
+  assert_not_contains "$out" "older snapshot" "presentation published the stale resolver snapshot"
+  pass "programme presentation revalidates before committing a stale-prone resolver snapshot"
+}
+
 test_af_presentation_quiet_and_ack_race() {
   local home out ack first second third presented snap view token
   home=$(make_af_home af-present)
@@ -1818,6 +1856,7 @@ timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno
 timed test_programme_ack_waits_for_presentation_lock
 timed test_programme_present_waits_for_presentation_lock
+timed test_programme_revalidates_stale_resolver_snapshot
 timed test_unreadable_inputs_are_cno
 timed test_completion_and_configuration
 timed test_render_and_check_prose

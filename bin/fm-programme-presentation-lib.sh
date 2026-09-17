@@ -61,6 +61,12 @@
 # The branch supervision actor never presents or acknowledges programme
 # state; docs/programme-continuation.md owns the caller census.
 
+FM_PROGRAMME_PRESENTATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v fm_run_timed >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$FM_PROGRAMME_PRESENTATION_DIR/fm-timeout-lib.sh"
+fi
+
 fm_programme_presented_path() {  # <state>
   printf '%s/.programme-presented' "$1"
 }
@@ -141,7 +147,11 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
   errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) \
     || errfile=$(mktemp "/tmp/$prefix.XXXXXX" 2>/dev/null) \
     || { FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: staging allocation failed'; return 125; }
-  out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  if [ "${FM_PROGRAMME_RESOLVER_BOUNDED:-0}" = 1 ]; then
+    out=$(fm_run_timed 1 "$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  else
+    out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  fi
   FM_PROGRAMME_RESOLVER_OUT=$out
   if ! FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile"); then
     FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read'
@@ -191,7 +201,7 @@ _fm_programme_present_locked() {
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1 lock present_rc
+  local state=$1 mode=$2 resolver out rc=0 identity summary diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1 lock present_rc revalidate_capture revalidate_rc revalidate_diag revalidate_out revalidate_identity revalidate_tmpdir saved_tmpdir had_tmpdir=0
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
   if fm_programme_resolver_capture "$resolver" render fm-programme-present; then
@@ -231,8 +241,35 @@ $diagnostic_reason"
   esac
   lock="$state/.status-presentation-lock"
   fm_lock_acquire_wait "$lock" || return 1
-  _fm_programme_present_locked "$state" "$mode" "$identity" "$summary" "$out" "$dedupe"
-  present_rc=$?
+  present_rc=0
+  if [ "$rc" -eq 0 ]; then
+    revalidate_tmpdir=${TMPDIR:-/tmp}
+    [ -d "$revalidate_tmpdir" ] && [ -w "$revalidate_tmpdir" ] || revalidate_tmpdir=/tmp
+    if [ "${TMPDIR+x}" = x ]; then had_tmpdir=1; saved_tmpdir=$TMPDIR; fi
+    TMPDIR=$revalidate_tmpdir
+    FM_PROGRAMME_RESOLVER_BOUNDED=1
+    fm_programme_resolver_capture "$resolver" render fm-programme-present
+    revalidate_capture=$?
+    unset FM_PROGRAMME_RESOLVER_BOUNDED
+    if [ "$had_tmpdir" -eq 1 ]; then TMPDIR=$saved_tmpdir; else unset TMPDIR; fi
+    revalidate_rc=$FM_PROGRAMME_RESOLVER_RC
+    revalidate_diag=$FM_PROGRAMME_RESOLVER_DIAG
+    fm_programme_relay_diagnostic "$revalidate_diag" >&2
+    if [ "$revalidate_capture" -ne 0 ] || [ "$revalidate_rc" -ne 0 ]; then
+      present_rc=1
+    else
+      revalidate_out=$FM_PROGRAMME_RESOLVER_OUT
+      revalidate_identity=$(fm_programme_identity_from_render "$revalidate_out")
+      [ -n "$revalidate_identity" ] || revalidate_identity=$(_fm_programme_sha256 "render-without-identity:$revalidate_out")
+      identity=$revalidate_identity
+      out=$revalidate_out
+      summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)
+    fi
+  fi
+  if [ "$present_rc" -eq 0 ]; then
+    _fm_programme_present_locked "$state" "$mode" "$identity" "$summary" "$out" "$dedupe"
+    present_rc=$?
+  fi
   fm_lock_release "$lock" || [ "$present_rc" -ne 0 ] || present_rc=1
   return "$present_rc"
 }

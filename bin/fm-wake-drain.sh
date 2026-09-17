@@ -407,8 +407,8 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
-  print_programme_presentation "$ack_mode"
-  fm_lock_release "$lock"
+  fm_lock_release "$lock" || rc=1
+  print_programme_presentation "$ack_mode" || rc=1
   return "$rc"
 }
 

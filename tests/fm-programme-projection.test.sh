@@ -477,6 +477,7 @@ test_resolver_stderr_is_not_the_typed_result() {
   mkdir -p "$fakebin" "$realbin"
   cp "$PROJECT" "$realbin/fm-programme-projection.sh"
   cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$realbin/fm-programme-presentation-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$realbin/fm-timeout-lib.sh"
   ln -s "$realbin/fm-programme-projection.sh" "$fakebin/fm-programme-projection.sh"
   # The noise is staged as a file, not interpolated into the stub: it carries a
   # backtick, which is exactly the shape that would otherwise be re-read as

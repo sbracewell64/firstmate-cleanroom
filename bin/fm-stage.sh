@@ -703,7 +703,7 @@ crew_state() {
 # may accept a changed context, after custody returns to the worker.
 engineering_context() { # <transition>
   local transition=$1 pin recorded_head recorded_tree actual_tree recorded_branch actual_branch observed_head
-  local recorded_discipline current_discipline output successor=0
+  local recorded_discipline current_discipline observer_candidate output successor=0
   fm_work_context_engineering "$DATA" "$ID" all all || refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   pin=$(meta stage_context)
   if [ -n "$pin" ] && [ "$pin" != "$FM_WC_ENGINEERING_DIGEST" ]; then
@@ -728,6 +728,9 @@ engineering_context() { # <transition>
     if [ -z "$recorded_head" ] || [ -z "$recorded_tree" ] || [ -z "$recorded_branch" ]; then
       refuse "$transition" DISCIPLINE_IDENTITY 'admitted discipline requires branch/head/tree in the stage receipt'
     fi
+    observer_candidate=$(obs candidate_head)
+    [ -z "$observer_candidate" ] || [ "$observer_candidate" = "$recorded_head" ] || \
+      refuse "$transition" DISCIPLINE_IDENTITY 'observer candidate does not match the admitted discipline candidate'
     actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     [ "$actual_branch" = "$recorded_branch" ] || \
       refuse "$transition" DISCIPLINE_IDENTITY "recorded branch $recorded_branch does not match current branch $actual_branch"
@@ -743,9 +746,6 @@ engineering_context() { # <transition>
       [ "$successor" -eq 1 ] || \
         refuse "$transition" DISCIPLINE_IDENTITY 'live task worktree must remain at the admitted candidate or a verified custody-returned successor'
     fi
-    observed_head=$(obs candidate_head)
-    [ -z "$observed_head" ] || [ "$observed_head" = "$recorded_head" ] || \
-      refuse "$transition" DISCIPLINE_IDENTITY 'observer candidate does not match the admitted discipline candidate'
   fi
 }
 

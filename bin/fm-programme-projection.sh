@@ -242,7 +242,7 @@ RESOLUTION=''
 # staging, reading, or cleanup fails. It never runs the projection without a
 # trustworthy capture boundary.
 read_resolution() {
-  local out diag='' diag_note='' diag_suffix='' reason='' rc=0
+  local out diag='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
   if fm_programme_resolver_capture "$RESOLVER" resolve fm-programme-projection \
@@ -255,19 +255,18 @@ read_resolution() {
     rc=$FM_PROGRAMME_RESOLVER_RC
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: unavailable, they could not be staged'}
   fi
-  reason=${diag:-$diag_note}
-  [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"
   projection_cleanup
   case "$rc" in
     0) fm_programme_relay_diagnostic "$diag" >&2 ;;
     3) fm_programme_relay_diagnostic "$diag" >&2; exit 3 ;;
     *)
       fm_programme_relay_diagnostic "$diag" >&2
-      fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}"
+      fm_programme_relay_diagnostic "$out" >&2
+      fail "resolver failed (exit $rc)"
       ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)$diag_suffix"
+    || { fm_programme_relay_diagnostic "$out" >&2; fail "resolver printed an unrecognized result schema on stdout"; }
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

@@ -179,6 +179,7 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
     captured=0
   fi
+  [ -n "$diag" ] || captured=0
   fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)

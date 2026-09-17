@@ -723,9 +723,9 @@ programme_digest_token() {  # [<state>]
           return 0
         fi
       fi
-      printf ' | %s' "$(_collapse_newlines "$out")" ;;
+      printf ' | %s' "$(_collapse_newlines "$out" | fm_programme_render_non_actionable)" ;;
     3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$(printf '%s' "${diag:-$diag_note}" | head -c 400)")" ;;
+    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(printf '%s' "${diag:-$diag_note}" | head -c 400 | fm_programme_render_non_actionable)" ;;
   esac
 }
 

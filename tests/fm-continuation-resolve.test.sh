@@ -1044,7 +1044,7 @@ test_consumers_project_the_typed_result() {
     FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
       . "$1"; programme_digest_token' _ "$ROOT/bin/fm-supervise-daemon.sh"
   ) || fail "daemon token failed"
-  assert_contains "$token" " | programme cleanroom-requalification@fm-requal-programme/v1: next=proof-b SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT" "away digest token"
+  assert_contains "$token" " | resolver data: programme cleanroom-requalification@fm-requal-programme/v1: next=proof-b SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT" "away digest token"
   pass "the away-mode digest embeds the typed summary token from the same owner"
 
   # No programme: the snapshot says so and the digest token is empty.

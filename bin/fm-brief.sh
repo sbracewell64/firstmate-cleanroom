@@ -127,6 +127,8 @@ MODE_SET=0
 DISCIPLINE_FACTS=()
 PROOF_KIND=
 PROOF_SURFACE=
+PROOF_KIND_SET=0
+PROOF_SURFACE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -137,8 +139,16 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       discipline-fact) DISCIPLINE_FACTS+=(--fact "$a") ;;
-      proof-kind) PROOF_KIND=$a ;;
-      proof-surface) PROOF_SURFACE=$a ;;
+      proof-kind)
+        [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+        PROOF_KIND=$a; PROOF_KIND_SET=1
+        ;;
+      proof-surface)
+        [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+        PROOF_SURFACE=$a; PROOF_SURFACE_SET=1
+        ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -154,9 +164,17 @@ for a in "$@"; do
     --discipline-fact) want_value="discipline-fact" ;;
     --discipline-fact=*) DISCIPLINE_FACTS+=(--fact "${a#--discipline-fact=}") ;;
     --proof-kind) want_value="proof-kind" ;;
-    --proof-kind=*) PROOF_KIND=${a#--proof-kind=} ;;
+    --proof-kind=*)
+      [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+      [ -n "${a#--proof-kind=}" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+      PROOF_KIND=${a#--proof-kind=}; PROOF_KIND_SET=1
+      ;;
     --proof-surface) want_value="proof-surface" ;;
-    --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    --proof-surface=*)
+      [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+      [ -n "${a#--proof-surface=}" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+      PROOF_SURFACE=${a#--proof-surface=}; PROOF_SURFACE_SET=1
+      ;;
     --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     # yolo never reaches the worker: it is recorded posture, not authority or a
     # brief input. Refuse it loudly so it is never silently dropped here and then

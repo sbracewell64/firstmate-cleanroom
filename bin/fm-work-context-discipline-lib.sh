@@ -179,6 +179,7 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
   local task=$1 role=$2 stage=$3 want='' a proof_kind='' proof_surface='' outer_generation='' local_fact=0 shared=0
   local runtime_surface=0 product_surface=0 repeated_verification=0
   local facts='[]' fact level block fragment preimage selection generation arg_kind
+  local proof_kind_seen=0 proof_surface_seen=0 outer_generation_seen=0
   shift 3
   command -v jq >/dev/null 2>&1 || { fm_discipline_gap 'discipline-capability: jq required'; return 3; }
   for a in "$@"; do
@@ -186,9 +187,21 @@ fm_discipline_compile() { # <task> <ship> <implementation> [--fact <fact>] [--pr
       arg_kind=$want
       case "$want" in
         fact) fact=$a ;;
-        proof-kind) proof_kind=$a ;;
-        proof-surface) proof_surface=$a ;;
-        outer-generation) outer_generation=$a ;;
+        proof-kind)
+          [ "$proof_kind_seen" -eq 0 ] || { fm_discipline_gap 'discipline-argument: duplicate --proof-kind'; return 3; }
+          proof_kind_seen=1
+          proof_kind=$a
+          ;;
+        proof-surface)
+          [ "$proof_surface_seen" -eq 0 ] || { fm_discipline_gap 'discipline-argument: duplicate --proof-surface'; return 3; }
+          proof_surface_seen=1
+          proof_surface=$a
+          ;;
+        outer-generation)
+          [ "$outer_generation_seen" -eq 0 ] || { fm_discipline_gap 'discipline-argument: duplicate --outer-generation'; return 3; }
+          outer_generation_seen=1
+          outer_generation=$a
+          ;;
       esac
       want=
       if [ "$arg_kind" = fact ] && [ -z "${fact:-}" ]; then

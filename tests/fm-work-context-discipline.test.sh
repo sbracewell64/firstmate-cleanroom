@@ -71,6 +71,17 @@ test_compiler_selects_three_levels() {
   expect_code 3 "$rc" "an empty fact beside a valid fact must refuse"
   assert_contains "$out" 'empty-discipline-fact' "mixed empty fact refusal was not typed"
 
+  out=$(FM_HOME="$home" "$BRIEF" duplicate-kind repo --mode local-only \
+    --discipline-fact real-runtime-surface --proof-kind accepted-surface \
+    --proof-kind verification-lever --proof-surface 'bin/example --status' 2>&1); rc=$?
+  expect_code 1 "$rc" "duplicate proof kinds must refuse before compilation"
+  assert_contains "$out" 'duplicate --proof-kind' "duplicate proof-kind refusal was not typed"
+  out=$(FM_HOME="$home" "$BRIEF" duplicate-surface repo --mode local-only \
+    --discipline-fact real-runtime-surface --proof-kind accepted-surface \
+    --proof-surface one --proof-surface=two 2>&1); rc=$?
+  expect_code 1 "$rc" "duplicate proof surfaces must refuse before compilation"
+  assert_contains "$out" 'duplicate --proof-surface' "duplicate proof-surface refusal was not typed"
+
   FM_HOME="$home" "$BRIEF" shared repo --mode local-only --discipline-fact schema >/dev/null \
     || fail "shared discipline did not compile"
   desc="$home/data/shared/work-context.json"

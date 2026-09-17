@@ -58,6 +58,8 @@ YOLO_SET=0
 DISCIPLINE_ARGS=()
 PROOF_KIND=
 PROOF_SURFACE=
+PROOF_KIND_SET=0
+PROOF_SURFACE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -69,8 +71,16 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       discipline-fact) DISCIPLINE_ARGS+=(--fact "$a") ;;
-      proof-kind) PROOF_KIND=$a ;;
-      proof-surface) PROOF_SURFACE=$a ;;
+      proof-kind)
+        [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+        PROOF_KIND=$a; PROOF_KIND_SET=1
+        ;;
+      proof-surface)
+        [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+        PROOF_SURFACE=$a; PROOF_SURFACE_SET=1
+        ;;
     esac
     want_value=
     continue
@@ -83,9 +93,17 @@ for a in "$@"; do
     --discipline-fact) want_value="discipline-fact" ;;
     --discipline-fact=*) DISCIPLINE_ARGS+=(--fact "${a#--discipline-fact=}") ;;
     --proof-kind) want_value="proof-kind" ;;
-    --proof-kind=*) PROOF_KIND=${a#--proof-kind=} ;;
+    --proof-kind=*)
+      [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+      [ -n "${a#--proof-kind=}" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+      PROOF_KIND=${a#--proof-kind=}; PROOF_KIND_SET=1
+      ;;
     --proof-surface) want_value="proof-surface" ;;
-    --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    --proof-surface=*)
+      [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+      [ -n "${a#--proof-surface=}" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+      PROOF_SURFACE=${a#--proof-surface=}; PROOF_SURFACE_SET=1
+      ;;
     --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
@@ -119,9 +137,33 @@ CONTROL_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+DESC=
+DESC_SNAPSHOT=
+DESC_EXISTED=0
+INSTRUCTIONS_SNAPSHOT=
+INSTRUCTIONS_EXISTED=0
 promote_cleanup() {
   local status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ -n "$DESC_SNAPSHOT" ]; then
+      if [ "$DESC_EXISTED" -eq 1 ]; then
+        cp -p -- "$DESC_SNAPSHOT" "$DESC" 2>/dev/null || true
+      else
+        rm -f -- "$DESC" 2>/dev/null || true
+      fi
+    fi
+    if [ -n "$INSTRUCTIONS_SNAPSHOT" ]; then
+      if [ "$INSTRUCTIONS_EXISTED" -eq 1 ]; then
+        rm -f -- "$INSTRUCTIONS" 2>/dev/null || true
+        cp -p -- "$INSTRUCTIONS_SNAPSHOT" "$INSTRUCTIONS" 2>/dev/null || true
+      else
+        rm -f -- "$INSTRUCTIONS" 2>/dev/null || true
+      fi
+    fi
+  fi
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$DESC_SNAPSHOT" ] || rm -f -- "$DESC_SNAPSHOT" 2>/dev/null || true
+  [ -z "$INSTRUCTIONS_SNAPSHOT" ] || rm -f -- "$INSTRUCTIONS_SNAPSHOT" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -157,7 +199,23 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 mkdir -p "$DATA/$ID"
-[ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
+[ ! -e "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || {
+  [ -f "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || { echo "error: ship instructions path is unsafe: $INSTRUCTIONS" >&2; exit 1; }
+}
+DESC="$DATA/$ID/work-context.json"
+if [ -e "$DESC" ] || [ -L "$DESC" ]; then
+  [ -f "$DESC" ] && [ ! -L "$DESC" ] || { echo "error: work context path is unsafe: $DESC" >&2; exit 1; }
+  DESC_EXISTED=1
+fi
+DESC_SNAPSHOT=$(mktemp "$DATA/$ID/.work-context.promote.XXXXXX") || { echo "error: could not stage work context" >&2; exit 1; }
+if [ "$DESC_EXISTED" -eq 1 ]; then
+  cp -p -- "$DESC" "$DESC_SNAPSHOT" || { echo "error: could not snapshot work context" >&2; exit 1; }
+fi
+INSTRUCTIONS_SNAPSHOT=$(mktemp "$DATA/$ID/.ship-instructions.promote.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
+if [ -f "$INSTRUCTIONS" ]; then
+  INSTRUCTIONS_EXISTED=1
+  cp -p -- "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" || { echo "error: could not snapshot ship instructions" >&2; exit 1; }
+fi
 [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
 [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
 fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {

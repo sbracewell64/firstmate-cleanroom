@@ -42,25 +42,48 @@ fm_current_pid() {
   printf '%s\n' "${BASHPID:-$$}"
 }
 
-fm_pid_alive() {
-  local pid=$1 proc_root stat_line state ppid
+fm_pid_proc_stat() {
+  local pid=$1 proc_root stat_line ppid
+  local -a stat_fields
+  FM_PID_PROC_STATE=
+  FM_PID_PROC_STARTTIME=
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
-  if [ -e "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/stat" ] &&
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null); then
-    read -r state ppid _ <<< "${stat_line##*)}"
-    if [ "$ppid" -eq "$ppid" ] 2>/dev/null; then
-      [ "$state" != Z ] || return 1
-    fi
+  [ -d "$proc_root" ] || return 2
+  [ -r "$proc_root/$pid/stat" ] || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  read -r -a stat_fields <<< "${stat_line##*)}"
+  [ "${#stat_fields[@]}" -ge 2 ] || return 1
+  ppid=${stat_fields[1]}
+  [ "$ppid" -eq "$ppid" ] 2>/dev/null || return 1
+  case "${stat_fields[0]}" in
+    [A-Z]) ;;
+    *) return 1 ;;
+  esac
+  FM_PID_PROC_STATE=${stat_fields[0]}
+  if [ "${#stat_fields[@]}" -ge 20 ]; then
+    FM_PID_PROC_STARTTIME=${stat_fields[19]}
+    case "$FM_PID_PROC_STARTTIME" in
+      ''|*[!0-9]*) FM_PID_PROC_STARTTIME=;;
+    esac
+  fi
+  return 0
+}
+
+fm_pid_alive() {
+  local pid=$1 proc_state
+  fm_pid_proc_stat "$pid"
+  proc_state=$?
+  if [ "$proc_state" -eq 0 ] && [ "$FM_PID_PROC_STATE" = Z ]; then
+    return 1
   fi
   kill -0 "$pid" 2>/dev/null
 }
 
 fm_pid_identity() {
-  local pid=$1 out proc_root stat_line starttime cmdline_hex identity_key
-  local -a stat_fields
+  local pid=$1 out proc_root cmdline_hex identity_key proc_state
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -71,22 +94,20 @@ fm_pid_identity() {
   # full NUL-separated cmdline keeps PID reuse a mismatch even on a tick collision.
   # Git Bash/MSYS exposes these compatible files but its Cygwin ps rejects the
   # portable fallback's -o fields, so capability detection must not key on uname.
-  if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    # After the final comm delimiter, array index 19 is proc stat field 22.
-    read -r -a stat_fields <<< "${stat_line##*)}"
-    [ "${#stat_fields[@]}" -ge 20 ] || return 1
-    starttime=${stat_fields[19]}
-    case "$starttime" in
-      ''|*[!0-9]*) return 1 ;;
-    esac
+  fm_pid_proc_stat "$pid"
+  proc_state=$?
+  if [ "$proc_state" -eq 0 ]; then
+    [ "$FM_PID_PROC_STATE" != Z ] || return 1
+    [ -n "$FM_PID_PROC_STARTTIME" ] || return 1
+    [ -r "$proc_root/$pid/cmdline" ] || return 1
     cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
     [ -n "$cmdline_hex" ] || return 1
     identity_key=proc-starttime
     [ "$_FM_UNAME" != Linux ] || identity_key=linux-starttime
-    printf '%s=%s cmdline-hex=%s\n' "$identity_key" "$starttime" "$cmdline_hex"
+    printf '%s=%s cmdline-hex=%s\n' "$identity_key" "$FM_PID_PROC_STARTTIME" "$cmdline_hex"
     return 0
   fi
+  [ "$proc_state" -eq 2 ] || return 1
   # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
   # written under one locale but re-read under the machine's ambient locale, which
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.

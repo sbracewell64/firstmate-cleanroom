@@ -172,6 +172,61 @@ fm_discipline_regular_file() { # <path>
   [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]
 }
 
+FM_DISCIPLINE_CAPTURE_DIR=
+FM_DISCIPLINE_CAPTURE_PATH=
+FM_DISCIPLINE_CAPTURE_SHA256=
+
+fm_discipline_capture_cleanup() {
+  [ -z "$FM_DISCIPLINE_CAPTURE_PATH" ] || rm -f -- "$FM_DISCIPLINE_CAPTURE_PATH" 2>/dev/null || true
+  [ -z "$FM_DISCIPLINE_CAPTURE_DIR" ] || rmdir "$FM_DISCIPLINE_CAPTURE_DIR" 2>/dev/null || true
+  FM_DISCIPLINE_CAPTURE_DIR=
+  FM_DISCIPLINE_CAPTURE_PATH=
+  FM_DISCIPLINE_CAPTURE_SHA256=
+}
+
+fm_discipline_capture() { # <path>
+  local path=$1 digest
+  fm_discipline_capture_cleanup
+  FM_DISCIPLINE_CAPTURE_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-discipline-capture.XXXXXX") || return 1
+  FM_DISCIPLINE_CAPTURE_PATH=$(umask 077; mktemp "$FM_DISCIPLINE_CAPTURE_DIR/bytes.XXXXXX") || {
+    fm_discipline_capture_cleanup; return 1;
+  }
+  digest=$(perl - "$path" "$FM_DISCIPLINE_CAPTURE_PATH" <<'PERL'
+use strict;
+use warnings;
+use Fcntl qw(O_NOFOLLOW O_NONBLOCK O_RDONLY O_TRUNC O_WRONLY);
+use Digest::SHA;
+my ($source, $output) = @ARGV;
+sysopen(my $in, $source, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 1;
+my @before = stat($in);
+exit 1 unless @before && (($before[2] & 0170000) == 0100000);
+sysopen(my $out, $output, O_WRONLY | O_TRUNC | O_NOFOLLOW) or exit 1;
+my $sha = Digest::SHA->new(256);
+my $buffer;
+while (1) {
+  my $read = sysread($in, $buffer, 65536);
+  exit 1 unless defined $read;
+  last if $read == 0;
+  $sha->add(substr($buffer, 0, $read));
+  my $offset = 0;
+  while ($offset < $read) {
+    my $written = syswrite($out, $buffer, $read - $offset, $offset);
+    exit 1 unless defined $written && $written > 0;
+    $offset += $written;
+  }
+}
+my @after = stat($in);
+exit 1 unless @after && $after[0] == $before[0] && $after[1] == $before[1] && $after[7] == $before[7];
+print $sha->hexdigest;
+PERL
+  ) || { fm_discipline_capture_cleanup; return 1; }
+  case "$digest" in
+    [0-9a-f][0-9a-f]* ) [ "${#digest}" -eq 64 ] || { fm_discipline_capture_cleanup; return 1; } ;;
+    * ) fm_discipline_capture_cleanup; return 1 ;;
+  esac
+  FM_DISCIPLINE_CAPTURE_SHA256=$digest
+}
+
 fm_discipline_generation_json_valid() {
   jq -e '
     type == "string" and length > 0 and
@@ -455,19 +510,22 @@ fm_discipline_render() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_evidence() { # <data> <task> <run> <exact-head>
-  local data=$1 task=$2 run=$3 head=$4 index proof path expected actual shared
+  local data=$1 task=$2 run=$3 head=$4 index proof path expected actual shared index_json
   FM_DISCIPLINE_PROOF_OUTCOME=
   fm_discipline_load "$data" "$task" ship implementation || return 3
   index="$data/$task/engineering-evidence.json"
+  fm_discipline_capture "$index" || { fm_discipline_gap "discipline-evidence-unreadable: $index"; return 3; }
+  index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  fm_discipline_capture_cleanup
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg task "$task" --arg run "$run" --arg head "$head" '
       length == 1 and (.[0] | .task == $task and .run == $run and .head == $head and
       (.results|type == "array") and (.results|map(.id)|length == (unique|length)))
-    ' "$index" >/dev/null 2>&1; then
+    ' <(printf '%s' "$index_json") >/dev/null 2>&1; then
     fm_discipline_gap "discipline-evidence-identity: $index requires current task/run/head"
     return 3
   fi
-  proof=$(jq -c '.results[] | select(.id == "worker-discipline")' "$index" 2>/dev/null) || return 3
+  proof=$(printf '%s' "$index_json" | jq -c '.results[] | select(.id == "worker-discipline")' 2>/dev/null) || return 3
   [ -n "$proof" ] || { fm_discipline_gap 'discipline-evidence-missing: worker-discipline candidate evidence is required'; return 3; }
   if ! printf '%s' "$proof" | jq -e --arg task "$task" --arg generation "$FM_DISCIPLINE_GENERATION" \
       --arg level "$FM_DISCIPLINE_LEVEL" --arg fragment "$FM_DISCIPLINE_FRAGMENT_SHA256" \
@@ -498,8 +556,9 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   fi
   path=$(printf '%s' "$proof" | jq -r .discipline.path)
   expected=$(printf '%s' "$proof" | jq -r .discipline.sha256)
-  fm_discipline_regular_file "$path" || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
-  actual=$(fm_discipline_sha "$path") || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
+  fm_discipline_capture "$path" || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
+  actual=$FM_DISCIPLINE_CAPTURE_SHA256
+  fm_discipline_capture_cleanup
   [ "$actual" = "$expected" ] || { fm_discipline_gap "discipline-evidence-stale: $path"; return 3; }
   # shellcheck disable=SC2034 # Result consumed by work-context and stage callers.
   FM_DISCIPLINE_PROOF_OUTCOME=$(printf '%s' "$proof" | jq -r .discipline.outcome)

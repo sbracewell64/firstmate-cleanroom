@@ -164,7 +164,7 @@ ROWS
 }
 
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
-  local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill
+  local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill index_json
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
@@ -181,17 +181,22 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   [ -n "$required" ] || return 0
   index="$data/$id/engineering-evidence.json"
   generation=$(printf '%s' "$FM_WC_ENGINEERING" | jq -r .generation)
+  fm_discipline_capture "$index" || {
+    _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
+  }
+  index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  fm_discipline_capture_cleanup
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg id "$id" --arg gen "$generation" --arg run "$run" --arg head "$head" '
       length == 1 and (.[0] | .task == $id and .generation == $gen and .run == $run and .head == $head and
       (.results|type == "array") and (.results|map(.id)|length == (unique|length)))
-    ' "$index" >/dev/null 2>&1; then
+    ' <(printf '%s' "$index_json") >/dev/null 2>&1; then
     _fm_wc_engineering_gap "engineering-evidence-identity: $index requires current task/generation/run/head owner=nmf-completion-residual-carry"; return 3
   fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     skill=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c --argjson req "$row" '.skills[] | select(.id == $req.skill)')
-    proof=$(jq -c --argjson req "$row" '.results[] | select(.id == $req.id)' "$index") || return 3
+    proof=$(printf '%s' "$index_json" | jq -c --argjson req "$row" '.results[] | select(.id == $req.id)') || return 3
     if [ -z "$proof" ] || ! printf '%s' "$proof" | jq -e --argjson req "$row" --argjson skill "$skill" '
       .load.source_sha256 == $skill.sha256 and .load.role == $skill.role and .load.stage == $skill.stage and
       .behavior.scope == $req.scope and (.load.kind == "native-read" or .load.kind == "tool-read") and
@@ -205,10 +210,11 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
     for kind in load behavior; do
       path=$(printf '%s' "$proof" | jq -r ".$kind.path")
       expected=$(printf '%s' "$proof" | jq -r ".$kind.sha256")
-      [ -f "$path" ] && [ -r "$path" ] || {
+      fm_discipline_capture "$path" || {
         _fm_wc_engineering_gap "engineering-evidence-unreadable: $path"; return 3;
       }
-      actual=$(_fm_wc_engineering_sha "$path") || return 3
+      actual=$FM_DISCIPLINE_CAPTURE_SHA256
+      fm_discipline_capture_cleanup
       [ "$actual" = "$expected" ] || {
         _fm_wc_engineering_gap "engineering-evidence-stale: $path"; return 3;
       }

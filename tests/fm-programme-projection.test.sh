@@ -468,7 +468,7 @@ test_not_configured_and_summary() {
 # The same separation is what lets an exit-3 refusal still reach the caller: it
 # is the resolver's stderr, mirrored, with stdout left empty.
 test_resolver_stderr_is_not_the_typed_result() {
-  local home fakebin realbin out err rc noise unstageable
+  local home fakebin realbin out err rc noise unstageable interrupt_tmp projection_pid interrupter_pid
   home=$(make_home noisy-stderr)
   disposition "$home" proof-a 1 PROVED
   noise="bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching \`)'"
@@ -544,6 +544,27 @@ SH
   [ -z "$out" ] || fail "exit 3 must print nothing on stdout: $out"
   err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
   assert_contains "$err" "no programme configured" "the exit-3 refusal is relayed from stderr"
+
+  interrupt_tmp="$TMP_ROOT/interrupted-staging"
+  mkdir -p "$interrupt_tmp"
+  cat > "$realbin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 5
+printf '{}\n'
+SH
+  chmod +x "$realbin/fm-continuation-resolve.sh"
+  with_home "$home" env TMPDIR="$interrupt_tmp" "$fakebin/fm-programme-projection.sh" project > /dev/null 2>&1 &
+  projection_pid=$!
+  (
+    sleep 0.1
+    kill -TERM "$projection_pid" 2>/dev/null || true
+  ) &
+  interrupter_pid=$!
+  wait "$projection_pid" 2>/dev/null || true
+  wait "$interrupter_pid" 2>/dev/null || true
+  if find "$interrupt_tmp" -type f -name 'fm-programme-projection.*' -print -quit | grep -q .; then
+    fail "interrupted projection left resolver staging files"
+  fi
   pass "corrupt stdout is refused naming the bytes received, and an exit-3 refusal is still relayed"
 }
 

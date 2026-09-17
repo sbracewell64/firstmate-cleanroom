@@ -1438,6 +1438,33 @@ test_af_private_local_delivery_owner() {
   expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery destination"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in "-a 256") exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_SOURCE_UNREADABLE "unhashable candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  tmp="$receipt.tmp"; jq '.manifest[0].source="exchange/bin"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "tree candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  mkdir -p "$home/cleanroom/exchange/bin/target-dir"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/bin/target-dir"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "directory destination"
+  rmdir "$home/cleanroom/exchange/bin/target-dir"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  ln -s "$dest" "$home/cleanroom/exchange/bin/target-link"
+  tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange/bin/target-link"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "symlink destination"
+  rm "$home/cleanroom/exchange/bin/target-link"; write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  ln -s exchange/bin/slice-a.py "$home/projects/exchange-work/exchange/bin/source-link"
+  git -C "$home/projects/exchange-work" add exchange/bin/source-link
+  git -C "$home/projects/exchange-work" -c user.name=maker-one -c user.email=maker-one@example.invalid commit -q -m 'symlink candidate source'
+  write_local_delivery_evidence "$home" slice-a exchange/bin/source-link exchange/bin/slice-a.py slice-a.json
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "symlink candidate source"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
   chmod 755 "$dest"
   out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "readable mode substitution"
   chmod 644 "$dest"

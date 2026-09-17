@@ -487,7 +487,7 @@ validate_binding() {
 # with an outcome: an in-flight or broken newest attempt is never terminal,
 # and an older attempt's disposition never stands in for it.
 latest_disposition() {  # <artifact-root>
-  local rel=$1 dir best=-1 best_dir='' n d disp outcome
+  local rel=$1 dir best=-1 best_dir='' n d disp outcome digest
   case "$rel" in
     /*) dir=$rel ;;
     *) dir="$ROOT/$rel" ;;
@@ -506,7 +506,11 @@ latest_disposition() {  # <artifact-root>
   [ -f "$disp" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
   outcome=$(jq -r 'if (.outcome | type) == "string" then .outcome else empty end' "$disp" 2>/dev/null) || outcome=''
   [ -n "$outcome" ] || { printf '%s\t\t%s\t\n' "$best" "$disp"; return 1; }
-  printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$(sha256_file "$disp")"
+  if ! digest=$(sha256_file "$disp"); then
+    printf '%s\t\t%s\t\n' "$best" "$disp"
+    return 1
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$best" "$outcome" "$disp" "$digest"
 }
 
 # --- accepted owner evidence ---------------------------------------------------
@@ -769,10 +773,10 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
       return 0
     fi
     source_type=$(git -C "$repo" cat-file -t "$head:$source" 2>/dev/null || true)
-    [ -n "$source_type" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source is not readable at the bound head"; return 0; }
+    [ -n "$source_type" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source is not readable at the bound head"; return 0; }
     [ "$source_type" = blob ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a regular-file object"; return 0; }
     source_sha=$(git -C "$repo" show "$head:$source" 2>/dev/null | sha256_stream) || source_sha=''
-    [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
+    [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
     [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
     source_mode=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $1}')
     source_type=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $2}')
@@ -943,7 +947,9 @@ read_owner_evidence() {  # <step-index> <step-id>
     if [ ! -f "$sfile" ]; then
       emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath is not readable under root $ROOT" "$doc" "$sha" "$outcome"; return 0
     fi
-    fsha=$(sha256_file "$sfile")
+    if ! fsha=$(sha256_file "$sfile"); then
+      emit CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "bound source $spath cannot be read or hashed" "$doc" "$sha" "$outcome"; return 0
+    fi
     [ "$fsha" = "$ssha" ] || { refuse OWNER_EVIDENCE_SOURCE_DIGEST_MISMATCH "bound source $spath sha256 $fsha differs from the recorded $ssha"; return 0; }
     if [ -n "$sout" ]; then
       fout=$(jq -r 'if (.outcome | type) == "string" then .outcome else "" end' "$sfile" 2>/dev/null) || fout=''

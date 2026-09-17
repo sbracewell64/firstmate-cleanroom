@@ -936,16 +936,14 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   pass "SIGSTOP distinguishes live PID from stale beacon and termination records the exit class"
 }
 
-test_a_zombie_reads_live_but_yields_no_identity() {
-  # The predicate pair the --restart disposition's free-pid poll rests on. A
-  # forked child that exited while its parent has not reaped it is still visible
-  # to kill -0, so fm_pid_alive reports it live, while /proc/<pid>/cmdline is
-  # empty so fm_pid_identity fails and fm_stop_process_confirmed reads the target
-  # as gone. That split is why the poll exists: without it a restart would record
-  # `confirmed` for a pid the relaunched watcher still stands down against. This
-  # pins both halves, so the case fails the moment the premise stops being true.
-  local dir zpid go i
+test_a_zombie_is_dead_and_does_not_block_successor() {
+  # A forked child that exited while its parent has not reaped it is a zombie.
+  # Linux exposes that state through /proc, and the lock owner must treat it as
+  # dead: it cannot authorize signalling or keep a stale lock from succession.
+  local dir state lockdir zpid go i successor_pid
   dir=$(make_case zombie-predicates)
+  state="$dir/state"
+  lockdir="$state/.zombie.lock"
   go="$dir/reap.go"
   command -v python3 >/dev/null 2>&1 || { pass "zombie predicate pair skipped: python3 is unavailable"; return; }
   [ -r /proc/$$/cmdline ] \
@@ -972,16 +970,26 @@ PYZ
     ''|*[!0-9]*) : > "$go"; wait; fail "the zombie fixture never published a pid" ;;
   esac
 
-  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$zpid" \
-    || { : > "$go"; wait; fail "a zombie was not read as live, so the free-pid poll has nothing to wait for"; }
-  if FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_identity "$2" >/dev/null 2>&1' _ "$LIB" "$zpid"; then
+  if FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$zpid"; then
     : > "$go"; wait
-    fail "a zombie yielded a process identity, so a stop would no longer read it as gone"
+    fail "a zombie was treated as live and could block stale-owner succession"
   fi
+  if FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2" >/dev/null 2>&1' _ "$LIB" "$zpid"; then
+    : > "$go"; wait
+    fail "a zombie yielded an identity that could authorize signalling"
+  fi
+
+  mkdir "$lockdir"
+  printf '%s\n' "$zpid" > "$lockdir/pid"
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_lock_try_acquire "$2"' _ "$LIB" "$lockdir" \
+    || { : > "$go"; wait; fail "stale-owner reconciliation did not establish a successor claim for a zombie"; }
+  successor_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  [ "$successor_pid" != "$zpid" ] \
+    || { : > "$go"; wait; fail "successor claim retained the zombie pid"; }
 
   : > "$go"
   wait
-  pass "a zombie reads as live while yielding no identity, which is what the restart free-pid poll waits out"
+  pass "a zombie is dead for ownership and permits a successor claim without signalling"
 }
 
 test_live_unverifiable_identity_does_not_confirm_stop() {
@@ -1837,7 +1845,7 @@ test_forced_owned_child_stop_is_reaped_and_recorded
 test_restart_records_whether_its_stop_was_confirmed
 test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
-test_a_zombie_reads_live_but_yields_no_identity
+test_a_zombie_is_dead_and_does_not_block_successor
 test_live_unverifiable_identity_does_not_confirm_stop
 test_zero_redelivery_polls_use_default_cadence
 test_pid_identity_is_locale_invariant

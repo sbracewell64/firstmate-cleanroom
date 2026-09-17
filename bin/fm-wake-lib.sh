@@ -9,12 +9,7 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
-# Tenths of a second fm_autoarm_release_abandoned spends confirming a retired
-# legacy auto-arm owner actually stopped.
-FM_AUTOARM_RETIRE_POLLS="${FM_AUTOARM_RETIRE_POLLS:-10}"
-case "$FM_AUTOARM_RETIRE_POLLS" in ''|*[!0-9]*) FM_AUTOARM_RETIRE_POLLS=10 ;; esac
-FM_AUTOARM_RETIRE_POLLS=${FM_AUTOARM_RETIRE_POLLS#"${FM_AUTOARM_RETIRE_POLLS%%[!0]*}"}
-[ -n "$FM_AUTOARM_RETIRE_POLLS" ] || FM_AUTOARM_RETIRE_POLLS=10
+FM_AUTOARM_RETIRE_POLLS=10
 # Polls between successive stop-signal deliveries in fm_stop_process_confirmed.
 # Two seconds: long enough that a target already running its close path is not
 # interrupted by the next delivery, short enough that a dropped stop is
@@ -29,12 +24,6 @@ FM_STOP_REDELIVER_POLLS="${FM_STOP_REDELIVER_POLLS:-20}"
 case "$FM_STOP_REDELIVER_POLLS" in ''|*[!0-9]*) FM_STOP_REDELIVER_POLLS=20 ;; esac
 FM_STOP_REDELIVER_POLLS=${FM_STOP_REDELIVER_POLLS#"${FM_STOP_REDELIVER_POLLS%%[!0]*}"}
 [ -n "$FM_STOP_REDELIVER_POLLS" ] || FM_STOP_REDELIVER_POLLS=20
-# The retire bound takes the same floor the arm layer's stop bounds take, for the
-# same reason and only once the interval above is a normalised number: a window
-# that does not OUTLAST the re-delivery interval delivers exactly once, which is
-# the single unconfirmed signal a confirmed stop exists to replace - and here
-# that one consumed signal would retire a still-running owner's lock. Neither
-# knob is capped; the window only ever widens.
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -1455,16 +1444,22 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  if [ -n "$recorded" ] && fm_pid_alive "$lock_pid" \
-    && current=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
-    && [ -n "$current" ] && [ "$current" = "$recorded" ]; then
+  if fm_pid_alive "$lock_pid"; then
+    current=$(fm_pid_identity "$lock_pid" 2>/dev/null) || {
+      fm_lock_release "$steal"
+      return 1
+    }
+    [ -n "$current" ] || {
+      fm_lock_release "$steal"
+      return 1
+    }
+  fi
+  if [ -n "$recorded" ] && [ "$current" = "$recorded" ]; then
     # A live pid still answering to the recorded identity IS the genuine
     # legacy owner (proven stuck or blocked after a terminal write): retire it
     # before removing its lock, because old-build code cannot re-check
-    # generations. A pid the recorded identity does NOT verify - reused,
-    # unverifiable, or never recorded - is NEVER signalled; those shapes are
-    # reclaimed as-is, which is safe exactly because the recorded owner is
-    # gone or was never provably this process.
+    # generations. A pid the recorded identity does NOT verify is never
+    # signalled; a positive mismatch is reclaimed as a reused pid.
     retire_rc=0
     fm_stop_process_confirmed "$lock_pid" "$recorded" "$FM_AUTOARM_RETIRE_POLLS" || retire_rc=$?
     if [ "$retire_rc" -ne 0 ]; then

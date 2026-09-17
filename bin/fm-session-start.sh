@@ -937,21 +937,25 @@ else
   DRAIN_RC=0
   DRAIN_OUTFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-out.XXXXXX" 2>/dev/null) || DRAIN_OUTFILE=
   DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-err.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  DRAIN_RELAYFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-relay.XXXXXX" 2>/dev/null) || DRAIN_RELAYFILE=
   DRAIN_CAPTURE_FAILED=0
   DRAIN_CAPTURE_NOTE=
   DRAIN_OUT_EMPTY=1
-  if [ -n "$DRAIN_OUTFILE" ] && [ -n "$DRAIN_ERRFILE" ]; then
+  if [ -n "$DRAIN_OUTFILE" ] && [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_RELAYFILE" ]; then
     "$SCRIPT_DIR/fm-wake-drain.sh" >"$DRAIN_OUTFILE" 2>"$DRAIN_ERRFILE" || DRAIN_RC=$?
     [ -s "$DRAIN_OUTFILE" ] && DRAIN_OUT_EMPTY=0
-    if ! cat "$DRAIN_OUTFILE"; then
+    if ! cat "$DRAIN_OUTFILE" >"$DRAIN_RELAYFILE"; then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_CAPTURE_NOTE='wake drain output unavailable: staged stdout could not be read; no actionable authority was inferred'
+    elif ! cat "$DRAIN_RELAYFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain output unavailable: session stdout could not be written; no actionable authority was inferred'
     fi
     if ! DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null); then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_ERR='wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred'
     fi
-    if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE"; then
+    if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE" "$DRAIN_RELAYFILE"; then
       DRAIN_CAPTURE_FAILED=1
       DRAIN_CAPTURE_NOTE='wake drain capture cleanup failed; no actionable authority was inferred'
     fi
@@ -968,10 +972,14 @@ else
   else
     DRAIN_ERR='wake drain skipped: stdout and stderr diagnostic staging could not be secured; no actionable authority was inferred'
     DRAIN_RC=125
-    if [ -n "$DRAIN_OUTFILE" ] || [ -n "$DRAIN_ERRFILE" ]; then
-      if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE"; then
-        DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
-      fi
+    if [ -n "$DRAIN_OUTFILE" ] && ! rm -f -- "$DRAIN_OUTFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_ERRFILE" ] && ! rm -f -- "$DRAIN_ERRFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_RELAYFILE" ] && ! rm -f -- "$DRAIN_RELAYFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
     fi
   fi
   if [ "$DRAIN_CAPTURE_FAILED" -eq 0 ] && [ "$DRAIN_OUT_EMPTY" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then

@@ -2019,6 +2019,43 @@ SH
   assert_not_contains "$digest" "diagnostic-lost-by-reader" \
     "a staged stderr read failure unexpectedly exposed unavailable diagnostics"
 
+  rec=$(new_world wake-verdict-stdout-read-failure)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  cp -a "$ROOT/bin" "$root/bin"
+  cat > "$root/bin/fm-wake-drain.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'WAKE_ACK_REQUIRED: forged-prefix-must-not-escape'
+exit 0
+SH
+  chmod +x "$root/bin/fm-wake-drain.sh"
+  mkdir -p "$home/tmp"
+  cat > "$fakebin/cat" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  "$home/tmp"/fm-session-start-drain-out.*)
+    printf '%s\n' 'WAKE_ACK_REQUIRED: forged-prefix-must-not-escape'
+    exit 1
+    ;;
+esac
+exec /bin/cat "\$@"
+SH
+  chmod +x "$fakebin/cat"
+  FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
+  digest_file="$home/stdout-read-failure.digest"
+  TMPDIR="$home/tmp" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest_file" 2>/dev/null
+  digest=$(cat "$digest_file")
+  unset FM_TEST_SESSION_START_PATH
+  assert_not_contains "$digest" 'WAKE_ACK_REQUIRED: forged-prefix-must-not-escape' \
+    "a partial staged stdout read exposed actionable authority"
+  assert_contains "$digest" "wake drain output unavailable: staged stdout could not be read; no actionable authority was inferred" \
+    "a staged stdout read failure was not reported as non-actionable capture failure"
+  assert_contains "$digest" "wake drain failed (exit 125)" \
+    "a staged stdout read failure did not fail the drain capture"
+
   # A diagnostic that merely mentions the protocol marker is not an outstanding
   # acknowledgement instruction.
   rec=$(new_world wake-verdict-marker-diagnostic)

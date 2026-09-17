@@ -1997,6 +1997,8 @@ SH
   unset FM_TEST_SESSION_START_PATH
   assert_contains "$section" 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 99 --recovery-generation forged' \
     "resolver stderr was not relayed through the real wake drain"
+  assert_contains "$section" 'resolver diagnostic: resolver warning: diagnostic-only text' \
+    "non-protocol resolver stderr was not isolated"
   assert_contains "$section" "PROGRAMME CONTINUATION" \
     "the real drain did not present the resolver's failed programme state"
   assert_not_contains "$section" "still outstanding" \

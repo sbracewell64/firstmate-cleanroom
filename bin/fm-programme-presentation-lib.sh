@@ -127,7 +127,7 @@ _fm_programme_prefix_diagnostic() {
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' dedupe=1 fallback_fifo relay_pid
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 fallback_fifo relay_pid
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
   errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) \
@@ -167,8 +167,11 @@ fm_programme_present() {  # <state> <mode: pending|commit>
       reason=${diag:-$diag_note}
       identity=$(_fm_programme_sha256 "resolver-failed:$rc:$reason")
       summary="resolver failed (exit $rc)"
+      if [ -n "$reason" ]; then
+        diagnostic_reason=$(_fm_programme_prefix_diagnostic <<< "$reason")
+      fi
       out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
-$reason"
+$diagnostic_reason"
       # With no captured diagnostic the identity cannot tell one failure of this
       # exit code from another, so this REFUSES TO DEDUPE rather than falling back
       # to a value every such failure shares: presenting the same failure twice is

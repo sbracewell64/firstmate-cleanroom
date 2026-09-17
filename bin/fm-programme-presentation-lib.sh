@@ -133,11 +133,11 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     out=$("$resolver" render) || rc=$?
     diag_note='resolver diagnostics: unavailable, they could not be staged'
   fi
-  # Separating the streams means ROUTING both, not discarding one, so the
-  # captured stderr is relayed here rather than dropped on a successful
-  # resolve; bin/fm-programme-projection.sh states that policy in full,
-  # including why exit 3 is the one deliberate exception.
-  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+  if [ "$rc" != 3 ] && [ -n "$diag" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf 'resolver diagnostic: %s\n' "$line" >&2
+    done <<< "$diag"
+  fi
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")

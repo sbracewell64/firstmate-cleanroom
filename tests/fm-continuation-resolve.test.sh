@@ -1426,10 +1426,21 @@ test_af_private_local_delivery_owner() {
   expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable checker receipt"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
+  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/af/evidence/slice-a.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
+  chmod 755 "$fakebin/shasum"
+  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
+  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_UNREADABLE "unhashable owner record"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
   printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/exchange/bin/slice-a.py*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
   chmod 755 "$fakebin/shasum"
   old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
   expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery destination"
+  write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
+
+  chmod 755 "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_CANDIDATE_MISMATCH "readable mode substitution"
+  chmod 644 "$dest"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
   tmp="$receipt.tmp"; jq '.manifest[0].destination="exchange//bin/slice-a.py"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json

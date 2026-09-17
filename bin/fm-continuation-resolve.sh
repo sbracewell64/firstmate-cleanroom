@@ -550,13 +550,15 @@ local_owner_deliverable_prefix() {  # <step-id>
   esac
 }
 
-local_owner_path_has_no_symlinks() {  # <root> <relative-path>
-  local root=$1 path=$2 part current=$1
+local_owner_path_has_no_symlink_parents() {  # <root> <relative-path>
+  local root=$1 path=$2 part current=$1 index=0 last
   local -a parts
   IFS='/' read -r -a parts <<< "$path"
+  last=$((${#parts[@]} - 1))
   for part in "${parts[@]}"; do
     current="$current/$part"
-    [ ! -L "$current" ] || return 1
+    [ "$index" -eq "$last" ] || { [ ! -L "$current" ] || return 1; }
+    index=$((index + 1))
   done
 }
 
@@ -766,7 +768,9 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
       local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery manifest entry $j contains an unsafe path or non-digest identity"
       return 0
     fi
-    [ "$(git -C "$repo" cat-file -t "$head:$source" 2>/dev/null || true)" = blob ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source is not a readable file at the bound head"; return 0; }
+    source_type=$(git -C "$repo" cat-file -t "$head:$source" 2>/dev/null || true)
+    [ -n "$source_type" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source is not readable at the bound head"; return 0; }
+    [ "$source_type" = blob ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a regular-file object"; return 0; }
     source_sha=$(git -C "$repo" show "$head:$source" 2>/dev/null | sha256_stream) || source_sha=''
     [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
     [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
@@ -774,10 +778,15 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
     source_type=$(git -C "$repo" ls-tree "$head" -- "$source" | awk 'NF {print $2}')
     case "$source_mode:$source_type" in 100644:blob|100755:blob) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a governed regular-file object"; return 0 ;; esac
     destination_file="$ROOT/$destination"
-    local_owner_path_has_no_symlinks "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
+    local_owner_path_has_no_symlink_parents "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
     destination_parent=$(CDPATH='' cd -- "$(dirname "$destination_file")" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination parent for $destination is unavailable"; return 0; }
     case "$destination_parent/" in "$root_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination resolves outside the programme root"; return 0 ;; esac
-    [ -f "$destination_file" ] && [ ! -L "$destination_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"; return 0; }
+    if [ ! -e "$destination_file" ] && [ ! -L "$destination_file" ]; then
+      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"
+      return 0
+    fi
+    [ ! -L "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is a symlink object"; return 0; }
+    [ -f "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a regular-file object"; return 0; }
     destination_index_oid=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $2}')
     destination_mode=$(git -C "$ROOT" ls-files --stage -- "$destination" | awk 'NF {print $1}')
     case "$destination_mode" in 100644|100755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a governed regular-file object"; return 0 ;; esac
@@ -837,7 +846,10 @@ read_owner_evidence() {  # <step-index> <step-id>
     emit CNO REQUIRED_BINDING_MISSING "no owner-produced evidence record is bound at $path for step $sid (accepted owner kinds: $FM_CONTINUATION_OWNER_KINDS)" null '' ''
     return 0
   fi
-  sha=$(sha256_file "$path")
+  if ! sha=$(sha256_file "$path"); then
+    emit CNO OWNER_EVIDENCE_UNREADABLE "$path cannot be read or hashed" null '' ''
+    return 0
+  fi
   if ! doc=$(jq -c 'if type == "object" then . else error("not an object") end' "$path" 2>/dev/null); then
     emit CNO OWNER_EVIDENCE_UNREADABLE "$path is not a readable JSON object" null "$sha" ''
     return 0

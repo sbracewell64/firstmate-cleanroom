@@ -1791,6 +1791,9 @@ install_drain_fixture() {  # <root> <stdout> <stderr> <status>
   cp -a "$ROOT/bin" "$root/bin"
   cat > "$root/bin/fm-wake-drain.sh" <<SH
 #!/usr/bin/env bash
+if [ -n "\${FM_TEST_DRAIN_MARKER:-}" ]; then
+  : > "\$FM_TEST_DRAIN_MARKER"
+fi
 printf '%s\\n' '$stdout'
 printf '%s\\n' '$stderr' >&2
 exit $status
@@ -1934,19 +1937,41 @@ EOF
 
   # A failed drain may have emitted a partial row before discovering its error,
   # but that output is not a valid queue presentation.
+  rec=$(new_world wake-verdict-partial-no-harness)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_without_harness "$fakebin"
+  install_drain_fixture "$root" "partial-row-that-must-be-withheld" "drain failed after partial output" 7
+  FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
+  FM_TEST_DRAIN_MARKER="$home/drain-invoked" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$home/digest" 2>"$home/stderr"
+  unset FM_TEST_SESSION_START_PATH
+  assert_absent "$home/drain-invoked" "an ancestry refusal still ran the injected drain"
+  assert_contains "$(cat "$home/digest")" "cannot locate harness process in ancestry" \
+    "the no-harness control did not stop at ancestry"
+  assert_not_contains "$(cat "$home/digest")" "wake drain failed (exit 7)" \
+    "the no-harness control reached the drain verdict"
+
   rec=$(new_world wake-verdict-partial-failure)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
   install_drain_fixture "$root" "partial-row-that-must-be-withheld" "drain failed after partial output" 7
   FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
   digest="$home/failed-drain.digest"
   stderr="$home/failed-drain.stderr"
   status=0
-  run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest" 2>"$stderr" || status=$?
+  FM_TEST_DRAIN_MARKER="$home/drain-invoked" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >"$digest" 2>"$stderr" || status=$?
   section=$(wake_queue_section "$(cat "$digest")")
   unset FM_TEST_SESSION_START_PATH
+  assert_present "$home/drain-invoked" "the partial-drain fixture never reached its injected drain"
+  assert_not_contains "$(cat "$digest")" "cannot locate harness process in ancestry" \
+    "the partial-drain fixture stopped at harness ancestry"
   if printf '%s\n' "$section" | grep -F 'partial-row-that-must-be-withheld' >/dev/null; then
     print_failed_drain_evidence "$root" "$home" "$digest" "$stderr"
   fi
@@ -1965,6 +1990,7 @@ EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
   install_drain_fixture "$root" "" "warning: WAKE_ACK_REQUIRED: not a protocol line" 0
   FM_TEST_SESSION_START_PATH="$root/bin/fm-session-start.sh"
   section=$(wake_queue_section "$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>/dev/null)")

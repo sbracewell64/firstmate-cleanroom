@@ -689,7 +689,7 @@ print_programme_continuation() {
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out" | sed 's/^WAKE_ACK_REQUIRED:/resolver data: WAKE_ACK_REQUIRED:/'
+    printf '%s\n' "$out" | fm_programme_render_non_actionable
     identity=$(fm_programme_identity_from_render "$out")
     verdict=$(fm_programme_presentation_state "$STATE" "$identity")
     case "$verdict" in

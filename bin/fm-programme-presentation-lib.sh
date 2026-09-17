@@ -125,6 +125,12 @@ _fm_programme_prefix_diagnostic() {
   done
 }
 
+fm_programme_render_non_actionable() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf 'resolver data: %s\n' "$line"
+  done
+}
+
 fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]
   local resolver=$1 operation=$2 prefix=$3 errfile out rc=0
   shift 3
@@ -193,7 +199,7 @@ $diagnostic_reason"
     esac
   fi
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
-  printf '%s\n' "$out"
+  printf '%s\n' "$out" | fm_programme_render_non_actionable
   if [ "$mode" = pending ]; then
     printf 'PROGRAMME CONTINUATION: presented identity %s; it is acknowledged by the WAKE_ACK_REQUIRED command below, and state that changes before then surfaces again.\n' "${identity:0:12}"
     _fm_programme_write_record "$(fm_programme_pending_path "$state")" "$identity" "$summary" || return 1

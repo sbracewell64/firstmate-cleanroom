@@ -168,6 +168,10 @@ fm_discipline_sha() { # <readable-file>
   fi
 }
 
+fm_discipline_regular_file() { # <path>
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]
+}
+
 fm_discipline_generation_json_valid() {
   jq -e '
     type == "string" and length > 0 and
@@ -494,7 +498,7 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   fi
   path=$(printf '%s' "$proof" | jq -r .discipline.path)
   expected=$(printf '%s' "$proof" | jq -r .discipline.sha256)
-  [ -f "$path" ] && [ -r "$path" ] || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
+  fm_discipline_regular_file "$path" || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
   actual=$(fm_discipline_sha "$path") || { fm_discipline_gap "discipline-evidence-unreadable: $path"; return 3; }
   [ "$actual" = "$expected" ] || { fm_discipline_gap "discipline-evidence-stale: $path"; return 3; }
   # shellcheck disable=SC2034 # Result consumed by work-context and stage callers.

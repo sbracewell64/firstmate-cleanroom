@@ -241,11 +241,18 @@ cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task meta
 # promoted no-mistakes worker that never received the ask-user escalation rule or
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
+DESC="$DATA/$ID/work-context.json"
+[ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
+[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+fm_discipline_compile "$ID" ship implementation "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+  echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+  exit 3
+}
 mkdir -p "$DATA/$ID"
+[ ! -L "$DATA/$ID" ] && [ -d "$DATA/$ID" ] || { echo "error: task data directory is unsafe: $DATA/$ID" >&2; exit 1; }
 [ ! -e "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || {
   [ -f "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || { echo "error: ship instructions path is unsafe: $INSTRUCTIONS" >&2; exit 1; }
 }
-DESC="$DATA/$ID/work-context.json"
 if [ -e "$DESC" ] || [ -L "$DESC" ]; then
   [ -f "$DESC" ] && [ ! -L "$DESC" ] || { echo "error: work context path is unsafe: $DESC" >&2; exit 1; }
   DESC_EXISTED=1
@@ -261,8 +268,6 @@ if [ -f "$INSTRUCTIONS" ]; then
   INSTRUCTIONS_EXISTED=1
   cp -p -- "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" || { echo "error: could not snapshot ship instructions" >&2; exit 1; }
 fi
-[ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
-[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
 fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
   echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
   exit 3

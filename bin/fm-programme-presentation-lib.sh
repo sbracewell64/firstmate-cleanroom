@@ -164,7 +164,7 @@ $reason"
       unchanged) return 0 ;;
       pending-ack)
         [ "$mode" = commit ] || return 0
-        fm_programme_ack_pending "$state"
+        _fm_programme_ack_pending_locked "$state"
         return $?
         ;;
     esac
@@ -182,10 +182,19 @@ $reason"
 }
 
 # Acknowledge exactly the identity the drain presented; never re-resolve here.
-fm_programme_ack_pending() {  # <state>
+_fm_programme_ack_pending_locked() {  # <state>
   local pending
   pending=$(fm_programme_pending_path "$1")
   [ -f "$pending" ] || return 0
   [ -n "$(_fm_programme_record_identity "$pending")" ] || { rm -f -- "$pending"; return 0; }
   mv -f -- "$pending" "$(fm_programme_presented_path "$1")"
+}
+
+fm_programme_ack_pending() {  # <state>
+  local state=$1 lock="$1/.status-presentation-lock" rc
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_programme_ack_pending_locked "$state"
+  rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
 }

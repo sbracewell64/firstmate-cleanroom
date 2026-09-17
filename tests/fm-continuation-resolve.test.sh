@@ -1502,6 +1502,41 @@ present_pending() {  # <home>
   ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$1/state"
 }
 
+test_programme_ack_waits_for_presentation_lock() {
+  local home lock holder ack_pid identity
+  home=$(make_af_home ack-lock)
+  mkdir -p "$home/state"
+  identity=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  jq -n --arg id "$identity" '{schema:"fm-programme-presented/v1", material_identity:$id, summary:"pending", presented_at:"2026-09-04T00:00:00Z"}' \
+    > "$home/state/.programme-presented.pending"
+  lock="$home/state/.status-presentation-lock"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$2.ready"
+    while [ ! -e "$2.release" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" &
+  holder=$!
+  while [ ! -e "$lock.ready" ]; do sleep 0.05; done
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    . "$2"
+    fm_programme_ack_pending "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state" &
+  ack_pid=$!
+  sleep 0.2
+  kill -0 "$ack_pid" 2>/dev/null || fail "ack did not wait for the presentation lock"
+  [ -e "$home/state/.programme-presented.pending" ] || fail "ack consumed the pending record before the presentation lock released"
+  : > "$lock.release"
+  wait "$ack_pid" || fail "ack failed after the presentation lock released"
+  wait "$holder" || fail "presentation lock holder failed"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$identity" ] \
+    || fail "ack promoted the wrong programme identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "ack left the pending programme record behind"
+  pass "programme acknowledgement waits for presentation serialization"
+}
+
 test_af_presentation_quiet_and_ack_race() {
   local home out ack first second third presented snap view token
   home=$(make_af_home af-present)
@@ -1628,6 +1663,7 @@ timed test_materialize_never_rebinds_foreign_binding
 timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno
+timed test_programme_ack_waits_for_presentation_lock
 timed test_unreadable_inputs_are_cno
 timed test_completion_and_configuration
 timed test_render_and_check_prose

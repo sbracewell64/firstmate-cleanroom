@@ -1474,8 +1474,8 @@ programme_continuation_json() {
     rc=$FM_PROGRAMME_RESOLVER_RC
   else
     out=''
-    rc=1
-    diag_note='resolver diagnostics: unavailable, they could not be staged'
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: unavailable, they could not be staged'}
   fi
   # Separating the streams means ROUTING both, not discarding one, so the
   # captured stderr is relayed here rather than dropped on a successful

@@ -682,8 +682,8 @@ print_programme_continuation() {
     rc=$FM_PROGRAMME_RESOLVER_RC
   else
     out=''
-    rc=1
-    diag_note='resolver diagnostics: staging was unavailable'
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
   fi
   fm_programme_relay_diagnostic "$diag" >&2
   [ "$rc" -ne 3 ] || return 0

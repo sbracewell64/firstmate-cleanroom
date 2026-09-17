@@ -134,9 +134,12 @@ fm_programme_render_non_actionable() {
 fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]
   local resolver=$1 operation=$2 prefix=$3 errfile out rc=0
   shift 3
+  FM_PROGRAMME_RESOLVER_OUT=''
+  FM_PROGRAMME_RESOLVER_DIAG=''
+  FM_PROGRAMME_RESOLVER_RC=125
   errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) \
     || errfile=$(mktemp "/tmp/$prefix.XXXXXX" 2>/dev/null) \
-    || return 125
+    || { FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: staging allocation failed'; return 125; }
   out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
   FM_PROGRAMME_RESOLVER_OUT=$out
   if ! FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile"); then
@@ -171,8 +174,8 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     rc=$FM_PROGRAMME_RESOLVER_RC
   else
     out=''
-    rc=1
-    diag_note='resolver diagnostics: staging was unavailable'
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
   fi
   fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in

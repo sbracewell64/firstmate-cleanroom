@@ -254,9 +254,9 @@ read_resolution() {
     diag=$FM_PROGRAMME_RESOLVER_DIAG
     rc=$FM_PROGRAMME_RESOLVER_RC
   else
-    diag_note='resolver diagnostics: unavailable, they could not be staged'
     out=''
-    rc=1
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: unavailable, they could not be staged'}
   fi
   reason=${diag:-$diag_note}
   [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"

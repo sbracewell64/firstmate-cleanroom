@@ -161,7 +161,9 @@ FM_DISCIPLINE_ARTIFACT_DIGEST=
 
 fm_discipline_descriptor_capture() { # <path>
   local path=$1
-  if [ "$FM_DISCIPLINE_DESCRIPTOR_PATH" = "$path" ] && [ -n "$FM_DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
+  if [ "$FM_DISCIPLINE_DESCRIPTOR_REUSE" -eq 1 ] &&
+    [ "$FM_DISCIPLINE_DESCRIPTOR_PATH" = "$path" ] &&
+    [ -n "$FM_DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
     return 0
   fi
   fm_discipline_capture "$path" || return 1
@@ -485,7 +487,7 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
 }
 
 fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
-  local data=$1 task=$2 task_dir desc tmp tmp_dir current existing='' outer_generation desc_exists=0
+  local data=$1 task=$2 task_dir desc tmp tmp_dir lock_dir current existing='' outer_generation desc_exists=0
   local original_descriptor_json='' original_descriptor_digest='' intended_descriptor_json='' intended_descriptor_digest='' intended_descriptor_mode=''
   local compile_args=()
   shift 2
@@ -564,29 +566,35 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
   intended_descriptor_digest=$FM_DISCIPLINE_CAPTURE_SHA256
   intended_descriptor_mode=$FM_DISCIPLINE_CAPTURE_MODE
   fm_discipline_capture_cleanup
+  lock_dir="$task_dir/.discipline-write.lock"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+    fm_discipline_gap 'discipline-write: another selection is being published'; return 3;
+  fi
   if [ "$desc_exists" -eq 1 ]; then
     fm_discipline_capture "$desc" || {
-      rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+      rmdir "$lock_dir" 2>/dev/null || true; rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
       fm_discipline_gap 'discipline-write: descriptor changed during preparation'; return 3;
     }
     if [ "$FM_DISCIPLINE_CAPTURE_SHA256" != "$original_descriptor_digest" ] ||
       [ "$(<"$FM_DISCIPLINE_CAPTURE_PATH")" != "$original_descriptor_json" ]; then
       fm_discipline_capture_cleanup
-      rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+      rmdir "$lock_dir" 2>/dev/null || true; rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
       fm_discipline_gap 'discipline-write: descriptor changed during preparation'; return 3;
     fi
     fm_discipline_capture_cleanup
   elif [ -e "$desc" ] || [ -L "$desc" ]; then
-    rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
+    rmdir "$lock_dir" 2>/dev/null || true; rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-write: descriptor appeared during preparation'; return 3;
   fi
   if [ "$desc_exists" -eq 1 ]; then
-    mv -f "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
+    mv -f "$tmp" "$desc" || { rmdir "$lock_dir" 2>/dev/null || true; rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish failed'; return 3; }
   else
-    ln "$tmp" "$desc" || { rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish raced or failed'; return 3; }
+    ln "$tmp" "$desc" || { rmdir "$lock_dir" 2>/dev/null || true; rm -f "$tmp"; rmdir "$tmp_dir" 2>/dev/null || true; fm_discipline_gap 'discipline-write: descriptor publish raced or failed'; return 3; }
   fi
   rm -f "$tmp"
   fm_discipline_capture "$desc" || {
+    rmdir "$lock_dir" 2>/dev/null || true
     rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-write: published descriptor verification failed'; return 3;
   }
@@ -594,10 +602,12 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
     [ "$FM_DISCIPLINE_CAPTURE_MODE" != "$intended_descriptor_mode" ] ||
     [ "$(<"$FM_DISCIPLINE_CAPTURE_PATH")" != "$intended_descriptor_json" ]; then
     fm_discipline_capture_cleanup
+    rmdir "$lock_dir" 2>/dev/null || true
     rmdir "$tmp_dir" 2>/dev/null || true
     fm_discipline_gap 'discipline-write: published descriptor changed during verification'; return 3;
   fi
   fm_discipline_capture_cleanup
+  rmdir "$lock_dir" 2>/dev/null || true
   rmdir "$tmp_dir" 2>/dev/null || true
   return 0
 }

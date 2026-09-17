@@ -675,25 +675,30 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict errfile diag='' diag_note=''
-  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) || errfile=
+  local out rc=0 identity verdict errfile diag='' diag_note='' fallback_fifo relay_pid
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=$(mktemp "$STATE/.session-start-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=
   if [ -n "$errfile" ]; then
     out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$errfile") || rc=$?
     diag=$(cat "$errfile" 2>/dev/null || true)
     rm -f -- "$errfile"
   else
-    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render \
-      2> >(sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/' >&2)) || rc=$?
-    diag_note='resolver diagnostics: unavailable, they could not be staged'
+    fallback_fifo="$STATE/.session-start-resolve.${BASHPID:-$$}.fifo"
+    if mkfifo "$fallback_fifo" 2>/dev/null; then
+      _fm_programme_prefix_diagnostic <"$fallback_fifo" >&2 &
+      relay_pid=$!
+      out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$fallback_fifo") || rc=$?
+      wait "$relay_pid" 2>/dev/null || true
+      rm -f -- "$fallback_fifo"
+    else
+      out=
+      rc=1
+      diag_note='resolver diagnostics: staging was unavailable'
+    fi
   fi
-  # Separating the streams means ROUTING both, not discarding one, so the
-  # captured stderr is relayed here rather than dropped on a successful
-  # resolve; bin/fm-programme-projection.sh states that policy in full,
-  # including why exit 3 is the one deliberate exception.
-  # A resolver diagnostic may be an entire WAKE_ACK_REQUIRED command. Keep it
-  # visible while marking that line as data before it reaches the hook output.
-  if [ "$rc" -ne 3 ] && [ -n "$diag" ]; then
-    printf '%s\n' "$diag" | sed 's/^WAKE_ACK_REQUIRED:/resolver diagnostic: WAKE_ACK_REQUIRED:/' >&2
+  if [ -n "$diag" ]; then
+    _fm_programme_prefix_diagnostic <<< "$diag" >&2
   fi
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"

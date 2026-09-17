@@ -1435,9 +1435,10 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # proven-abandoned claim either - it only disables the TERM and the ledger graft
 # below.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal lock_pid recorded current retire_rc
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp retire_rc
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
+  epoch="$state/.claude-autoarm-epoch"
   fm_autoarm_claim_abandoned "$state" "$grace" || return 1
   fm_lock_try_acquire "$steal" || return 1
   if ! fm_autoarm_claim_abandoned "$state" "$grace"; then
@@ -1459,8 +1460,27 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       fm_lock_release "$steal"
       return 1
     fi
+    fm_lock_release "$steal"
+    return 1
   fi
+
+  if [ -n "$recorded" ] && [ -n "$lock_pid" ] \
+    && owner=$(_fm_autoarm_epoch_field "$epoch" owner_pid 2>/dev/null) \
+    && [ "$owner" = "$lock_pid" ] \
+    && [ -z "$(sed -n '2p' "$epoch" 2>/dev/null)" ]; then
+    line1=$(sed -n '1p' "$epoch" 2>/dev/null || true)
+    tmp="$epoch.tmp.${BASHPID:-$$}"
+    if [ -n "$line1" ] \
+      && printf '%s\n%s\n' "$line1" "$recorded" > "$tmp" 2>/dev/null \
+      && touch -r "$epoch" "$tmp" 2>/dev/null \
+      && mv -f "$tmp" "$epoch" 2>/dev/null; then
+      :
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  fm_lock_remove_path "$lock" || true
   fm_lock_release "$steal"
+  [ -e "$lock" ] || [ -L "$lock" ] || return 0
   return 1
 }
 

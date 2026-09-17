@@ -780,13 +780,11 @@ test_abandoned_owner_claim_defers_reconciliation() {
   kill -0 "$pid" 2>/dev/null || fail "a pid-reused owner must be reclaimed without signalling the unrelated process"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "a live reused-pid claim must defer reconciliation"
-  [ ! -e "$dir/state/arm-ran" ] || fail "deferred claim re-armed before stale-owner reconciliation"
-  [ "$(epoch_field "$dir" epoch)" = 464 ] || fail "deferred claim changed the ledger"
-  [ "$(epoch_outcome "$dir")" = rewake ] || fail "deferred claim changed the ledger outcome"
-  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "deferred claim lost its owner lock"
+  expect_code 2 "$status" "a readable pid-reused claim must be reclaimed"
+  [ -e "$dir/state/arm-ran" ] || fail "reclaimed pid-reused claim did not establish the successor arm"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "reclaimed pid-reused claim retained its owner lock"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
-  pass "auto-arm: an abandoned owner claim defers to later reconciliation"
+  pass "auto-arm: a readable pid-reused owner is reclaimed"
 }
 
 test_arming_claim_with_fresh_beacon_is_never_reclaimed() {
@@ -882,12 +880,12 @@ test_pid_reused_arming_claim_defers_reconciliation() {
   kill -0 "$pid" 2>/dev/null || fail "the unrelated live process inheriting the number must never be signalled"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "a reused-pid claim must defer reconciliation"
-  [ ! -e "$dir/state/arm-ran" ] || fail "a reused-pid claim re-armed before reconciliation"
-  [ "$(epoch_field "$dir" epoch)" = 464 ] || fail "a reused-pid claim changed the ledger"
-  assert_present "$dir/state/.claude-autoarm.lock" "a reused-pid claim lost its owner lock"
+  expect_code 2 "$status" "a reused-pid arming claim must complete stale-owner reconciliation"
+  [ -e "$dir/state/arm-ran" ] || fail "a reclaimed reused-pid claim did not establish the successor arm"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "a reused-pid claim retained its stale owner lock"
+  assert_absent "$dir/state/.claude-autoarm.lock" "a reused-pid claim retained its stale owner lock"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
-  pass "auto-arm: a claim whose pid was reused defers reconciliation"
+  pass "auto-arm: a claim whose pid was reused is reclaimed"
 }
 
 # The other ledger-blind shape: no ledger at all (a fresh or hand-cleared home)
@@ -906,10 +904,10 @@ test_pid_reused_claim_with_no_ledger_defers_reconciliation() {
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "a reused-pid claim with no ledger must defer reconciliation"
-  [ ! -e "$dir/state/arm-ran" ] || fail "a reused-pid claim with no ledger re-armed"
-  assert_present "$dir/state/.claude-autoarm.lock" "a reused-pid claim with no ledger lost its owner lock"
-  pass "auto-arm: a reused-pid claim with no ledger defers reconciliation"
+  expect_code 2 "$status" "a reused-pid claim with no ledger must complete stale-owner reconciliation"
+  [ -e "$dir/state/arm-ran" ] || fail "a reused-pid claim with no ledger did not establish the successor arm"
+  assert_absent "$dir/state/.claude-autoarm.lock" "a reused-pid claim with no ledger retained its stale owner lock"
+  pass "auto-arm: a reused-pid claim with no ledger is reclaimed"
 }
 
 # The negative control for the identity leg: a claim whose recorded identity still
@@ -1275,22 +1273,74 @@ test_missing_live_legacy_owner_identity_retains_lock() {
 }
 
 test_dead_autoarm_owner_reclaims_without_identity_comparison() {
-  local dir status=0
+  local dir status=0 dead_pid
   dir=$(make_primary_dir "$TMP_ROOT/dead-autoarm-owner")
   mkdir -p "$dir/state/.claude-autoarm.lock"
-  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  sleep 0.1 &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' autoarm > "$dir/state/.claude-autoarm.lock/role"
   printf '%s\n' stale-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
-  FM_STATE_OVERRIDE="$dir/state" bash -c '
-    . "$1"
-    fm_autoarm_claim_abandoned() { return 0; }
-    fm_lock_try_acquire() { return 0; }
-    fm_lock_release() { :; }
-    fm_pid_alive() { return 1; }
-    fm_autoarm_release_abandoned "$2" 0
-  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
-  [ "$status" -ne 0 ] || fail "dead auto-arm owner was reclaimed before deferred reconciliation"
-  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "dead auto-arm owner lock was removed during deferred reconciliation"
-  pass "auto-arm: dead owner defers stale-lock reconciliation"
+  record_autoarm_epoch "$dir" 466 "$dead_pid" rewake
+  touch -t 202001010000 "$dir/state/.last-watcher-beat" "$dir/state/.claude-autoarm-epoch"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -eq 0 ] || fail "dead auto-arm owner was not reclaimed"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "dead auto-arm owner lock was retained"
+  pass "auto-arm: dead owner is reclaimed"
+}
+
+test_confirmed_stop_then_dead_owner_reconciles() {
+  local dir pid status=0 second_status=0 third_status=0 marker first_gen successor_pid
+  dir=$(make_primary_dir "$TMP_ROOT/confirmed-stop-dead-reconcile")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill "$pid" 2>/dev/null || true
+    fail "could not record the retiring owner identity"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" rewake
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "retirement removed a live owner before confirmed stop"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "confirmed-stop attempt lost the owner lock"
+  wait "$pid" 2>/dev/null || true
+
+  marker="$dir/state/successor-claimed"
+  (
+    FM_STATE_OVERRIDE="$dir/state" bash -c '
+      . "$1"
+      fm_autoarm_release_abandoned "$2" 0 || exit 41
+      fm_autoarm_claim_next "$2" 300 || exit 42
+      printf "%s %s\n" "$FM_AUTOARM_MY_GEN" "${BASHPID:-$$}" > "$3"
+      sleep 3
+    ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" "$marker"
+  ) &
+  successor_pid=$!
+  for _ in $(seq 1 100); do
+    [ -s "$marker" ] && break
+    sleep 0.01
+  done
+  [ -s "$marker" ] || {
+    kill "$successor_pid" 2>/dev/null || true
+    wait "$successor_pid" 2>/dev/null || true
+    fail "dead-owner reconciliation did not establish a successor"
+  }
+  read -r first_gen successor_pid < "$marker"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_claim_next "$2" 300' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || second_status=$?
+  [ "$second_status" -eq 2 ] || fail "successor claim was not preserved on repeat"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || third_status=$?
+  [ "$third_status" -ne 0 ] || fail "third stale-owner call reclaimed the live successor"
+  [ "$(epoch_field "$dir" epoch)" = "$first_gen" ] || fail "repeat reconciliation changed the successor generation"
+  kill "$successor_pid" 2>/dev/null || true
+  wait "$successor_pid" 2>/dev/null || true
+  pass "auto-arm: confirmed stop defers to idempotent dead-owner reconciliation"
 }
 
 test_later_dead_owner_reconciliation_is_idempotent() {
@@ -1607,6 +1657,7 @@ run_bounded_mechanism_case perl
 test_first_unverifiable_live_legacy_owner_retains_lock
 test_missing_live_legacy_owner_identity_retains_lock
 test_dead_autoarm_owner_reclaims_without_identity_comparison
+test_confirmed_stop_then_dead_owner_reconciles
 test_later_dead_owner_reconciliation_is_idempotent
 test_unverifiable_live_legacy_owner_retains_lock
 test_open_generation_claim_defers_without_any_lock

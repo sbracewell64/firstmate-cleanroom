@@ -2204,16 +2204,22 @@ EOF
 
 # --- deferred network stage -------------------------------------------------
 
-# install_slow_gh <fakebin> <seconds>: one external-network call the digest used
+# install_slow_gh <fakebin> <seconds> [finished-marker] [release-fifo]: one external-network call the digest used
 # to make directly. Making it pathologically slow is how a test stands in for an
 # unreachable host without touching one: if any part of the blocking path still
-# waits on the network, the digest cannot finish before this does.
+# waits on the network, the digest cannot finish before this does. When a
+# release FIFO is supplied, the test controls completion explicitly so this
+# fixture does not depend on long wall-clock sleeps.
 install_slow_gh() {
-  local fakebin=$1 seconds=$2 finished_marker=${3:-}
+  local fakebin=$1 seconds=$2 finished_marker=${3:-} release_fifo=${4:-}
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = auth ]; then
-  sleep $seconds
+  if [ -n '$release_fifo' ]; then
+    read -r _ < '$release_fifo'
+  else
+    sleep $seconds
+  fi
   [ -z '$finished_marker' ] || : > '$finished_marker'
   exit 1
 fi
@@ -2223,24 +2229,27 @@ SH
 }
 
 # The headline guarantee: an unreachable host delays a reported CHECK, never the
-# startup. The fake host hangs for 12s; the digest must be done long before that,
+# startup. The fake host remains blocked until the test releases it; the digest
+# must be done before that,
 # must say so rather than implying the checks passed, and the sweeps must still
 # run and land afterwards.
 test_unreachable_network_never_blocks_the_digest() {
-  local rec root home fakebin mate log spawned network_finished out started elapsed
+  local rec root home fakebin mate log spawned network_finished release_fifo out started elapsed
   rec=$(prepare_session_start_secondmate secondmate-slow-network)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
   network_finished="${root%/root}/network-finished"
-  install_slow_gh "$fakebin" 12 "$network_finished"
+  release_fifo="${root%/root}/network-release"
+  mkfifo "$release_fifo"
+  install_slow_gh "$fakebin" 2 "$network_finished" "$release_fifo"
 
   started=$(date +%s)
   out=$(run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing)
   elapsed=$(( $(date +%s) - started ))
 
   [ ! -e "$network_finished" ] \
-    || fail "the digest waited for the 12s unreachable-host probe instead of returning from local state (${elapsed}s)"
+    || fail "the digest waited for the unreleased unreachable-host probe instead of returning from local state (${elapsed}s)"
   assert_contains "$out" "SESSION START" "the digest did not complete"
   assert_contains "$out" "IN PROGRESS - the deferred network checks have not finished yet." \
     "the digest did not disclose that its network checks were still running"
@@ -2250,6 +2259,7 @@ EOF
     "the digest reported a GitHub-auth verdict it could not yet have"
 
   # ... and the work itself still happens, off the blocking path.
+  printf '%s\n' release > "$release_fifo"
   wait_for_network_stage "$home" "$root" 60 \
     || fail "the deferred stage never finished: $(network_stage_report "$home" "$root")"
   assert_contains "$(network_stage_report "$home" "$root")" "NEEDS_GH_AUTH" \
@@ -2264,15 +2274,18 @@ EOF
 # is asserted deterministically in tests/fm-startup-network.test.sh, where the
 # claim can be set up directly instead of raced against digest composition.
 test_deferred_result_reaches_the_agent_when_the_digest_cannot_print_it() {
-  local rec root home fakebin mate log spawned queue
+  local rec root home fakebin mate log spawned queue release_fifo
   rec=$(prepare_session_start_secondmate secondmate-wake-once)
   IFS='|' read -r root home fakebin mate log spawned <<EOF
 $rec
 EOF
-  install_slow_gh "$fakebin" 8
+  release_fifo="${root%/root}/network-release"
+  mkfifo "$release_fifo"
+  install_slow_gh "$fakebin" 2 '' "$release_fifo"
   queue="$home/state/.wake-queue"
 
   run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing >/dev/null
+  printf '%s\n' release > "$release_fifo"
   wait_for_network_stage "$home" "$root" 60 || fail "the deferred stage never finished"
   wait_for_network_wake "$home" 60 || fail "the deferred stage never settled wake delivery"
   assert_grep 'check	startup-network' "$queue" \

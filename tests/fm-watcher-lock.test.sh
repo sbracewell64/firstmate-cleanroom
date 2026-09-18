@@ -22,31 +22,6 @@ ARM_FAIL_EXIT_POLLS=400
 
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
-# Stop a background watcher or arm and collect it, never blocking unboundedly on
-# a process that swallowed its stop signal. Send <signal> (default TERM) so the
-# target's own signal trap can release its lock and reap its child, then wait a
-# bounded grace; if it is still alive, KILL it and collect. This is the exact
-# hang this suite is fixing: on CI's bash 5.2 (ubuntu-latest) a trap that lands
-# while bash is expanding a command substitution can fail to run
-# ("fm-watch.sh: trap: unexpected EOF while looking for matching `)'"), so the
-# watcher swallows its TERM and loops until the job timeout - and a bare
-# `kill "$pid"; wait "$pid"` teardown then blocks forever, taking the whole
-# portable-serial lane to its 30-minute cap with no FM_TEST_END emitted. A KILL
-# is uncatchable, so the bounded path always collects; the lock library reclaims
-# a dead holder's lock, so any later watcher a case launches still starts. Local
-# bash 5.3 fixes the underlying trap bug and so cannot reproduce the swallow,
-# which is why this must be structural rather than reproduced here.
-reap() {  # <pid> [signal]
-  local pid=$1 sig=${2:-TERM} i=0 max=${FM_REAP_GRACE_POLLS:-100}
-  kill "-$sig" "$pid" 2>/dev/null || true
-  while [ "$i" -lt "$max" ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
-
 drain_and_ack() {  # <state>
   local state=$1 err sequence generation
   err="$state/.test-drain.err"
@@ -921,7 +896,7 @@ SH
   done
   size=$(wc -c < "$state/.watch-cycle-exits.log" | tr -d '[:space:]')
   [ "$size" -le 1400 ] || fail "cycle ledger exceeded its configured cap ($size bytes)"
-  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
+  ! grep -v '^arm_pid=.*watcher_pid=.*started_at=.*ended_at=.*exit_code=.*signal=.*reason=.*beacon_age=.*lock_before=.*lock_after=.*restart_stop=.*child_stop=.*successor=' "$state/.watch-cycle-exits.log" | grep . >/dev/null \
     || fail "bounded lifecycle ledger contains a partial or malformed record"
   pass "cycle-exit ledger links a verified successor and remains size-capped"
 }
@@ -959,6 +934,54 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   grep -Eq 'reason=(nonzero-exit|signal-exit)' "$state/.watch-cycle-exits.log" \
     || fail "terminated watcher exit was not classified in the lifecycle ledger"
   pass "SIGSTOP distinguishes live PID from stale beacon and termination records the exit class"
+}
+
+test_a_zombie_reads_live_but_yields_no_identity() {
+  # The predicate pair the --restart disposition's free-pid poll rests on. A
+  # forked child that exited while its parent has not reaped it is still visible
+  # to kill -0, so fm_pid_alive reports it live, while /proc/<pid>/cmdline is
+  # empty so fm_pid_identity fails and fm_stop_process_confirmed reads the target
+  # as gone. That split is why the poll exists: without it a restart would record
+  # `confirmed` for a pid the relaunched watcher still stands down against. This
+  # pins both halves, so the case fails the moment the premise stops being true.
+  local dir zpid go i
+  dir=$(make_case zombie-predicates)
+  go="$dir/reap.go"
+  command -v python3 >/dev/null 2>&1 || { pass "zombie predicate pair skipped: python3 is unavailable"; return; }
+  [ -r /proc/$$/cmdline ] \
+    || { pass "zombie predicate pair skipped: this host exposes no /proc cmdline"; return; }
+
+  python3 - "$dir/zombie.pid" "$go" <<'PYZ' &
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(pid))
+while not os.path.exists(sys.argv[2]):
+    time.sleep(0.05)
+os.waitpid(pid, 0)
+PYZ
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/zombie.pid" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  zpid=$(cat "$dir/zombie.pid" 2>/dev/null || true)
+  case "$zpid" in
+    ''|*[!0-9]*) : > "$go"; wait; fail "the zombie fixture never published a pid" ;;
+  esac
+
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_alive "$2"' _ "$LIB" "$zpid" \
+    || { : > "$go"; wait; fail "a zombie was not read as live, so the free-pid poll has nothing to wait for"; }
+  if FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_pid_identity "$2" >/dev/null 2>&1' _ "$LIB" "$zpid"; then
+    : > "$go"; wait
+    fail "a zombie yielded a process identity, so a stop would no longer read it as gone"
+  fi
+
+  : > "$go"
+  wait
+  pass "a zombie reads as live while yielding no identity, which is what the restart free-pid poll waits out"
 }
 
 test_pid_identity_is_locale_invariant() {
@@ -1169,8 +1192,628 @@ test_reap_bounds_a_signal_swallowing_watcher() {
   pass "reap collects a signal-swallowing watcher within a bounded deadline"
 }
 
+test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs() {
+  # The failure this pins is the one the bounded KILL above only CONTAINS: a
+  # watcher whose stop signal was dropped is collected, but by an uncatchable
+  # KILL, so its close path - singleton lock release, downtime publication,
+  # delivery ledger - never runs, and the next drain then has no stopped cycle to
+  # present or acknowledge. That is how a green branch arrived red on CI's
+  # bash 5.2, where a trapped signal landing while the shell expands a command
+  # substitution is consumed without its handler ever running.
+  #
+  # The stand-in reproduces that observable deterministically on every bash, with
+  # no wall-clock window to race: it counts deliveries whose close path does NOT
+  # run, and arms the real close path only after the SECOND such delivery. The
+  # first is spent by the negative control below, so the first delivery any stop
+  # protocol makes is provably dropped. One that delivers once then escalates to
+  # KILL leaves no close record; one that re-delivers until the target is
+  # observed gone does.
+  local dir ready closed drops armed dropper start elapsed i
+  dir=$(make_case reap-redelivery)
+  ready="$dir/dropper.ready"
+  closed="$dir/dropper.closed"
+  drops="$dir/dropper.drops"
+  armed="$dir/dropper.armed"
+  # Marked ready only after the dropping disposition is installed, so a stop sent
+  # in the startup window cannot kill it through the inherited default and mask
+  # the re-delivery this asserts.
+  bash -c '
+    count=0
+    trap "count=\$((count + 1)); printf %s \"\$count\" > \"\$3\"" TERM
+    : > "$1"
+    while [ "$count" -lt 2 ]; do sleep 0.05; done
+    trap "printf closed > \"\$2\"; exit 0" TERM
+    : > "$4"
+    while :; do sleep 0.2; done
+  ' _ "$ready" "$closed" "$drops" "$armed" &
+  dropper=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -e "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] || fail "stop-dropping stand-in did not install its dropping disposition"
+
+  # Negative control: the first stop really is dropped, so a passing case cannot
+  # come from a stand-in that stops on the first delivery anyway.
+  kill -TERM "$dropper" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 50 ] && [ "$(cat "$drops" 2>/dev/null || true)" != 1 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$drops" 2>/dev/null || true)" = 1 ] || fail "stop-dropping stand-in never observed its first stop"
+  is_live_non_zombie "$dropper" || fail "stop-dropping stand-in exited on its dropped stop"
+  [ ! -e "$closed" ] || fail "stop-dropping stand-in ran a close path for a dropped stop"
+  [ ! -e "$armed" ] || fail "stop-dropping stand-in armed its close path before its drop window closed"
+
+  # A grace comfortably past both the drop window and the re-delivery interval,
+  # so the assertion is about re-delivery rather than about outlasting anything.
+  start=$(date +%s)
+  FM_REAP_GRACE_POLLS=80 reap "$dropper"
+  elapsed=$(( $(date +%s) - start ))
+  is_live_non_zombie "$dropper" && fail "reap did not collect a stop-dropping watcher"
+  [ -e "$closed" ] \
+    || fail "reap collected the watcher without its close path running: the dropped stop was never re-delivered"
+  [ "$elapsed" -le 8 ] \
+    || fail "reap did not re-deliver promptly after the drop window (took ${elapsed}s)"
+  pass "a dropped stop is re-delivered until the watcher is gone, so its close path still runs"
+}
+
+test_watcher_close_path_is_not_abandoned_by_a_later_stop() {
+  # A dying watcher receiving more than one stop is ordinary: a supervisor
+  # signals the process group AND the pid, and a confirmed stop re-delivers to a
+  # target that has shown no sign of stopping. Its close path is what makes the
+  # stop READABLE - it releases the singleton lock and publishes the downtime
+  # episode the next drain presents and retires - so a later stop must not
+  # re-enter the exit handler and abandon it half done. That leaves a watcher
+  # that is gone with no record that it ever stopped, and the next drain then has
+  # nothing to present: the exact shape of the CI failure this branch repairs.
+  local dir state fakebin out pid i
+  dir=$(make_case close-path-second-stop)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$pid"; fail "watcher never reached its poll loop"; }
+
+  # Keep stopping it until it is gone. The interval is deliberately far shorter
+  # than the library's own 2-second re-delivery pacing: the window this case must
+  # hit is the one before watcher_cleanup installs its ignore, and only an
+  # interval shorter than the close path lands a stop inside it, which is what
+  # makes this deterministic rather than a race the run might miss. The burst is
+  # safe once that ignore is in force because the close path IGNORES stops rather
+  # than queueing them, so they build no pending-trap bookkeeping to corrupt.
+  i=0
+  while [ "$i" -lt 250 ] && is_live_non_zombie "$pid"; do
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.02
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && { reap "$pid"; fail "watcher never stopped under repeated stops"; }
+  wait "$pid" 2>/dev/null || true
+
+  [ -e "$state/.watcher-down" ] \
+    || fail "the watcher's close path was abandoned by a later stop: no downtime episode was published"
+  drain_and_ack "$state" \
+    || fail "a watcher stopped under repeated stops left no acknowledgeable stopped cycle"
+  pass "a later stop cannot abandon the watcher close path that publishes its stop"
+}
+
+test_close_path_wait_for_the_marker_lock_stays_killable() {
+  # arch-escape-hatch-ordering regression. The close path ignores stop signals so
+  # a later stop cannot tear its downtime publication, but the WAIT for the
+  # downtime marker lock has no deadline of its own, and a live holder that never
+  # releases would leave the exiting watcher spinning with every stop discarded -
+  # an UNKILLABLE watcher, which is worse in this fleet than a torn close because
+  # the broad kill that would be the only way out is forbidden here. So that wait
+  # runs with the ordinary stop disposition still in force, and this proves both
+  # halves: the watcher is still collectable by an ordinary stop while it waits,
+  # and what it leaves behind is the ordinary killed-watcher state the next
+  # watcher recovers rather than a half-written marker.
+  local dir state fakebin out watcher holder successor watcher_status i
+  dir=$(make_case close-path-marker-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>/dev/null &
+  watcher=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$watcher"; fail "watcher never reached its poll loop"; }
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher" ] \
+    || { reap "$watcher"; fail "watcher did not record itself as the singleton holder"; }
+
+  # A peer that takes the downtime marker lock through the real primitive and
+  # never gives it back, so the exiting watcher's acquire cannot return.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$3"
+    while :; do sleep 0.2; done
+  ' _ "$LIB" "$state/.watcher-down.lock" "$dir/holder.ready" >/dev/null 2>&1 &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/holder.ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$dir/holder.ready" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; reap "$watcher"; fail "the marker-lock holder never took the lock"; }
+
+  # Ordinary stops only, re-delivered the way a supervisor and a confirmed stop
+  # both do. No KILL: an uncatchable signal would collect the watcher whether or
+  # not the wait is interruptible, and would prove nothing.
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$watcher"; do
+    kill -TERM "$watcher" 2>/dev/null || true
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$watcher" \
+    && { kill -KILL "$holder" 2>/dev/null || true; reap "$watcher"; fail "a watcher waiting for the downtime marker lock discarded every stop: only an uncatchable KILL could collect it"; }
+  watcher_status=0
+  wait "$watcher" 2>/dev/null || watcher_status=$?
+  [ "$watcher_status" -eq 1 ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "the marker-lock signal path did not exit directly after releasing its lock (status $watcher_status)"; }
+
+  # Nothing was half-done: the marker was never written, and the singleton lock
+  # still names the collected watcher, exactly as for a watcher killed outright.
+  [ ! -e "$state/.watcher-down" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "a stop taken during the marker-lock wait left a downtime marker behind"; }
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$watcher" ] \
+    || { kill -KILL "$holder" 2>/dev/null || true; fail "a stop taken during the marker-lock wait tore the singleton lock"; }
+
+  kill -KILL "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  # And that state is recoverable rather than lost: the next watcher steals the
+  # stale singleton lock, publishes the downtime its predecessor never reached,
+  # and the drain can present and acknowledge that stopped cycle.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch-two.out" 2>/dev/null &
+  successor=$!
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$state/.watcher-down" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.watcher-down" ] \
+    || { reap "$successor"; fail "the next watcher did not publish the downtime the collected watcher never reached"; }
+  drain_and_ack "$state" \
+    || { reap "$successor"; fail "the state left by a stop during the marker-lock wait is not an acknowledgeable stopped cycle"; }
+  reap "$successor"
+  pass "a close path waiting for the marker lock is still collectable by a stop, and what it leaves is recoverable"
+}
+
+test_close_path_publishes_under_marker_lock_contention() {
+  # The sequence the case above cannot reach: the downtime marker lock is FREE
+  # when the close begins, and a peer only starts contending for it once the stop
+  # has landed. A close that asked "is the lock free?" and then separately took it
+  # would pass its probe, lose the lock to that peer in between, and then block on
+  # the real acquire with every stop ignored. Holding the probe-acquired lock
+  # across the transition removes the window rather than narrowing it, so this
+  # pins the property either interleaving must satisfy: the watcher is collected
+  # by ordinary stops alone, and its downtime is still recoverable afterwards.
+  local dir state fakebin out watcher peer successor i
+  dir=$(make_case marker-lock-contention)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>/dev/null &
+  watcher=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.last-watcher-beat" ] || { reap "$watcher"; fail "watcher never reached its poll loop"; }
+  # The watcher takes this lock briefly during its own startup, so the premise is
+  # that it has been GIVEN BACK, not that it was never held. Wait for that rather
+  # than sampling the instant the beacon appears.
+  i=0
+  while [ "$i" -lt 100 ] && [ -e "$state/.watcher-down.lock" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.watcher-down.lock" ] \
+    && { reap "$watcher"; fail "the marker lock must be free before this close begins"; }
+
+  # The stop first, then a peer that starts competing for the marker lock and
+  # keeps it once it wins. Whichever of them takes it first, the watcher must not
+  # end up spinning on it with its stops discarded.
+  kill -TERM "$watcher" 2>/dev/null || true
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$3"
+    while :; do sleep 0.2; done
+  ' _ "$LIB" "$state/.watcher-down.lock" "$dir/peer.held" >/dev/null 2>&1 &
+  peer=$!
+
+  # Ordinary stops only. A KILL would collect the watcher whether or not the
+  # publishing wait is interruptible, and would prove nothing.
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$watcher"; do
+    kill -TERM "$watcher" 2>/dev/null || true
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$watcher" \
+    && { kill -KILL "$peer" 2>/dev/null || true; reap "$watcher"; fail "a close path that lost the marker lock to a peer discarded every stop: only an uncatchable KILL could collect it"; }
+  wait "$watcher" 2>/dev/null || true
+
+  kill -KILL "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+
+  # Recoverable either way: the watcher published its downtime before the peer
+  # could take the lock, or it was collected without publishing and the next
+  # watcher's stale-lock steal publishes it. Both must reach an acknowledgeable
+  # stopped cycle.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch-two.out" 2>/dev/null &
+  successor=$!
+  i=0
+  while [ "$i" -lt 200 ] && [ ! -e "$state/.watcher-down" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$state/.watcher-down" ] \
+    || { reap "$successor"; fail "no downtime episode survived a close that contended for the marker lock"; }
+  drain_and_ack "$state" \
+    || { reap "$successor"; fail "a close that contended for the marker lock left no acknowledgeable stopped cycle"; }
+  reap "$successor"
+  pass "a close path racing a peer for the marker lock is still collectable by a stop and still leaves a recoverable downtime"
+}
+
+# A stand-in watcher that RECORDS every stop signal it receives, so a case can
+# assert on what the arm actually sent its owned child rather than on prose about
+# it. It is launched by the real arm, through a fixture bin/ whose fm-watch.sh is
+# this stand-in, and it claims this home's singleton lock the way a real watcher
+# does so the arm's healthy-watcher confirmation accepts it.
+make_recording_watcher_bin() {  # <dir>
+  local dir=$1 armbin
+  armbin="$dir/armbin"
+  mkdir -p "$armbin"
+  ln -sf "$ROOT/bin/fm-watch-arm.sh" "$armbin/fm-watch-arm.sh"
+  ln -sf "$ROOT/bin/fm-wake-lib.sh" "$armbin/fm-wake-lib.sh"
+  cat > "$armbin/fm-watch.sh" <<'STUB'
+#!/usr/bin/env bash
+set -u
+SIG_LOG=${FM_STUB_SIGLOG:?}
+STUB_MODE=${FM_STUB_MODE:?}
+STUB_GO=${FM_STUB_GO:-}
+STUB_LIB=${FM_STUB_LIB:?}
+STUB_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+: > "$SIG_LOG"
+stub_stops=0
+on_stop() {
+  printf '%s\n' "$1" >> "$SIG_LOG"
+  stub_stops=$((stub_stops + 1))
+  if [ "$STUB_MODE" = drop-first-stop ] && [ "$stub_stops" -ge 2 ]; then
+    exit 1
+  fi
+}
+trap 'on_stop TERM' TERM
+trap 'on_stop HUP' HUP
+trap 'on_stop INT' INT
+[ "$STUB_MODE" != exit-now ] || exit 0
+# shellcheck disable=SC1090,SC1091
+. "$STUB_LIB"
+mkdir -p "$STATE/.watch.lock"
+printf '%s\n' "$$" > "$STATE/.watch.lock/pid"
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$STUB_SELF" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "$$" > "$STATE/.watch.lock/pid-identity"
+touch "$STATE/.last-watcher-beat"
+stub_i=0
+while [ "$stub_i" -lt 300 ]; do
+  if [ -n "$STUB_GO" ] && [ -e "$STUB_GO" ]; then
+    break
+  fi
+  sleep 0.1
+  stub_i=$((stub_i + 1))
+done
+[ "$STUB_MODE" != wake ] || printf 'signal: stub-wake\n'
+exit 0
+STUB
+  chmod +x "$armbin/fm-watch.sh"
+  printf '%s\n' "$armbin"
+}
+
+test_normal_cycle_end_sends_the_owned_child_no_stop() {
+  # The arm's normal-completion waits are deliberately NOT routed through the
+  # confirmed stop: their unbounded wait IS the supervision cycle, and the child
+  # ends it by itself. That exclusion is only safe while those paths send the
+  # child nothing, so this asserts it from the child's side - a stand-in watcher
+  # that records every stop it receives must record none across a cycle that ends
+  # with its own wake.
+  local dir state armbin siglog go out arm status
+  dir=$(make_case normal-cycle-no-stop)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  go="$dir/child.go"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=wake \
+    FM_STUB_GO="$go" FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the recording stand-in watcher was never confirmed by the arm"; }
+
+  : > "$go"
+  status=0
+  wait_for_exit "$arm" 200 >/dev/null 2>&1 || status=$?
+  out=$(cat "$dir/arm.out" 2>/dev/null || true)
+  case "$out" in
+    *"signal: stub-wake"*) ;;
+    *) fail "the arm did not surface the wake its child ended on: $out" ;;
+  esac
+  [ ! -s "$siglog" ] \
+    || fail "a normal cycle end signalled the owned child: $(tr '\n' ' ' < "$siglog")"
+  pass "a cycle that ends on the child's own wake sends that child no stop signal"
+}
+
+test_an_unconfirmed_child_stop_is_never_the_arms_last_word() {
+  # The counterpart exclusion: cleanup_child delivers ONE unconfirmed TERM and is
+  # only safe because every path that reaches it has already run the confirmed
+  # stop. A stand-in that drops its first stop proves that ordering from outside:
+  # if a single delivery were the arm's whole stop, this child would outlive the
+  # arm that owned it.
+  local dir state armbin siglog arm child delivered i
+  dir=$(make_case arm-stop-is-confirmed)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=drop-first-stop \
+    FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the stop-dropping stand-in watcher was never confirmed by the arm"; }
+  child=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  case "$child" in
+    ''|*[!0-9]*) reap "$arm"; fail "the stand-in watcher recorded no lock pid" ;;
+  esac
+
+  reap "$arm" HUP
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$child" \
+    && { kill -KILL "$child" 2>/dev/null || true; fail "the arm left behind a child that ignored its single stop: the stop was never confirmed"; }
+  delivered=$(grep -c . "$siglog" 2>/dev/null || echo 0)
+  [ "$delivered" -ge 2 ] \
+    || fail "the arm stopped its child with $delivered delivery/deliveries, so a dropped stop would have been abandoned"
+  pass "an arm stopping its owned child re-delivers until it is gone rather than trusting one signal"
+}
+
+test_forced_owned_child_stop_is_reaped_and_recorded() {
+  local dir state armbin siglog arm child status i
+  dir=$(make_case forced-owned-child-stop)
+  state="$dir/state"
+  siglog="$dir/child-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=ignore-stop \
+    FM_STOP_REDELIVER_POLLS=2 FM_ARM_STOP_POLLS=2 FM_STUB_LIB="$LIB" \
+    "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the ignore-stop stand-in watcher was never confirmed by the arm"; }
+  child=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -HUP "$arm" 2>/dev/null || true
+  status=0
+  wait "$arm" 2>/dev/null || status=$?
+  is_live_non_zombie "$child" \
+    && fail "the arm left a TERM-ignoring owned watcher alive after its bounded stop"
+  grep -q 'child_stop=forced-unconfirmed' "$state/.watch-cycle-exits.log" \
+    || fail "the arm did not record its forced unconfirmed child disposition"
+  [ "$status" -eq 129 ] || fail "the arm did not preserve its HUP outcome after force-collecting the child"
+  pass "a TERM-ignoring owned child is force-collected, reaped, and recorded unconfirmed"
+}
+
+test_restart_records_whether_its_stop_was_confirmed() {
+  # --restart is a RECOVERY path, so an unconfirmed stop must not refuse it:
+  # leaving the fleet with no watcher at all is worse than the duplicate a
+  # refusal would avoid, and an escape hatch that will not open when the evidence
+  # is missing is not a safety property. What the restart owes a consumer instead
+  # is the fact in a form it can act on, so the arm-layer lifecycle row carries
+  # restart_stop and names "could not confirm" as its own value rather than
+  # reading like a confirmed stop. This drives the real --restart against a real
+  # recorded holder in both dispositions, and pins the exclusion the unconfirmed
+  # case rests on - the singleton lock, not an assumption.
+  local dir state fakebin arm_out restart_out restart_err second_out second_err
+  local arm_pid holder_pid stopped_pid lock_pid status i
+  dir=$(make_case restart-stop-disposition)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  arm_out="$dir/arm.out"
+  restart_out="$dir/restart.out"
+  restart_err="$dir/restart.err"
+  second_out="$dir/unconfirmed.out"
+  second_err="$dir/unconfirmed.err"
+
+  restart_case_arm() {
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" "$@"
+  }
+  resume_stopped_holder() {
+    [ -n "${stopped_pid:-}" ] || return 0
+    kill -CONT "$stopped_pid" 2>/dev/null || true
+  }
+
+  restart_case_arm > "$arm_out" 2>/dev/null &
+  arm_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && ! grep -qF 'watcher: started pid=' "$arm_out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  holder_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$holder_pid" "$arm_out" \
+    || { reap "$arm_pid"; fail "restart fixture watcher did not start"; }
+
+  # A recorded holder that DOES act on its stop: the confirmed disposition.
+  restart_case_arm --restart > "$restart_out" 2> "$restart_err" || true
+  is_live_non_zombie "$holder_pid" \
+    && { reap "$arm_pid"; fail "--restart returned while the watcher it stopped was still alive"; }
+  grep -q 'restart_stop=confirmed' "$state/.watch-cycle-exits.log" \
+    || { reap "$arm_pid"; fail "a --restart that confirmed its stop did not record the confirmed disposition"; }
+
+  # An arm that restarted nothing must not claim a stop disposition at all.
+  wait_for_exit "$arm_pid" 200 >/dev/null 2>&1
+  grep -q 'restart_stop=none' "$state/.watch-cycle-exits.log" \
+    || fail "an arm that performed no --restart stop did not record the absent disposition"
+  drain_and_ack "$state" || fail "recovery drain after the confirmed restart failed"
+
+  restart_case_arm > "$second_out" 2>/dev/null &
+  arm_pid=$!
+  i=0
+  while [ "$i" -lt 80 ] && ! grep -qF 'watcher: started pid=' "$second_out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  stopped_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF "watcher: started pid=$stopped_pid" "$second_out" \
+    || { reap "$arm_pid"; fail "stop-proof fixture watcher did not start"; }
+
+  # Now a recorded holder that CANNOT act on any stop, however often it is
+  # delivered: SIGSTOP leaves it live and identity-matched, so --restart signals
+  # it for real and its bounded confirmation genuinely cannot succeed.
+  kill -STOP "$stopped_pid" 2>/dev/null \
+    || { reap "$arm_pid"; fail "could not SIGSTOP the recorded watcher"; }
+  touch -t 200001010000 "$state/.last-watcher-beat"
+  status=0
+  restart_case_arm --restart > "$second_out.restart" 2> "$second_err" || status=$?
+
+  # Every assertion below that depends on the holder still existing runs while it
+  # is still SIGSTOPped, so none of them can race the close path the pending stops
+  # release. is_live_non_zombie already reads a stopped process as live.
+  is_live_non_zombie "$stopped_pid" \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "the stop-proof holder was collected, so this case proves nothing about an unconfirmed stop"; }
+  grep -q 'restart_stop=unconfirmed' "$state/.watch-cycle-exits.log" \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "a --restart that could not confirm its stop did not record the unconfirmed disposition"; }
+  [ "$status" -ne 0 ] \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "--restart reported success while the watcher it never confirmed stopped still held the lock"; }
+
+  # The exclusion the unconfirmed case rests on, proven rather than assumed: the
+  # relaunched watcher stands down against the still-live recorded holder instead
+  # of running beside it, so one live watcher remains and it is still that holder.
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ "$lock_pid" = "$stopped_pid" ] \
+    || { resume_stopped_holder; reap "$arm_pid"; fail "a second watcher took the singleton lock beside the one that was never confirmed stopped"; }
+
+  resume_stopped_holder
+  grep -qF "lock held by live pid $stopped_pid" "$second_err" \
+    || { reap "$arm_pid"; fail "the relaunched watcher did not stand down against the live recorded holder"; }
+
+  reap "$arm_pid"
+  unset -f restart_case_arm resume_stopped_holder
+  pass "--restart records whether its stop was confirmed and still leaves one live watcher when it was not"
+}
+
+test_restart_stop_bound_outlasts_a_slow_redelivery_cadence() {
+  # --restart confirms its stop through the same re-delivering helper as the
+  # arm's close paths, so its bound must outlast the re-delivery interval: a
+  # bound that expires before the second delivery is due leaves exactly ONE
+  # signal, which is the unconfirmed single stop the confirmed stop exists to
+  # replace. FM_STOP_REDELIVER_POLLS is deliberately raised past the base bound
+  # here - the "do not re-signal aggressively" configuration - and a stand-in
+  # watcher that records every stop it receives and acts on none reports what
+  # --restart actually delivered. The holder and the relaunched successor record
+  # to SEPARATE logs, because the stand-in truncates its log at startup.
+  local dir state armbin siglog successor_log arm restart_arm holder successor delivered i
+  dir=$(make_case restart-stop-bound-floor)
+  state="$dir/state"
+  siglog="$dir/holder-signals.log"
+  successor_log="$dir/successor-signals.log"
+  armbin=$(make_recording_watcher_bin "$dir")
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=wake \
+    FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
+  arm=$!
+  i=0
+  while [ "$i" -lt 150 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$dir/arm.out" \
+    || { reap "$arm"; fail "the recording stand-in watcher was never confirmed by the arm"; }
+  holder=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  case "$holder" in
+    ''|*[!0-9]*) reap "$arm"; fail "the stand-in watcher recorded no lock pid" ;;
+  esac
+
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$successor_log" FM_STUB_MODE=wake \
+    FM_STUB_LIB="$LIB" FM_STOP_REDELIVER_POLLS=60 \
+    "$armbin/fm-watch-arm.sh" --restart > "$dir/restart.out" 2>/dev/null &
+  restart_arm=$!
+  # The relaunch is what proves the stop attempt finished, so the delivery count
+  # below is read from a completed confirmation window rather than mid-flight.
+  i=0
+  while [ "$i" -lt 250 ] && ! grep -qF 'watcher: started pid=' "$dir/restart.out" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  successor=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  grep -qF 'watcher: started pid=' "$dir/restart.out" \
+    || { kill -KILL "$holder" 2>/dev/null || true; reap "$restart_arm"; reap "$arm"
+         fail "--restart never relaunched, so its stop window cannot be read"; }
+
+  delivered=$(grep -c . "$siglog" 2>/dev/null || echo 0)
+  kill -KILL "$holder" 2>/dev/null || true
+  case "$successor" in
+    ''|*[!0-9]*) ;;
+    *) [ "$successor" = "$holder" ] || kill -KILL "$successor" 2>/dev/null || true ;;
+  esac
+  reap "$restart_arm"
+  reap "$arm"
+  [ "$delivered" -ge 2 ] \
+    || fail "--restart delivered its stop $delivered time(s) with a 6s re-delivery cadence, so a dropped stop would never be re-sent"
+  pass "--restart keeps a confirmation window wide enough to re-deliver even when re-deliveries are paced far apart"
+}
+
 test_reap_bounds_a_signal_swallowing_watcher
+test_reap_redelivers_a_dropped_stop_so_the_close_path_still_runs
+test_watcher_close_path_is_not_abandoned_by_a_later_stop
+test_close_path_wait_for_the_marker_lock_stays_killable
+test_close_path_publishes_under_marker_lock_contention
+test_normal_cycle_end_sends_the_owned_child_no_stop
+test_an_unconfirmed_child_stop_is_never_the_arms_last_word
+test_forced_owned_child_stop_is_reaped_and_recorded
+test_restart_records_whether_its_stop_was_confirmed
+test_restart_stop_bound_outlasts_a_slow_redelivery_cadence
 test_singleton_start
+test_a_zombie_reads_live_but_yields_no_identity
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc

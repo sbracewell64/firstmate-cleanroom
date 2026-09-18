@@ -31,8 +31,16 @@
 # CONTRACT (fm_programme_present <state> <mode>):
 #   1. Run the resolver's `render`; exit 3 (no programme) prints nothing and
 #      returns 3; a resolver failure is itself material state, keyed by a
-#      digest of its exit code and message, so a broken pin surfaces once and
-#      then stays quiet until it changes.
+#      digest of its exit code and the diagnostic it wrote, so a broken pin
+#      surfaces once and then stays quiet until it changes. When NO diagnostic
+#      was captured - whether because it could not be staged or because the
+#      resolver wrote none, which are the same thing here - that digest would be
+#      identical for every failure of that exit code, so this REFUSES TO DEDUPE
+#      and presents each occurrence instead. When the distinguishing input is
+#      unavailable the answer is to refuse to identify, never to fall back to a
+#      value everything shares: presenting the same failure twice is harmless,
+#      suppressing a genuinely different one is not. Do not narrow that guard to
+#      the unstageable case alone; it would re-create the collapse.
 #   2. Compare the identity with the acknowledged record AND the pending
 #      record: equal to either is unchanged -> print nothing, return 0. When
 #      it equals the pending record and the mode is `commit` (a no-ack turn
@@ -113,10 +121,23 @@ fm_programme_presentation_state() {  # <state> <identity>
 
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' dedupe=1
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  out=$("$resolver" render 2>&1) || rc=$?
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$resolver" render 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    out=$("$resolver" render) || rc=$?
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
+  fi
+  # Separating the streams means ROUTING both, not discarding one, so the
+  # captured stderr is relayed here rather than dropped on a successful
+  # resolve; bin/fm-programme-projection.sh states that policy in full,
+  # including why exit 3 is the one deliberate exception.
+  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")
@@ -125,21 +146,29 @@ fm_programme_present() {  # <state> <mode: pending|commit>
       ;;
     3) return 3 ;;
     *)
-      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$out")
+      reason=${diag:-$diag_note}
+      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$reason")
       summary="resolver failed (exit $rc)"
       out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
-$out"
+$reason"
+      # With no captured diagnostic the identity cannot tell one failure of this
+      # exit code from another, so this REFUSES TO DEDUPE rather than falling back
+      # to a value every such failure shares: presenting the same failure twice is
+      # harmless, suppressing a genuinely new one is not.
+      [ -n "$diag" ] || dedupe=0
       ;;
   esac
-  verdict=$(fm_programme_presentation_state "$state" "$identity")
-  case "$verdict" in
-    unchanged) return 0 ;;
-    pending-ack)
-      [ "$mode" = commit ] || return 0
-      fm_programme_ack_pending "$state"
-      return $?
-      ;;
-  esac
+  if [ "$dedupe" -eq 1 ]; then
+    verdict=$(fm_programme_presentation_state "$state" "$identity")
+    case "$verdict" in
+      unchanged) return 0 ;;
+      pending-ack)
+        [ "$mode" = commit ] || return 0
+        fm_programme_ack_pending "$state"
+        return $?
+        ;;
+    esac
+  fi
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
   printf '%s\n' "$out"
   if [ "$mode" = pending ]; then

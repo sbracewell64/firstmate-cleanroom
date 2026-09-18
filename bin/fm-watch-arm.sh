@@ -462,7 +462,11 @@ if [ "$mode" = restart ]; then
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
       cycle_restart_stop=unconfirmed
-      if fm_watch_stop_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY" || ! fm_pid_alive "$lock_pid"; then
+      if fm_watch_stop_confirmed "$lock_pid" "$FM_WATCHER_MATCHED_IDENTITY"; then
+        if ! fm_pid_alive "$lock_pid"; then
+          cycle_restart_stop=confirmed
+        fi
+      elif ! fm_pid_alive "$lock_pid"; then
         cycle_restart_stop=confirmed
       fi
     else

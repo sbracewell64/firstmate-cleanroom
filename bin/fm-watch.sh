@@ -2013,11 +2013,17 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      rm -f "$sf"
       paused_bound=1
       if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
-        busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
+        if busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf"; then
+          # A busy declared pause in away mode uses the declaration signature,
+          # not the changing pane hash, as its one-shot suppressor.
+          paused_bound=0
+        else
+          rm -f "$sf"
+        fi
       else
+        rm -f "$sf"
         rm -f "$ssf" "$ewf"
         clear_deferral_tracking "$key"
       fi

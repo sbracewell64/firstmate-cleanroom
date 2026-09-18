@@ -226,7 +226,7 @@ if [ "$KIND" = secondmate ]; then
 fi
 
 BRIEF="$DATA/$ID/brief.md"
-[ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+[ -e "$BRIEF" ] || [ -L "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -236,7 +236,47 @@ BRIEF_CONTROL_LOCK_HELD=0
 FM_DISCIPLINE_WRITER_LOCK_PATH="$BRIEF_CONTROL_LOCK"
 FM_DISCIPLINE_WRITER_LOCK_HELD=0
 DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH=
+DISCIPLINE_PUBLISHED=0
+BRIEF_COMMITTED=0
+BRIEF_TMP=
+brief_mark_publication() {
+  [ "$KIND" = ship ] || return 0
+  if fm_discipline_capture "$DATA/$ID/work-context.json"; then
+    if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] ||
+      [ "$FM_DISCIPLINE_CAPTURE_SHA256" != "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ]; then
+      DISCIPLINE_PUBLISHED=1
+    fi
+    fm_discipline_capture_cleanup
+  else
+    fm_discipline_capture_cleanup
+  fi
+}
+brief_rollback_discipline() {
+  local rollback
+  [ "$DISCIPLINE_PUBLISHED" -eq 1 ] || return 0
+  rm -f -- "$BRIEF" || return 1
+  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 1 ]; then
+    rollback=$(umask 077; mktemp "$DATA/$ID/.discipline-rollback.XXXXXX") || return 1
+    cp -- "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" "$rollback" || { rm -f -- "$rollback"; return 1; }
+    chmod "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" "$rollback" || { rm -f -- "$rollback"; return 1; }
+    mv -f "$rollback" "$DATA/$ID/work-context.json" || { rm -f -- "$rollback"; return 1; }
+    fm_discipline_capture "$DATA/$ID/work-context.json" || return 1
+    [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ] || { fm_discipline_capture_cleanup; return 1; }
+    [ "$FM_DISCIPLINE_CAPTURE_MODE" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" ] || { fm_discipline_capture_cleanup; return 1; }
+    cmp -s "$FM_DISCIPLINE_CAPTURE_PATH" "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" || { fm_discipline_capture_cleanup; return 1; }
+    fm_discipline_capture_cleanup
+  else
+    rm -f -- "$DATA/$ID/work-context.json" || return 1
+    rmdir "$DATA/$ID" 2>/dev/null || true
+  fi
+  DISCIPLINE_PUBLISHED=0
+}
 brief_release_control_lock() {
+  local status=$?
+  if [ "$DISCIPLINE_PUBLISHED" -eq 1 ] && [ "$BRIEF_COMMITTED" -eq 0 ]; then
+    brief_rollback_discipline || status=70
+  fi
+  [ -z "$BRIEF_TMP" ] || rm -f -- "$BRIEF_TMP"
   if [ "$BRIEF_CONTROL_LOCK_HELD" -eq 1 ]; then
     BRIEF_CONTROL_LOCK_HELD=0
     fm_lock_release "$BRIEF_CONTROL_LOCK" || true
@@ -254,6 +294,10 @@ if [ "$KIND" = ship ]; then
   }
   BRIEF_CONTROL_LOCK_HELD=1
   FM_DISCIPLINE_WRITER_LOCK_HELD=1
+  [ -e "$BRIEF" ] || [ -L "$BRIEF" ] && {
+    echo "error: $BRIEF already exists" >&2
+    exit 1
+  }
 fi
 
 shell_quote() {
@@ -434,12 +478,20 @@ if [ "$KIND" = ship ]; then
   [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
   [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
   fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+    brief_mark_publication
     echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
     exit 3
   }
-  fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
+  if ! fm_discipline_capture "$DATA/$ID/work-context.json"; then
+    brief_mark_publication
+    exit 3
+  fi
   DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
   fm_discipline_capture_cleanup
+  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] ||
+    [ "$DISCIPLINE_DESCRIPTOR_DIGEST" != "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ]; then
+    DISCIPLINE_PUBLISHED=1
+  fi
   DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
 fi
 
@@ -450,27 +502,6 @@ if [ "$KIND" != secondmate ]; then
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
   if [ "$KIND" = ship ]; then
     ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE" 0) || {
-      if [ -n "$DISCIPLINE_DESCRIPTOR_DIGEST" ] &&
-        fm_discipline_capture "$DATA/$ID/work-context.json" &&
-        [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
-        fm_discipline_capture_cleanup
-        if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 1 ]; then
-          rollback=$(umask 077; mktemp "$DATA/$ID/.discipline-rollback.XXXXXX") || exit 3
-          cp -- "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" "$rollback" || exit 3
-          chmod "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" "$rollback" || exit 3
-          mv -f "$rollback" "$DATA/$ID/work-context.json" || exit 3
-          fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
-          [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ] || exit 3
-          [ "$FM_DISCIPLINE_CAPTURE_MODE" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" ] || exit 3
-          cmp -s "$FM_DISCIPLINE_CAPTURE_PATH" "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" || exit 3
-          fm_discipline_capture_cleanup
-        else
-          rm -f -- "$DATA/$ID/work-context.json"
-          rmdir "$DATA/$ID" 2>/dev/null || true
-        fi
-      else
-        fm_discipline_capture_cleanup
-      fi
       echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
       exit 3
     }
@@ -569,8 +600,11 @@ case "$MODE" in
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
 
-printf '%s\n' "$DISCIPLINE" > "$BRIEF"
-cat >> "$BRIEF" <<EOF
+BRIEF_TMP=$(umask 077; mktemp "$DATA/$ID/.brief.XXXXXX") || exit 1
+[ -f "$BRIEF_TMP" ] && [ ! -L "$BRIEF_TMP" ] || exit 1
+{
+printf '%s\n' "$DISCIPLINE"
+cat <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -632,4 +666,9 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
+} > "$BRIEF_TMP" || exit 1
+mv -f "$BRIEF_TMP" "$BRIEF" || exit 1
+BRIEF_TMP=
+[ -f "$BRIEF" ] && [ ! -L "$BRIEF" ] && [ -r "$BRIEF" ] || exit 1
+BRIEF_COMMITTED=1
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"

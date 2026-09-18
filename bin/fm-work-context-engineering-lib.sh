@@ -326,7 +326,7 @@ fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
       if [ "$origin" = scout-to-ship ]; then
         mode=$(fm_meta_get "$state/$id.meta" mode)
         fm_discipline_envelope_validate "$data" "$id" "$brief" \
-          "Your scout task has been promoted to a ship task, mode=$mode. Your window, worktree, and context stay as they are; only the contract below changes." || return 3
+          'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' || return 3
       else
         fm_discipline_brief "$data" "$id" ship "$brief" || return 3
       fi

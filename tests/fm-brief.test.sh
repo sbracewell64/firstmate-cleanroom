@@ -810,7 +810,23 @@ EOF
   pass "engineering context: fresh/resumed exact bytes, missing/stale refusal, irrelevant trigger"
 }
 
+test_fresh_ship_refusal_restores_descriptor() {
+  local home desc original out rc
+  home="$TMP_ROOT/brief-rollback"
+  mkdir -p "$home/data/rollback" "$home/state"
+  desc="$home/data/rollback/work-context.json"
+  printf '%s\n\n' '{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"/missing/skill.md","release":"fixture-r1","sha256":"0000000000000000000000000000000000000000000000000000000000000000","role":"worker","stage":"test","trigger":"test-change"}],"verification":[]}}' > "$desc"
+  original="$home/original.json"
+  cp "$desc" "$original"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rollback alpha --mode no-mistakes 2>&1); rc=$?
+  expect_code 3 "$rc" "fresh ship with an unreadable engineering source must refuse"
+  cmp -s "$original" "$desc" || fail "fresh ship refusal changed the pre-existing descriptor bytes"
+  [ ! -e "$home/data/rollback/brief.md" ] || fail "fresh ship refusal left a partial brief"
+  pass "fm-brief.sh: late fresh-ship refusal restores exact descriptor and brief absence"
+}
+
 test_engineering_context_sources_and_resume
+test_fresh_ship_refusal_restores_descriptor
 test_worker_kernel_roles_and_promotion
 test_script_parses
 test_bash32_generates_brief

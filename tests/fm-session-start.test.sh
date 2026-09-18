@@ -2101,6 +2101,9 @@ SH
     "a staged stdout read failure was not reported as non-actionable capture failure"
   assert_contains "$digest" "wake drain failed (exit 125)" \
     "a staged stdout read failure did not fail the drain capture"
+  if find "$home/tmp" -maxdepth 1 -name 'fm-session-start-drain-*' -print -quit | grep -q .; then
+    fail "a completed drain left capture files in TMPDIR"
+  fi
 
   # A diagnostic that merely mentions the protocol marker is not an outstanding
   # acknowledgement instruction.

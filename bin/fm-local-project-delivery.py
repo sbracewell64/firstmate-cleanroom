@@ -88,6 +88,13 @@ def open_directory(path: Path) -> int:
         raise
 
 
+def verify_directory_identity(path: Path, fd: int, label: str) -> None:
+    held = os.fstat(fd)
+    current = os.stat(path, follow_symlinks=False)
+    if (held.st_dev, held.st_ino, held.st_mode) != (current.st_dev, current.st_ino, current.st_mode):
+        refuse("IDENTITY_CHANGED", f"{label} changed while it was being read")
+
+
 def capture(path: Path, *, private: bool = False, anchor_fd: int | None = None, anchor_path: Path | None = None) -> tuple[bytes, str, int]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     absolute = Path(os.path.abspath(path))
@@ -395,6 +402,8 @@ def build_candidate(
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} path is not its repository root")
     if require_cwd and Path.cwd().resolve() != repo_real:
         refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {repo_real}")
+    source_root_fd = open_directory(root)
+    destination_root_fd = open_directory(repo_real)
     if not ref.startswith("refs/heads/") or not SLUG.fullmatch(ref.removeprefix("refs/heads/")):
         refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
     head = git(repo_real, "rev-parse", f"{ref}^{{commit}}")
@@ -407,36 +416,32 @@ def build_candidate(
         raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
-    source_root_fd = open_directory(root)
-    destination_root_fd = open_directory(repo_real)
-    try:
-        for row in policy["artifacts"]:
-            source_path = under(root, row["source"])
-            source_bytes, source_sha, _ = capture(source_path, anchor_fd=source_root_fd, anchor_path=root)
-            mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"])
-            if obj_type != "blob":
-                refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
-            if mode != row["git_mode"]:
-                refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
-            parse_index_entry(repo_real, row["destination"], mode, oid)
-            destination_bytes = git_blob(repo_real, head, row["destination"])
-            destination_sha = hashlib.sha256(destination_bytes).hexdigest()
-            if source_sha != destination_sha:
-                refuse("SOURCE_DESTINATION_MISMATCH", f"{row['source']} and {row['destination']} differ")
-            destination_file = under(repo_real, row["destination"])
-            work_bytes, work_sha, work_mode = capture(destination_file, anchor_fd=destination_root_fd, anchor_path=repo_real)
-            expected_fs = 0o755 if mode == "100755" else 0o644
-            if work_mode != expected_fs:
-                refuse("DESTINATION_MODE_MISMATCH", f"{destination_file} is mode {work_mode:04o}, expected {expected_fs:04o}")
-            if work_sha != destination_sha or work_bytes != destination_bytes:
-                refuse("DESTINATION_READBACK_MISMATCH", f"working destination {row['destination']} differs from candidate {head}")
-            artifacts.append({
-                "source": row["source"], "destination": row["destination"], "git_mode": mode,
-                "file_mode": f"{expected_fs:04o}", "object_id": oid, "sha256": source_sha,
-            })
-    finally:
-        os.close(source_root_fd)
-        os.close(destination_root_fd)
+    for row in policy["artifacts"]:
+        source_path = under(root, row["source"])
+        source_bytes, source_sha, _ = capture(source_path, anchor_fd=source_root_fd, anchor_path=root)
+        mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"])
+        if obj_type != "blob":
+            refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
+        if mode != row["git_mode"]:
+            refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
+        parse_index_entry(repo_real, row["destination"], mode, oid)
+        destination_bytes = git_blob(repo_real, head, row["destination"])
+        destination_sha = hashlib.sha256(destination_bytes).hexdigest()
+        if source_sha != destination_sha:
+            refuse("SOURCE_DESTINATION_MISMATCH", f"{row['source']} and {row['destination']} differ")
+        destination_file = under(repo_real, row["destination"])
+        work_bytes, work_sha, work_mode = capture(destination_file, anchor_fd=destination_root_fd, anchor_path=repo_real)
+        expected_fs = 0o755 if mode == "100755" else 0o644
+        if work_mode != expected_fs:
+            refuse("DESTINATION_MODE_MISMATCH", f"{destination_file} is mode {work_mode:04o}, expected {expected_fs:04o}")
+        if work_sha != destination_sha or work_bytes != destination_bytes:
+            refuse("DESTINATION_READBACK_MISMATCH", f"working destination {row['destination']} differs from candidate {head}")
+        artifacts.append({
+            "source": row["source"], "destination": row["destination"], "git_mode": mode,
+            "file_mode": f"{expected_fs:04o}", "object_id": oid, "sha256": source_sha,
+        })
+    verify_directory_identity(root, source_root_fd, "source root")
+    verify_directory_identity(repo_real, destination_root_fd, "destination root")
 
     preservation: dict[str, Any] | None = None
     declared_preservation = policy.get("preservation")
@@ -471,11 +476,17 @@ def build_candidate(
                     refuse("PRESERVATION_MISMATCH", f"rollback generation owner {path} is not a Git tree")
                 preservation[role] = {"kind": expected_kind, "path": path, "generation": generation, "object_id": oid}
 
+    verify_directory_identity(root, source_root_fd, "source root")
+    verify_directory_identity(repo_real, destination_root_fd, "destination root")
+
     programme_id = require_slug(programme.get("programme_id"), "programme_id")
     programme_generation = programme.get("schema")
     if not isinstance(programme_generation, str) or not programme_generation:
         refuse("PROGRAMME_MALFORMED", "programme schema is required")
     manifest_sha = hashlib.sha256(canonical(artifacts)).hexdigest()
+    source = source_identity(root)
+    verify_directory_identity(root, source_root_fd, "source root")
+    verify_directory_identity(repo_real, destination_root_fd, "destination root")
     candidate: dict[str, Any] = {
         "schema": SCHEMA,
         "admission_id": delivery_id,
@@ -483,7 +494,7 @@ def build_candidate(
         "home": str(home),
         "context": {"working_directory": str(repo_real)},
         "owner": {"project": project, "mode": "local-only", "registry_sha256": registry_sha256},
-        "source": source_identity(root),
+        "source": source,
         "destination": {"project": project, "root": str(repo_real), "ref": ref, "head": head, "tree": tree},
         "action": {
             "programme_id": programme_id,
@@ -497,6 +508,8 @@ def build_candidate(
         "manifest_sha256": manifest_sha,
         "preservation": preservation,
     }
+    os.close(source_root_fd)
+    os.close(destination_root_fd)
     return candidate
 
 
@@ -516,7 +529,7 @@ def validate_admission(
     if not isinstance(action, dict):
         refuse("ACTION_MISMATCH", "admission action is absent")
     policy = policy_for(programme, step)
-    _, registry_sha256, _ = registered_projects(home)
+    _, registry_sha256, registry_data = registered_projects(home)
     expected_action = {
         "programme_id": programme.get("programme_id"), "programme_generation": programme.get("schema"),
         "step": step, "local_delivery_policy_sha256": hashlib.sha256(canonical(policy)).hexdigest(),
@@ -557,7 +570,11 @@ def validate_admission(
         delivery_id=admission_id, maker=maker, checker=checker, route=route,
         script_dir=script_dir, require_cwd=False,
         registry_sha256=registry_sha256,
+        registry_data=registry_data,
     )
+    _, current_registry_sha256, _ = registered_projects(home)
+    if current_registry_sha256 != registry_sha256:
+        refuse("OWNER_REGISTRY_CHANGED", "project registry changed during admission verification")
     if doc.get("manifest_sha256") != rebuilt["manifest_sha256"]:
         refuse("MANIFEST_DIGEST_MISMATCH", "artifact manifest digest differs from current exact family")
     if doc.get("artifacts") != rebuilt["artifacts"]:
@@ -621,7 +638,10 @@ def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str
             continue
 
 
-def publish(home: Path, candidate: dict[str, Any]) -> tuple[Path, str]:
+def publish(home: Path, candidate: dict[str, Any], registry_sha256: str) -> tuple[Path, str]:
+    _, current_registry_sha256, _ = registered_projects(home)
+    if current_registry_sha256 != registry_sha256:
+        refuse("OWNER_REGISTRY_CHANGED", "project registry changed before admission publication")
     directory = home / "data/local-project-delivery/admissions"
     final_name = f"{candidate['admission_id']}.json"
     data = json.dumps(candidate, sort_keys=True, indent=2, ensure_ascii=False).encode() + b"\n"
@@ -739,7 +759,7 @@ def main() -> int:
         _, current_registry_sha256, _ = registered_projects(home)
         if current_registry_sha256 != registry_sha256:
             refuse("OWNER_REGISTRY_CHANGED", "project registry changed during owner census")
-        path, digest = publish(home, candidate)
+        path, digest = publish(home, candidate, registry_sha256)
         print(json.dumps({"status": "ADMITTED", "reason_code": None, "path": str(path), "sha256": digest, "project": project, "head": candidate["destination"]["head"], "tree": candidate["destination"]["tree"], "manifest_sha256": candidate["manifest_sha256"]}, sort_keys=True))
         return 0
 

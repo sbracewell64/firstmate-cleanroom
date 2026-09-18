@@ -2,9 +2,9 @@
 name: project-management
 description: >-
   Agent-only procedure for Firstmate project management.
-  Use before adding, creating, removing, or initializing a project.
+  Use before adding, creating, removing, or initializing a project, and before binding a governed local-project artifact delivery.
   Cloning or registering a project is add intake and uses the same trigger.
-  Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, and outward-consent decisions.
+  Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, outward-consent, and local artifact-admission decisions.
 user-invocable: false
 metadata:
   internal: true
@@ -32,6 +32,15 @@ If the owning second mate cannot accept the route, report that concrete blocker 
 Resolve the project name, destination, delivery posture, and autonomy posture before changing local or remote state.
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
+
+## Governed local artifact admission
+
+Before dispatching work or applying a delivery effect whose programme evidence will use `local_project_delivery`, bind the exact artifact family through `bin/fm-local-project-delivery.py bind`.
+The command derives and publishes one immutable owner-bound manifest only after the programme action, strict project registration and `local-only` posture, source identity and bytes, destination root and Git candidate, tracked paths and modes, maker/checker separation, qualification route, and complete family agree.
+Run it from the destination project's repository root.
+Use `--project auto` only when the programme policy does not pin an owner; zero complete registered owners is CNO, while more than one is an ambiguity refusal.
+A refusal publishes nothing, and an existing delivery identity is a replay refusal rather than a new admission.
+The command header owns the manifest schema, exact flags, result codes, and verification mechanics, while the programme step's `terminal_predicate.local_delivery` object owns the required family and any pinned destination or preservation identity.
 
 ## Delivery posture
 

@@ -408,6 +408,26 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+# Authority readers cannot use the conservative default as evidence that a
+# project really has a registry owner.
+test_project_mode_can_require_exact_registration() {
+  local home out status
+  home="$TMP_ROOT/project-mode-strict/home"
+  mkdir -p "$home/data"
+  printf '%s\n' '- exact [local-only] - fixture (added 2026-01-01)' > "$home/data/projects.md"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --require-registered --raw exact 2>/dev/null) \
+    || fail "strict registered lookup failed"
+  [ "$out" = 'local-only off' ] || fail "strict lookup changed the registered posture: $out"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --require-registered --raw absent 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "strict lookup defaulted an absent project"
+  assert_contains "$out" 'is not registered' "strict absent-project refusal did not name the missing owner"
+  rm "$home/data/projects.md"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --require-registered --raw exact 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "strict lookup defaulted an absent registry"
+  assert_contains "$out" 'no readable project registry' "strict absent-registry refusal did not name the missing owner store"
+  pass "fm-project-mode: strict readers require an exact readable registration"
+}
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
@@ -417,4 +437,5 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
+test_project_mode_can_require_exact_registration
 echo "# all fm-task-delivery tests passed"

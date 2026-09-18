@@ -309,6 +309,18 @@
       "note": "Known-good reference: the shared enforcement owner landed by PR 47 (merge 0a519ea)."
     },
     {
+      "id": "bin/fm-project-mode.sh:--require-registered",
+      "kind": "enforced",
+      "invariant": "An authority-bound local delivery may resolve only an exact project registry row, never the conservative unregistered-project default.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-continuation-resolve.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
       "id": "bin/fm-pr-check.sh",
       "kind": "enforced",
       "invariant": "A task's recorded PR identity is validated before a merge poll is armed for it.",

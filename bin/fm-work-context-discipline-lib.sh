@@ -785,6 +785,9 @@ fm_discipline_brief() { # <data> <task> <ship|scout|secondmate> <brief>
     ship) ;;
     *) fm_discipline_gap "discipline-role: unknown kind $kind"; return 3 ;;
   esac
-  fm_discipline_envelope_validate "$data" "$task" "$brief" \
-    'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+  if ! fm_discipline_envelope_validate "$data" "$task" "$brief" \
+    'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'; then
+    fm_discipline_gap 'discipline-brief: fixed envelope slot or successor prefix changed'
+    return 3
+  fi
 }

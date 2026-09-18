@@ -275,7 +275,11 @@ fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}
   echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
   exit 3
 }
-ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" all all) || {
+DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || {
+  echo "error: discipline envelope rendering failed" >&2
+  exit 3
+}
+ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" all all 0) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
 }
@@ -295,7 +299,9 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 The worker discipline below replaces the scout evidence subset. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
 
 EOF
-  printf '%s\n\n' "$ENGINEERING"
+  printf '%s\n' "$DISCIPLINE"
+  printf 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.\n\n'
+  printf '%s\n' "$ENGINEERING"
   fm_dod_block "$MODE" "$ID"
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
 mv "$TMP" "$INSTRUCTIONS"

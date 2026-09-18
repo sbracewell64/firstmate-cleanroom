@@ -189,11 +189,11 @@ ROWS
       .id == $v.skill and ($role == "all" or .role == $role) and ($stage == "all" or .stage == $stage)))'
 }
 
-fm_work_context_engineering_prompt() { # <data> <id> <role> <stage>
-  local data=$1 id=$2 role=$3 stage=$4 discipline_rc
+fm_work_context_engineering_prompt() { # <data> <id> <role> <stage> [include-discipline]
+  local data=$1 id=$2 role=$3 stage=$4 discipline_rc include_discipline=${5:-1}
   fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
+  if [ "$include_discipline" -eq 1 ] && [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
     [ "$role:$stage" = all:all ] ||
     [ "$role:$stage" = worker:implementation ];
   }; then

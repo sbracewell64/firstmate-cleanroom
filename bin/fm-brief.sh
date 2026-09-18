@@ -119,6 +119,7 @@ if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
 else
   STATE="$FM_HOME/state"
 fi
+BRIEF_RESOLVED_STATE=$STATE
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
@@ -229,6 +230,7 @@ BRIEF="$DATA/$ID/brief.md"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+STATE=$BRIEF_RESOLVED_STATE
 BRIEF_CONTROL_LOCK="$STATE/.control-$ID.lock"
 BRIEF_CONTROL_LOCK_HELD=0
 FM_DISCIPLINE_WRITER_LOCK_PATH="$BRIEF_CONTROL_LOCK"
@@ -440,6 +442,7 @@ if [ "$KIND" = ship ]; then
   DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
   DISCIPLINE_DESCRIPTOR_MODE=$FM_DISCIPLINE_CAPTURE_MODE
   fm_discipline_capture_cleanup
+  DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
 fi
 
 ENGINEERING=
@@ -448,7 +451,7 @@ if [ "$KIND" != secondmate ]; then
   ENGINEERING_STAGE=all
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
   if [ "$KIND" = ship ]; then
-    ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+    ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE" 0) || {
       if [ -n "$DISCIPLINE_DESCRIPTOR_DIGEST" ] &&
         fm_discipline_capture "$DATA/$ID/work-context.json" &&
         [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
@@ -473,7 +476,6 @@ if [ "$KIND" != secondmate ]; then
       echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
       exit 3
     }
-    DISCIPLINE=
   else
     ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
       echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
@@ -618,8 +620,6 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
-
-$DISCIPLINE
 
 $ENGINEERING
 

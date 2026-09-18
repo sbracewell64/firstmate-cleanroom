@@ -1470,16 +1470,18 @@ ${context.command}
     parameters: Type.Object({
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
-    renderShell: "self",
+    get renderShell() {
+      return calmPresentation.active && !calmPresentation.stockExportRendering ? "self" : "default";
+    },
     renderCall: (_args, theme, context) => {
-      if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
+      if (!calmPresentation.active || calmPresentation.stockExportRendering) throw new Error("Use Pi stock rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
       shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
-      if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
+      if (!calmPresentation.active || calmPresentation.stockExportRendering) throw new Error("Use Pi stock rendering");
       if (calmHides("tool-result")) return new Container();
       const output = result.content
         .filter((item) => item.type === "text")

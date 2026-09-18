@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Engineering extension of fm-work-context-lib.sh; no independent task/authority
 # store. The optional work-context.json engineering object owns generation,
-# triggers[], skills[] and verification[]. No declaration means no new duty.
+# discipline, triggers[], skills[] and verification[]. The discipline field is
+# compiled and checked by fm-work-context-discipline-lib.sh; this owner includes
+# it in the context identity without duplicating its schema. No declaration
+# means no new duty.
 # Trigger mapping is closed and model-invoked: test-change -> tdd/worker/test,
 # diagnosis -> diagnosing-bugs/worker/diagnosis, instruction-change ->
 # writing-for-agents/worker/implementation, review -> code-review/reviewer/review.
@@ -11,9 +14,10 @@
 # verification[] rows bind id, skill, scope (component|composition|
 # provisioned-runtime|deployed-consumer), public_seam, inputs, environment, oracle,
 # allowed_effects, source_identity, caller_identity, command, negative, owner,
-# next_gate. All are nonempty strings. Component/composition evidence is owed at
-# CI-ready; runtime/consumer obligations survive landing in the existing
-# currentness receipt until their existing owner qualifies them.
+# next_gate. All are nonempty strings. Component/composition evidence and
+# selected-discipline candidate evidence are owed at CI-ready; runtime/consumer
+# obligations survive landing in the existing currentness receipt until their
+# existing owner qualifies them.
 # data/<id>/engineering-evidence.json is the evidence index, not a success token:
 # {task,generation,run,head,results:[{id,
 # load:{kind,path,sha256,source_sha256,role,stage},
@@ -26,9 +30,15 @@
 # behavioral evidence; integrity/read delivery never establishes good reasoning.
 # No recorded command is executed. No source/receipt is mutated by this library.
 
+# shellcheck source=bin/fm-work-context-discipline-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-work-context-discipline-lib.sh"
+
 FM_WC_ENGINEERING=
 FM_WC_ENGINEERING_DIGEST=
 FM_WC_ENGINEERING_SKILLS=
+FM_WC_ENGINEERING_REUSE=0
+FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
+FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
 
 _fm_wc_engineering_gap() {
   # shellcheck disable=SC2034 # Result consumed by work-context, stage and generator callers.
@@ -49,17 +59,33 @@ _fm_wc_engineering_sha() { # <readable-file>
 }
 
 fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
-  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual
+  local data=$1 id=$2 role=$3 stage=$4 desc rows row path expected actual generation descriptor_rc
   FM_WC_ENGINEERING=
   FM_WC_ENGINEERING_DIGEST=
   FM_WC_ENGINEERING_SKILLS=
+  FM_DISCIPLINE_DESCRIPTOR_JSON=
+  FM_DISCIPLINE_DESCRIPTOR_DIGEST=
+  FM_DISCIPLINE_DESCRIPTOR_PATH=
+  FM_DISCIPLINE_ARTIFACT_BYTES=
+  FM_DISCIPLINE_ARTIFACT_DIGEST=
   desc="$data/$id/work-context.json"
-  [ -e "$desc" ] || return 0
+  if [ ! -e "$desc" ] && [ ! -L "$desc" ]; then
+    return 0
+  fi
+  fm_discipline_descriptor_capture "$desc" || {
+    _fm_wc_engineering_gap "unsafe-work-context: $desc"; return 3;
+  }
   command -v jq >/dev/null 2>&1 || { _fm_wc_engineering_gap 'engineering-capability: jq required'; return 3; }
-  jq -se 'length == 1 and (.[0]|type == "object")' "$desc" >/dev/null 2>&1 || {
+  printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -se 'length == 1 and (.[0]|type == "object")' >/dev/null 2>&1 || {
     _fm_wc_engineering_gap "malformed-work-context: $desc"; return 3;
   }
-  jq -e 'has("engineering")' "$desc" >/dev/null || return 0
+  printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e 'has("engineering")' >/dev/null || return 0
+  if printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e '.engineering.discipline != null' >/dev/null 2>&1; then
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=1
+    fm_discipline_load "$data" "$id" ship implementation; descriptor_rc=$?
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+    [ "$descriptor_rc" -eq 0 ] || return 3
+  fi
   case "$role:$stage" in
     all:all|worker:all|reviewer:all|worker:implementation|worker:test|worker:diagnosis|reviewer:review) ;;
     *) _fm_wc_engineering_gap "engineering-role-stage: $role/$stage"; return 3 ;;
@@ -72,7 +98,7 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
       "diagnosis":["diagnosing-bugs","worker","diagnosis"],
       "instruction-change":["writing-for-agents","worker","implementation"],
       "review":["code-review","reviewer","review"]};
-    .engineering as $e | ($e|type == "object") and ($e.generation|text) and
+    .engineering as $e | ($e|type == "object") and
     ($e.triggers|type == "array") and ($e.triggers|length == (unique|length)) and
     all($e.triggers[]; . as $t | catalog|has($t)) and
     ($e.skills|type == "array") and ($e.skills|map(.id)|length == (unique|length)) and
@@ -87,10 +113,14 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
         .source_identity,.caller_identity,.command,.negative,.owner,.next_gate][]; text) and
       (["component","composition","provisioned-runtime","deployed-consumer"]|index($v.scope)) != null and
       any($e.skills[]; .id == $v.skill and (.trigger as $t | $e.triggers|index($t)) != null))
-  ' "$desc" >/dev/null 2>&1; then
+  ' <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON") >/dev/null 2>&1; then
     _fm_wc_engineering_gap "engineering-schema: invalid source/trigger/role/stage/evidence declaration in $desc"; return 3
   fi
-  FM_WC_ENGINEERING=$(jq -cS '.engineering' "$desc") || return 3
+  if ! printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -c '.engineering.generation' | fm_discipline_generation_json_valid; then
+    _fm_wc_engineering_gap "engineering-schema: invalid generation in $desc"; return 3;
+  fi
+  generation=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -r '.engineering.generation')
+  FM_WC_ENGINEERING=$(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -cS '.engineering') || return 3
   FM_WC_ENGINEERING_DIGEST=$(printf '%s\n' "$FM_WC_ENGINEERING" | _fm_wc_engineering_sha /dev/stdin) || {
     _fm_wc_engineering_gap 'engineering-capability: SHA256 unavailable'; return 3;
   }
@@ -98,17 +128,21 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
     .engineering as $e | $e.skills[] |
     select(.trigger as $t | $e.triggers|index($t)) |
     select($role == "all" or .role == $role) |
-    select($stage == "all" or .stage == $stage)' "$desc") || return 3
+    select($stage == "all" or .stage == $stage)' <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON")) || return 3
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     path=$(printf '%s' "$row" | jq -r .path)
     expected=$(printf '%s' "$row" | jq -r .sha256)
-    [ -f "$path" ] && [ -r "$path" ] || {
-      _fm_wc_engineering_gap "missing-skill-source: $path owner=pocock-seven-skill-adoption"; return 3;
+    fm_discipline_capture "$path" || {
+      if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        _fm_wc_engineering_gap "missing-skill-source: $path"
+      else
+        _fm_wc_engineering_gap "unreadable-skill-source: $path"
+      fi
+      return 3;
     }
-    actual=$(_fm_wc_engineering_sha "$path") || {
-      _fm_wc_engineering_gap "unreadable-skill-source: $path"; return 3;
-    }
+    actual=$FM_DISCIPLINE_CAPTURE_SHA256
+    fm_discipline_capture_cleanup
     [ "$actual" = "$expected" ] || {
       _fm_wc_engineering_gap "stale-skill-source: $path expected=$expected actual=$actual owner=pocock-seven-skill-adoption"; return 3;
     }
@@ -121,7 +155,9 @@ ROWS
 
 fm_work_context_engineering_render() { # <data> <id> <worker|reviewer|all> <stage|all>
   local data=$1 id=$2 role=$3 stage=$4 row skill_role skill_stage
-  fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  if [ "$FM_WC_ENGINEERING_REUSE" -ne 1 ]; then
+    fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  fi
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   printf '# Engineering context\n'
   printf 'Task %s; generation %s; engineering SHA256 %s.\n' "$id" \
@@ -140,14 +176,44 @@ $FM_WC_ENGINEERING_SKILLS
 ROWS
   printf 'The worker carries reviewer obligations into the existing no-mistakes intent; only its review owner performs that review.\n'
   printf 'Load/read, self-report, behavior, qualification and deployed consumption remain separate; these sources grant no routing, merge or phase authority.\n'
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
+    [ "$role:$stage" = all:all ] ||
+    [ "$role:$stage" = worker:implementation ];
+  }; then
+    printf 'Candidate discipline evidence uses the existing engineering-evidence.json results[] row id=worker-discipline. Its discipline object binds task, role=ship, stage=implementation, generation, level, fragment_sha256, producer=worker-candidate, outcome=OBSERVED|CNO, the selected surface, command, oracle, absolute artifact path/SHA256 and safety_facts[]. Bind the index to the current task/run/head. OBSERVED and CNO remain candidate evidence, never qualification or landing authority.\n'
+  fi
   printf 'Required proof (JSON; scopes do not substitute for each other):\n'
   printf '%s' "$FM_WC_ENGINEERING" | jq -c --arg role "$role" --arg stage "$stage" '
     . as $e | .verification[] | . as $v | select(any($e.skills[];
       .id == $v.skill and ($role == "all" or .role == $role) and ($stage == "all" or .stage == $stage)))'
 }
 
+fm_work_context_engineering_prompt() { # <data> <id> <role> <stage> [include-discipline]
+  local data=$1 id=$2 role=$3 stage=$4 discipline_rc include_discipline=${5:-1}
+  fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
+  [ -n "$FM_WC_ENGINEERING" ] || return 0
+  if [ "$include_discipline" -eq 1 ] && [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
+    [ "$role:$stage" = all:all ] ||
+    [ "$role:$stage" = worker:implementation ];
+  }; then
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=1
+    fm_discipline_envelope_render "$data" "$id"; discipline_rc=$?
+    FM_DISCIPLINE_DESCRIPTOR_REUSE=0
+    [ "$discipline_rc" -eq 0 ] || return 3
+    printf '\n\n'
+  fi
+  FM_WC_ENGINEERING_REUSE=1
+  fm_work_context_engineering_render "$data" "$id" "$role" "$stage"
+  discipline_rc=$?
+  FM_WC_ENGINEERING_REUSE=0
+  return "$discipline_rc"
+}
+
 fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
-  local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill
+  local data=$1 id=$2 run=$3 head=$4 index generation required row proof kind path expected actual skill index_json
+  FM_WC_ENGINEERING_EVIDENCE_DIGEST=
+  FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
+  FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   required=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c '.verification[] | select(.scope == "component" or .scope == "composition")')
@@ -158,20 +224,36 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
         any($e.skills[]; .trigger == $t and .id == $v.skill)))' >/dev/null; then
     _fm_wc_engineering_gap 'engineering-evidence-undeclared: every applicable skill needs independent behavioral verification owner=nmf-completion-residual-carry'; return 3
   fi
-  [ -n "$required" ] || return 0
   index="$data/$id/engineering-evidence.json"
   generation=$(printf '%s' "$FM_WC_ENGINEERING" | jq -r .generation)
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
+    index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
+    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
+  elif [ -n "$required" ] || [ -e "$index" ] || [ -L "$index" ]; then
+    fm_discipline_capture "$index" || {
+      _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
+    }
+    index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    FM_DISCIPLINE_EVIDENCE_INDEX_JSON=$index_json
+    FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    # shellcheck disable=SC2034 # Operation-scoped evidence digest return contract.
+    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
+    fm_discipline_capture_cleanup
+  fi
+  [ -n "$required" ] || return 0
+  index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg id "$id" --arg gen "$generation" --arg run "$run" --arg head "$head" '
       length == 1 and (.[0] | .task == $id and .generation == $gen and .run == $run and .head == $head and
       (.results|type == "array") and (.results|map(.id)|length == (unique|length)))
-    ' "$index" >/dev/null 2>&1; then
+    ' <(printf '%s' "$index_json") >/dev/null 2>&1; then
     _fm_wc_engineering_gap "engineering-evidence-identity: $index requires current task/generation/run/head owner=nmf-completion-residual-carry"; return 3
   fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     skill=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c --argjson req "$row" '.skills[] | select(.id == $req.skill)')
-    proof=$(jq -c --argjson req "$row" '.results[] | select(.id == $req.id)' "$index") || return 3
+    proof=$(printf '%s' "$index_json" | jq -c --argjson req "$row" '.results[] | select(.id == $req.id)') || return 3
     if [ -z "$proof" ] || ! printf '%s' "$proof" | jq -e --argjson req "$row" --argjson skill "$skill" '
       .load.source_sha256 == $skill.sha256 and .load.role == $skill.role and .load.stage == $skill.stage and
       .behavior.scope == $req.scope and (.load.kind == "native-read" or .load.kind == "tool-read") and
@@ -185,10 +267,11 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
     for kind in load behavior; do
       path=$(printf '%s' "$proof" | jq -r ".$kind.path")
       expected=$(printf '%s' "$proof" | jq -r ".$kind.sha256")
-      [ -f "$path" ] && [ -r "$path" ] || {
+      fm_discipline_capture "$path" || {
         _fm_wc_engineering_gap "engineering-evidence-unreadable: $path"; return 3;
       }
-      actual=$(_fm_wc_engineering_sha "$path") || return 3
+      actual=$FM_DISCIPLINE_CAPTURE_SHA256
+      fm_discipline_capture_cleanup
       [ "$actual" = "$expected" ] || {
         _fm_wc_engineering_gap "engineering-evidence-stale: $path"; return 3;
       }
@@ -201,20 +284,74 @@ ROWS
 fm_work_context_engineering_residuals() { # <descriptor>
   # Source completion never discharges runtime/deployed scope. Its existing
   # owner supplies later acceptance; this receipt preserves each obligation.
+  fm_discipline_descriptor_capture "$1" || return 3
   jq -c '
     .engineering as $e | if $e == null then empty else
     ($e.verification[]? | select(.scope == "provisioned-runtime" or .scope == "deployed-consumer") |
       {id,scope,owner,next_gate,source_identity,caller_identity,status:"open"}),
+    ($e.discipline? | select(type == "object") | {id:"worker-discipline:active",scope:"provisioned-runtime",
+      owner:"runtime-pin-adoption-gap",next_gate:"qualified release deployment and read-back",
+      source_identity:.fragment_sha256,caller_identity:"pending",claim:"ACTIVE",evidence:"CNO",status:"open"}),
+    ($e.discipline? | select(type == "object") | {id:"worker-discipline:fresh-production-consumed",scope:"deployed-consumer",
+      owner:"runtime-pin-adoption-gap",next_gate:"fresh production worker receipt",
+      source_identity:.fragment_sha256,caller_identity:"pending",claim:"CONSUMED",evidence:"CNO",status:"open"}),
     ($e.skills[] | select(.trigger as $t | $e.triggers|index($t)) |
       {id:("skill:" + .id + ":consumer"),scope:"deployed-consumer",
        owner:"pocock-seven-skill-adoption",next_gate:"qualified actual consumer evidence",
-       source_identity:.sha256,caller_identity:"pending",status:"open"}) end' "$1"
+       source_identity:.sha256,caller_identity:"pending",status:"open"}) end' \
+    <(printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON")
 }
 
-fm_work_context_engineering_brief() { # <data> <id>
-  local data=$1 id=$2 line expected brief
+fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
+  local data=$1 id=$2 kind=$3 state=$4 line expected brief instructions origin_count origin mode
   brief="$data/$id/brief.md"
-  line=$(grep -F 'engineering SHA256 ' "$brief" 2>/dev/null || true)
+  instructions="$data/$id/ship-instructions.md"
+  if [ "$kind" = ship ]; then
+    origin_count=$(grep -c '^origin=' "$state/$id.meta" 2>/dev/null || true)
+    origin=$(fm_meta_get "$state/$id.meta" origin)
+    case "$origin_count:$origin" in
+      *:) [ ! -e "$instructions" ] && [ ! -L "$instructions" ] || {
+        _fm_wc_engineering_gap 'discipline-artifact: unexpected promoted instructions shadow'; return 3;
+      } ;;
+      1:scout-to-ship) : ;;
+      *) _fm_wc_engineering_gap 'discipline-artifact: malformed promotion origin'; return 3 ;;
+    esac
+    if [ "$origin" = scout-to-ship ]; then
+      [ -f "$instructions" ] && [ ! -L "$instructions" ] || {
+        _fm_wc_engineering_gap 'discipline-artifact: promoted instructions path is unsafe'; return 3;
+      }
+      brief="$instructions"
+    fi
+    if printf '%s' "$FM_DISCIPLINE_DESCRIPTOR_JSON" | jq -e '.engineering.discipline != null' >/dev/null 2>&1; then
+      if [ "$origin" = scout-to-ship ]; then
+        mode=$(fm_meta_get "$state/$id.meta" mode)
+        fm_discipline_envelope_validate "$data" "$id" "$brief" \
+          'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' || return 3
+      else
+        fm_discipline_brief "$data" "$id" ship "$brief" || return 3
+      fi
+    fi
+  elif [ "$kind" = scout ] || [ "$kind" = secondmate ]; then
+    if [ "$kind" = scout ]; then
+      fm_discipline_capture "$brief" || {
+        _fm_wc_engineering_gap 'discipline-artifact: unsafe or missing scout brief'; return 3;
+      }
+      FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+      FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+      fm_discipline_capture_cleanup
+      [ "$(printf '%s' "$FM_DISCIPLINE_ARTIFACT_BYTES" | head -n 1)" = 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' ] || {
+        _fm_wc_engineering_gap 'discipline-role: scout brief has an unexpected generated prefix'; return 3;
+      }
+    fi
+    fm_discipline_brief "$data" "$id" "$kind" "$brief" || return 3
+  fi
+  if [ -z "$FM_DISCIPLINE_ARTIFACT_DIGEST" ]; then
+    fm_discipline_capture "$brief" || { _fm_wc_engineering_gap "discipline-artifact: unsafe or unreadable $brief"; return 3; }
+    FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    fm_discipline_capture_cleanup
+  fi
+  line=$(printf '%s' "$FM_DISCIPLINE_ARTIFACT_BYTES" | grep -F 'engineering SHA256 ' 2>/dev/null || true)
   [ -n "$FM_WC_ENGINEERING" ] || {
     [ -z "$line" ] || { _fm_wc_engineering_gap 'stale-engineering-brief: declaration removed'; return 3; }
     return 0

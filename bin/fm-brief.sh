@@ -7,9 +7,12 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Worker discipline is owned by bin/fm-work-context-discipline-lib.sh.
-# --shared-boundary and --proof-surface <text> add ship-only evidence requirements.
+# Ship intake accepts repeatable typed --discipline-fact values; --proof-kind
+# plus --proof-surface declares an accepted real surface or verification lever.
+# The compiler persists and renders the resulting base, shared-boundary or
+# proof-surface selection through the existing work-context descriptor.
 # Scouts receive its evidence subset; secondmate charters receive neither.
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -116,13 +119,17 @@ if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
 else
   STATE="$FM_HOME/state"
 fi
+BRIEF_RESOLVED_STATE=$STATE
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
-SHARED_BOUNDARY=0
+DISCIPLINE_FACTS=()
+PROOF_KIND=
 PROOF_SURFACE=
+PROOF_KIND_SET=0
+PROOF_SURFACE_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -132,7 +139,17 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
-      proof-surface) PROOF_SURFACE=$a ;;
+      discipline-fact) DISCIPLINE_FACTS+=(--fact "$a") ;;
+      proof-kind)
+        [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+        PROOF_KIND=$a; PROOF_KIND_SET=1
+        ;;
+      proof-surface)
+        [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+        PROOF_SURFACE=$a; PROOF_SURFACE_SET=1
+        ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -145,9 +162,21 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
-    --shared-boundary) SHARED_BOUNDARY=1 ;;
+    --discipline-fact) want_value="discipline-fact" ;;
+    --discipline-fact=*) DISCIPLINE_FACTS+=(--fact "${a#--discipline-fact=}") ;;
+    --proof-kind) want_value="proof-kind" ;;
+    --proof-kind=*)
+      [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+      [ -n "${a#--proof-kind=}" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+      PROOF_KIND=${a#--proof-kind=}; PROOF_KIND_SET=1
+      ;;
     --proof-surface) want_value="proof-surface" ;;
-    --proof-surface=*) PROOF_SURFACE=${a#--proof-surface=} ;;
+    --proof-surface=*)
+      [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+      [ -n "${a#--proof-surface=}" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+      PROOF_SURFACE=${a#--proof-surface=}; PROOF_SURFACE_SET=1
+      ;;
+    --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     # yolo never reaches the worker: it is recorded posture, not authority or a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -175,8 +204,8 @@ elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
-if [ "$KIND" != ship ] && { [ "$SHARED_BOUNDARY" -eq 1 ] || [ -n "$PROOF_SURFACE" ]; }; then
-  echo "error: --shared-boundary and --proof-surface apply only to ship briefs" >&2
+if [ "$KIND" != ship ] && { [ "${#DISCIPLINE_FACTS[@]}" -gt 0 ] || [ -n "$PROOF_KIND" ] || [ -n "$PROOF_SURFACE" ]; }; then
+  echo "error: --discipline-fact, --proof-kind and --proof-surface apply only to ship briefs" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -191,9 +220,85 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   exit 1
 fi
 
+if [ "$KIND" = secondmate ]; then
+  mkdir -p "$DATA/$ID" || { echo "error: could not create task data directory: $DATA/$ID" >&2; exit 1; }
+  [ ! -L "$DATA/$ID" ] || { echo "error: task data directory is a symlink: $DATA/$ID" >&2; exit 1; }
+fi
+
 BRIEF="$DATA/$ID/brief.md"
-[ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
-mkdir -p "$DATA/$ID"
+[ -e "$BRIEF" ] || [ -L "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+STATE=$BRIEF_RESOLVED_STATE
+BRIEF_CONTROL_LOCK="$STATE/.control-$ID.lock"
+BRIEF_CONTROL_LOCK_HELD=0
+FM_DISCIPLINE_WRITER_LOCK_PATH="$BRIEF_CONTROL_LOCK"
+FM_DISCIPLINE_WRITER_LOCK_HELD=0
+DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH=
+DISCIPLINE_PUBLISHED=0
+BRIEF_COMMITTED=0
+BRIEF_TMP=
+brief_mark_publication() {
+  [ "$KIND" = ship ] || return 0
+  if fm_discipline_capture "$DATA/$ID/work-context.json"; then
+    if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] ||
+      [ "$FM_DISCIPLINE_CAPTURE_SHA256" != "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ]; then
+      DISCIPLINE_PUBLISHED=1
+    fi
+    fm_discipline_capture_cleanup
+  else
+    fm_discipline_capture_cleanup
+  fi
+}
+brief_rollback_discipline() {
+  local rollback
+  [ "$DISCIPLINE_PUBLISHED" -eq 1 ] || return 0
+  rm -f -- "$BRIEF" || return 1
+  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 1 ]; then
+    rollback=$(umask 077; mktemp "$DATA/$ID/.discipline-rollback.XXXXXX") || return 1
+    cp -- "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" "$rollback" || { rm -f -- "$rollback"; return 1; }
+    chmod "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" "$rollback" || { rm -f -- "$rollback"; return 1; }
+    mv -f "$rollback" "$DATA/$ID/work-context.json" || { rm -f -- "$rollback"; return 1; }
+    fm_discipline_capture "$DATA/$ID/work-context.json" || return 1
+    [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ] || { fm_discipline_capture_cleanup; return 1; }
+    [ "$FM_DISCIPLINE_CAPTURE_MODE" = "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" ] || { fm_discipline_capture_cleanup; return 1; }
+    cmp -s "$FM_DISCIPLINE_CAPTURE_PATH" "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" || { fm_discipline_capture_cleanup; return 1; }
+    fm_discipline_capture_cleanup
+  else
+    rm -f -- "$DATA/$ID/work-context.json" || return 1
+    rmdir "$DATA/$ID" 2>/dev/null || true
+  fi
+  DISCIPLINE_PUBLISHED=0
+}
+brief_release_control_lock() {
+  local status=$?
+  if [ "$DISCIPLINE_PUBLISHED" -eq 1 ] && [ "$BRIEF_COMMITTED" -eq 0 ]; then
+    brief_rollback_discipline || status=70
+  fi
+  [ -z "$BRIEF_TMP" ] || rm -f -- "$BRIEF_TMP"
+  if [ "$BRIEF_CONTROL_LOCK_HELD" -eq 1 ]; then
+    BRIEF_CONTROL_LOCK_HELD=0
+    fm_lock_release "$BRIEF_CONTROL_LOCK" || true
+  fi
+  if [ -n "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" ]; then
+    rm -f -- "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH"
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH=
+  fi
+}
+trap brief_release_control_lock EXIT
+if [ "$KIND" = ship ]; then
+  fm_lock_try_acquire "$BRIEF_CONTROL_LOCK" || {
+    echo "error: another lifecycle action is already running for task $ID; nothing was changed" >&2
+    exit 1
+  }
+  BRIEF_CONTROL_LOCK_HELD=1
+  FM_DISCIPLINE_WRITER_LOCK_HELD=1
+  [ -e "$BRIEF" ] || [ -L "$BRIEF" ] && {
+    echo "error: $BRIEF already exists" >&2
+    exit 1
+  }
+fi
 
 shell_quote() {
   printf "'"
@@ -353,16 +458,66 @@ For a reported malfunction or causal review, read \`$FM_ROOT/.agents/skills/diag
 EOF
 WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
 
+DISCIPLINE=
+DISCIPLINE_DESCRIPTOR_PREEXISTED=0
+DISCIPLINE_DESCRIPTOR_DIGEST=
+DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST=
+DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE=
+if [ "$KIND" = ship ]; then
+  if [ -e "$DATA/$ID/work-context.json" ] || [ -L "$DATA/$ID/work-context.json" ]; then
+    DISCIPLINE_DESCRIPTOR_PREEXISTED=1
+    fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-discipline-original.XXXXXX") || exit 3
+    cp -- "$FM_DISCIPLINE_CAPTURE_PATH" "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" || exit 3
+    chmod "$FM_DISCIPLINE_CAPTURE_MODE" "$DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH" || exit 3
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE=$FM_DISCIPLINE_CAPTURE_MODE
+    fm_discipline_capture_cleanup
+  fi
+  DISCIPLINE_ARGS=("${DISCIPLINE_FACTS[@]+"${DISCIPLINE_FACTS[@]}"}")
+  [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
+  [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+  fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+    brief_mark_publication
+    echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+    exit 3
+  }
+  if ! fm_discipline_capture "$DATA/$ID/work-context.json"; then
+    brief_mark_publication
+    exit 3
+  fi
+  DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+  fm_discipline_capture_cleanup
+  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] ||
+    [ "$DISCIPLINE_DESCRIPTOR_DIGEST" != "$DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST" ]; then
+    DISCIPLINE_PUBLISHED=1
+  fi
+  DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || exit 3
+fi
+
 ENGINEERING=
 if [ "$KIND" != secondmate ]; then
   ENGINEERING_ROLE=all
   ENGINEERING_STAGE=all
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
-  ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
-    echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
-    exit 3
-  }
+  if [ "$KIND" = ship ]; then
+    ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE" 0) || {
+      echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
+      exit 3
+    }
+  else
+    ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
+      echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
+      exit 3
+    }
+  fi
 fi
+
+[ -d "$DATA/$ID" ] || mkdir -p "$DATA/$ID" || {
+  echo "error: could not create task data directory: $DATA/$ID" >&2
+  exit 1
+}
+[ ! -L "$DATA/$ID" ] || { echo "error: task data directory is a symlink: $DATA/$ID" >&2; exit 1; }
 
 if [ "$KIND" = scout ]; then
 DISCIPLINE=$(fm_discipline_block scout) || exit 1
@@ -444,12 +599,12 @@ case "$MODE" in
     ;;
 esac
 DOD=$(fm_dod_block "$MODE" "$ID") || exit 1
-DISCIPLINE_ARGS=()
-[ "$SHARED_BOUNDARY" -eq 0 ] || DISCIPLINE_ARGS+=(--shared-boundary)
-[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
-DISCIPLINE=$(fm_discipline_block ship "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}") || exit 1
 
-cat > "$BRIEF" <<EOF
+BRIEF_TMP=$(umask 077; mktemp "$DATA/$ID/.brief.XXXXXX") || exit 1
+[ -f "$BRIEF_TMP" ] && [ ! -L "$BRIEF_TMP" ] || exit 1
+{
+printf '%s\n' "$DISCIPLINE"
+cat <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -498,8 +653,6 @@ $RULE1
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
-$DISCIPLINE
-
 $ENGINEERING
 
 $INBOX_SECTION
@@ -513,4 +666,9 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
+} > "$BRIEF_TMP" || exit 1
+mv -f "$BRIEF_TMP" "$BRIEF" || exit 1
+BRIEF_TMP=
+[ -f "$BRIEF" ] && [ ! -L "$BRIEF" ] && [ -r "$BRIEF" ] || exit 1
+BRIEF_COMMITTED=1
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"

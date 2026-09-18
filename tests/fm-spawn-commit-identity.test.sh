@@ -92,7 +92,10 @@ make_case() {
   fakebin=$(make_capturing_fakebin "$case_dir/fake")
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  {
+    printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+    printf 'brief for %s\n' "$id"
+  } > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$launchlog"

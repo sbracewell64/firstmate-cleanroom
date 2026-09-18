@@ -17,11 +17,11 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# The same instructions render the ship worker-discipline section from
-# bin/fm-work-context-discipline-lib.sh, the single owner an ordinary ship brief uses, and
-# accept its --shared-boundary and --proof-surface fragments, so a promoted worker
-# receives the same engineering contract as a briefed one.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--shared-boundary] [--proof-surface <text>]
+# The same instructions compile and render ship worker discipline from
+# bin/fm-work-context-discipline-lib.sh, the single owner an ordinary ship brief
+# uses. Typed task facts select the fragments, so a promoted worker receives the
+# same engineering contract as a freshly briefed one.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +56,11 @@ YOLO=
 MODE_SET=0
 YOLO_SET=0
 DISCIPLINE_ARGS=()
+PROOF_KIND=
+PROOF_SURFACE=
+PROOF_KIND_SET=0
+PROOF_SURFACE_SET=0
+DISCIPLINE_SELECTION_EXPLICIT=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -66,7 +71,17 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
-      proof-surface) DISCIPLINE_ARGS+=(--proof-surface "$a") ;;
+      discipline-fact) DISCIPLINE_ARGS+=(--fact "$a") ;;
+      proof-kind)
+        [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+        PROOF_KIND=$a; PROOF_KIND_SET=1
+        ;;
+      proof-surface)
+        [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+        [ -n "$a" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+        PROOF_SURFACE=$a; PROOF_SURFACE_SET=1
+        ;;
     esac
     want_value=
     continue
@@ -76,14 +91,26 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
-    --shared-boundary) DISCIPLINE_ARGS+=(--shared-boundary) ;;
+    --discipline-fact) want_value="discipline-fact" ;;
+    --discipline-fact=*) DISCIPLINE_ARGS+=(--fact "${a#--discipline-fact=}") ;;
+    --proof-kind) want_value="proof-kind" ;;
+    --proof-kind=*)
+      [ "$PROOF_KIND_SET" -eq 0 ] || { echo "error: duplicate --proof-kind" >&2; exit 1; }
+      [ -n "${a#--proof-kind=}" ] || { echo "error: --proof-kind requires a non-empty value" >&2; exit 1; }
+      PROOF_KIND=${a#--proof-kind=}; PROOF_KIND_SET=1
+      ;;
     --proof-surface) want_value="proof-surface" ;;
-    --proof-surface=*) DISCIPLINE_ARGS+=(--proof-surface "${a#--proof-surface=}") ;;
+    --proof-surface=*)
+      [ "$PROOF_SURFACE_SET" -eq 0 ] || { echo "error: duplicate --proof-surface" >&2; exit 1; }
+      [ -n "${a#--proof-surface=}" ] || { echo "error: --proof-surface requires a non-empty value" >&2; exit 1; }
+      PROOF_SURFACE=${a#--proof-surface=}; PROOF_SURFACE_SET=1
+      ;;
+    --shared-boundary) echo "error: --shared-boundary is manual level selection; pass a typed --discipline-fact instead" >&2; exit 1 ;;
     *) POS+=("$a") ;;
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--shared-boundary] [--proof-surface <text>]" >&2; exit 1; }
+[ "${#POS[@]}" -ge 1 ] || { echo "usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--discipline-fact <fact>] [--proof-kind <accepted-surface|verification-lever> --proof-surface <text>]" >&2; exit 1; }
 [ "$MODE_SET" -eq 1 ] || {
   echo "error: promotion requires --mode <no-mistakes|direct-PR|local-only>; decide it now from the scout's findings and the project's registered posture in data/projects.md" >&2
   exit 1
@@ -105,15 +132,84 @@ case "$YOLO" in
 esac
 
 ID=${POS[0]}
+if [ "${#DISCIPLINE_ARGS[@]}" -gt 0 ] || [ "$PROOF_KIND_SET" -eq 1 ] || [ "$PROOF_SURFACE_SET" -eq 1 ]; then
+  DISCIPLINE_SELECTION_EXPLICIT=1
+fi
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
+FM_DISCIPLINE_WRITER_LOCK_PATH="$CONTROL_LOCK"
+FM_DISCIPLINE_WRITER_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
+DESC=
+DESC_SNAPSHOT=
+DESC_EXISTED=0
+INSTRUCTIONS_SNAPSHOT=
+INSTRUCTIONS_EXISTED=0
+META_SNAPSHOT=
+META_EXISTED=0
+PROMOTE_DATA_TMP_DIR=
+PROMOTE_STATE_TMP_DIR=
 promote_cleanup() {
   local status=$?
+  local rollback_failed=0 rollback_tmp
+  promote_snapshot_matches() {
+    local snapshot=$1 target=$2
+    [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$snapshot" "$target" &&
+      [ "$(stat -c %a "$snapshot" 2>/dev/null || stat -f %Lp "$snapshot")" = "$(stat -c %a "$target" 2>/dev/null || stat -f %Lp "$target")" ]
+  }
+  promote_restore_regular() {
+    local target=$1 snapshot=$2 existed=$3 directory
+    directory=${target%/*}
+    if [ "$existed" -eq 0 ]; then
+      rm -f -- "$target" || return 1
+    else
+      rollback_tmp=$(umask 077; mktemp "$directory/.rollback.XXXXXX") || return 1
+      cp -p -- "$snapshot" "$rollback_tmp" || { rm -f -- "$rollback_tmp"; return 1; }
+      [ -f "$rollback_tmp" ] && [ ! -L "$rollback_tmp" ] || { rm -f -- "$rollback_tmp"; return 1; }
+      mv -f -- "$rollback_tmp" "$target" || { rm -f -- "$rollback_tmp"; return 1; }
+    fi
+    if [ "$existed" -eq 0 ]; then
+      [ ! -e "$target" ] && [ ! -L "$target" ]
+    else
+      promote_snapshot_matches "$snapshot" "$target"
+    fi
+  }
+  if [ "$status" -ne 0 ]; then
+    if [ -n "$DESC_SNAPSHOT" ]; then
+      promote_restore_regular "$DESC" "$DESC_SNAPSHOT" "$DESC_EXISTED" || { echo "error: promotion rollback failed for work context" >&2; rollback_failed=1; }
+    fi
+    if [ -n "$INSTRUCTIONS_SNAPSHOT" ]; then
+      promote_restore_regular "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" "$INSTRUCTIONS_EXISTED" || { echo "error: promotion rollback failed for ship instructions" >&2; rollback_failed=1; }
+    fi
+    if [ -n "$META_SNAPSHOT" ]; then
+      if [ "$META_EXISTED" -eq 1 ]; then
+        rollback_tmp=$(umask 077; mktemp "$PROMOTE_STATE_TMP_DIR/meta-rollback.XXXXXX") || rollback_failed=1
+        if [ "$rollback_failed" -eq 0 ]; then
+          cp -p -- "$META_SNAPSHOT" "$rollback_tmp" || rollback_failed=1
+          [ -f "$rollback_tmp" ] && [ ! -L "$rollback_tmp" ] || rollback_failed=1
+          if [ "$rollback_failed" -eq 0 ] && ! fm_backlog_atomic_transition publish "$rollback_tmp" "$META" "task record rollback" "$STATE"; then
+            rollback_failed=1
+          fi
+          [ "$rollback_failed" -eq 0 ] || rm -f -- "$rollback_tmp" 2>/dev/null || true
+        fi
+        if [ "$rollback_failed" -eq 0 ]; then
+          promote_snapshot_matches "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
+        fi
+      else
+        rm -f -- "$META" || rollback_failed=1
+      fi
+    fi
+  fi
+  [ "$rollback_failed" -eq 0 ] || status=70
   [ -z "$TMP" ] || rm -f -- "$TMP" 2>/dev/null || true
+  [ -z "$DESC_SNAPSHOT" ] || rm -f -- "$DESC_SNAPSHOT" 2>/dev/null || true
+  [ -z "$INSTRUCTIONS_SNAPSHOT" ] || rm -f -- "$INSTRUCTIONS_SNAPSHOT" 2>/dev/null || true
+  [ -z "$META_SNAPSHOT" ] || rm -f -- "$META_SNAPSHOT" 2>/dev/null || true
+  [ -z "$PROMOTE_DATA_TMP_DIR" ] || rmdir "$PROMOTE_DATA_TMP_DIR" 2>/dev/null || true
+  [ -z "$PROMOTE_STATE_TMP_DIR" ] || rmdir "$PROMOTE_STATE_TMP_DIR" 2>/dev/null || true
   if [ "$META_LOCK_HELD" = 1 ]; then
     META_LOCK_HELD=0
     fm_lock_release "$META_LOCK" || true
@@ -130,6 +226,7 @@ fm_lock_try_acquire "$CONTROL_LOCK" || {
   exit 1
 }
 CONTROL_LOCK_HELD=1
+FM_DISCIPLINE_WRITER_LOCK_HELD=1
 "$FM_ROOT/bin/fm-guard.sh" || true
 META="$STATE/$ID.meta"
 [ -d "$STATE" ] || { echo "error: state dir not found: $STATE" >&2; exit 1; }
@@ -141,6 +238,11 @@ if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
   exit 1
 fi
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+META_EXISTED=1
+PROMOTE_STATE_TMP_DIR=$(umask 077; mktemp -d "$STATE/.promote-$ID.XXXXXX") || { echo "error: could not create metadata staging directory" >&2; exit 1; }
+[ -d "$PROMOTE_STATE_TMP_DIR" ] && [ ! -L "$PROMOTE_STATE_TMP_DIR" ] || { echo "error: unsafe metadata staging directory" >&2; exit 1; }
+META_SNAPSHOT=$(mktemp "$STATE/.${ID}.meta.promote.XXXXXX") || { echo "error: could not stage task metadata" >&2; exit 1; }
+cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task metadata" >&2; exit 1; }
 
 # The promoted worker must receive the same delivery contract an ordinary ship
 # brief carries, so the mode-specific Definition of done is rendered from its
@@ -148,18 +250,71 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 # promoted no-mistakes worker that never received the ask-user escalation rule or
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
+DESC="$DATA/$ID/work-context.json"
 mkdir -p "$DATA/$ID"
-[ ! -d "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
-ENGINEERING=$(fm_work_context_engineering_render "$DATA" "$ID" all all) || {
+[ ! -L "$DATA/$ID" ] && [ -d "$DATA/$ID" ] || { echo "error: task data directory is unsafe: $DATA/$ID" >&2; exit 1; }
+[ ! -e "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || {
+  [ -f "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
+}
+if [ -f "$DESC" ] && [ ! -L "$DESC" ] &&
+  jq -e '.engineering.discipline != null' "$DESC" >/dev/null 2>&1; then
+  if [ "$DISCIPLINE_SELECTION_EXPLICIT" -eq 0 ]; then
+    fm_discipline_load "$DATA" "$ID" ship implementation || {
+      echo "error: ${FM_WORK_CONTEXT_DETAIL:-persisted discipline selection is invalid}" >&2
+      exit 3
+    }
+    DISCIPLINE_ARGS=()
+    while IFS= read -r fact; do
+      [ -n "$fact" ] && DISCIPLINE_ARGS+=(--fact "$fact")
+    done < <(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '.facts[]?')
+    persisted_proof_kind=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '.proof_kind // empty')
+    persisted_proof_surface=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -j '.proof_surface // empty'; printf '\001')
+    persisted_proof_surface=${persisted_proof_surface%$'\001'}
+    [ -z "$persisted_proof_kind" ] || DISCIPLINE_ARGS+=(--proof-kind "$persisted_proof_kind" --proof-surface "$persisted_proof_surface")
+  fi
+fi
+[ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
+[ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
+fm_discipline_compile "$ID" ship implementation "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+  echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+  exit 3
+}
+if [ -e "$DESC" ] || [ -L "$DESC" ]; then
+  [ -f "$DESC" ] && [ ! -L "$DESC" ] || { echo "error: work context path is unsafe: $DESC" >&2; exit 1; }
+  DESC_EXISTED=1
+fi
+PROMOTE_DATA_TMP_DIR=$(umask 077; mktemp -d "$DATA/$ID/.promote.XXXXXX") || { echo "error: could not create promotion staging directory" >&2; exit 1; }
+[ -d "$PROMOTE_DATA_TMP_DIR" ] && [ ! -L "$PROMOTE_DATA_TMP_DIR" ] || { echo "error: unsafe promotion staging directory" >&2; exit 1; }
+DESC_SNAPSHOT=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/work-context.snapshot.XXXXXX") || { echo "error: could not stage work context" >&2; exit 1; }
+if [ "$DESC_EXISTED" -eq 1 ]; then
+  cp -p -- "$DESC" "$DESC_SNAPSHOT" || { echo "error: could not snapshot work context" >&2; exit 1; }
+fi
+INSTRUCTIONS_SNAPSHOT=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.snapshot.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
+if [ -f "$INSTRUCTIONS" ]; then
+  INSTRUCTIONS_EXISTED=1
+  cp -p -- "$INSTRUCTIONS" "$INSTRUCTIONS_SNAPSHOT" || { echo "error: could not snapshot ship instructions" >&2; exit 1; }
+fi
+fm_discipline_prepare "$DATA" "$ID" "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
+  echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
+  exit 3
+}
+DISCIPLINE=$(fm_discipline_envelope_render "$DATA" "$ID") || {
+  echo "error: discipline envelope rendering failed" >&2
+  exit 3
+}
+ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" all all 0) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
 }
-TMP="$DATA/$ID/.ship-instructions.md.${BASHPID:-$$}"
+TMP=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
+[ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe ship instructions staging file" >&2; exit 1; }
 {
-  cat <<EOF
+  printf '%s\n' "$DISCIPLINE"
+  printf 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.\n\n'
+cat <<EOF
+# Ship instructions
 Your scout task has been promoted to a ship task, mode=$MODE. Your window, worktree, and context stay as they are; only the contract below changes.
 
-# Ship instructions
 1. **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from. If either does not resolve to the worktree you were launched in, stop and escalate to firstmate.
 2. Inventory this worktree's scratch state with \`git status\` and \`git log\` before changing anything.
 3. Return to a clean default-branch base, then create your branch: \`git checkout -b fm/$ID\`.
@@ -169,21 +324,21 @@ Your scout task has been promoted to a ship task, mode=$MODE. Your window, workt
 The worker discipline below replaces the scout evidence subset. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
 
 EOF
-  fm_discipline_block ship "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || exit 1
-  printf '\n\n'
-  printf '%s\n\n' "$ENGINEERING"
+  printf '%s\n' "$ENGINEERING"
   fm_dod_block "$MODE" "$ID"
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
 mv "$TMP" "$INSTRUCTIONS"
 TMP=
 [ -f "$INSTRUCTIONS" ] && [ -r "$INSTRUCTIONS" ] || { echo "error: ship instructions were not published as a readable file: $INSTRUCTIONS" >&2; exit 1; }
 
-TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
+TMP=$(umask 077; mktemp "$PROMOTE_STATE_TMP_DIR/meta.XXXXXX") || { echo "error: could not stage task metadata" >&2; exit 1; }
+[ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe task metadata staging file" >&2; exit 1; }
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  echo "origin=scout-to-ship"
 } >> "$TMP"
 if ! fm_backlog_atomic_transition publish "$TMP" "$META" "task record" "$STATE"; then
   rm -f -- "$TMP"

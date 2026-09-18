@@ -10,6 +10,8 @@
 #   fm-work-context.sh classify  <id>
 #   fm-work-context.sh reconcile <id> <transition>
 #   fm-work-context.sh engineering <id> <worker|reviewer|all> <stage|all>
+#   fm-work-context.sh discipline  <id> <ship> <implementation>
+#   fm-work-context.sh discipline-evidence <id> <run> <exact-head>
 #   fm-work-context.sh select
 #
 # preflight prints one `verdict=<type> detail=<...>` line and exits:
@@ -72,9 +74,24 @@ require_id() {
 }
 
 case "${1:-}" in
+  discipline-evidence)
+    [ "$#" -eq 4 ] || { echo 'usage: discipline-evidence <id> <run> <exact-head>' >&2; exit 2; }
+    if ! fm_discipline_evidence "$DATA" "$2" "$3" "$4"; then
+      printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
+      exit 3
+    fi
+    printf 'verdict=candidate-evidence outcome=%s qualification=unchanged landing=unchanged\n' "$FM_DISCIPLINE_PROOF_OUTCOME"
+    ;;
+  discipline)
+    [ "$#" -eq 4 ] || { echo 'usage: discipline <id> <ship> <implementation>' >&2; exit 2; }
+    if ! fm_discipline_render "$DATA" "$2" "$3" "$4"; then
+      printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
+      exit 3
+    fi
+    ;;
   engineering)
     [ "$#" -eq 4 ] || { echo 'usage: engineering <id> <worker|reviewer|all> <stage|all>' >&2; exit 2; }
-    if ! fm_work_context_engineering_render "$DATA" "$2" "$3" "$4"; then
+    if ! fm_work_context_engineering_prompt "$DATA" "$2" "$3" "$4"; then
       printf 'verdict=refuse detail=%s\n' "$FM_WORK_CONTEXT_DETAIL" >&2
       exit 3
     fi

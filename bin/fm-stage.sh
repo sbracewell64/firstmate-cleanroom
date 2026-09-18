@@ -145,6 +145,7 @@
 #                      matching rather than by reading. Only ever moves upward;
 #                      a recorded `confirmed` is never taken back>
 #   stage_tree=<full tree>     stage_gen=<spawn_gen at the last transition>
+#   stage_discipline=<level@generation@fragment identity; immutable across retry>
 #   stage_attempt=<observer attempt id>   stage_run=<bound run id>
 #   stage_pr=<PR url>          stage_reason=<validation-pending reason, the
 #                                            landing `landed-head:<source>`
@@ -186,7 +187,9 @@
 # profile (<no-mistakes version>+<build> from the observer's qualified-profile
 # read), attempt, run, step (the run's canonical status), outcome (the
 # observer's outcome class), pr, owner (who acts next: worker, firstmate, or
-# merge-authority), reason, engineering, residuals.
+# merge-authority), reason, engineering, discipline (selected
+# level@generation@fragment), discipline_proof (OBSERVED, CNO or absent), and
+# residuals.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -311,6 +314,10 @@ enc() {  # percent-encode space, percent, tab; a value is never multi-line
   printf '%s' "$1" | tr -d '\n' | sed -e 's/%/%25/g' -e 's/ /%20/g' -e "s/$(printf '\t')/%09/g"
 }
 dash() { [ -n "${1:-}" ] && printf '%s' "$1" || printf -- '-'; }
+discipline_identity() {
+  [ -n "${FM_DISCIPLINE_RECEIPT:-}" ] || return 0
+  printf '%s@%s@%s' "$FM_DISCIPLINE_LEVEL" "$FM_DISCIPLINE_GENERATION" "$FM_DISCIPLINE_FRAGMENT_SHA256"
+}
 
 KIND=$(meta kind); [ -n "$KIND" ] || KIND=ship
 MODE=$(meta mode)
@@ -587,11 +594,13 @@ receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
   if [ -n "$FM_WC_ENGINEERING" ]; then
     residuals=$(fm_work_context_engineering_residuals "$DATA/$ID/work-context.json" | jq -sr 'map(.id) | join(",")')
   fi
-  printf '%s: task=%s gen=%s branch=%s head=%s landed_head=%s landed_confirmed=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s engineering=%s residuals=%s\n' \
+  printf '%s: task=%s gen=%s branch=%s head=%s landed_head=%s landed_confirmed=%s tree=%s intent=%s decisions=%s mode=%s yolo=%s alloc=%s nm_home=%s profile=%s attempt=%s run=%s step=%s outcome=%s pr=%s owner=%s reason=%s engineering=%s discipline=%s discipline_proof=%s residuals=%s\n' \
     "$stage" "$ID" "$(enc "$GEN")" "$(enc "$branch")" "$(enc "$(short "$head")")" "$(enc "$(short "$(landed_head_value)")")" "$(enc "$STAGE_LANDED_HEAD_CONFIRMED")" "$(enc "$(short "$tree")")" \
     "$(intent_identity)" "$(enc "$(closed_decision_keys)")" "$(enc "$MODE")" "$(enc "$YOLO")" "$(enc "$(alloc_identity)")" \
     "$(enc "$(obs nm_home)")" "$(enc "$(profile_identity)")" "$(enc "$(obs attempt_id)")" "$(enc "$(obs run_id)")" \
-    "$(enc "$(obs run_status)")" "$(enc "$(obs outcome_class)")" "$(enc "$STAGE_PR_VALUE")" "$owner" "$(enc "$reason")" "$(enc "${FM_WC_ENGINEERING_DIGEST:-}")" "$(enc "$residuals")"
+    "$(enc "$(obs run_status)")" "$(enc "$(obs outcome_class)")" "$(enc "$STAGE_PR_VALUE")" "$owner" "$(enc "$reason")" "$(enc "${FM_WC_ENGINEERING_DIGEST:-}")" \
+    "$(enc "$(discipline_identity)")" \
+    "$(enc "${FM_DISCIPLINE_PROOF_OUTCOME:-}")" "$(enc "$residuals")"
 }
 
 # Append the receipt, then publish the record. A crash between the two leaves a
@@ -619,6 +628,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     printf 'stage_tree=%s\n' "$tree"
     printf 'stage_gen=%s\n' "$GEN"
     printf 'stage_context=%s\n' "$FM_WC_ENGINEERING_DIGEST"
+    printf 'stage_discipline=%s\n' "$(discipline_identity)"
     if [ "$stage" = candidate-committed ]; then
       printf 'stage_evidence=\n'
     else
@@ -654,6 +664,10 @@ next_for() {  # <stage>
       printf 'next: worker stops and waits (%s); firstmate clears the hold or repairs the environment, then the worker re-runs `%s committed`\n' "$(dash "$(meta stage_reason)")" "$SELF_CMD" ;;
     validation-admitted)
       if [ -n "$FM_WC_ENGINEERING" ]; then
+        if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+          fm_discipline_render "$DATA" "$ID" ship implementation || refuse validation-admitted ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+          printf '\n\n'
+        fi
         fm_work_context_engineering_render "$DATA" "$ID" all all || refuse validation-admitted ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
         printf 'intent: include this checked engineering context and its verification obligations in the existing no-mistakes --intent; its review owner loads the reviewer source.\n'
       fi
@@ -688,12 +702,49 @@ crew_state() {
 # declaration cannot downgrade its obligations. Only a supported new attempt
 # may accept a changed context, after custody returns to the worker.
 engineering_context() { # <transition>
-  local transition=$1 pin
+  local transition=$1 pin recorded_head recorded_tree actual_tree recorded_branch actual_branch observed_head
+  local recorded_discipline current_discipline observer_candidate output successor=0
   fm_work_context_engineering "$DATA" "$ID" all all || refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   pin=$(meta stage_context)
   if [ -n "$pin" ] && [ "$pin" != "$FM_WC_ENGINEERING_DIGEST" ]; then
     if [ "$transition" != committed ] || [ "$RETRY" -ne 1 ]; then
       refuse "$transition" ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt'
+    fi
+  fi
+  current_discipline=$(discipline_identity)
+  if [ -n "$pin" ]; then
+    recorded_discipline=$(meta stage_discipline)
+    [ "$recorded_discipline" = "$current_discipline" ] || \
+      refuse "$transition" DISCIPLINE_IDENTITY 'the selected discipline is immutable across resume and retry'
+  fi
+  # A selected discipline rides the existing stage identity rather than a
+  # second receipt store. Once admitted, independently re-read every available
+  # facet before work resumes: the selected context, original branch/head/tree,
+  # and observer candidate must still describe one candidate.
+  if [ -n "$pin" ] && [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    recorded_head=$(meta stage_head)
+    recorded_tree=$(meta stage_tree)
+    recorded_branch=$(meta stage_branch)
+    if [ -z "$recorded_head" ] || [ -z "$recorded_tree" ] || [ -z "$recorded_branch" ]; then
+      refuse "$transition" DISCIPLINE_IDENTITY 'admitted discipline requires branch/head/tree in the stage receipt'
+    fi
+    observer_candidate=$(obs candidate_head)
+    [ -z "$observer_candidate" ] || [ "$observer_candidate" = "$recorded_head" ] || \
+      refuse "$transition" DISCIPLINE_IDENTITY 'observer candidate does not match the admitted discipline candidate'
+    actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    [ "$actual_branch" = "$recorded_branch" ] || \
+      refuse "$transition" DISCIPLINE_IDENTITY "recorded branch $recorded_branch does not match current branch $actual_branch"
+    actual_tree=$(git -C "$WT" rev-parse 'HEAD^{tree}' 2>/dev/null || true)
+    observed_head=$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)
+    if [ "$observed_head" != "$recorded_head" ] || [ "$actual_tree" != "$recorded_tree" ]; then
+      if [ -n "$(meta stage_run)" ] && [ "$(meta stage_run)" = "$(obs run_id)" ]; then
+        output=$(bound_run_status 2>/dev/null || true)
+        if [ -n "$output" ] && completed_successor_current "$output" "$observed_head"; then
+          successor=1
+        fi
+      fi
+      [ "$successor" -eq 1 ] || \
+        refuse "$transition" DISCIPLINE_IDENTITY 'live task worktree must remain at the admitted candidate or a verified custody-returned successor'
     fi
   fi
 }
@@ -722,9 +773,9 @@ engineering_result() {
     || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-identity: pipeline head is not a candidate successor'
   fm_work_context_engineering_evidence "$DATA" "$ID" "$run" "$actual" \
     || refuse ci-ready ENGINEERING_EVIDENCE "$FM_WORK_CONTEXT_DETAIL"
-  if [ -f "$DATA/$ID/engineering-evidence.json" ]; then
-    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$(_fm_wc_engineering_sha "$DATA/$ID/engineering-evidence.json") \
-      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-unreadable: index changed during admission'
+  if [ -e "$DATA/$ID/engineering-evidence.json" ] || [ -L "$DATA/$ID/engineering-evidence.json" ]; then
+    [ -n "${FM_WC_ENGINEERING_EVIDENCE_DIGEST:-}" ] \
+      || refuse ci-ready ENGINEERING_EVIDENCE 'engineering-evidence-unreadable: index capture unavailable during admission'
   fi
 }
 
@@ -1119,6 +1170,10 @@ do_activated() {
 
 do_show() {
   engineering_context show
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    fm_discipline_render "$DATA" "$ID" ship implementation || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+    printf '\n\n'
+  fi
   fm_work_context_engineering_render "$DATA" "$ID" all all || refuse show ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
   local current
   current=$(meta stage)

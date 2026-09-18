@@ -743,13 +743,13 @@ test_worker_kernel_roles_and_promotion() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-promote.sh" kernel-scout --mode no-mistakes --yolo off 2>&1); rc=$?
   expect_code 0 "$rc" "promotion did not render: $out"
   promoted="$home/data/kernel-scout/ship-instructions.md"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" > "$home/ship-kernel"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" > "$home/promoted-kernel"
-  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" | grep -v '^Discipline receipt:' | grep -v '^<!-- firstmate-discipline:v1 ' > "$home/ship-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" | grep -v '^Discipline receipt:' | grep -v '^<!-- firstmate-discipline:v1 ' > "$home/promoted-kernel"
+  cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different canonical kernel"
   [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "ship-only fragment accepted for scout"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --shared-boundary --proof-surface 'receiver CLI' >/dev/null \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-shared alpha --mode direct-PR --discipline-fact schema --discipline-fact real-runtime-surface --proof-kind accepted-surface --proof-surface 'receiver CLI' >/dev/null \
     || fail "shared-boundary ship did not render"
   assert_grep '# Shared boundary' "$home/data/kernel-shared/brief.md" "explicit shared seam was lost"
   assert_grep 'receiver CLI' "$home/data/kernel-shared/brief.md" "explicit proof surface was lost"
@@ -777,8 +777,11 @@ EOF
   # in a worker stage. The scout subset cannot acquire a test-writing loop.
   out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer test 2>&1); rc=$?
   expect_code 3 "$rc" "reviewer/test role conflict must refuse"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer review 2>&1); rc=$?
+  expect_code 0 "$rc" "reviewer/review context should render without worker discipline"
+  assert_not_contains "$out" '# Worker discipline' "reviewer/review context received worker discipline"
   mkdir -p "$home/data/engineering-scout"
-  cp "$desc" "$home/data/engineering-scout/work-context.json"
+  jq 'del(.engineering.discipline)' "$desc" > "$home/data/engineering-scout/work-context.json"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering-scout alpha --scout >/dev/null || fail "scout source fixture failed"
   if grep -q 'fixture-r1' "$home/data/engineering-scout/brief.md"; then
     fail "scout received the test-writing skill instead of its evidence subset"
@@ -807,7 +810,23 @@ EOF
   pass "engineering context: fresh/resumed exact bytes, missing/stale refusal, irrelevant trigger"
 }
 
+test_fresh_ship_refusal_restores_descriptor() {
+  local home desc original out rc
+  home="$TMP_ROOT/brief-rollback"
+  mkdir -p "$home/data/rollback" "$home/state"
+  desc="$home/data/rollback/work-context.json"
+  printf '%s\n\n' '{"engineering":{"generation":"g1","triggers":["test-change"],"skills":[{"id":"tdd","path":"/missing/skill.md","release":"fixture-r1","sha256":"0000000000000000000000000000000000000000000000000000000000000000","role":"worker","stage":"test","trigger":"test-change"}],"verification":[]}}' > "$desc"
+  original="$home/original.json"
+  cp "$desc" "$original"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" rollback alpha --mode no-mistakes 2>&1); rc=$?
+  expect_code 3 "$rc" "fresh ship with an unreadable engineering source must refuse"
+  cmp -s "$original" "$desc" || fail "fresh ship refusal changed the pre-existing descriptor bytes"
+  [ ! -e "$home/data/rollback/brief.md" ] || fail "fresh ship refusal left a partial brief"
+  pass "fm-brief.sh: late fresh-ship refusal restores exact descriptor and brief absence"
+}
+
 test_engineering_context_sources_and_resume
+test_fresh_ship_refusal_restores_descriptor
 test_worker_kernel_roles_and_promotion
 test_script_parses
 test_bash32_generates_brief

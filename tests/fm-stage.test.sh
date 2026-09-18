@@ -381,10 +381,12 @@ test_landing_and_activated_need_readback() {
   if command -v jq >/dev/null 2>&1; then
     assert_not_contains "$out" "currentness:" "activated is inert for a task with no work-context descriptor"
     mkdir -p "$DATA/a1"
-    printf '{"reconcile":{"parent":"a1"}}\n' > "$DATA/a1/work-context.json"
+    printf '%s\n' '{"reconcile":{"parent":"a1"},"engineering":{"generation":"legacy-g1","triggers":[],"skills":[],"verification":[]}}' > "$DATA/a1/work-context.json"
     out=$("$STAGE" a1 activated 2>&1)
     assert_contains "$out" "currentness:" "activated reconciles currentness when the child declares a reconcile block"
     assert_present "$STATE/a1.parent-currentness" "the terminal transition writes the currentness receipt through the work-context owner"
+    assert_no_grep 'engineering_residual=.*worker-discipline:' "$STATE/a1.parent-currentness" \
+      "legacy engineering context without discipline has no discipline residuals"
     rm -f "$DATA/a1/work-context.json"
   fi
   pass "fm-stage landing/activated: landing records, activated needs read-back evidence and refreshes declared currentness"
@@ -465,7 +467,7 @@ exec "$ROOT/bin/fm-nm-observe.sh" "\$@"
 SH
   chmod +x "$TMP_ROOT/racebin/fm-nm-observe.sh"
   cp "$ROOT/bin/fm-stage.sh" "$TMP_ROOT/racebin/fm-stage.sh"
-  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
+  for f in fm-wake-lib.sh fm-backend.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tasks-axi-lib.sh fm-backlog-transition-lib.sh fm-work-context-lib.sh fm-work-context-engineering-lib.sh fm-work-context-discipline-lib.sh fm-classify-lib.sh fm-timeout-lib.sh fm-nm-run-lib.sh fm-crew-state.sh fm-tmux-lib.sh fm-busy-lib.sh fm-tool-profile.sh fm-workflow-yaml.sh fm-lint.sh fm-lint-workflows.sh fm-bootstrap.sh; do
     [ -e "$ROOT/bin/$f" ] && ln -sf "$ROOT/bin/$f" "$TMP_ROOT/racebin/$f"
   done
   out=$("$TMP_ROOT/racebin/fm-stage.sh" d1 committed 2>&1); rc=$?
@@ -694,6 +696,114 @@ branch_sync:
   pass "engineering stage: rebase custody, exact evidence refresh, context replacement, and residuals"
 }
 test_engineering_stage_evidence_and_residuals
+
+# Typed worker discipline is part of the same admitted engineering identity.
+# Candidate proof is integrity-checked at CI-ready but never substitutes for the
+# canonical run verdict, and an honest CNO stays labeled CNO in the receipt.
+test_discipline_stage_identity_evidence_and_retry() {
+  local wt head desc outer_generation generation fragment artifact out rc pin
+  wt="$TMP_ROOT/wt-discipline"
+  make_worktree "$wt" fm/discipline-stage
+  head=$(git -C "$wt" rev-parse HEAD)
+  FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" discipline-stage repo --mode no-mistakes \
+    --discipline-fact schema --discipline-fact real-runtime-surface --proof-kind accepted-surface --proof-surface 'bin/example --status' >/dev/null \
+    || fail "discipline stage fixture did not compile"
+  make_task discipline-stage no-mistakes "$wt"
+  desc="$DATA/discipline-stage/work-context.json"
+  outer_generation=$(jq -r .engineering.generation "$desc")
+  generation=$(jq -r .engineering.discipline.generation "$desc")
+  fragment=$(jq -r .engineering.discipline.fragment_sha256 "$desc")
+
+  FM_FAKE_AXI_STATUS=""
+  out=$("$STAGE" discipline-stage committed 2>&1); rc=$?
+  expect_code 0 "$rc" "discipline candidate did not admit: $out"
+  pin=$(meta_get discipline-stage stage_context)
+  [ -n "$pin" ] || fail "discipline attempt did not bind work-context identity"
+  assert_contains "$(last_line discipline-stage)" "discipline=proof-surface@$generation@$fragment" \
+    "stage receipt lost selected discipline identity"
+
+  FM_FAKE_AXI_STATUS=$(run_toon 01DISCIPLINE fm/discipline-stage reviewing "$head")
+  out=$("$STAGE" discipline-stage running --run 01DISCIPLINE 2>&1); rc=$?
+  expect_code 0 "$rc" "discipline run did not bind: $out"
+  FM_FAKE_AXI_STATUS="$(run_toon 01DISCIPLINE fm/discipline-stage ci "$head")
+branch_sync:
+  state: pipeline_owned"
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  out=$("$STAGE" discipline-stage ci-ready --pr https://github.com/o/r/pull/18 2>&1); rc=$?
+  expect_code 1 "$rc" "CI-ready accepted worker narration without bound discipline evidence"
+  assert_contains "$out" 'discipline-evidence' "missing candidate evidence refusal was not typed"
+
+  artifact="$DATA/discipline-stage/proof.txt"
+  printf 'CNO: runtime unavailable; schema safety fact remained unobserved\n' > "$artifact"
+  jq -n --arg task discipline-stage --arg run 01DISCIPLINE --arg head "$head" \
+    --arg outer_generation "$outer_generation" --arg discipline_generation "$generation" \
+    --arg fragment "$fragment" --arg path "$artifact" \
+    --arg sha "$(sha256sum < "$artifact" | cut -d' ' -f1)" \
+    '{task:$task,generation:$outer_generation,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$discipline_generation,level:"proof-surface",fragment_sha256:$fragment,producer:"worker-candidate",outcome:"CNO",surface:"bin/example --status",command:"bin/example --status",oracle:"expected status response",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' \
+    > "$DATA/discipline-stage/engineering-evidence.json"
+  out=$("$STAGE" discipline-stage ci-ready --pr https://github.com/o/r/pull/18 2>&1); rc=$?
+  expect_code 0 "$rc" "bound CNO evidence should reach the independent validator: $out"
+  assert_contains "$(last_line discipline-stage)" 'discipline_proof=CNO' "CNO was rounded to PASS in the stage receipt"
+  printf 'fm-pr-poll-merge-notified-v1\ngithub\ngithub.com\no/r\n18\n' > "$STATE/discipline-stage.pr-poll-merge-notified"
+  out=$("$STAGE" discipline-stage activated 2>&1); rc=$?
+  expect_code 0 "$rc" "discipline source landing read-back failed: $out"
+  assert_grep '"claim":"ACTIVE","evidence":"CNO"' "$STATE/discipline-stage.parent-currentness" \
+    "source landing claimed runtime activation"
+  assert_grep '"claim":"CONSUMED","evidence":"CNO"' "$STATE/discipline-stage.parent-currentness" \
+    "source landing claimed fresh production consumption"
+  assert_grep '"owner":"runtime-pin-adoption-gap"' "$STATE/discipline-stage.parent-currentness" \
+    "runtime CNO residuals lost their qualified adoption owner"
+  assert_grep "engineering_discipline=proof-surface@$generation@$fragment" \
+    "$STATE/discipline-stage.parent-currentness" "landing receipt lost the selected discipline identity"
+
+  cp "$STATE/discipline-stage.meta" "$STATE/discipline-stage.meta.valid"
+  awk '{ if ($0 ~ /^stage_tree=/) print "stage_tree=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; else print }' \
+    "$STATE/discipline-stage.meta.valid" > "$STATE/discipline-stage.meta"
+  out=$("$STAGE" discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "wrong discipline candidate tree must refuse resume"
+  assert_contains "$out" 'DISCIPLINE_IDENTITY' "wrong tree refusal was not typed"
+  mv "$STATE/discipline-stage.meta.valid" "$STATE/discipline-stage.meta"
+
+  git -C "$wt" commit -q --allow-empty -m 'unverified same-branch successor'
+  out=$($STAGE discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "same-branch descendant must refuse resume"
+  assert_contains "$out" 'DISCIPLINE_IDENTITY' "same-branch descendant refusal was not typed"
+  git -C "$wt" reset -q --hard "$head"
+  git -C "$wt" checkout -q --detach "$head"
+  out=$($STAGE discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "detached task worktree must refuse resume"
+  assert_contains "$out" 'DISCIPLINE_IDENTITY' "detached worktree refusal was not typed"
+  git -C "$wt" checkout -q fm/discipline-stage
+
+  jq '.engineering.discipline.generation="changed"' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+  out=$("$STAGE" discipline-stage show 2>&1); rc=$?
+  expect_code 1 "$rc" "changed discipline identity must refuse resume"
+  assert_contains "$out" 'ENGINEERING_CONTEXT' "changed discipline identity refusal did not name context"
+  [ "$(meta_get discipline-stage stage_context)" = "$pin" ] || fail "refused resume rewrote admitted identity"
+  jq --arg generation "$generation" '.engineering.discipline.generation=$generation' "$desc" > "$desc.tmp" && mv "$desc.tmp" "$desc"
+
+  FM_FAKE_AXI_STATUS=$(run_toon 01DISCIPLINE fm/discipline-stage completed "$head" checks-passed)
+  mkdir -p "$TMP_ROOT/alternate-discipline/data" "$TMP_ROOT/alternate-discipline/state"
+  FM_HOME="$TMP_ROOT/alternate-discipline" FM_DATA_OVERRIDE="$TMP_ROOT/alternate-discipline/data" \
+    FM_STATE_OVERRIDE="$TMP_ROOT/alternate-discipline/state" \
+    "$ROOT/bin/fm-brief.sh" discipline-stage repo --mode no-mistakes \
+    --discipline-fact local >/dev/null || fail "alternate discipline fixture did not compile"
+  cp "$desc" "$desc.valid"
+  jq --slurpfile alternate "$TMP_ROOT/alternate-discipline/data/discipline-stage/work-context.json" \
+    --arg outer_generation "$outer_generation" \
+    '.engineering.discipline=$alternate[0].engineering.discipline |
+     .engineering.discipline.outer_generation=$outer_generation' "$desc.valid" > "$desc"
+  out=$("$STAGE" discipline-stage committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "worker-selected discipline change must refuse retry"
+  assert_contains "$out" 'discipline-identity' "retry self-upgrade refusal was not typed"
+  mv "$desc.valid" "$desc"
+  out=$("$STAGE" discipline-stage committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "retry with unchanged discipline identity did not admit: $out"
+  [ "$(meta_get discipline-stage stage_context)" = "$pin" ] || fail "retry changed the selected discipline identity"
+  [ -z "$(meta_get discipline-stage stage_evidence)" ] || fail "retry retained predecessor candidate evidence"
+  pass "discipline stage: context survives resume/retry, exact CNO evidence is consumed, and self-proof never bypasses qualification"
+}
+test_discipline_stage_identity_evidence_and_retry
 
 
 test_isolated_pipeline_successor() {

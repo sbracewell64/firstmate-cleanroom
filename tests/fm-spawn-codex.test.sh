@@ -15,7 +15,7 @@ run_case() {
   selected="$w/selected client"; old="$w/old-client"
   [ "$kind" != raw ] || selected="$w/selected-client"
   mkdir -p "$home/state" "$home/data/$id" "$home/config" "$selected" "$old"
-  printf 'brief bytes\n' > "$home/data/$id/brief.md"
+  printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.' > "$home/data/$id/brief.md"
   if [ "$kind" = secondmate ]; then
     mkdir -p "$target/bin" "$target/data"
     printf '# Firstmate\n' > "$target/AGENTS.md"

@@ -251,6 +251,11 @@ cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task meta
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 DESC="$DATA/$ID/work-context.json"
+mkdir -p "$DATA/$ID"
+[ ! -L "$DATA/$ID" ] && [ -d "$DATA/$ID" ] || { echo "error: task data directory is unsafe: $DATA/$ID" >&2; exit 1; }
+[ ! -e "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || {
+  [ -f "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || { echo "error: ship instructions path is a directory: $INSTRUCTIONS" >&2; exit 1; }
+}
 if [ -f "$DESC" ] && [ ! -L "$DESC" ] &&
   jq -e '.engineering.discipline != null' "$DESC" >/dev/null 2>&1; then
   if [ "$DISCIPLINE_SELECTION_EXPLICIT" -eq 0 ]; then
@@ -273,11 +278,6 @@ fi
 fm_discipline_compile "$ID" ship implementation "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {
   echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
   exit 3
-}
-mkdir -p "$DATA/$ID"
-[ ! -L "$DATA/$ID" ] && [ -d "$DATA/$ID" ] || { echo "error: task data directory is unsafe: $DATA/$ID" >&2; exit 1; }
-[ ! -e "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || {
-  [ -f "$INSTRUCTIONS" ] && [ ! -L "$INSTRUCTIONS" ] || { echo "error: ship instructions path is unsafe: $INSTRUCTIONS" >&2; exit 1; }
 }
 if [ -e "$DESC" ] || [ -L "$DESC" ]; then
   [ -f "$DESC" ] && [ ! -L "$DESC" ] || { echo "error: work context path is unsafe: $DESC" >&2; exit 1; }

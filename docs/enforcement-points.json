@@ -2,6 +2,18 @@
   "version": 1,
   "entryPoints": [
     {
+      "id": "bin/fm-work-context-discipline-lib.sh:fm_discipline_envelope_validate",
+      "kind": "enforced",
+      "invariant": "A generated worker brief may proceed only when its canonical discipline envelope and successor prefix exactly match the selected task context.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-work-context-engineering-lib.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
       "id": "bin/fm-arm-pretool-check.sh",
       "kind": "enforced",
       "invariant": "A primary session may not arm supervision or run a guarded tool without the pre-tool checkpoint.",

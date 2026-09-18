@@ -25,7 +25,10 @@ make_case() {
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  {
+    printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+    printf 'brief for %s\n' "$id"
+  } > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
 
   git init --quiet -b "$default" "$project"
@@ -81,7 +84,10 @@ test_stale_pool_base_refreshes_before_branching() {
 
   id='pool-current-base-repeat-r1'
   mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  {
+    printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+    printf 'brief for %s\n' "$id"
+  } > "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -221,7 +227,10 @@ make_submodule_case() {  # <name> <id>
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  {
+    printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+    printf 'brief for %s\n' "$id"
+  } > "$home/data/$id/brief.md"
   touch "$home/state/.last-watcher-beat"
 
   git init --quiet -b main "$sub"
@@ -269,7 +278,10 @@ EOF
 strand_submodule_pin_via_spawn() {  # <seed-id>
   local id=$1 out status
   mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  {
+    printf '%s\n' 'You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.'
+    printf 'brief for %s\n' "$id"
+  } > "$HOME_DIR/data/$id/brief.md"
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"

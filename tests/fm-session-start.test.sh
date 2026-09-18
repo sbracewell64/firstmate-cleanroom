@@ -2286,6 +2286,7 @@ EOF
   network_finished="${root%/root}/network-finished"
   release_fifo="${root%/root}/network-release"
   mkfifo "$release_fifo"
+  exec 3<> "$release_fifo"
   install_slow_gh "$fakebin" 2 "$network_finished" "$release_fifo"
 
   started=$(date +%s)
@@ -2303,9 +2304,10 @@ EOF
     "the digest reported a GitHub-auth verdict it could not yet have"
 
   # ... and the work itself still happens, off the blocking path.
-  printf '%s\n' release > "$release_fifo"
+  printf '%s\n' release >&3
   wait_for_network_stage "$home" "$root" 60 \
     || fail "the deferred stage never finished: $(network_stage_report "$home" "$root")"
+  exec 3>&-
   assert_contains "$(network_stage_report "$home" "$root")" "NEEDS_GH_AUTH" \
     "the deferred stage lost the GitHub-auth verdict it was deferring"
   assert_contains "$(cat "$log")" "new-window" \
@@ -2325,13 +2327,15 @@ $rec
 EOF
   release_fifo="${root%/root}/network-release"
   mkfifo "$release_fifo"
+  exec 3<> "$release_fifo"
   install_slow_gh "$fakebin" 2 '' "$release_fifo"
   queue="$home/state/.wake-queue"
 
   run_session_start_secondmate "$root" "$home" "$fakebin" "$mate" "$log" "$spawned" missing >/dev/null
-  printf '%s\n' release > "$release_fifo"
+  printf '%s\n' release >&3
   wait_for_network_stage "$home" "$root" 60 || fail "the deferred stage never finished"
   wait_for_network_wake "$home" 60 || fail "the deferred stage never settled wake delivery"
+  exec 3>&-
   assert_grep 'check	startup-network' "$queue" \
     "a result the digest could not print never reached the agent: $(cat "$queue" 2>/dev/null)"
   pass "session start: a deferred result the digest outran still reaches the agent as a wake"

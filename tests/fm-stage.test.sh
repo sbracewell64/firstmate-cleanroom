@@ -701,7 +701,7 @@ test_engineering_stage_evidence_and_residuals
 # Candidate proof is integrity-checked at CI-ready but never substitutes for the
 # canonical run verdict, and an honest CNO stays labeled CNO in the receipt.
 test_discipline_stage_identity_evidence_and_retry() {
-  local wt head desc generation fragment artifact out rc pin
+  local wt head desc outer_generation generation fragment artifact out rc pin
   wt="$TMP_ROOT/wt-discipline"
   make_worktree "$wt" fm/discipline-stage
   head=$(git -C "$wt" rev-parse HEAD)
@@ -710,6 +710,7 @@ test_discipline_stage_identity_evidence_and_retry() {
     || fail "discipline stage fixture did not compile"
   make_task discipline-stage no-mistakes "$wt"
   desc="$DATA/discipline-stage/work-context.json"
+  outer_generation=$(jq -r .engineering.generation "$desc")
   generation=$(jq -r .engineering.discipline.generation "$desc")
   fragment=$(jq -r .engineering.discipline.fragment_sha256 "$desc")
 
@@ -735,9 +736,10 @@ branch_sync:
   artifact="$DATA/discipline-stage/proof.txt"
   printf 'CNO: runtime unavailable; schema safety fact remained unobserved\n' > "$artifact"
   jq -n --arg task discipline-stage --arg run 01DISCIPLINE --arg head "$head" \
-    --arg generation "$generation" --arg fragment "$fragment" --arg path "$artifact" \
+    --arg outer_generation "$outer_generation" --arg discipline_generation "$generation" \
+    --arg fragment "$fragment" --arg path "$artifact" \
     --arg sha "$(sha256sum < "$artifact" | cut -d' ' -f1)" \
-    '{task:$task,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$generation,level:"proof-surface",fragment_sha256:$fragment,producer:"worker-candidate",outcome:"CNO",surface:"bin/example --status",command:"bin/example --status",oracle:"expected status response",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' \
+    '{task:$task,generation:$outer_generation,run:$run,head:$head,results:[{id:"worker-discipline",discipline:{task:$task,role:"ship",stage:"implementation",generation:$discipline_generation,level:"proof-surface",fragment_sha256:$fragment,producer:"worker-candidate",outcome:"CNO",surface:"bin/example --status",command:"bin/example --status",oracle:"expected status response",path:$path,sha256:$sha,safety_facts:["schema reader rejects unknown state"]}}]}' \
     > "$DATA/discipline-stage/engineering-evidence.json"
   out=$("$STAGE" discipline-stage ci-ready --pr https://github.com/o/r/pull/18 2>&1); rc=$?
   expect_code 0 "$rc" "bound CNO evidence should reach the independent validator: $out"
@@ -788,10 +790,12 @@ branch_sync:
     --discipline-fact local >/dev/null || fail "alternate discipline fixture did not compile"
   cp "$desc" "$desc.valid"
   jq --slurpfile alternate "$TMP_ROOT/alternate-discipline/data/discipline-stage/work-context.json" \
-    '.engineering.discipline=$alternate[0].engineering.discipline' "$desc.valid" > "$desc"
+    --arg outer_generation "$outer_generation" \
+    '.engineering.discipline=$alternate[0].engineering.discipline |
+     .engineering.discipline.outer_generation=$outer_generation' "$desc.valid" > "$desc"
   out=$("$STAGE" discipline-stage committed --retry 2>&1); rc=$?
   expect_code 1 "$rc" "worker-selected discipline change must refuse retry"
-  assert_contains "$out" 'DISCIPLINE_IDENTITY' "retry self-upgrade refusal was not typed"
+  assert_contains "$out" 'discipline-identity' "retry self-upgrade refusal was not typed"
   mv "$desc.valid" "$desc"
   out=$("$STAGE" discipline-stage committed --retry 2>&1); rc=$?
   expect_code 0 "$rc" "retry with unchanged discipline identity did not admit: $out"

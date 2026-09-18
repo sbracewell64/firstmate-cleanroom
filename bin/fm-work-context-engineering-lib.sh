@@ -231,6 +231,7 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
     fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
     index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
+    FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
   elif [ -n "$required" ] || [ -e "$index" ] || [ -L "$index" ]; then
     fm_discipline_capture "$index" || {
       _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;

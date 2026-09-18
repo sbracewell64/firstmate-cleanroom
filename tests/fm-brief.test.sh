@@ -743,8 +743,8 @@ test_worker_kernel_roles_and_promotion() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-promote.sh" kernel-scout --mode no-mistakes --yolo off 2>&1); rc=$?
   expect_code 0 "$rc" "promotion did not render: $out"
   promoted="$home/data/kernel-scout/ship-instructions.md"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" | grep -v '^Discipline receipt:' > "$home/ship-kernel"
-  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" | grep -v '^Discipline receipt:' > "$home/promoted-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$ship" | grep -v '^Discipline receipt:' | grep -v '^<!-- firstmate-discipline:v1 ' > "$home/ship-kernel"
+  awk '/^# Worker discipline$/{on=1} on && /^# / && !/^# Worker discipline$/{exit} on{print}' "$promoted" | grep -v '^Discipline receipt:' | grep -v '^<!-- firstmate-discipline:v1 ' > "$home/promoted-kernel"
   cmp -s "$home/ship-kernel" "$home/promoted-kernel" || fail "promoted ship received a different canonical kernel"
   [ "$(wc -c < "$home/ship-kernel")" -le 2900 ] || fail "ordinary kernel exceeds its prompt budget"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" kernel-bad alpha --scout --shared-boundary 2>&1); rc=$?

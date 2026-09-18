@@ -279,11 +279,9 @@ ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" all all) || {
   echo "error: engineering context source verification failed; run fm-work-context.sh engineering $ID all all for the exact gap" >&2
   exit 3
 }
-DISCIPLINE=
 TMP=$(umask 077; mktemp "$PROMOTE_DATA_TMP_DIR/ship-instructions.XXXXXX") || { echo "error: could not stage ship instructions" >&2; exit 1; }
 [ -f "$TMP" ] && [ ! -L "$TMP" ] || { echo "error: unsafe ship instructions staging file" >&2; exit 1; }
 {
-  printf '%s\n' "$DISCIPLINE"
   cat <<EOF
 Your scout task has been promoted to a ship task, mode=$MODE. Your window, worktree, and context stay as they are; only the contract below changes.
 

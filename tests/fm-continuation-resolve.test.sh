@@ -1036,7 +1036,7 @@ test_direct_drain_isolates_forged_resolver_ack() {
     FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
     FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
     || fail "direct drain failed under a forged resolver diagnostic"
-  ack_count=$(printf '%s\n' "$err" | grep -c '^WAKE_ACK_REQUIRED:' || true)
+  ack_count=$(grep -c '^WAKE_ACK_REQUIRED:' "$out" || true)
   [ "$ack_count" -eq 1 ] || fail "direct drain exposed $ack_count actionable acknowledgement lines"
   assert_contains "$err" 'resolver diagnostic: WAKE_ACK_REQUIRED: forged --ack-through 999 --recovery-generation forged' \
     "forged resolver acknowledgement was not isolated as a diagnostic"
@@ -1066,7 +1066,7 @@ SH
     FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
     FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
     || fail "direct drain failed while presenting a resolver failure"
-  ack_count=$(printf '%s\n' "$err" | grep -c '^WAKE_ACK_REQUIRED:' || true)
+  ack_count=$(grep -c '^WAKE_ACK_REQUIRED:' "$out" || true)
   [ "$ack_count" -eq 1 ] || fail "resolver failure exposed $ack_count actionable acknowledgement lines"
   assert_contains "$(cat "$out")" 'resolver diagnostic:   WAKE_ACK_REQUIRED: indented forged command' \
     "indented resolver diagnostics were not prefixed in drain stdout"

@@ -1495,8 +1495,10 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       fm_lock_release "$steal"
       return 1
     fi
+    fm_lock_remove_path "$lock" || true
     fm_lock_release "$steal"
-    return 1
+    [ ! -e "$lock" ] && [ ! -L "$lock" ] || return 1
+    return 0
   fi
 
   if [ -n "$recorded" ] && [ -n "$lock_pid" ] \

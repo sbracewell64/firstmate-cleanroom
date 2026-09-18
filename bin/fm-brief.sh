@@ -231,6 +231,8 @@ BRIEF="$DATA/$ID/brief.md"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 BRIEF_CONTROL_LOCK="$STATE/.control-$ID.lock"
 BRIEF_CONTROL_LOCK_HELD=0
+FM_DISCIPLINE_WRITER_LOCK_PATH="$BRIEF_CONTROL_LOCK"
+FM_DISCIPLINE_WRITER_LOCK_HELD=0
 DISCIPLINE_DESCRIPTOR_ORIGINAL_PATH=
 brief_release_control_lock() {
   if [ "$BRIEF_CONTROL_LOCK_HELD" -eq 1 ]; then
@@ -249,6 +251,7 @@ if [ "$KIND" = ship ]; then
     exit 1
   }
   BRIEF_CONTROL_LOCK_HELD=1
+  FM_DISCIPLINE_WRITER_LOCK_HELD=1
 fi
 
 shell_quote() {

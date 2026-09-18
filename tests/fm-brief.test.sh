@@ -777,6 +777,9 @@ EOF
   # in a worker stage. The scout subset cannot acquire a test-writing loop.
   out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer test 2>&1); rc=$?
   expect_code 3 "$rc" "reviewer/test role conflict must refuse"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-work-context.sh" engineering engineering reviewer review 2>&1); rc=$?
+  expect_code 0 "$rc" "reviewer/review context should render without worker discipline"
+  assert_not_contains "$out" '# Worker discipline' "reviewer/review context received worker discipline"
   mkdir -p "$home/data/engineering-scout"
   jq 'del(.engineering.discipline)' "$desc" > "$home/data/engineering-scout/work-context.json"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" engineering-scout alpha --scout >/dev/null || fail "scout source fixture failed"

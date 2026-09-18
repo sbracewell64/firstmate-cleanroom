@@ -172,7 +172,10 @@ $FM_WC_ENGINEERING_SKILLS
 ROWS
   printf 'The worker carries reviewer obligations into the existing no-mistakes intent; only its review owner performs that review.\n'
   printf 'Load/read, self-report, behavior, qualification and deployed consumption remain separate; these sources grant no routing, merge or phase authority.\n'
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
+    [ "$role:$stage" = all:all ] ||
+    [ "$role:$stage" = worker:implementation ];
+  }; then
     printf 'Candidate discipline evidence uses the existing engineering-evidence.json results[] row id=worker-discipline. Its discipline object binds task, role=ship, stage=implementation, generation, level, fragment_sha256, producer=worker-candidate, outcome=OBSERVED|CNO, the selected surface, command, oracle, absolute artifact path/SHA256 and safety_facts[]. Bind the index to the current task/run/head. OBSERVED and CNO remain candidate evidence, never qualification or landing authority.\n'
   fi
   printf 'Required proof (JSON; scopes do not substitute for each other):\n'
@@ -185,7 +188,10 @@ fm_work_context_engineering_prompt() { # <data> <id> <role> <stage>
   local data=$1 id=$2 role=$3 stage=$4 discipline_rc
   fm_work_context_engineering "$data" "$id" "$role" "$stage" || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ] && {
+    [ "$role:$stage" = all:all ] ||
+    [ "$role:$stage" = worker:implementation ];
+  }; then
     FM_DISCIPLINE_DESCRIPTOR_REUSE=1
     fm_discipline_envelope_render "$data" "$id"; discipline_rc=$?
     FM_DISCIPLINE_DESCRIPTOR_REUSE=0

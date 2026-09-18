@@ -486,7 +486,7 @@ fm_discipline_load() { # <data> <task> <ship> <implementation>
   return 0
 }
 
-fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
+_fm_discipline_prepare_locked() { # <data> <task> [typed compiler arguments]
   local data=$1 task=$2 task_dir desc tmp tmp_dir current existing='' outer_generation desc_exists=0
   local original_descriptor_json='' original_descriptor_digest='' intended_descriptor_json='' intended_descriptor_digest='' intended_descriptor_mode=''
   local compile_args=()
@@ -602,6 +602,30 @@ fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
   fm_discipline_capture_cleanup
   rmdir "$tmp_dir" 2>/dev/null || true
   return 0
+}
+
+fm_discipline_prepare() { # <data> <task> [typed compiler arguments]
+  local lock_path lock_acquired=0 rc
+  lock_path=${FM_DISCIPLINE_WRITER_LOCK_PATH:-${STATE:-}/.control-$2.lock}
+  if [ "${FM_DISCIPLINE_WRITER_LOCK_HELD:-0}" -ne 1 ]; then
+    command -v fm_lock_try_acquire >/dev/null 2>&1 || {
+      fm_discipline_gap 'discipline-write: authoritative writer lock unavailable'
+      return 3
+    }
+    fm_lock_try_acquire "$lock_path" || {
+      fm_discipline_gap 'discipline-write: another lifecycle action is already running'
+      return 3
+    }
+    lock_acquired=1
+  fi
+  FM_DISCIPLINE_WRITER_LOCK_HELD=1
+  _fm_discipline_prepare_locked "$@"
+  rc=$?
+  if [ "$lock_acquired" -eq 1 ]; then
+    FM_DISCIPLINE_WRITER_LOCK_HELD=0
+    fm_lock_release "$lock_path" || rc=3
+  fi
+  return "$rc"
 }
 
 fm_discipline_render() { # <data> <task> <ship> <implementation>

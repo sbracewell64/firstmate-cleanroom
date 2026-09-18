@@ -134,6 +134,8 @@ ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
+FM_DISCIPLINE_WRITER_LOCK_PATH="$CONTROL_LOCK"
+FM_DISCIPLINE_WRITER_LOCK_HELD=0
 META_LOCK=
 META_LOCK_HELD=0
 TMP=
@@ -218,6 +220,7 @@ fm_lock_try_acquire "$CONTROL_LOCK" || {
   exit 1
 }
 CONTROL_LOCK_HELD=1
+FM_DISCIPLINE_WRITER_LOCK_HELD=1
 "$FM_ROOT/bin/fm-guard.sh" || true
 META="$STATE/$ID.meta"
 [ -d "$STATE" ] || { echo "error: state dir not found: $STATE" >&2; exit 1; }

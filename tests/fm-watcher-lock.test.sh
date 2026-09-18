@@ -1593,6 +1593,9 @@ stub_stops=0
 on_stop() {
   printf '%s\n' "$1" >> "$SIG_LOG"
   stub_stops=$((stub_stops + 1))
+  if [ "$STUB_MODE" = exit-on-stop ]; then
+    exit 0
+  fi
   if [ "$STUB_MODE" = drop-first-stop ] && [ "$stub_stops" -ge 2 ]; then
     exit 1
   fi
@@ -1818,7 +1821,7 @@ test_restart_stop_bound_is_one_second_and_single_signal() {
   successor_log="$dir/successor-signals.log"
   armbin=$(make_recording_watcher_bin "$dir")
 
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=wake \
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_STUB_SIGLOG="$siglog" FM_STUB_MODE=exit-on-stop \
     FM_STUB_LIB="$LIB" "$armbin/fm-watch-arm.sh" > "$dir/arm.out" 2>/dev/null &
   arm=$!
   i=0

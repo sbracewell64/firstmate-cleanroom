@@ -745,7 +745,7 @@ test_moved_generation_acknowledgement_is_self_healing() {
   # Replaying the stale pair must not fail, must not over-consume, and must not
   # retire the newer episode.
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$first_sequence" \
-    --recovery-generation "$first_generation" 2> "$dir/stale-ack.err" \
+    --recovery-generation "$first_generation" > "$dir/stale-ack.out" 2> "$dir/stale-ack.err" \
     || fail "a replayed stale acknowledgement was rejected instead of degrading safely"
   if ! grep -F 'WAKE_ACK_REQUIRED' "$dir/stale-ack.out" >/dev/null \
     || ! grep -F 're-run' "$dir/stale-ack.err" >/dev/null; then

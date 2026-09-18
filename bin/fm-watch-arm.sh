@@ -447,6 +447,15 @@ if [ "$mode" = handling-delivered ]; then
 fi
 
 if [ "$mode" = restart ]; then
+  # A restart request may race with an already healthy peer.  Attach to that
+  # verified cycle instead of treating the peer as a predecessor to stop.
+  if [ -n "${FM_ARM_ATTACH_POLL:-}" ] && healthy_watcher; then
+    cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
+    cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
+    report_attached
+    attach_and_wait "$HEALTHY_PID"
+    exit $?
+  fi
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   cycle_restart_stop=no-live-watcher

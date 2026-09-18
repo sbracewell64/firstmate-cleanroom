@@ -191,7 +191,9 @@ promote_cleanup() {
           fi
           [ "$rollback_failed" -eq 0 ] || rm -f -- "$rollback_tmp" 2>/dev/null || true
         fi
-        [ "$rollback_failed" -eq 0 ] && promote_snapshot_matches "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
+        if [ "$rollback_failed" -eq 0 ]; then
+          promote_snapshot_matches "$META_SNAPSHOT" "$META" || { echo "error: promotion rollback failed for task metadata" >&2; rollback_failed=1; }
+        fi
       else
         rm -f -- "$META" || rollback_failed=1
       fi

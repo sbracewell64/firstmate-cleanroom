@@ -39,7 +39,6 @@ FM_WC_ENGINEERING_SKILLS=
 FM_WC_ENGINEERING_REUSE=0
 FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
 FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
-FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
 
 _fm_wc_engineering_gap() {
   # shellcheck disable=SC2034 # Result consumed by work-context, stage and generator callers.
@@ -215,7 +214,6 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   FM_WC_ENGINEERING_EVIDENCE_DIGEST=
   FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
   FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
-  FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
   fm_work_context_engineering "$data" "$id" all all || return 3
   [ -n "$FM_WC_ENGINEERING" ] || return 0
   required=$(printf '%s' "$FM_WC_ENGINEERING" | jq -c '.verification[] | select(.scope == "component" or .scope == "composition")')
@@ -239,7 +237,7 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
     index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
     FM_DISCIPLINE_EVIDENCE_INDEX_JSON=$index_json
     FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
-    FM_DISCIPLINE_EVIDENCE_INDEX_PATH=$index
+    # shellcheck disable=SC2034 # Operation-scoped evidence digest return contract.
     FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
     fm_discipline_capture_cleanup
   fi

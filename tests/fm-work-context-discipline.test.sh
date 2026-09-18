@@ -119,6 +119,7 @@ test_compiler_selects_three_levels() {
   assert_grep 'bin/example --status' "$home/data/proof/brief.md" "proof surface was not preserved"
 
   marker="$home/proof-surface-side-effect"
+  # shellcheck disable=SC2016 # The fixture must preserve literal shell syntax.
   surface='$(touch '
   surface="${surface}${marker}) \`uname\` \${PATH} \"quoted\" \\\\"
   FM_HOME="$home" "$BRIEF" literal repo --mode local-only --discipline-fact real-runtime-surface \

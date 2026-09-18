@@ -151,13 +151,10 @@ FM_DISCIPLINE_PROOF_SURFACE=
 FM_DISCIPLINE_PROOF_OUTCOME=
 FM_DISCIPLINE_EVIDENCE_INDEX_JSON=
 FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=
-FM_DISCIPLINE_EVIDENCE_INDEX_PATH=
 FM_DISCIPLINE_DESCRIPTOR_JSON=
 FM_DISCIPLINE_DESCRIPTOR_DIGEST=
 FM_DISCIPLINE_DESCRIPTOR_PATH=
 FM_DISCIPLINE_DESCRIPTOR_REUSE=0
-FM_DISCIPLINE_ARTIFACT_BYTES=
-FM_DISCIPLINE_ARTIFACT_DIGEST=
 
 fm_discipline_descriptor_capture() { # <path>
   local path=$1
@@ -658,9 +655,10 @@ fm_discipline_evidence() { # <data> <task> <run> <exact-head>
   index="$data/$task/engineering-evidence.json"
   fm_discipline_capture "$index" || { fm_discipline_gap "discipline-evidence-unreadable: $index"; return 3; }
   index_json=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+  # shellcheck disable=SC2034 # Operation-scoped evidence return contract for engineering callers.
   FM_DISCIPLINE_EVIDENCE_INDEX_JSON=$index_json
+  # shellcheck disable=SC2034 # Operation-scoped evidence return contract for engineering callers.
   FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
-  FM_DISCIPLINE_EVIDENCE_INDEX_PATH=$index
   fm_discipline_capture_cleanup
   if [ -z "$run" ] || ! printf '%s' "$head" | grep -Eq '^[0-9a-f]{40}$' ||
     ! jq -se --arg task "$task" --arg run "$run" --arg head "$head" --arg generation "$generation" '
@@ -761,8 +759,6 @@ fm_discipline_envelope_validate() { # <data> <task> <artifact> <successor-prefix
     return 3
   }
   captured_artifact=$FM_DISCIPLINE_CAPTURE_PATH
-  FM_DISCIPLINE_ARTIFACT_BYTES=$(<"$captured_artifact")
-  FM_DISCIPLINE_ARTIFACT_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
   head -c "$bytes" "$captured_artifact" > "$actual_file" 2>/dev/null || true
   if ! cmp -s "$combined_file" "$actual_file"; then
     fm_discipline_capture_cleanup

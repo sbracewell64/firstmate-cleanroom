@@ -606,6 +606,7 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
       (.delivery.receipt | type)=="object" and ([.delivery.receipt|keys[]]-["path","sha256"]|length)==0 and
       (.privacy | type)=="object" and ([.privacy|keys[]]-["classification","exposure","published_private_bytes"]|length)==0 and
       .verifier=={tool:"fm-local-project-delivery/v2"} and
+      (.generation|type)=="number" and (.generation|isfinite) and (.generation|floor)==.generation and .generation>=1 and
       (.policy | type)=="object" and ([.policy|keys[]]-["digest","id"]|length)==0 and
       (.captures | type)=="array" and (.captures|length)==0 and (.sources | type)=="array" and (.sources|length)==0' >/dev/null 2>&1; then
     local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "local delivery v2 evidence must bind one private receipt and publish identities and digests only"
@@ -619,6 +620,10 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   if [ -z "$pin_ref" ] || [ -z "$pin_sha" ] || [ -z "$pin_gen" ] || [ -z "$pin_policy" ] \
     || ! printf '%s' "$pin_candidate" | jq -e 'has("head") and has("tree") and has("delivery_id") and has("owner_project") and has("ref")' >/dev/null; then
     local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery requires programme pins for owner, record digest, generation, policy, and candidate head/tree/delivery_id/owner_project/ref"
+    return 0
+  fi
+  if ! jq -e ".steps[$i].terminal_predicate.evidence_generation | type==\"number\" and isfinite and floor==. and .>=1" "$PROGRAMME" >/dev/null 2>&1; then
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery evidence_generation must be a positive exact integer"
     return 0
   fi
 
@@ -637,7 +642,7 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
     local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not a readable JSON object"; return 0; }
   if ! printf '%s' "$receipt" | jq -e '
       ([keys[]]-["admission","candidate","checker","delivery_id","generation","maker","owner","privacy","qualification","read_back","schema"]|length)==0 and
-      .schema=="fm-local-project-delivery-receipt/v2" and (.delivery_id|type)=="string" and (.generation|type)=="number" and .generation>=1 and
+      .schema=="fm-local-project-delivery-receipt/v2" and (.delivery_id|type)=="string" and (.generation|type)=="number" and (.generation|isfinite) and (.generation|floor)==.generation and .generation>=1 and
       (.owner|type)=="object" and ([.owner|keys[]]-["kind","ref"]|length)==0 and
       (.candidate|type)=="object" and ([.candidate|keys[]]-["delivery_id","head","owner_project","ref","tree"]|length)==0 and
       (.admission|type)=="object" and ([.admission|keys[]]-["path","sha256"]|length)==0 and

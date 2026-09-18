@@ -485,6 +485,16 @@ def owner_candidates(
 ) -> list[tuple[str, dict[str, Any]]]:
     registered, registry_sha256 = registered_projects(home)
     candidates: list[tuple[str, dict[str, Any]]] = []
+    non_owner_reasons = {
+        "OWNER_MODE_MISMATCH",
+        "OWNER_PROJECT_MISMATCH",
+        "DESTINATION_UNREADABLE",
+        "DESTINATION_TYPE_MISMATCH",
+        "DESTINATION_MODE_MISMATCH",
+        "DESTINATION_INDEX_MISMATCH",
+        "SOURCE_DESTINATION_MISMATCH",
+        "DESTINATION_READBACK_MISMATCH",
+    }
     for project in registered:
         try:
             candidate = build_candidate(
@@ -494,8 +504,10 @@ def owner_candidates(
                 script_dir=script_dir, require_cwd=False,
                 registry_sha256=registry_sha256,
             )
-        except Verdict:
-            continue
+        except Verdict as exc:
+            if exc.reason == "DESTINATION_UNREADABLE" or exc.reason in non_owner_reasons:
+                continue
+            raise
         candidates.append((project, candidate))
     return candidates
 

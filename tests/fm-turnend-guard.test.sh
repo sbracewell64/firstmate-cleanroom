@@ -1186,6 +1186,7 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$pid" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
   out=$(run_hook_claude "$dir" false); status=$?
   count=$(sed -n '2s/^count=//p' "$dir/state/.turnend-claude-blocks")
   out2=$(run_hook_claude "$dir" false); status2=$?
@@ -1201,6 +1202,22 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   assert_present "$dir/state/.claude-autoarm-failure-notified" "live auto-arm owner cleared the failure episode"
   assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "live automatic continuation emitted the attended fail-open alarm"
   pass "fm-turnend-guard --claude: a live arming epoch advances once and repeated observation is idempotent"
+}
+
+test_hook_claude_mode_blocks_identityless_owner_from_other_epoch() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-identityless-other-epoch")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=999 outcome=arming updated_at=%s\n' "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "an identityless owner from another epoch must not suppress recovery"
+  assert_contains "$out" "TURN WOULD END BLIND" "a mismatched identityless epoch must re-block the turn"
+  pass "fm-turnend-guard --claude: identityless legacy ownership requires the current epoch PID"
 }
 
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open() {
@@ -1723,6 +1740,7 @@ test_hook_claude_mode_waits_for_late_claim() {
     sleep 0.4
     sleep 60 &
     record_autoarm_owner "$dir" $!
+    printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$!" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
     printf '%s\n' $! > "$dir/holder.pid"
     wait
   ) &
@@ -1747,6 +1765,7 @@ test_hook_claude_mode_secondmate_reblocks_like_primary() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$pid" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
   out=$(run_hook_claude "$dir" false); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
@@ -1803,6 +1822,7 @@ test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
+test_hook_claude_mode_blocks_identityless_owner_from_other_epoch
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
 test_hook_claude_mode_allows_on_fresh_rewake_epoch

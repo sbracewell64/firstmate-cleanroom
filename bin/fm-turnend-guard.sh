@@ -268,7 +268,7 @@ legacy_autoarm_owner_active() {
   else
     owner=$(_fm_autoarm_epoch_field "$STATE/.claude-autoarm-epoch" owner_pid 2>/dev/null || true)
     outcome=$(_fm_autoarm_epoch_field "$STATE/.claude-autoarm-epoch" outcome 2>/dev/null || true)
-    [ "$owner" = "$pid" ] && [ "$outcome" = arming ] || [ "$owner" != "$pid" ] || return 1
+    [ "$owner" = "$pid" ] && [ "$outcome" = arming ] || return 1
   fi
   ! fm_autoarm_claim_abandoned "$STATE" "$GRACE"
 }

@@ -72,14 +72,41 @@ def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def capture(path: Path, *, private: bool = False) -> tuple[bytes, str, int]:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+def open_directory(path: Path) -> int:
     absolute = Path(os.path.abspath(path))
     parts = absolute.parts
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    directory_fd = os.open(parts[0], directory_flags)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(parts[0], flags)
     try:
-        for part in parts[1:-1]:
+        for part in parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def capture(path: Path, *, private: bool = False, anchor_fd: int | None = None, anchor_path: Path | None = None) -> tuple[bytes, str, int]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    absolute = Path(os.path.abspath(path))
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if anchor_fd is not None and anchor_path is not None:
+        anchor = Path(os.path.abspath(anchor_path))
+        try:
+            relative = absolute.relative_to(anchor)
+        except ValueError:
+            refuse("PATH_UNSAFE", f"{path} is outside {anchor_path}")
+        parts = relative.parts
+        if not parts or any(part in ("", ".", "..") for part in parts):
+            refuse("PATH_UNSAFE", f"{path} is not a safe anchored path")
+        directory_fd = os.dup(anchor_fd)
+    else:
+        parts = absolute.parts
+        directory_fd = os.open(parts[0], directory_flags)
+    try:
+        for part in parts[:-1]:
             next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
             os.close(directory_fd)
             directory_fd = next_fd
@@ -104,6 +131,11 @@ def capture(path: Path, *, private: bool = False) -> tuple[bytes, str, int]:
         identity_after = (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
         if identity != identity_after:
             refuse("IDENTITY_CHANGED", f"{path} changed while it was read")
+        if anchor_fd is not None and anchor_path is not None:
+            anchor_identity = os.fstat(anchor_fd)
+            current_anchor = os.stat(anchor_path, follow_symlinks=False)
+            if (anchor_identity.st_dev, anchor_identity.st_ino, anchor_identity.st_mode) != (current_anchor.st_dev, current_anchor.st_ino, current_anchor.st_mode):
+                refuse("IDENTITY_CHANGED", f"{anchor_path} changed while {path} was read")
         data = b"".join(chunks)
         return data, hashlib.sha256(data).hexdigest(), stat.S_IMODE(before.st_mode)
     finally:
@@ -111,8 +143,8 @@ def capture(path: Path, *, private: bool = False) -> tuple[bytes, str, int]:
         os.close(directory_fd)
 
 
-def load_json(path: Path, *, private: bool = False) -> tuple[dict[str, Any], bytes, str]:
-    data, digest, _ = capture(path, private=private)
+def load_json(path: Path, *, private: bool = False, anchor_fd: int | None = None, anchor_path: Path | None = None) -> tuple[dict[str, Any], bytes, str]:
+    data, digest, _ = capture(path, private=private, anchor_fd=anchor_fd, anchor_path=anchor_path)
     try:
         value = json.loads(data, object_pairs_hook=object_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -178,6 +210,29 @@ def canonical(value: Any) -> bytes:
 
 
 def project_mode(script_dir: Path, home: Path, project: str) -> str:
+    registry = home / "data/projects.md"
+    try:
+        data, _, _ = capture(registry)
+        entries = []
+        for line in data.decode(errors="strict").splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == "-" and fields[1] == project:
+                mode = "no-mistakes"
+                if len(fields) >= 3 and fields[2].startswith("["):
+                    annotation = " ".join(fields[2:])
+                    annotation = annotation.split("]", 1)[0].lstrip("[")
+                    mode = annotation.split()[0] if annotation.split() and annotation.split()[0] != "+yolo" else mode
+                entries.append(mode)
+    except (UnicodeError, Verdict) as exc:
+        if isinstance(exc, Verdict):
+            raise
+        cno("OWNER_MISSING", f"project registry is unreadable: {exc}")
+    if len(entries) != 1:
+        cno("OWNER_MISSING", f"project {project} does not have one readable registry posture")
+    if entries[0] not in {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}:
+        refuse("OWNER_MODE_MALFORMED", f"project {project} has unsupported registry posture {entries[0]}")
+    if entries[0] != "local-only":
+        raise NotOwner(f"project {project} is not registered local-only")
     env = os.environ.copy()
     env["FM_HOME"] = str(home)
     result = subprocess.run(
@@ -191,7 +246,7 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
         cno("OWNER_MISSING", f"project {project} has no readable exact registry owner: {result.stderr.decode(errors='replace').strip()}")
     mode = result.stdout.decode().strip().split()
     if not mode or mode[0] != "local-only":
-        raise NotOwner(f"project {project} is not registered local-only")
+        refuse("OWNER_MODE_MISMATCH", f"project {project} registry posture changed while it was read")
     return mode[0]
 
 
@@ -665,13 +720,12 @@ def main() -> int:
         return 0
 
     admission_path = Path(args.admission)
+    data_path = home / "data"
+    data_fd = open_directory(data_path)
     try:
-        admission_real_parent = admission_path.parent.resolve(strict=True)
-        data_real = (home / "data").resolve(strict=True)
-        admission_real_parent.relative_to(data_real)
-    except (OSError, ValueError):
-        refuse("MANIFEST_AUTHENTICITY", "admission must be a private file under this home's data directory")
-    doc, _, digest = load_json(admission_path, private=True)
+        doc, _, digest = load_json(admission_path, private=True, anchor_fd=data_fd, anchor_path=data_path)
+    finally:
+        os.close(data_fd)
     rebuilt = validate_admission(
         doc, home=home, programme=programme, root=root, step=step, script_dir=script_dir,
     )

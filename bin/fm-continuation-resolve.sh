@@ -602,12 +602,22 @@ import stat
 import sys
 
 path = os.path.abspath(sys.argv[1])
-parts = path.split(os.sep)
+anchor = os.path.abspath(os.path.join(os.environ["FM_HOME"], "data"))
+relative = os.path.relpath(path, anchor)
+if relative == os.pardir or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative):
+    raise OSError("private file is outside FM_HOME/data")
+parts = relative.split(os.sep)
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+anchor_parts = anchor.split(os.sep)
 directory_fd = os.open(os.sep, directory_flags)
+for part in anchor_parts[1:]:
+    next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+    os.close(directory_fd)
+    directory_fd = next_fd
+anchor_identity = os.fstat(directory_fd)
 try:
-    for part in parts[1:-1]:
+    for part in parts[:-1]:
         next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
         os.close(directory_fd)
         directory_fd = next_fd
@@ -625,6 +635,9 @@ try:
         after = os.fstat(fd)
         if (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise OSError("private file changed while read")
+        current_anchor = os.stat(anchor, follow_symlinks=False)
+        if (anchor_identity.st_dev, anchor_identity.st_ino, anchor_identity.st_mode) != (current_anchor.st_dev, current_anchor.st_ino, current_anchor.st_mode):
+            raise OSError("FM_HOME/data changed while read")
         raw = bytes(data)
         print(hashlib.sha256(raw).hexdigest() + "\t" + base64.b64encode(raw).decode())
     finally:
@@ -683,7 +696,6 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
     local_owner_result REFUSED OWNER_EVIDENCE_POLICY_MISMATCH "record policy digest $policy_digest is not the pinned $pin_policy"
     return 0
   fi
-
   receipt_rel=$(printf '%s' "$doc" | jq -r '.delivery.receipt.path // ""')
   receipt_sha=$(printf '%s' "$doc" | jq -r '.delivery.receipt.sha256 // ""')
   if ! local_owner_relative_path "$receipt_rel" data || ! local_owner_sha256 "$receipt_sha"; then
@@ -837,6 +849,10 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   if [ -z "$pin_ref" ] || [ -z "$pin_sha" ] || [ -z "$pin_gen" ] || [ -z "$pin_policy" ] \
     || ! printf '%s' "$pin_candidate" | jq -e 'has("head") and has("tree") and has("delivery_id") and has("owner_project") and has("ref")' >/dev/null; then
     local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery requires programme pins for owner, record digest, generation, policy, and candidate head/tree/delivery_id/owner_project/ref"
+    return 0
+  fi
+  if jq -e ".steps[$i].terminal_predicate.local_delivery != null" "$PROGRAMME" >/dev/null 2>&1; then
+    local_owner_result CNO LEGACY_REQUALIFICATION_REQUIRED "V1 delivery evidence is historical-only; this V2-capable step requires a new owner-bound admission"
     return 0
   fi
 

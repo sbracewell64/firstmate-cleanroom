@@ -401,27 +401,9 @@ handling_watcher_pid=
 fm_watch_stop_confirmed() {
   local pid=$1 recorded=$2
   [ -n "$recorded" ] || return 4
-  (
-    # shellcheck source=bin/fm-timeout-lib.sh
-    . "$SCRIPT_DIR/fm-timeout-lib.sh"
-    # shellcheck disable=SC2016 # The bounded child receives its arguments positionally.
-    fm_run_timed_strict 1 bash -c '
-      . "$1"
-      pid=$2
-      recorded=$3
-      current=$(fm_pid_identity "$pid" 2>/dev/null) || exit 4
-      [ "$current" = "$recorded" ] || exit 4
-      fm_pid_alive "$pid" || exit 0
-      kill -TERM "$pid" 2>/dev/null || {
-        fm_pid_alive "$pid" || exit 0
-        exit 3
-      }
-      while fm_pid_alive "$pid"; do
-        sleep 0.1
-      done
-      exit 0
-    ' _ "$SCRIPT_DIR/fm-wake-lib.sh" "$pid" "$recorded"
-  )
+  # Reuse the identity-bound stop owner so the one-second window starts with
+  # the first TERM, rather than spending part of it starting another shell.
+  fm_stop_process_confirmed "$pid" "$recorded" 10 TERM
 }
 
 case "${1:-}" in

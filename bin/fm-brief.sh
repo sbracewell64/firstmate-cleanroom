@@ -227,6 +227,25 @@ fi
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+BRIEF_CONTROL_LOCK="$STATE/.control-$ID.lock"
+BRIEF_CONTROL_LOCK_HELD=0
+brief_release_control_lock() {
+  if [ "$BRIEF_CONTROL_LOCK_HELD" -eq 1 ]; then
+    BRIEF_CONTROL_LOCK_HELD=0
+    fm_lock_release "$BRIEF_CONTROL_LOCK" || true
+  fi
+}
+trap brief_release_control_lock EXIT
+if [ "$KIND" = ship ]; then
+  fm_lock_try_acquire "$BRIEF_CONTROL_LOCK" || {
+    echo "error: another lifecycle action is already running for task $ID; nothing was changed" >&2
+    exit 1
+  }
+  BRIEF_CONTROL_LOCK_HELD=1
+fi
+
 shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
@@ -388,9 +407,18 @@ WORKTREE_BOUNDARY=${WORKTREE_BOUNDARY%$'\n'}
 DISCIPLINE=
 DISCIPLINE_DESCRIPTOR_PREEXISTED=0
 DISCIPLINE_DESCRIPTOR_DIGEST=
+DISCIPLINE_DESCRIPTOR_MODE=
+DISCIPLINE_DESCRIPTOR_ORIGINAL_JSON=
+DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST=
+DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE=
 if [ "$KIND" = ship ]; then
   if [ -e "$DATA/$ID/work-context.json" ] || [ -L "$DATA/$ID/work-context.json" ]; then
     DISCIPLINE_DESCRIPTOR_PREEXISTED=1
+    fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_JSON=$(<"$FM_DISCIPLINE_CAPTURE_PATH")
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+    DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE=$FM_DISCIPLINE_CAPTURE_MODE
+    fm_discipline_capture_cleanup
   fi
   DISCIPLINE_ARGS=("${DISCIPLINE_FACTS[@]+"${DISCIPLINE_FACTS[@]}"}")
   [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
@@ -399,11 +427,10 @@ if [ "$KIND" = ship ]; then
     echo "error: ${FM_WORK_CONTEXT_DETAIL:-discipline selection failed}" >&2
     exit 3
   }
-  if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ]; then
-    fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
-    DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
-    fm_discipline_capture_cleanup
-  fi
+  fm_discipline_capture "$DATA/$ID/work-context.json" || exit 3
+  DISCIPLINE_DESCRIPTOR_DIGEST=$FM_DISCIPLINE_CAPTURE_SHA256
+  DISCIPLINE_DESCRIPTOR_MODE=$FM_DISCIPLINE_CAPTURE_MODE
+  fm_discipline_capture_cleanup
 fi
 
 ENGINEERING=
@@ -413,12 +440,19 @@ if [ "$KIND" != secondmate ]; then
   [ "$KIND" != scout ] || { ENGINEERING_ROLE=worker; ENGINEERING_STAGE=diagnosis; }
   if [ "$KIND" = ship ]; then
     ENGINEERING=$(fm_work_context_engineering_prompt "$DATA" "$ID" "$ENGINEERING_ROLE" "$ENGINEERING_STAGE") || {
-      if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 0 ] && [ -n "$DISCIPLINE_DESCRIPTOR_DIGEST" ] &&
+      if [ -n "$DISCIPLINE_DESCRIPTOR_DIGEST" ] &&
         fm_discipline_capture "$DATA/$ID/work-context.json" &&
         [ "$FM_DISCIPLINE_CAPTURE_SHA256" = "$DISCIPLINE_DESCRIPTOR_DIGEST" ]; then
         fm_discipline_capture_cleanup
-        rm -f -- "$DATA/$ID/work-context.json"
-        rmdir "$DATA/$ID" 2>/dev/null || true
+        if [ "$DISCIPLINE_DESCRIPTOR_PREEXISTED" -eq 1 ]; then
+          rollback=$(umask 077; mktemp "$DATA/$ID/.discipline-rollback.XXXXXX") || exit 3
+          printf '%s' "$DISCIPLINE_DESCRIPTOR_ORIGINAL_JSON" > "$rollback" || exit 3
+          chmod "$DISCIPLINE_DESCRIPTOR_ORIGINAL_MODE" "$rollback" || exit 3
+          mv -f "$rollback" "$DATA/$ID/work-context.json" || exit 3
+        else
+          rm -f -- "$DATA/$ID/work-context.json"
+          rmdir "$DATA/$ID" 2>/dev/null || true
+        fi
       else
         fm_discipline_capture_cleanup
       fi

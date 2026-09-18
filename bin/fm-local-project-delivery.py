@@ -209,10 +209,10 @@ def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def project_mode(script_dir: Path, home: Path, project: str) -> str:
+def project_mode(script_dir: Path, home: Path, project: str, registry_data: bytes | None = None) -> str:
     registry = home / "data/projects.md"
     try:
-        data, _, _ = capture(registry)
+        data = registry_data if registry_data is not None else capture(registry)[0]
         entries = []
         for line in data.decode(errors="strict").splitlines():
             fields = line.split(maxsplit=2)
@@ -244,6 +244,8 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
         refuse("OWNER_MODE_MALFORMED", f"project {project} has unsupported registry posture {entries[0]}")
     if entries[0] != "local-only":
         raise NotOwner(f"project {project} is not registered local-only")
+    if registry_data is not None:
+        return "local-only"
     env = os.environ.copy()
     env["FM_HOME"] = str(home)
     result = subprocess.run(
@@ -261,7 +263,7 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
     return mode[0]
 
 
-def registered_projects(home: Path) -> tuple[list[str], str]:
+def registered_projects(home: Path) -> tuple[list[str], str, bytes]:
     registry = home / "data/projects.md"
     try:
         data, digest, _ = capture(registry)
@@ -272,7 +274,7 @@ def registered_projects(home: Path) -> tuple[list[str], str]:
         fields = line.split()
         if len(fields) >= 2 and fields[0] == "-" and SLUG.fullmatch(fields[1]):
             projects.append(fields[1])
-    return projects, digest
+    return projects, digest, data
 
 
 def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
@@ -369,6 +371,7 @@ def build_candidate(
     policy: dict[str, Any], project: str, ref: str,
     delivery_id: str, maker: str, checker: str, route: str, script_dir: Path,
     require_cwd: bool, registry_sha256: str, enforce_pinned_owner: bool = True,
+    registry_data: bytes | None = None,
 ) -> dict[str, Any]:
     pinned = policy.get("owner_project")
     if pinned is not None and (not isinstance(pinned, str) or not SLUG.fullmatch(pinned)):
@@ -376,7 +379,7 @@ def build_candidate(
     if enforce_pinned_owner and pinned is not None and project != pinned:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the pinned owner {pinned}")
     require_slug(project, "project")
-    project_mode(script_dir, home, project)
+    project_mode(script_dir, home, project, registry_data=registry_data)
     repo = (home / "projects" / project)
     try:
         repo_real = repo.resolve(strict=True)
@@ -513,7 +516,7 @@ def validate_admission(
     if not isinstance(action, dict):
         refuse("ACTION_MISMATCH", "admission action is absent")
     policy = policy_for(programme, step)
-    _, registry_sha256 = registered_projects(home)
+    _, registry_sha256, _ = registered_projects(home)
     expected_action = {
         "programme_id": programme.get("programme_id"), "programme_generation": programme.get("schema"),
         "step": step, "local_delivery_policy_sha256": hashlib.sha256(canonical(policy)).hexdigest(),
@@ -580,8 +583,8 @@ def owner_candidates(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
     checker: str, route: str, script_dir: Path,
-) -> list[tuple[str, dict[str, Any]]]:
-    registered, registry_sha256 = registered_projects(home)
+) -> tuple[list[tuple[str, dict[str, Any]]], str]:
+    registered, registry_sha256, registry_data = registered_projects(home)
     candidates: list[tuple[str, dict[str, Any]]] = []
     blocking: list[Verdict] = []
     for project in registered:
@@ -592,6 +595,7 @@ def owner_candidates(
                 delivery_id=delivery_id, maker=maker, checker=checker, route=route,
                 script_dir=script_dir, require_cwd=False,
                 registry_sha256=registry_sha256,
+                registry_data=registry_data,
                 enforce_pinned_owner=False,
             )
             candidates.append((project, candidate))
@@ -603,7 +607,7 @@ def owner_candidates(
         raise blocking[0]
     if blocking and not candidates:
         cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
-    return candidates
+    return candidates, registry_sha256
 
 
 def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str) -> None:
@@ -715,7 +719,7 @@ def main() -> int:
         requested_project = args.project
         if requested_project != "auto":
             require_slug(requested_project, "project")
-        candidates = owner_candidates(
+        candidates, registry_sha256 = owner_candidates(
             home=home, programme=programme, root=root, step=step, policy=policy,
             ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
             route=route, script_dir=script_dir,
@@ -732,6 +736,9 @@ def main() -> int:
             refuse("OWNER_PROJECT_MISMATCH", f"project {requested_project} is not the unique lawful owner {project}")
         if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
             refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
+        _, current_registry_sha256, _ = registered_projects(home)
+        if current_registry_sha256 != registry_sha256:
+            refuse("OWNER_REGISTRY_CHANGED", "project registry changed during owner census")
         path, digest = publish(home, candidate)
         print(json.dumps({"status": "ADMITTED", "reason_code": None, "path": str(path), "sha256": digest, "project": project, "head": candidate["destination"]["head"], "tree": candidate["destination"]["tree"], "manifest_sha256": candidate["manifest_sha256"]}, sort_keys=True))
         return 0

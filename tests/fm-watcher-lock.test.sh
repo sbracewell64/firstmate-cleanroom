@@ -823,8 +823,10 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   # After the peer dies without a successor, the attached arm must fail loudly.
   kill "$peer" 2>/dev/null || true
   wait "$peer" 2>/dev/null || true
-  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS"
-  status=$?
+  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS" \
+    || fail "attached arm did not exit after peer died"
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "peer-attached arm did not emit the typed cycle-end failure"
   pass "arm attaches to a peer watcher after child stands down and surfaces a missing successor"
@@ -846,8 +848,10 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   touch -t 200001010000 "$state/.last-watcher-beat"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=3 "$WATCH_ARM" > "$armout" &
   armpid=$!
-  wait_for_exit "$armpid" 120
-  status=$?
+  wait_for_exit "$armpid" 120 \
+    || fail "arm did not exit after losing its fresh watcher"
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 124 ] || fail "arm never returned for an unconfirmable watcher"
   [ "$status" -ne 0 ] || fail "arm exited zero when no fresh watcher could be confirmed"
   grep -F 'watcher: FAILED' "$armout" >/dev/null || fail "arm did not print a typed FAILED line"
@@ -955,8 +959,10 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
 
   kill -CONT "$watcher_pid" 2>/dev/null || true
   kill -TERM "$watcher_pid" 2>/dev/null || true
-  wait_for_exit "$armpid" 80
-  status=$?
+  wait_for_exit "$armpid" 80 \
+    || fail "terminated stopped-watcher cycle did not exit"
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "terminated stopped-watcher cycle did not surface nonzero (status $status)"
   grep -Eq 'reason=(nonzero-exit|signal-exit)' "$state/.watch-cycle-exits.log" \
     || fail "terminated watcher exit was not classified in the lifecycle ledger"

@@ -1050,6 +1050,21 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   }
   [ "$generation" = "$(printf '%s' "$receipt" | jq -r '.generation')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_GENERATION_MISMATCH "delivery receipt generation differs from its owner record"; return 0; }
   [ "$sid" = "$(printf '%s' "$doc" | jq -r '.step')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_STEP_MISMATCH "delivery record step changed during validation"; return 0; }
+  if ! jq -e --arg programme "$(jq -r '.programme_id' "$PROGRAMME")" --arg step "$sid" --arg owner "$pin_ref" \
+      --arg evidence "$pin_sha" --argjson generation "$pin_gen" --arg receipt "$receipt_actual" \
+      --argjson index "$i" '
+      .steps[$index].terminal_predicate.canonical_finalization as $f |
+      ($f | type) == "object" and
+      ($f | ([keys[]] - ["kind","status","action","programme_id","step","owner_ref","evidence_sha256","evidence_generation","receipt_sha256"] | length) == 0) and
+      $f.kind == "fm-programme-finalization/v1" and $f.status == "DELIVERED_QUALIFIED" and
+      $f.action == "local_project_delivery" and $f.programme_id == $programme and $f.step == $step and
+      $f.owner_ref == $owner and $f.evidence_sha256 == $evidence and
+      ($f.evidence_generation | type) == "number" and ($f.evidence_generation | floor) == $f.evidence_generation and
+      $f.evidence_generation == $generation and $f.receipt_sha256 == $receipt
+    ' "$PROGRAMME" >/dev/null 2>&1; then
+    local_owner_result CNO LEGACY_REQUALIFICATION_REQUIRED "V1 delivery evidence lacks an existing canonical finalized programme binding"
+    return 0
+  fi
   local_owner_result ACCEPTED '' ''
 }
 

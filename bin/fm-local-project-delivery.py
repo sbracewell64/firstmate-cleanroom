@@ -215,14 +215,25 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
         data, _, _ = capture(registry)
         entries = []
         for line in data.decode(errors="strict").splitlines():
-            fields = line.split()
-            if len(fields) >= 2 and fields[0] == "-" and fields[1] == project:
-                mode = "no-mistakes"
-                if len(fields) >= 3 and fields[2].startswith("["):
-                    annotation = " ".join(fields[2:])
-                    annotation = annotation.split("]", 1)[0].lstrip("[")
-                    mode = annotation.split()[0] if annotation.split() and annotation.split()[0] != "+yolo" else mode
-                entries.append(mode)
+            fields = line.split(maxsplit=2)
+            if len(fields) < 2 or fields[0] != "-" or fields[1] != project:
+                continue
+            match = re.fullmatch(
+                r"- ([A-Za-z0-9._-]+)(?: \[([^\[\]]*)\])? - .+ \(added [0-9]{4}-[0-9]{2}-[0-9]{2}\)",
+                line,
+            )
+            if match is None:
+                refuse("OWNER_MODE_MALFORMED", f"project {project} has malformed registry posture")
+            annotation = match.group(2)
+            if annotation is None:
+                entries.append("no-mistakes")
+                continue
+            tokens = annotation.split()
+            modes = {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}
+            recognized = [token for token in tokens if token in modes]
+            if len(recognized) != 1 or any(token != "+yolo" and token not in modes for token in tokens) or tokens.count("+yolo") > 1:
+                refuse("OWNER_MODE_MALFORMED", f"project {project} has ambiguous registry posture")
+            entries.append(recognized[0])
     except (UnicodeError, Verdict) as exc:
         if isinstance(exc, Verdict):
             raise

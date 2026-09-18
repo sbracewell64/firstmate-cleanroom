@@ -1279,11 +1279,15 @@ pin_local_delivery_step() {  # <home> <step> <evidence-file>
   local home=$1 step=$2 file=$3 ev="$1/cleanroom/af/evidence/$3" tmp
   tmp="$(af_programme_path "$home").tmp"
   jq --arg step "$step" --arg sha "$(sha_of "$ev")" --arg head "$(jq -r '.candidate.head' "$ev")" \
-    --arg tree "$(jq -r '.candidate.tree' "$ev")" --arg delivery "$(jq -r '.candidate.delivery_id' "$ev")" '
+    --arg tree "$(jq -r '.candidate.tree' "$ev")" --arg delivery "$(jq -r '.candidate.delivery_id' "$ev")" \
+    --arg receipt "$(jq -r '.delivery.receipt.sha256' "$ev")" '
       (.steps[] | select(.id == $step) | .terminal_predicate) +=
         {owner_ref:"exchange-work", evidence_generation:1, evidence_sha256:$sha,
          policy_digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-         candidate:{head:$head, tree:$tree, delivery_id:$delivery, owner_project:"exchange-work", ref:"refs/heads/main"}}
+         candidate:{head:$head, tree:$tree, delivery_id:$delivery, owner_project:"exchange-work", ref:"refs/heads/main"},
+         canonical_finalization:{kind:"fm-programme-finalization/v1", status:"DELIVERED_QUALIFIED", action:"local_project_delivery",
+           programme_id:"cleanroom-af-package", step:$step, owner_ref:"exchange-work", evidence_sha256:$sha,
+           evidence_generation:1, receipt_sha256:$receipt}}
     ' "$(af_programme_path "$home")" > "$tmp" && mv "$tmp" "$(af_programme_path "$home")"
 }
 

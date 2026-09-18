@@ -453,6 +453,7 @@ DRAIN_RELAYFILE=''
 memory_snapshot_discard() {
   [ -z "$MEMORY_SNAPSHOT" ] || rm -rf "$MEMORY_SNAPSHOT" 2>/dev/null || true
   MEMORY_SNAPSHOT=''
+  fm_programme_resolver_cleanup
   [ -z "$DRAIN_OUTFILE" ] || rm -f -- "$DRAIN_OUTFILE" 2>/dev/null || true
   [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE" 2>/dev/null || true
   [ -z "$DRAIN_RELAYFILE" ] || rm -f -- "$DRAIN_RELAYFILE" 2>/dev/null || true

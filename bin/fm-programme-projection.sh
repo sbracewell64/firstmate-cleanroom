@@ -175,8 +175,7 @@ fail() {
 # dies between staging and reading.
 RESOLVER_ERRFILE=
 projection_cleanup() {
-  [ -z "$RESOLVER_ERRFILE" ] || rm -f -- "$RESOLVER_ERRFILE"
-  RESOLVER_ERRFILE=
+  fm_programme_resolver_cleanup
 }
 trap projection_cleanup EXIT
 

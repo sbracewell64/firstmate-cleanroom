@@ -180,6 +180,12 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
   return 0
 }
 
+fm_programme_resolver_cleanup() {
+  [ -z "${RESOLVER_ERRFILE:-}" ] || rm -f -- "$RESOLVER_ERRFILE" 2>/dev/null || true
+  RESOLVER_ERRFILE=
+  export RESOLVER_ERRFILE
+}
+
 fm_programme_relay_diagnostic() {  # <diagnostic>
   [ -z "$1" ] || _fm_programme_prefix_diagnostic <<< "$1"
 }
@@ -266,8 +272,10 @@ $diagnostic_reason"
     revalidate_rc=$FM_PROGRAMME_RESOLVER_RC
     revalidate_diag=$FM_PROGRAMME_RESOLVER_DIAG
     fm_programme_relay_diagnostic "$revalidate_diag" >&2
-    if [ "$revalidate_capture" -ne 0 ] || [ "$revalidate_rc" -ne 0 ]; then
+    if [ "$revalidate_capture" -ne 0 ]; then
       present_rc=1
+    elif [ "$revalidate_rc" -ne 0 ]; then
+      present_rc=$revalidate_rc
     else
       revalidate_out=$FM_PROGRAMME_RESOLVER_OUT
       revalidate_identity=$(fm_programme_identity_from_render "$revalidate_out")

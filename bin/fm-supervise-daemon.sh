@@ -1651,6 +1651,7 @@ fm_super_main() {
   local WATCHER_PID="" CUR_TMP=""
   cleanup() {
     trap - TERM INT
+    fm_programme_resolver_cleanup
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then

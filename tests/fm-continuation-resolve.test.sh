@@ -1743,6 +1743,40 @@ SH
   pass "programme presentation revalidates before committing a stale-prone resolver snapshot"
 }
 
+test_programme_revalidation_preserves_no_programme_exit() {
+  local home bin counter out err status=0
+  home=$(make_home revalidation-no-programme)
+  bin="$home/presenter-bin"
+  mkdir -p "$bin" "$home/tmp"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$bin/fm-programme-presentation-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$bin/fm-wake-lib.sh"
+  counter="$home/resolver-count"
+  cat > "$bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+count=0
+[ -f '$counter' ] && count=\$(cat '$counter')
+count=\$((count + 1))
+printf '%s\n' "\$count" > '$counter'
+if [ "\$count" -eq 1 ]; then
+  printf '%s\n' 'configured snapshot' 'Material identity cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc configured'
+else
+  exit 3
+fi
+SH
+  chmod +x "$bin/fm-continuation-resolve.sh"
+  out_file="$home/presenter.out"
+  err_file="$home/presenter.err"
+  TMPDIR="$home/tmp" FM_STATE_OVERRIDE="$home/state" \
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit' _ \
+    "$bin/fm-programme-presentation-lib.sh" "$bin/fm-wake-lib.sh" "$home/state" \
+    >"$out_file" 2>"$err_file" || status=$?
+  expect_code 3 "$status" "revalidation no-programme result"
+  [ ! -e "$home/state/.programme-presented" ] || fail "no-programme revalidation committed a stale presentation"
+  [ -z "$(find "$home/tmp" -type f -print -quit)" ] || fail "revalidation left resolver staging files"
+  pass "programme revalidation preserves exit 3 and cleans resolver staging"
+}
+
 test_af_presentation_quiet_and_ack_race() {
   local home out ack first second third presented snap view token
   home=$(make_af_home af-present)
@@ -1879,6 +1913,7 @@ timed test_programme_ack_waits_for_presentation_lock
 timed test_identityless_render_shares_presenter_reader_identity
 timed test_programme_present_waits_for_presentation_lock
 timed test_programme_revalidates_stale_resolver_snapshot
+timed test_programme_revalidation_preserves_no_programme_exit
 timed test_unreadable_inputs_are_cno
 timed test_completion_and_configuration
 timed test_render_and_check_prose

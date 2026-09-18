@@ -401,6 +401,7 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
+  fm_programme_resolver_cleanup
   [ -z "$DRAIN_TMP" ] || rm -f -- "$DRAIN_TMP" 2>/dev/null || true
   [ -z "$DRAIN_VIEW_TMP" ] || rm -f -- "$DRAIN_VIEW_TMP" 2>/dev/null || true
   if [ "$DRAIN_LOCK_HELD" = true ]; then

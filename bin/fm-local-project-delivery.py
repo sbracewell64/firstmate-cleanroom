@@ -192,6 +192,8 @@ def registered_projects(home: Path) -> tuple[list[str], str]:
 def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
     raw = run(["git", "-C", str(repo), "ls-tree", "-z", head, "--", path])
     rows = [row for row in raw.split(b"\0") if row]
+    if not rows:
+        refuse("FAMILY_INCOMPLETE", f"candidate does not track {path}")
     if len(rows) != 1:
         cno("DESTINATION_UNREADABLE", f"candidate does not track exactly one object at {path}")
     try:
@@ -280,12 +282,12 @@ def build_candidate(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], project: str, ref: str,
     delivery_id: str, maker: str, checker: str, route: str, script_dir: Path,
-    require_cwd: bool, registry_sha256: str,
+    require_cwd: bool, registry_sha256: str, enforce_pinned_owner: bool = True,
 ) -> dict[str, Any]:
     pinned = policy.get("owner_project")
     if pinned is not None and (not isinstance(pinned, str) or not SLUG.fullmatch(pinned)):
         refuse("OWNER_PROJECT_MISMATCH", "policy owner_project must be a slug when present")
-    if pinned is not None and project != pinned:
+    if enforce_pinned_owner and pinned is not None and project != pinned:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the pinned owner {pinned}")
     require_slug(project, "project")
     project_mode(script_dir, home, project)
@@ -485,16 +487,8 @@ def owner_candidates(
 ) -> list[tuple[str, dict[str, Any]]]:
     registered, registry_sha256 = registered_projects(home)
     candidates: list[tuple[str, dict[str, Any]]] = []
-    non_owner_reasons = {
-        "OWNER_MODE_MISMATCH",
-        "OWNER_PROJECT_MISMATCH",
-        "DESTINATION_UNREADABLE",
-        "DESTINATION_TYPE_MISMATCH",
-        "DESTINATION_MODE_MISMATCH",
-        "DESTINATION_INDEX_MISMATCH",
-        "SOURCE_DESTINATION_MISMATCH",
-        "DESTINATION_READBACK_MISMATCH",
-    }
+    blocking: list[Verdict] = []
+    observations: list[tuple[str, dict[str, Any] | None, Verdict | None]] = []
     for project in registered:
         try:
             candidate = build_candidate(
@@ -503,12 +497,29 @@ def owner_candidates(
                 delivery_id=delivery_id, maker=maker, checker=checker, route=route,
                 script_dir=script_dir, require_cwd=False,
                 registry_sha256=registry_sha256,
+                enforce_pinned_owner=False,
             )
+            observations.append((project, candidate, None))
         except Verdict as exc:
-            if exc.reason == "DESTINATION_UNREADABLE" or exc.reason in non_owner_reasons:
-                continue
-            raise
-        candidates.append((project, candidate))
+            observations.append((project, None, exc))
+            if exc.status == "CNO" or exc.reason == "DESTINATION_UNREADABLE":
+                blocking.append(exc)
+            elif exc.reason not in {
+                "OWNER_MODE_MISMATCH",
+                "OWNER_PROJECT_MISMATCH",
+                "DESTINATION_TYPE_MISMATCH",
+                "DESTINATION_MODE_MISMATCH",
+                "DESTINATION_INDEX_MISMATCH",
+                "SOURCE_DESTINATION_MISMATCH",
+                "DESTINATION_READBACK_MISMATCH",
+                "FAMILY_INCOMPLETE",
+            }:
+                blocking.append(exc)
+    candidates = [(project, candidate) for project, candidate, error in observations if candidate is not None and error is None]
+    if blocking and candidates:
+        raise blocking[0]
+    if blocking and not candidates:
+        cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
     return candidates
 
 
@@ -585,44 +596,25 @@ def main() -> int:
         if route not in policy["qualification_routes"]:
             refuse("QUALIFICATION_ROUTE_MISMATCH", f"route {route} is not allowed for step {step}")
         requested_project = args.project
-        if requested_project == "auto":
-            candidates = owner_candidates(
-                home=home, programme=programme, root=root, step=step, policy=policy,
-                ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
-                route=route, script_dir=script_dir,
-            )
-            if not candidates:
-                cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
-            if len(candidates) != 1:
-                refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _ in candidates)}")
-            project, candidate = candidates[0]
-            if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
-                refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
-        else:
-            project = require_slug(requested_project, "project")
-            if policy.get("owner_project") is None:
-                candidates = owner_candidates(
-                    home=home, programme=programme, root=root, step=step, policy=policy,
-                    ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
-                    route=route, script_dir=script_dir,
-                )
-                if not candidates:
-                    cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
-                if len(candidates) != 1:
-                    refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _ in candidates)}")
-                if candidates[0][0] != project:
-                    refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the unique lawful owner {candidates[0][0]}")
-                project, candidate = candidates[0]
-                if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
-                    refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
-            else:
-                candidate = build_candidate(
-                    home=home, programme=programme, root=root, step=step,
-                    policy=policy, project=project, ref=args.ref,
-                    delivery_id=delivery_id, maker=maker, checker=checker, route=route,
-                    script_dir=script_dir, require_cwd=True,
-                    registry_sha256=registered_projects(home)[1],
-                )
+        if requested_project != "auto":
+            require_slug(requested_project, "project")
+        candidates = owner_candidates(
+            home=home, programme=programme, root=root, step=step, policy=policy,
+            ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
+            route=route, script_dir=script_dir,
+        )
+        if not candidates:
+            cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
+        if len(candidates) != 1:
+            refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _ in candidates)}")
+        project, candidate = candidates[0]
+        pinned = policy.get("owner_project")
+        if pinned is not None and project != pinned:
+            refuse("OWNER_PROJECT_MISMATCH", f"unique lawful owner {project} is not the pinned owner {pinned}")
+        if requested_project != "auto" and project != requested_project:
+            refuse("OWNER_PROJECT_MISMATCH", f"project {requested_project} is not the unique lawful owner {project}")
+        if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
+            refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
         path, digest = publish(home, candidate)
         print(json.dumps({"status": "ADMITTED", "reason_code": None, "path": str(path), "sha256": digest, "project": project, "head": candidate["destination"]["head"], "tree": candidate["destination"]["tree"], "manifest_sha256": candidate["manifest_sha256"]}, sort_keys=True))
         return 0

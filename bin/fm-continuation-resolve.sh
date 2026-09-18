@@ -826,7 +826,7 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode
   local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
-  local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown
+  local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown snapshot snapshot_digest snapshot_data receipt_bytes check_bytes
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 
   unknown=$(printf '%s' "$doc" | jq -r '[keys[]] - ["candidate","captures","delivery","evidence_id","generation","observed_bad","outcome","owner","policy","privacy","programme_id","project","qualification","schema","sources","step","superseded_by","verifier","work_id"] | join(",")')
@@ -865,15 +865,11 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   receipt_file="$FM_HOME/$receipt_rel"
   [ -e "$receipt_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt $receipt_rel is unavailable"; return 0; }
   local_owner_private_file "$receipt_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel is not a private same-user single-link mode-0600 file"; return 0; }
-  if ! receipt_actual=$(sha256_file "$receipt_file"); then
-    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt cannot be read or hashed"
-    return 0
-  fi
+  snapshot=$(local_owner_private_snapshot "$receipt_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt cannot be read as one private snapshot"; return 0; }
+  receipt_actual=${snapshot%%$'\t'*}; snapshot_data=${snapshot#*$'\t'}
   [ "$receipt_actual" = "$receipt_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel no longer has its recorded sha256"; return 0; }
-  receipt=$(jq -c 'if type=="object" then . else error("not object") end' "$receipt_file" 2>/dev/null) || {
-    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not a readable JSON object"
-    return 0
-  }
+  receipt_bytes=$(printf '%s' "$snapshot_data" | base64 -d 2>/dev/null) || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not decodable"; return 0; }
+  receipt=$(printf '%s' "$receipt_bytes" | jq -c 'if type=="object" then . else error("not object") end' 2>/dev/null) || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt is not a readable JSON object"; return 0; }
   unknown=$(printf '%s' "$receipt" | jq -r '[keys[]]-["candidate","checker","delivery_id","generation","maker","manifest","owner","privacy","qualification","read_back","schema"]|join(",")')
   [ -z "$unknown" ] || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "local delivery receipt carries unsupported fields that could expose private bytes: $unknown"; return 0; }
   if ! printf '%s' "$receipt" | jq -e '
@@ -948,13 +944,11 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   check_file="$FM_HOME/$check_rel"
   [ -e "$check_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt $check_rel is unavailable"; return 0; }
   local_owner_private_file "$check_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel is not a private same-user single-link mode-0600 file"; return 0; }
-  if ! check_actual=$(sha256_file "$check_file"); then
-    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt cannot be read or hashed"
-    return 0
-  fi
+  snapshot=$(local_owner_private_snapshot "$check_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound checker receipt cannot be read as one private snapshot"; return 0; }
+  check_actual=${snapshot%%$'\t'*}; snapshot_data=${snapshot#*$'\t'}
   [ "$check_actual" = "$check_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel no longer has its recorded sha256"; return 0; }
-  check_doc=$(jq -c 'if type=="object" then . else error("not object") end' "$check_file" 2>/dev/null) || {
-    local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt is not a readable JSON object"; return 0; }
+  check_bytes=$(printf '%s' "$snapshot_data" | base64 -d 2>/dev/null) || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt is not decodable"; return 0; }
+  check_doc=$(printf '%s' "$check_bytes" | jq -c 'if type=="object" then . else error("not object") end' 2>/dev/null) || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt is not a readable JSON object"; return 0; }
   if ! printf '%s' "$check_doc" | jq -e --arg head "$head" --arg tree "$tree" --arg maker "$maker" --arg checker "$checker" --arg pipeline "$(printf '%s' "$qualification" | jq -r '.pipeline')" '
       ([keys[]]-["candidate","checker","maker","outcome","pipeline","receipt_id","schema"]|length)==0 and
       .schema=="fm-local-checker-receipt/v1" and .candidate=={head:$head,tree:$tree} and

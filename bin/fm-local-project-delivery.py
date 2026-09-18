@@ -404,30 +404,36 @@ def build_candidate(
         raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
-    for row in policy["artifacts"]:
-        source_path = under(root, row["source"])
-        source_bytes, source_sha, _ = capture(source_path)
-        mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"])
-        if obj_type != "blob":
-            refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
-        if mode != row["git_mode"]:
-            refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
-        parse_index_entry(repo_real, row["destination"], mode, oid)
-        destination_bytes = git_blob(repo_real, head, row["destination"])
-        destination_sha = hashlib.sha256(destination_bytes).hexdigest()
-        if source_sha != destination_sha:
-            refuse("SOURCE_DESTINATION_MISMATCH", f"{row['source']} and {row['destination']} differ")
-        destination_file = under(repo_real, row["destination"])
-        work_bytes, work_sha, work_mode = capture(destination_file)
-        expected_fs = 0o755 if mode == "100755" else 0o644
-        if work_mode != expected_fs:
-            refuse("DESTINATION_MODE_MISMATCH", f"{destination_file} is mode {work_mode:04o}, expected {expected_fs:04o}")
-        if work_sha != destination_sha or work_bytes != destination_bytes:
-            refuse("DESTINATION_READBACK_MISMATCH", f"working destination {row['destination']} differs from candidate {head}")
-        artifacts.append({
-            "source": row["source"], "destination": row["destination"], "git_mode": mode,
-            "file_mode": f"{expected_fs:04o}", "object_id": oid, "sha256": source_sha,
-        })
+    source_root_fd = open_directory(root)
+    destination_root_fd = open_directory(repo_real)
+    try:
+        for row in policy["artifacts"]:
+            source_path = under(root, row["source"])
+            source_bytes, source_sha, _ = capture(source_path, anchor_fd=source_root_fd, anchor_path=root)
+            mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"])
+            if obj_type != "blob":
+                refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
+            if mode != row["git_mode"]:
+                refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
+            parse_index_entry(repo_real, row["destination"], mode, oid)
+            destination_bytes = git_blob(repo_real, head, row["destination"])
+            destination_sha = hashlib.sha256(destination_bytes).hexdigest()
+            if source_sha != destination_sha:
+                refuse("SOURCE_DESTINATION_MISMATCH", f"{row['source']} and {row['destination']} differ")
+            destination_file = under(repo_real, row["destination"])
+            work_bytes, work_sha, work_mode = capture(destination_file, anchor_fd=destination_root_fd, anchor_path=repo_real)
+            expected_fs = 0o755 if mode == "100755" else 0o644
+            if work_mode != expected_fs:
+                refuse("DESTINATION_MODE_MISMATCH", f"{destination_file} is mode {work_mode:04o}, expected {expected_fs:04o}")
+            if work_sha != destination_sha or work_bytes != destination_bytes:
+                refuse("DESTINATION_READBACK_MISMATCH", f"working destination {row['destination']} differs from candidate {head}")
+            artifacts.append({
+                "source": row["source"], "destination": row["destination"], "git_mode": mode,
+                "file_mode": f"{expected_fs:04o}", "object_id": oid, "sha256": source_sha,
+            })
+    finally:
+        os.close(source_root_fd)
+        os.close(destination_root_fd)
 
     preservation: dict[str, Any] | None = None
     declared_preservation = policy.get("preservation")

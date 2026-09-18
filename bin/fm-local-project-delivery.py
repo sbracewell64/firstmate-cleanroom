@@ -175,10 +175,10 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
     return mode[0]
 
 
-def registered_projects(home: Path) -> list[str]:
+def registered_projects(home: Path) -> tuple[list[str], str]:
     registry = home / "data/projects.md"
     try:
-        data, _, _ = capture(registry)
+        data, digest, _ = capture(registry)
     except Verdict as exc:
         cno("OWNER_MISSING", f"project registry is unreadable: {exc.detail}")
     projects: list[str] = []
@@ -186,7 +186,7 @@ def registered_projects(home: Path) -> list[str]:
         fields = line.split()
         if len(fields) >= 2 and fields[0] == "-" and SLUG.fullmatch(fields[1]):
             projects.append(fields[1])
-    return projects
+    return projects, digest
 
 
 def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
@@ -203,6 +203,21 @@ def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
     if found_path != path:
         refuse("DESTINATION_PATH_MISMATCH", f"candidate returned {found_path}, not {path}")
     return mode, obj_type, oid
+
+
+def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: str) -> None:
+    raw = run(["git", "-C", str(repo), "ls-files", "--stage", "-z", "--", path])
+    rows = [row for row in raw.split(b"\0") if row]
+    if len(rows) != 1:
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index does not have one stage-0 entry at {path}")
+    try:
+        meta, found = rows[0].split(b"\t", 1)
+        mode, oid, stage = meta.decode().split(" ")
+        found_path = found.decode()
+    except (ValueError, UnicodeDecodeError):
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} is unreadable")
+    if found_path != path or stage != "0" or mode != expected_mode or oid != expected_oid:
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} differs from the admitted tree entry")
 
 
 def git_blob(repo: Path, head: str, path: str) -> bytes:
@@ -265,7 +280,7 @@ def build_candidate(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], project: str, ref: str,
     delivery_id: str, maker: str, checker: str, route: str, script_dir: Path,
-    require_cwd: bool,
+    require_cwd: bool, registry_sha256: str,
 ) -> dict[str, Any]:
     pinned = policy.get("owner_project")
     if pinned is not None and (not isinstance(pinned, str) or not SLUG.fullmatch(pinned)):
@@ -305,6 +320,7 @@ def build_candidate(
             refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
         if mode != row["git_mode"]:
             refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
+        parse_index_entry(repo_real, row["destination"], mode, oid)
         destination_bytes = git_blob(repo_real, head, row["destination"])
         destination_sha = hashlib.sha256(destination_bytes).hexdigest()
         if source_sha != destination_sha:
@@ -335,7 +351,7 @@ def build_candidate(
             exact_keys(spec, {"kind", "path", "generation"}, f"preservation {role}")
             path = safe_relative(spec.get("path"), f"preservation {role} path")
             generation = spec.get("generation")
-            if spec.get("kind") != expected_kind or not isinstance(generation, int) or generation < 1:
+            if spec.get("kind") != expected_kind or type(generation) is not int or generation < 1:
                 refuse("PRESERVATION_MISMATCH", f"preservation {role} has unsupported identity")
             mode, obj_type, oid = parse_tree_entry(repo_real, head, path)
             if role == "current":
@@ -365,7 +381,7 @@ def build_candidate(
         "delivery_id": delivery_id,
         "home": str(home),
         "context": {"working_directory": str(repo_real)},
-        "owner": {"project": project, "mode": "local-only"},
+        "owner": {"project": project, "mode": "local-only", "registry_sha256": registry_sha256},
         "source": source_identity(root),
         "destination": {"project": project, "root": str(repo_real), "ref": ref, "head": head, "tree": tree},
         "action": {
@@ -399,6 +415,7 @@ def validate_admission(
     if not isinstance(action, dict):
         refuse("ACTION_MISMATCH", "admission action is absent")
     policy = policy_for(programme, step)
+    _, registry_sha256 = registered_projects(home)
     expected_action = {
         "programme_id": programme.get("programme_id"), "programme_generation": programme.get("schema"),
         "step": step, "local_delivery_policy_sha256": hashlib.sha256(canonical(policy)).hexdigest(),
@@ -438,6 +455,7 @@ def validate_admission(
         policy=policy, project=project, ref=ref,
         delivery_id=admission_id, maker=maker, checker=checker, route=route,
         script_dir=script_dir, require_cwd=False,
+        registry_sha256=registry_sha256,
     )
     if doc.get("manifest_sha256") != rebuilt["manifest_sha256"]:
         refuse("MANIFEST_DIGEST_MISMATCH", "artifact manifest digest differs from current exact family")
@@ -458,6 +476,28 @@ def validate_admission(
                 refuse("PRESERVATION_MISMATCH", "current or rollback generation identity changed")
             refuse("MANIFEST_AUTHENTICITY", f"admission {key} identity differs from current facts")
     return rebuilt
+
+
+def owner_candidates(
+    *, home: Path, programme: dict[str, Any], root: Path, step: str,
+    policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
+    checker: str, route: str, script_dir: Path,
+) -> list[tuple[str, dict[str, Any]]]:
+    registered, registry_sha256 = registered_projects(home)
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for project in registered:
+        try:
+            candidate = build_candidate(
+                home=home, programme=programme, root=root, step=step,
+                policy=policy, project=project, ref=ref,
+                delivery_id=delivery_id, maker=maker, checker=checker, route=route,
+                script_dir=script_dir, require_cwd=False,
+                registry_sha256=registry_sha256,
+            )
+        except Verdict:
+            continue
+        candidates.append((project, candidate))
+    return candidates
 
 
 def publish(home: Path, candidate: dict[str, Any]) -> tuple[Path, str]:
@@ -534,18 +574,11 @@ def main() -> int:
             refuse("QUALIFICATION_ROUTE_MISMATCH", f"route {route} is not allowed for step {step}")
         requested_project = args.project
         if requested_project == "auto":
-            candidates: list[tuple[str, dict[str, Any]]] = []
-            for project in registered_projects(home):
-                try:
-                    candidate = build_candidate(
-                        home=home, programme=programme, root=root, step=step,
-                        policy=policy, project=project, ref=args.ref,
-                        delivery_id=delivery_id, maker=maker, checker=checker, route=route,
-                        script_dir=script_dir, require_cwd=False,
-                    )
-                except Verdict:
-                    continue
-                candidates.append((project, candidate))
+            candidates = owner_candidates(
+                home=home, programme=programme, root=root, step=step, policy=policy,
+                ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
+                route=route, script_dir=script_dir,
+            )
             if not candidates:
                 cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
             if len(candidates) != 1:
@@ -555,12 +588,29 @@ def main() -> int:
                 refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
         else:
             project = require_slug(requested_project, "project")
-            candidate = build_candidate(
-                home=home, programme=programme, root=root, step=step,
-                policy=policy, project=project, ref=args.ref,
-                delivery_id=delivery_id, maker=maker, checker=checker, route=route,
-                script_dir=script_dir, require_cwd=True,
-            )
+            if policy.get("owner_project") is None:
+                candidates = owner_candidates(
+                    home=home, programme=programme, root=root, step=step, policy=policy,
+                    ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
+                    route=route, script_dir=script_dir,
+                )
+                if not candidates:
+                    cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
+                if len(candidates) != 1:
+                    refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _ in candidates)}")
+                if candidates[0][0] != project:
+                    refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the unique lawful owner {candidates[0][0]}")
+                project, candidate = candidates[0]
+                if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
+                    refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
+            else:
+                candidate = build_candidate(
+                    home=home, programme=programme, root=root, step=step,
+                    policy=policy, project=project, ref=args.ref,
+                    delivery_id=delivery_id, maker=maker, checker=checker, route=route,
+                    script_dir=script_dir, require_cwd=True,
+                    registry_sha256=registered_projects(home)[1],
+                )
         path, digest = publish(home, candidate)
         print(json.dumps({"status": "ADMITTED", "reason_code": None, "path": str(path), "sha256": digest, "project": project, "head": candidate["destination"]["head"], "tree": candidate["destination"]["tree"], "manifest_sha256": candidate["manifest_sha256"]}, sort_keys=True))
         return 0

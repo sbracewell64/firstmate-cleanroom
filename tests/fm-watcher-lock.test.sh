@@ -488,8 +488,13 @@ test_watch_restart_attaches_to_healthy_peer() {
   is_live_non_zombie "$peer" || fail "restart killed a TERM-resistant peer unexpectedly"
   kill -KILL "$peer" 2>/dev/null || true
   wait "$peer" 2>/dev/null || true
-  wait_for_exit "$armpid" 80
-  status=$?
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status)"
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$out" || fail "restart arm did not surface the attached cycle end"
   pass "watch restart attaches to a verified healthy peer and later surfaces a successor gap"
@@ -553,8 +558,13 @@ test_arm_self_eviction_is_loud_without_successor() {
   # self-evict normally. With no verified successor, the arm must turn that
   # otherwise clean empty close into the typed nonzero failure.
   printf '%s\n' "$$" > "$state/.watch.lock/pid"
-  wait_for_exit "$armpid" "$ARM_FAIL_EXIT_POLLS"
-  status=$?
+  i=0
+  while [ "$i" -lt "$ARM_FAIL_EXIT_POLLS" ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "self-evicted arm did not fail nonzero (status $status)"
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "self-evicted arm omitted the typed cycle-end failure"
   grep -q "reason=unexpected-clean-exit" "$state/.watch-cycle-exits.log" || fail "self-evicted cycle was not classified in the lifecycle ledger"
@@ -595,8 +605,13 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
   # After the seed dies without a successor, the attached arm must fail loudly.
   reap "$wpid"
-  wait_for_exit "$armpid" 80
-  status=$?
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "attached arm did not emit the typed cycle-end failure"
   pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
@@ -628,8 +643,13 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   done
   grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not report attach before signal"
   kill -TERM "$armpid" 2>/dev/null || fail "could not signal the attached arm"
-  wait_for_exit "$armpid" 80
-  status=$?
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -eq 143 ] || fail "attached arm did not exit with TERM status (got $status)"
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
     || fail "attached arm signal was not recorded in the lifecycle ledger"
@@ -710,8 +730,13 @@ test_arm_hup_cleans_child_and_temp_output() {
   grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  wait_for_exit "$armpid" 80
-  status=$?
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$armpid" 2>/dev/null || status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0
   while [ "$i" -lt 80 ] && is_live_non_zombie "$lock_pid"; do
@@ -1742,7 +1767,7 @@ test_restart_records_whether_its_stop_was_confirmed() {
   second_err="$dir/unconfirmed.err"
 
   restart_case_arm() {
-    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=0 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" "$@"
   }
   resume_stopped_holder() {

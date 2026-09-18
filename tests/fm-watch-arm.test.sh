@@ -232,11 +232,16 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   # A process-event producer advances the same home-wide queue while the
   # observed watcher remains uninvolved, so only watcher-bound evidence can
   # distinguish this from a delivered watcher cycle.
-  append_wake "$state" check process-event "check: process-event result captured: fixture"
   kill "$SEED_PID" 2>/dev/null || true
   wait "$SEED_PID" 2>/dev/null || true
-  wait_for_exit "$ARM_PID" 120
-  status=$?
+  append_wake "$state" check process-event "check: process-event result captured: fixture"
+  i=0
+  while [ "$i" -lt 120 ] && is_live_non_zombie "$ARM_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$ARM_PID" 2>/dev/null || status=$?
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
     || fail "a cycle that delivered nothing must still fail loudly: $(cat "$armout")"
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \

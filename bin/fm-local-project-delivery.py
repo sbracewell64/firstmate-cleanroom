@@ -512,7 +512,6 @@ def owner_candidates(
                 blocking.append(exc)
             elif exc.reason not in {
                 "OWNER_MODE_MISMATCH",
-                "OWNER_PROJECT_MISMATCH",
                 "DESTINATION_TYPE_MISMATCH",
                 "DESTINATION_MODE_MISMATCH",
                 "SOURCE_DESTINATION_MISMATCH",
@@ -541,33 +540,54 @@ def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str
 
 def publish(home: Path, candidate: dict[str, Any]) -> tuple[Path, str]:
     directory = home / "data/local-project-delivery/admissions"
-    path = directory / f"{candidate['admission_id']}.json"
-    reject_symlink_chain(home, ("data", "local-project-delivery", "admissions"), "admission directory")
-    if path.exists() or path.is_symlink():
-        refuse("ADMISSION_REPLAY", f"delivery identity {candidate['admission_id']} already has an admission")
+    final_name = f"{candidate['admission_id']}.json"
     data = json.dumps(candidate, sort_keys=True, indent=2, ensure_ascii=False).encode() + b"\n"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     reject_symlink_chain(home, ("data", "local-project-delivery", "admissions"), "admission directory")
-    os.chmod(directory, 0o700)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    home_fd = os.open(home, directory_flags)
+    data_fd = local_fd = admissions_fd = temp_fd = None
+    temp_name = None
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    except FileExistsError:
-        refuse("ADMISSION_REPLAY", f"delivery identity {candidate['admission_id']} already has an admission")
-    try:
+        data_fd = os.open("data", directory_flags, dir_fd=home_fd)
+        try:
+            os.mkdir("local-project-delivery", 0o700, dir_fd=data_fd)
+        except FileExistsError:
+            pass
+        local_fd = os.open("local-project-delivery", directory_flags, dir_fd=data_fd)
+        os.fchmod(local_fd, 0o700)
+        try:
+            os.mkdir("admissions", 0o700, dir_fd=local_fd)
+        except FileExistsError:
+            pass
+        admissions_fd = os.open("admissions", directory_flags, dir_fd=local_fd)
+        os.fchmod(admissions_fd, 0o700)
+        temp_name = f".{final_name}.{os.getpid()}.tmp"
+        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=admissions_fd)
         offset = 0
         while offset < len(data):
-            offset += os.write(fd, data[offset:])
-        os.fsync(fd)
-    except BaseException:
-        os.close(fd)
+            offset += os.write(temp_fd, data[offset:])
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = None
         try:
-            path.unlink()
-        except OSError:
-            pass
-        raise
-    else:
-        os.close(fd)
-    return path, hashlib.sha256(data).hexdigest()
+            os.link(temp_name, final_name, src_dir_fd=admissions_fd, dst_dir_fd=admissions_fd, follow_symlinks=False)
+        except FileExistsError:
+            refuse("ADMISSION_REPLAY", f"delivery identity {candidate['admission_id']} already has an admission")
+        os.unlink(temp_name, dir_fd=admissions_fd)
+        temp_name = None
+        os.fsync(admissions_fd)
+        return directory / final_name, hashlib.sha256(data).hexdigest()
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        if temp_name is not None and admissions_fd is not None:
+            try:
+                os.unlink(temp_name, dir_fd=admissions_fd)
+            except OSError:
+                pass
+        for fd in (admissions_fd, local_fd, data_fd, home_fd):
+            if fd is not None:
+                os.close(fd)
 
 
 def parser() -> argparse.ArgumentParser:

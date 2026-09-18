@@ -570,8 +570,14 @@ local_owner_path_has_no_symlink_parents() {  # <root> <relative-path>
 }
 
 local_owner_private_file() {  # <path>
-  local mode links owner data_real parent_real
+  local mode links owner data_real parent_real data_root relative
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  data_root="$FM_HOME/data"
+  case "$1" in
+    "$data_root"/*) relative=${1#"$data_root"/} ;;
+    *) return 1 ;;
+  esac
+  local_owner_path_has_no_symlink_parents "$data_root" "$relative" || return 1
   data_real=$(CDPATH='' cd -- "$FM_HOME/data" 2>/dev/null && pwd -P) || return 1
   parent_real=$(CDPATH='' cd -- "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   case "$parent_real/" in "$data_real/"*) ;; *) return 1 ;; esac

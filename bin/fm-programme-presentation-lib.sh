@@ -153,7 +153,7 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
   errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) \
     || errfile=$(mktemp "/tmp/$prefix.XXXXXX" 2>/dev/null) \
     || { FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: staging allocation failed'; return 125; }
-  RESOLVER_ERRFILE=$errfile
+  export RESOLVER_ERRFILE="$errfile"
   if [ "${FM_PROGRAMME_RESOLVER_BOUNDED:-0}" = 1 ]; then
     out=$(fm_run_timed 1 "$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
   else
@@ -165,7 +165,7 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
     if ! rm -f -- "$errfile"; then
       FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read or removed'
     else
-      RESOLVER_ERRFILE=
+      export RESOLVER_ERRFILE=
     fi
     FM_PROGRAMME_RESOLVER_RC=125
     return 125
@@ -175,7 +175,7 @@ fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args.
     FM_PROGRAMME_RESOLVER_RC=125
     return 125
   fi
-  RESOLVER_ERRFILE=
+  export RESOLVER_ERRFILE=
   FM_PROGRAMME_RESOLVER_RC=$rc
   return 0
 }

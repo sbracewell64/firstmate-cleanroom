@@ -126,12 +126,12 @@ fm_run_external_timeout() {
 }
 
 fm_run_external_timeout_strict() {
-  local runner=$1 seconds=$2 status_file done_dir expired_dir runner_pid watchdog_pid runner_rc command_rc
+  local runner=$1 seconds=$2 status_file done_dir expired_dir runner_pid watchdog_pid runner_rc command_rc child_script
   shift 2
   status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-strict-status.XXXXXX" 2>/dev/null) || return 124
   done_dir="${status_file}.done"
   expired_dir="${status_file}.expired"
-  "$runner" -s KILL "$seconds" bash -c '
+  child_script=$(cat <<'EOF'
     status_file=$1
     done_dir=$2
     shift 2
@@ -140,7 +140,9 @@ fm_run_external_timeout_strict() {
     printf "%s\n" "$command_rc" > "$status_file"
     mkdir "$done_dir" 2>/dev/null || exit 124
     exit "$command_rc"
-  ' _ "$status_file" "$done_dir" "$@" &
+EOF
+  )
+  "$runner" -s KILL "$seconds" bash -c "$child_script" _ "$status_file" "$done_dir" "$@" &
   runner_pid=$!
   (
     sleep "$seconds"

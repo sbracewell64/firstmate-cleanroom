@@ -680,7 +680,8 @@ run_session_start_herdr_secondmate() {
 # which is exactly why the sweeps it used to run inline have to be re-asserted
 # here instead of straight off the digest's own output.
 wait_for_network_stage() {
-  local home=$1 root=$2 limit=${3:-30} status="$home/state/.startup-network.status"
+  local home=$1 root=$2 limit=${3:-30}
+  local status="$home/state/.startup-network.status"
   local waited=0 state worker
   while [ "$waited" -lt "$((limit * 10))" ]; do
     state=$(sed -n 's/^state=//p' "$status" 2>/dev/null | tail -1)

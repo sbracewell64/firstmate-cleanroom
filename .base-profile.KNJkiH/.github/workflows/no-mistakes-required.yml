@@ -1,0 +1,112 @@
+name: Require no-mistakes
+run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# GitHub concurrency groups retain at most one pending run, replacing older
+# pending runs even when cancel-in-progress is false. Give body-bearing events
+# an immutable per-event group so first-time-fork approvals can never collapse
+# opened/edited checks. Keep synchronize/reopened coalescing as before.
+concurrency:
+  group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: PR must be raised via no-mistakes
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.user.login != 'github-actions[bot]' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      # Check out the gate helper from the PR BASE, never the head. The workflow
+      # definition runs from the head, but the guard a PR is judged by must be
+      # the trusted, already-landed helper on the base branch - a PR cannot
+      # supply its own copy of the guard, and the helper is guaranteed to exist
+      # on the base independently of whatever the head contains.
+      - name: Check out base gate helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      # bin/fm-nmf-verify-input.sh is the single owner of the event-action ->
+      # input-mode mapping; the workflow never re-spells the action list.
+      # historical (opened, edited) is judged on the frozen event snapshot by
+      # the pinned action's defaults; current (synchronize, reopened) re-binds
+      # to a single live PR read below.
+      - name: Classify event input mode
+        id: classify
+        env:
+          NMF_EVENT_ACTION: ${{ github.event.action }}
+        run: bin/fm-nmf-verify-input.sh classify >> "$GITHUB_OUTPUT"
+
+      # Current mode only, and the whole live-subject step. The frozen event
+      # payload can carry a one-generation late body/head pair (read-replica
+      # lag, or a head that advanced after the event fired), so 'await' reads
+      # the live PR subject instead, binds PR identity, refuses a superseded
+      # subject, fails closed on an empty live body, and waits out the
+      # publication race before emitting the subject the verifier judges. A
+      # historical event skips this step, so an old event can never be re-judged
+      # against a newer live body or head.
+      #
+      # bin/fm-nmf-verify-input.sh is the single owner of that wait - the
+      # publication window and its derivation from the observed publication
+      # latency, the poll cadence, the bounded live-read retry, the deadline
+      # hand-off, and which outcome the closed window is attributed to. Read its
+      # header for the contract and do not re-spell any of it here. Pin none of
+      # the bounds it derives - the publication window, the poll cadence, the
+      # live-read attempts, the live-read backoff - in this env, in the job's, or
+      # at the workflow level: Actions env precedence is step > job > workflow,
+      # so a pin at any of the three silently overrides the derived bound. Keep
+      # the GITHUB_OUTPUT redirect as well; without it the resolve outputs go
+      # empty and the pinned action falls back to the frozen event payload this
+      # step exists to replace. tests/fm-no-mistakes-required.test.sh guards all
+      # of that against the workflow's parsed model.
+      - name: Resolve live PR subject
+        id: resolve
+        if: steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NMF_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          NMF_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bin/fm-nmf-verify-input.sh await >> "$GITHUB_OUTPUT"
+
+      # In historical mode the resolve step is skipped, so pr-body and
+      # pr-head-sha are empty and the pinned action falls back to the frozen
+      # event payload - exactly the event-snapshot judgement historical events
+      # require. In current mode they carry the subject-bound live body and head
+      # from the helper. pr-head-ref and pr-author are left to the action's
+      # event-payload defaults in both modes, so exempt-branch and fork-approval
+      # semantics are unchanged.
+      - name: Verify no-mistakes signature and pipeline attestation
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          pr-body: ${{ steps.resolve.outputs.body }}
+          pr-head-sha: ${{ steps.resolve.outputs.head_sha }}
+
+      # Current mode only, AFTER the verdict. Re-read the live subject and
+      # refuse to let a green result stand if the PR head advanced during
+      # verification, so an old-head run can never publish a result for a newer,
+      # already-advanced head (which fires its own run).
+      - name: Read back live PR subject
+        if: steps.classify.outputs.mode == 'current'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NMF_SUBJECT_NUMBER: ${{ steps.resolve.outputs.subject_number }}
+          NMF_SUBJECT_HEAD: ${{ steps.resolve.outputs.subject_head }}
+        run: |
+          set -eu
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${NMF_SUBJECT_NUMBER}")
+          NMF_LIVE_NUMBER=$(printf '%s' "$pr" | jq -r '.number // ""')
+          NMF_LIVE_HEAD_SHA=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+          export NMF_LIVE_NUMBER NMF_LIVE_HEAD_SHA
+          bin/fm-nmf-verify-input.sh readback

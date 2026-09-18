@@ -1,0 +1,95 @@
+{
+  "schema": "fm-accepted-owner-evidence/v1",
+  "programme_id": "cleanroom-af-package",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "work_id": "cleanroom-af-package",
+  "generation": 1,
+  "evidence_id": "slice-e-pr6-landing",
+  "step": "slice-e-projection-substrate",
+  "owner": {
+    "kind": "pull_request_merge",
+    "ref": "sbracewell64/firstmate-cleanroom#6",
+    "url": "https://github.com/sbracewell64/firstmate-cleanroom/pull/6",
+    "title": "feat(bin): add stateless programme projection substrate over the continuation resolver"
+  },
+  "outcome": "MERGED_QUALIFIED",
+  "candidate": {
+    "head": "a5c08ba75817eccb8a9ed98dd616134d09be894a",
+    "merge_commit": "9783fc78f0873ec436c32268ec0f10f42366033f",
+    "base_ref": "main",
+    "base_sha": "e70debdc4806e2fed3693af13c3f2dbfb78e39cb",
+    "merged_at": "2026-09-06T13:33:01Z",
+    "merged_by": "sbracewell64",
+    "merge_method": "squash"
+  },
+  "policy": null,
+  "verifier": {
+    "tool": "gh api (GitHub REST) read by the bounded worker af-programme-binding; digests recomputed with sha256sum over the fetched bytes",
+    "observed_at": "2026-09-06T20:05:00Z",
+    "observation_class": "read-only capture; no ruling, hold, merge, or acceptance was produced by this record"
+  },
+  "qualification": {
+    "pipeline": "no-mistakes",
+    "evidence_refs": [
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/4af5d2d087e16f2ac53a84a6e0ca49bd3c704fef/.no-mistakes/evidence/fm/e-programme-projection-substrate/projection-cli-transcript.txt"
+    ],
+    "ci_check_runs": {
+      "head": "a5c08ba75817eccb8a9ed98dd616134d09be894a",
+      "total": 14,
+      "by_conclusion": {
+        "success": 13,
+        "failure": 1
+      },
+      "distinct_checks": 13,
+      "latest_run_per_check_all_success": true,
+      "superseded_runs": [
+        {
+          "id": 101493209536,
+          "name": "PR must be raised via no-mistakes",
+          "conclusion": "failure",
+          "completed_at": "2026-09-06T13:18:24Z",
+          "superseded_by": 101493616070,
+          "final_conclusion": "success"
+        }
+      ]
+    },
+    "landing_owner": "exact-head merge through the forge (bin/fm-pr-merge.sh records merge metadata on the task during its life; the task record was retired at teardown)",
+    "reconciliation": "reconciled from the forge pull-request record and its check runs plus the no-mistakes evidence links the pipeline wrote into the PR body; nothing here is presumed from the control-venue report"
+  },
+  "captures": [
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom/pulls/6",
+      "sha256": "01f75043d6d809442d56beb44ece7d249e893c8b241f3613d13038388705275f",
+      "bytes": 44225,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    },
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom/commits/a5c08ba75817eccb8a9ed98dd616134d09be894a/check-runs?per_page=100",
+      "sha256": "e394fee38c997f0fe9d5b7ae36bf7fb93025675a5badd3be85a9e99bd240277d",
+      "bytes": 43755,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    },
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5555276103",
+      "sha256": "65186aa24ae3db5344d672c856271ebba6b02305d219ca3a6ebc2a8ab46edb71",
+      "bytes": 3690,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    }
+  ],
+  "sources": [],
+  "observed_bad": [],
+  "superseded_by": null,
+  "reported_in": {
+    "kind": "control_report",
+    "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5555276103",
+    "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5555276103",
+    "slice": "E",
+    "note": "5555276103 announces E as the next build; the landing record above is the owner record for E"
+  }
+}

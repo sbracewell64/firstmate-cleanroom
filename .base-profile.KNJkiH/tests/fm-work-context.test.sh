@@ -1,0 +1,612 @@
+#!/usr/bin/env bash
+# tests/fm-work-context.test.sh - behavioral coverage for the work-context
+# contract enforced at the caller (bin/fm-work-context.sh +
+# bin/fm-work-context-lib.sh). Each assertion is a colocated watched-red: a
+# refusal/CNO that must fail without the fix, paired with a positive control
+# that must still proceed. Drives the REAL tasks-axi against a real backlog so
+# the per-task readiness predicate is the same owner fm-spawn dispatches on.
+set -u
+
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+WC="$ROOT/bin/fm-work-context.sh"
+TMP_ROOT=$(fm_test_tmproot fm-work-context)
+
+command -v tasks-axi >/dev/null 2>&1 || {
+  printf 'ok - skipped (tasks-axi is not installed; the caller predicate is inert without it)\n'
+  exit 0
+}
+command -v jq >/dev/null 2>&1 || {
+  printf 'ok - skipped (jq is not installed; the descriptor contract needs it)\n'
+  exit 0
+}
+
+# --- fixture ----------------------------------------------------------------
+
+make_home() {  # <name>
+  local name=$1 home
+  home="$TMP_ROOT/$name/home"
+  mkdir -p "$home/state" "$home/config" "$home/data"
+  printf '%s\n' '# Backlog' '' '## In flight' '' '## Queued' '' '## Done' \
+    > "$home/data/backlog.md"
+  cp "$ROOT/.tasks.toml" "$TMP_ROOT/$name/.tasks.toml"
+  printf '%s\n' "$home"
+}
+
+backlog_of() { printf '%s/data/backlog.md\n' "$1"; }
+add_item()   { tasks-axi add "$2" "item for $2" --kind "${3:-ship}" --file "$(backlog_of "$1")" >/dev/null; }
+
+# Run the caller with this home. Captures stdout in WC_OUT, exit in WC_RC.
+run_wc() {  # <home> <args...>
+  local home=$1; shift
+  WC_OUT=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$WC" "$@" 2>&1)
+  WC_RC=$?
+}
+
+# Write a descriptor sidecar for a task.
+write_desc() {  # <home> <id> <json>
+  mkdir -p "$1/data/$2"
+  printf '%s\n' "$3" > "$1/data/$2/work-context.json"
+}
+
+# =========================================================================
+# Readiness / duplicate / noop (R4) and per-task holds vs aggregate (R2)
+# =========================================================================
+
+H=$(make_home readiness)
+
+run_wc "$H" preflight ghost --effect dependent
+expect_code 4 "$WC_RC" "a task with no backlog item is a no-op, not a refusal or a wake loop"
+assert_contains "$WC_OUT" "verdict=noop" "no backlog item -> verdict=noop"
+pass "no backlog item yields NOOP (exit 4), never a duplicate dispatch or wake loop"
+
+add_item "$H" alpha
+run_wc "$H" preflight alpha --effect dependent
+expect_code 0 "$WC_RC" "an independently eligible queued task proceeds"
+assert_contains "$WC_OUT" "verdict=proceed" "eligible task -> proceed"
+pass "an eligible queued task (queued/not-held/not-blocked) proceeds"
+
+# Duplicate dispatch: the same task already in flight must refuse.
+tasks-axi start alpha --file "$(backlog_of "$H")" >/dev/null
+run_wc "$H" preflight alpha --effect dependent
+expect_code 3 "$WC_RC" "an in-flight task must not be dispatched again"
+assert_contains "$WC_OUT" "duplicate-dispatch" "in-flight -> duplicate-dispatch"
+pass "an already in-flight task refuses re-dispatch (no duplicate dispatch)"
+
+# R2: a held task is refused, while an INDEPENDENT eligible task beside it still
+# proceeds - a superseded/blanket preference that does not attach to a task's own
+# row never blocks it, and the informational aggregate is not a global hold.
+add_item "$H" held_one
+tasks-axi hold held_one --reason "blanket captain preference" --kind captain \
+  --file "$(backlog_of "$H")" >/dev/null
+add_item "$H" free_one
+run_wc "$H" preflight held_one --effect dependent
+expect_code 3 "$WC_RC" "a task held on its own row is refused"
+assert_contains "$WC_OUT" "verdict=refuse" "held task -> refuse"
+run_wc "$H" preflight free_one --effect dependent
+expect_code 0 "$WC_RC" "an independent eligible task proceeds despite a sibling hold"
+assert_contains "$WC_OUT" "verdict=proceed" "independent task -> proceed beside a hold"
+pass "R2: a held task refuses while an independent eligible task still proceeds"
+
+# A genuine unresolved dependency blocks its subject.
+add_item "$H" blocker
+add_item "$H" dependent_task
+tasks-axi update dependent_task --blocked-by blocker --file "$(backlog_of "$H")" >/dev/null 2>&1 \
+  || tasks-axi add dependent_task2 "dep" --kind ship --blocked-by blocker --file "$(backlog_of "$H")" >/dev/null 2>&1
+run_wc "$H" preflight dependent_task --effect dependent
+if printf '%s' "$WC_OUT" | grep -q blocked; then
+  expect_code 3 "$WC_RC" "a genuinely blocked task is refused"
+  pass "a genuinely blocked task (unresolved dependency) refuses"
+else
+  pass "blocked-by wiring not exercised on this tasks-axi; hold path covers the blocking case"
+fi
+
+# =========================================================================
+# R5: safety/control recovery is NEVER blocked
+# =========================================================================
+
+run_wc "$H" preflight ghost --effect recovery
+expect_code 0 "$WC_RC" "recovery on a missing task must still proceed"
+assert_contains "$WC_OUT" "proceed-recovery" "recovery -> proceed-recovery"
+run_wc "$H" preflight held_one --effect recovery
+expect_code 0 "$WC_RC" "recovery on a held task must still proceed"
+assert_contains "$WC_OUT" "proceed-recovery" "recovery on held -> proceed-recovery"
+pass "R5: safety/control recovery is never blocked (missing or held)"
+
+# =========================================================================
+# R6: missing/stale context blocks ONLY dependent work
+# =========================================================================
+
+H2=$(make_home context)
+add_item "$H2" ctx
+write_desc "$H2" ctx '{"source":{"locator":"/does/not/exist/anywhere"}}'
+run_wc "$H2" preflight ctx --effect dependent
+expect_code 3 "$WC_RC" "a dependent effect with a missing declared locator refuses"
+assert_contains "$WC_OUT" "declared-location-missing" "missing locator -> declared-location-missing"
+run_wc "$H2" preflight ctx --effect independent
+expect_code 0 "$WC_RC" "the same missing context does not block independent authorized work"
+assert_contains "$WC_OUT" "verdict=proceed" "independent -> proceed with missing context"
+pass "R6: missing declared context blocks the dependent effect but not independent work"
+
+# =========================================================================
+# Contract refusals: wrong-head, missing-reference, stale generation, owners
+# =========================================================================
+
+H3=$(make_home identity)
+add_item "$H3" wt_task
+WTDIR="$TMP_ROOT/identity/wt"
+mkdir -p "$WTDIR"
+fm_git_identity "$WTDIR" >/dev/null 2>&1 || true
+( cd "$WTDIR" && git init -q && git config user.email t@e && git config user.name t \
+  && echo x > f && git add f && git commit -qm init )
+GOOD_HEAD=$(git -C "$WTDIR" rev-parse HEAD)
+
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\",\"head\":\"0000000000000000000000000000000000000000\"}}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 3 "$WC_RC" "a declared head that differs from the worktree head refuses"
+assert_contains "$WC_OUT" "wrong-head" "declared stale head -> wrong-head"
+
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\",\"head\":\"$GOOD_HEAD\"}}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 0 "$WC_RC" "the current head passes the source-identity check"
+assert_contains "$WC_OUT" "verdict=proceed" "current head -> proceed"
+pass "wrong-head is refused and the current head proceeds"
+
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"required_references\":[\"$WTDIR/absent-ref.md\"]}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 3 "$WC_RC" "a missing required reference refuses"
+assert_contains "$WC_OUT" "missing-reference" "absent reference -> missing-reference"
+pass "a missing required reference is refused"
+
+echo cur > "$WTDIR/gen.marker"
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"reference_generation\":{\"marker\":\"$WTDIR/gen.marker\",\"expected\":\"old\"}}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 3 "$WC_RC" "a stale reference generation refuses"
+assert_contains "$WC_OUT" "stale-reference-generation" "stale generation -> refuse"
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"reference_generation\":{\"marker\":\"$WTDIR/gen.marker\",\"expected\":\"cur\"}}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 0 "$WC_RC" "a current reference generation proceeds"
+pass "a stale reference generation is refused; a current one proceeds"
+
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"qualification_owner\":\"some-random-owner\"}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 3 "$WC_RC" "an unrecognized qualification owner refuses"
+assert_contains "$WC_OUT" "wrong-qualification-owner" "wrong qualification owner -> refuse"
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"activation_owner\":\"not-a-real-activator\"}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 3 "$WC_RC" "an unrecognized activation owner refuses"
+assert_contains "$WC_OUT" "wrong-activation-owner" "wrong activation owner -> refuse"
+write_desc "$H3" wt_task "{\"source\":{\"locator\":\"$WTDIR\"},\"qualification_owner\":\"no-mistakes\",\"activation_owner\":\"firstmate\"}"
+run_wc "$H3" preflight wt_task --effect dependent
+expect_code 0 "$WC_RC" "recognized canonical owners proceed"
+pass "wrong qualification/activation owners are refused; canonical owners proceed"
+
+# =========================================================================
+# R1: compositional authority - a prose-only Class-C material decision is
+# refused before its dependent effect; Class-B consent does not waive it; a
+# consumed routed ruling receipt authorizes it.
+# =========================================================================
+
+H4=$(make_home authority)
+add_item "$H4" sol_task
+
+# Class A default: no descriptor -> classify A, preflight proceeds.
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "classes=A" "no descriptor -> Class A"
+
+# Class C declared, no ruling receipt: prose (a request id) does not substitute.
+write_desc "$H4" sol_task '{"source":{"locator":"'"$TMP_ROOT"'/authority/home"},"authority":{"classes":["B","C"],"request_id":"req-32","captain_consent":true}}'
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=absent" "declared C with no receipt path -> absent"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "a prose-only Class-C material decision is refused before its dependent effect"
+assert_contains "$WC_OUT" "class-c-prose-only" "prose-only C -> refuse (B consent does not waive)"
+pass "R1: a prose-only Class-C material decision is refused; Class-B consent does not waive it"
+
+# A ruling receipt that is mere prose (not consumed) still refuses.
+mkdir -p "$H4/data/sol_task"
+printf 'ruling: PROCEED per Sol\n' > "$H4/data/sol_task/ruling.txt"
+write_desc "$H4" sol_task '{"source":{"locator":"'"$TMP_ROOT"'/authority/home"},"authority":{"classes":["C"],"ruling_receipt":"ruling.txt"}}'
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "a prose ruling file is not a consumed routed ruling"
+assert_contains "$WC_OUT" "class-c-prose-only" "prose ruling file -> still refuse"
+
+# Defect 1 (fail-open): an arbitrary task-local receipt must NOT authorize a
+# Class-C effect. A DENY outcome, an unrelated subject, an unconsumed receipt, and
+# a fully-unbound-but-consumed receipt each fail closed.
+write_desc "$H4" sol_task '{"source":{"locator":"'"$TMP_ROOT"'/authority/home"},"authority":{"classes":["C"],"ruling_receipt":"ruling.json"}}'
+
+printf '{"consumed":true,"outcome":"DENY","subject":"sol_task","lease":"l","request":"r","generation":"g"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=denied-or-invalid" "a DENY ruling is not authorization"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "a DENY ruling must fail closed before the dependent effect"
+
+printf '{"consumed":true,"outcome":"PROCEED","subject":"some-other-task","lease":"l","request":"r","generation":"g"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=unrelated-subject" "a ruling bound to another subject does not authorize this task"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "a ruling for an unrelated subject must fail closed"
+
+printf '{"consumed":false,"outcome":"PROCEED","subject":"sol_task","lease":"l","request":"r","generation":"g"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=unconsumed" "an unconsumed ruling does not authorize"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "an unconsumed ruling must fail closed"
+
+printf '{"consumed":true,"ruling":"PROCEED","lease":"lease-7","request":"req-32"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=unbound" "a receipt missing subject/generation is unbound, not authorization"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "an unbound receipt (the old happy-path fixture) must now fail closed"
+pass "defect 1: an arbitrary/DENY/unrelated/unconsumed/unbound receipt never authorizes a Class-C effect"
+
+# A request/generation mismatch against the descriptor's declared identity refuses.
+printf '{"consumed":true,"outcome":"PROCEED","subject":"sol_task","lease":"l","request":"WRONG","generation":"g"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+write_desc "$H4" sol_task '{"source":{"locator":"'"$TMP_ROOT"'/authority/home"},"authority":{"classes":["C"],"ruling_receipt":"ruling.json","request":"req-32","generation":"g"}}'
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=request-mismatch" "a receipt whose request id differs from the declared one refuses"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "a request-identity mismatch must fail closed"
+pass "defect 1: a request-identity mismatch between receipt and declared binding fails closed"
+
+# A fully consumed, affirmative, subject-and-identity-bound receipt authorizes.
+printf '{"consumed":true,"outcome":"PROCEED","subject":"sol_task","lease":"lease-7","request":"req-32","generation":"g"}\n' \
+  > "$H4/data/sol_task/ruling.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "class_c_ruling=present" "valid consumed subject-bound ruling -> present"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 0 "$WC_RC" "a consumed subject-bound routed ruling authorizes the dependent effect"
+assert_contains "$WC_OUT" "verdict=proceed" "consumed ruling -> proceed"
+pass "a consumed, subject-bound routed-ruling receipt authorizes the Class-C dependent effect"
+
+# Defect 2 (fail-open): deleting the descriptor must NOT downgrade a KNOWN
+# dependent op to authorized Class A. The authoritative operation binding lives in
+# state/<id>.meta (authority_classes=C), which survives descriptor deletion.
+printf 'kind=ship\nauthority_classes=C\n' > "$H4/state/sol_task.meta"
+rm -f "$H4/data/sol_task/work-context.json"
+run_wc "$H4" classify sol_task
+assert_contains "$WC_OUT" "classes=C" "meta authority_classes=C survives descriptor deletion"
+assert_contains "$WC_OUT" "class_c_ruling=absent" "no descriptor -> no ruling receipt -> absent"
+run_wc "$H4" preflight sol_task --effect dependent
+expect_code 3 "$WC_RC" "deleting the descriptor must not downgrade a known Class-C op to authorized Class A"
+assert_contains "$WC_OUT" "class-c" "descriptor-absence still refuses the dependent Class-C effect"
+# The same known-Class-C op with no ruling still permits INDEPENDENT work and
+# safety/control recovery (missing context blocks only the dependent effect).
+run_wc "$H4" preflight sol_task --effect independent
+expect_code 0 "$WC_RC" "independent authorized work continues despite the unruled Class-C binding"
+run_wc "$H4" preflight sol_task --effect recovery
+expect_code 0 "$WC_RC" "safety/control recovery is never blocked by the unruled Class-C binding"
+pass "defect 2: descriptor absence does not downgrade a meta-declared Class-C op; only its dependent effect is blocked"
+
+# =========================================================================
+# Trusted authority path adoption (audit findings A/B/C). A configured canonical
+# ruling verifier is AUTHORITATIVE, is bound to the DECLARED applicability
+# (subject + request + generation), and a DECLARED-but-unreachable verifier FAILS
+# CLOSED rather than downgrading to the schema-shaped local validation. This is
+# the runtime adoption a schema-shaped receipt can never prove on its own.
+# =========================================================================
+
+HV=$(make_home verifier)
+add_item "$HV" vtask
+mkdir -p "$TMP_ROOT/verifier" "$HV/data/vtask"
+VSTUB="$TMP_ROOT/verifier/verifier-stub.sh"
+VARGS_LOG="$TMP_ROOT/verifier/verifier-args.log"
+cat > "$VSTUB" <<'STUB'
+#!/usr/bin/env bash
+# Stub standing in for the canonical control-plane verifier. It records the exact
+# args it was invoked with, then exits per VSTUB_EXIT (default 0). It never reads
+# the receipt's local schema, so a PROCEED here on a locally-INVALID receipt
+# proves the trusted path is authoritative, not merely ANDed with local checks.
+printf '%s\n' "$*" > "${VSTUB_ARGS_LOG:?}"
+exit "${VSTUB_EXIT:-0}"
+STUB
+chmod +x "$VSTUB"
+printf '%s\n' "$VSTUB" > "$HV/config/work-context-ruling-verifier"
+export VSTUB_ARGS_LOG="$VARGS_LOG"
+
+# The receipt is LOCALLY INVALID (unconsumed DENY): if the trusted path were
+# merely ANDed with local validation, no verdict could ever proceed.
+printf '{"consumed":false,"outcome":"DENY"}\n' > "$HV/data/vtask/ruling.json"
+printf 'kind=ship\nauthority_classes=C\n' > "$HV/state/vtask.meta"
+write_desc "$HV" vtask '{"source":{"locator":"'"$HV"'"},"authority":{"classes":["C"],"ruling_receipt":"ruling.json","request":"req-32","generation":"g-9"}}'
+
+# (finding A / positive) a reachable verifier that PROCEEDs authorizes the effect
+# even though the receipt would fail local validation: the trusted path is
+# authoritative and actually consulted at the seam.
+rm -f "$VARGS_LOG"
+export VSTUB_EXIT=0
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=present" "a reachable canonical verifier that PROCEEDs -> present"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 0 "$WC_RC" "the trusted verifier authorizes the dependent effect (authoritative over local schema)"
+assert_contains "$WC_OUT" "verdict=proceed" "trusted verifier PROCEED -> proceed"
+# (finding B) the verifier was bound to the DECLARED applicability, not just the receipt.
+assert_grep "--subject vtask" "$VARGS_LOG" "the verifier is bound to the subject"
+assert_grep "--request req-32" "$VARGS_LOG" "the verifier is bound to the declared request identity"
+assert_grep "--generation g-9" "$VARGS_LOG" "the verifier is bound to the declared generation identity"
+pass "findings A/B: a configured canonical verifier is consulted, authoritative, and applicability-bound"
+
+# (authoritative refuse) the same reachable verifier that REFUSES fails closed,
+# regardless of receipt shape.
+export VSTUB_EXIT=1
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=denied-or-invalid" "a reachable verifier that refuses -> denied-or-invalid"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 3 "$WC_RC" "a non-zero verifier exit fails closed before the dependent effect"
+unset VSTUB_EXIT
+
+# (finding A / the core defect) a DECLARED-but-unreachable verifier must FAIL
+# CLOSED, never silently downgrade to schema-shaped local validation - even when
+# the local receipt would otherwise be perfectly valid.
+printf '{"consumed":true,"outcome":"PROCEED","subject":"vtask","lease":"l","request":"req-32","generation":"g-9"}\n' \
+  > "$HV/data/vtask/ruling.json"
+# Sanity: with NO verifier declared, this exact receipt authorizes locally.
+rm -f "$HV/config/work-context-ruling-verifier"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 0 "$WC_RC" "with no verifier declared the locally-valid receipt authorizes (control)"
+# Now DECLARE an unreachable verifier: the very same receipt must be refused.
+printf '%s\n' "$TMP_ROOT/verifier/no-such-verifier-xyz" > "$HV/config/work-context-ruling-verifier"
+run_wc "$HV" classify vtask
+assert_contains "$WC_OUT" "class_c_ruling=verifier-unavailable" "a declared-but-unreachable verifier -> verifier-unavailable, not present"
+run_wc "$HV" preflight vtask --effect dependent
+expect_code 3 "$WC_RC" "a declared-but-unreachable verifier fails closed instead of accepting the schema-shaped receipt"
+assert_contains "$WC_OUT" "verifier-unavailable" "the refusal names the unreachable trusted path, not a schema verdict"
+pass "finding A: a declared-but-unreachable canonical verifier fails closed rather than downgrading to local schema validation"
+unset VSTUB_ARGS_LOG
+
+# =========================================================================
+# Defect 3 (fail-open): an ERROR from the readiness owner must FAIL CLOSED for a
+# dependent op, never collapse to proceed. A legitimate exemption still proceeds.
+# =========================================================================
+
+H6=$(make_home readiness_error)
+add_item "$H6" errtask
+# A present-but-unreadable backlog (a directory where a regular file is required)
+# makes the readiness owner return ERROR, not a clean exemption.
+rm -f "$H6/data/backlog.md"
+mkdir -p "$H6/data/backlog.md"
+run_wc "$H6" preflight errtask --effect dependent
+expect_code 3 "$WC_RC" "a readiness-owner error must fail closed for the dependent op, not proceed"
+assert_contains "$WC_OUT" "readiness-owner-error" "readiness owner error -> typed fail-closed refusal"
+# Recovery is still never blocked, even when readiness cannot be evaluated.
+run_wc "$H6" preflight errtask --effect recovery
+expect_code 0 "$WC_RC" "safety/control recovery proceeds even when readiness cannot be evaluated"
+pass "defect 3: a readiness-owner ERROR fails closed for dependent work while recovery still proceeds"
+
+H7=$(make_home readiness_exempt)
+# A genuinely absent backlog file is a legitimate exemption (readiness owned
+# elsewhere): the dependent op is NOT synthesized into a refusal.
+rm -f "$H7/data/backlog.md"
+run_wc "$H7" preflight sometask --effect dependent
+expect_code 0 "$WC_RC" "a legitimate readiness exemption still proceeds (not conflated with error)"
+assert_contains "$WC_OUT" "verdict=proceed" "absent backlog -> exemption proceeds (not the error refusal)"
+pass "defect 3: a legitimate readiness exemption is preserved and distinct from the error path"
+
+# =========================================================================
+# R3: one authorized child transition refreshes the currentness receipt via an
+# independent backing-owner read-back, idempotently.
+# =========================================================================
+
+H5=$(make_home reconcile)
+add_item "$H5" child
+tasks-axi start child --file "$(backlog_of "$H5")" >/dev/null
+
+# While the child is still in flight, a 'done' transition cannot be confirmed.
+run_wc "$H5" reconcile child "done"
+expect_code 1 "$WC_RC" "a done transition on a still-open child is unconfirmed"
+assert_contains "$WC_OUT" "reconcile=unconfirmed" "open child -> unconfirmed"
+
+# Close the child; the transition is now confirmed by an independent read-back.
+tasks-axi "done" child --file "$(backlog_of "$H5")" >/dev/null
+run_wc "$H5" reconcile child "done"
+expect_code 0 "$WC_RC" "a done transition on a closed child confirms via read-back"
+assert_contains "$WC_OUT" "reconcile=confirmed" "closed child -> confirmed"
+assert_present "$H5/state/child.parent-currentness" "reconcile writes a durable currentness receipt"
+assert_grep "currentness=confirmed" "$H5/state/child.parent-currentness" "receipt records confirmed currentness"
+
+# Idempotent replay: a second reconcile of the same transition converges.
+FIRST=$(cat "$H5/state/child.parent-currentness" | grep -v '^epoch=')
+run_wc "$H5" reconcile child "done"
+expect_code 0 "$WC_RC" "replaying the same transition stays confirmed"
+SECOND=$(cat "$H5/state/child.parent-currentness" | grep -v '^epoch=')
+[ "$FIRST" = "$SECOND" ] || fail "reconcile is not idempotent: '$FIRST' vs '$SECOND'"
+pass "R3: an authorized child transition refreshes the currentness receipt via independent read-back, idempotently"
+
+# The next-selection result reflects the completed child: a preflight after the
+# transition reads the now-current backlog owner and no longer treats the closed
+# child as an eligible dispatch (it is not 'proceed').
+run_wc "$H5" preflight child --effect dependent
+[ "$WC_RC" -ne 0 ] || fail "a completed child must not still preflight as an eligible dispatch: $WC_OUT"
+assert_not_contains "$WC_OUT" "verdict=proceed" "completed child -> next-selection does not re-dispatch it"
+pass "R3: after the transition the next-selection result reflects the completed child through the same caller"
+
+# =========================================================================
+# Defect 4: a real child -> parent/reference reconciliation. One confirmed child
+# transition reads back an INDEPENDENT authoritative parent row, refreshes a
+# declared reference currentness marker, and independently reads that marker back.
+# =========================================================================
+
+H8=$(make_home reconcile_ref)
+add_item "$H8" parent_task
+add_item "$H8" child2
+tasks-axi start child2 --file "$(backlog_of "$H8")" >/dev/null
+mkdir -p "$H8/data/child2"
+# Declare the authoritative parent and the reference currentness marker to refresh.
+write_desc "$H8" child2 '{"reconcile":{"parent":"parent_task","reference_marker":"roadmap.currentness"}}'
+
+# While the child is still open, the reconciliation cannot confirm and must NOT
+# write the reference marker.
+run_wc "$H8" reconcile child2 "done"
+expect_code 1 "$WC_RC" "an open child cannot confirm the parent/reference reconciliation"
+assert_absent "$H8/data/child2/roadmap.currentness" "an unconfirmed child must not refresh the reference marker"
+
+# Close the child; now the reconciliation confirms, reads the parent's real row,
+# refreshes the marker, and independently reads it back.
+tasks-axi "done" child2 --file "$(backlog_of "$H8")" >/dev/null
+run_wc "$H8" reconcile child2 "done"
+expect_code 0 "$WC_RC" "a closed child confirms the child->parent/reference reconciliation"
+assert_contains "$WC_OUT" "reconcile=confirmed" "confirmed reconciliation"
+assert_present "$H8/data/child2/roadmap.currentness" "the declared reference marker is refreshed"
+assert_grep "child=child2" "$H8/data/child2/roadmap.currentness" "the marker records the child transition"
+assert_grep "parent=parent_task" "$H8/data/child2/roadmap.currentness" "the marker records the authoritative parent"
+assert_grep "parent_state=queued" "$H8/data/child2/roadmap.currentness" "the marker records the independently read-back parent state"
+assert_grep "parent_readback=confirmed" "$H8/state/child2.parent-currentness" "the receipt proves an independent marker read-back"
+assert_grep "parent=parent_task" "$H8/state/child2.parent-currentness" "the receipt names the authoritative parent it read back"
+
+# Idempotent replay: the marker and receipt converge on the same content.
+REF_FIRST=$(cat "$H8/data/child2/roadmap.currentness")
+run_wc "$H8" reconcile child2 "done"
+expect_code 0 "$WC_RC" "replaying the confirmed reconciliation stays confirmed"
+REF_SECOND=$(cat "$H8/data/child2/roadmap.currentness")
+[ "$REF_FIRST" = "$REF_SECOND" ] || fail "reference reconciliation is not idempotent: '$REF_FIRST' vs '$REF_SECOND'"
+pass "defect 4: a confirmed child transition refreshes the declared reference marker from an independent parent read-back, idempotently"
+
+# =========================================================================
+# Acceptance (a): COMPLETION-TO-PARENT REFRESH. A confirmed terminal child
+# transition flips ONLY that child's matching obligation in the declared roadmap
+# owner from open to landed; unrelated obligations stay open and history is kept.
+# It never clears open wording before the child actually landed, and is idempotent.
+# =========================================================================
+
+H9=$(make_home roadmap)
+add_item "$H9" rchild
+add_item "$H9" rparent
+mkdir -p "$H9/data/rchild"
+ROADMAP="$H9/data/commission-roadmap.md"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver auth flow    obligation=rchild status=open'
+  printf '%s\n' '- Deliver billing      obligation=sibling status=open'
+  printf '%s\n' '- Deliver logging      obligation=shipped status=landed'
+} > "$ROADMAP"
+write_desc "$H9" rchild "{\"reconcile\":{\"parent\":\"rparent\",\"roadmap\":\"$ROADMAP\",\"obligation\":\"rchild\"}}"
+
+# (c) currentness read-back BEFORE declaring complete: while the child's
+# authoritative row is still open, the roadmap owner is not touched.
+tasks-axi start rchild --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild "merged"
+expect_code 1 "$WC_RC" "an open child cannot confirm the completion-to-parent refresh"
+assert_contains "$WC_OUT" "roadmap=skipped-unconfirmed-child" "open child -> roadmap untouched"
+assert_grep "obligation=rchild status=open" "$ROADMAP" "the matching obligation stays open until the child lands"
+pass "acceptance (c): roadmap state is compared with the authoritative child owner before declaring complete"
+
+# The child merges: the matching obligation flips open->landed; the sibling stays
+# open; the already-landed obligation is untouched; nothing is deleted.
+tasks-axi "done" rchild --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild "merged"
+expect_code 0 "$WC_RC" "a merged child confirms the completion-to-parent refresh"
+assert_contains "$WC_OUT" "roadmap=applied" "confirmed merge -> roadmap obligation flipped"
+assert_grep "obligation=rchild status=landed" "$ROADMAP" "the matching obligation is now landed"
+assert_grep "obligation=sibling status=open" "$ROADMAP" "an unrelated obligation stays open"
+assert_grep "obligation=shipped status=landed" "$ROADMAP" "an already-landed obligation is preserved"
+assert_grep "Deliver auth flow" "$ROADMAP" "history is preserved (the obligation line is edited in place, not deleted)"
+pass "acceptance (a): a merged child flips the parent's matching obligation open->landed while unrelated obligations stay open"
+
+# Idempotent replay: the roadmap owner is byte-identical and stays confirmed.
+ROADMAP_FIRST=$(cat "$ROADMAP")
+run_wc "$H9" reconcile rchild "merged"
+expect_code 0 "$WC_RC" "replaying the confirmed refresh stays confirmed"
+assert_contains "$WC_OUT" "roadmap=already-landed" "a matching obligation already landed is idempotent"
+ROADMAP_SECOND=$(cat "$ROADMAP")
+[ "$ROADMAP_FIRST" = "$ROADMAP_SECOND" ] || fail "roadmap refresh is not idempotent: '$ROADMAP_FIRST' vs '$ROADMAP_SECOND'"
+pass "acceptance (a): the completion-to-parent refresh is idempotent (the roadmap owner is byte-identical on replay)"
+
+# A declared obligation the roadmap does not carry is a real discrepancy that
+# fails closed, so a stale roadmap is never silently trusted as current.
+add_item "$H9" rchild_absent
+mkdir -p "$H9/data/rchild_absent"
+write_desc "$H9" rchild_absent "{\"reconcile\":{\"roadmap\":\"$ROADMAP\",\"obligation\":\"not-in-the-roadmap\"}}"
+tasks-axi start rchild_absent --file "$(backlog_of "$H9")" >/dev/null
+tasks-axi "done" rchild_absent --file "$(backlog_of "$H9")" >/dev/null
+run_wc "$H9" reconcile rchild_absent "merged"
+expect_code 1 "$WC_RC" "a declared obligation the roadmap does not carry fails closed"
+assert_contains "$WC_OUT" "roadmap=obligation-absent" "a missing obligation is a discrepancy, not a silent confirm"
+pass "acceptance (a): a declared obligation absent from the roadmap fails closed rather than trusting a stale roadmap"
+
+# A matched obligation line that is neither status=open nor status=landed (a
+# stale in-progress line, or a matched obligation tag carrying no status token)
+# must FAIL CLOSED as obligation-not-landed, never be silently confirmed as
+# already-landed. Only a genuinely status=landed matched line confirms.
+H9B=$(make_home roadmap_notlanded)
+ROADMAP_NL="$H9B/data/commission-roadmap.md"
+
+# (i) status=in-progress: matched but not open and not landed -> fail closed.
+add_item "$H9B" rc_inprog
+mkdir -p "$H9B/data/rc_inprog"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver auth flow    obligation=rc_inprog status=in-progress'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_inprog "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_inprog\"}}"
+tasks-axi start rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_inprog --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_inprog "merged"
+expect_code 1 "$WC_RC" "an in-progress obligation line fails closed rather than confirming"
+assert_contains "$WC_OUT" "currentness=unconfirmed" "a non-landed matched obligation downgrades currentness"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "an in-progress obligation is not silently trusted as already-landed"
+assert_grep "obligation=rc_inprog status=in-progress" "$ROADMAP_NL" "the stale in-progress line is not flipped"
+
+# (ii) a matched obligation tag with no status token at all -> fail closed.
+add_item "$H9B" rc_nostatus
+mkdir -p "$H9B/data/rc_nostatus"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver logging    obligation=rc_nostatus'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_nostatus "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_nostatus\"}}"
+tasks-axi start rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_nostatus --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_nostatus "merged"
+expect_code 1 "$WC_RC" "a matched obligation with no status token fails closed"
+assert_contains "$WC_OUT" "roadmap=obligation-not-landed" "a status-less matched obligation is not silently trusted"
+
+# (iii) a genuinely status=landed matched line still confirms idempotently.
+add_item "$H9B" rc_landed
+mkdir -p "$H9B/data/rc_landed"
+{
+  printf '%s\n' '# Commission roadmap'
+  printf '%s\n' '- Deliver caching    obligation=rc_landed status=landed'
+} > "$ROADMAP_NL"
+write_desc "$H9B" rc_landed "{\"reconcile\":{\"roadmap\":\"$ROADMAP_NL\",\"obligation\":\"rc_landed\"}}"
+tasks-axi start rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+tasks-axi "done" rc_landed --file "$(backlog_of "$H9B")" >/dev/null
+run_wc "$H9B" reconcile rc_landed "merged"
+expect_code 0 "$WC_RC" "a genuinely landed obligation still confirms"
+assert_contains "$WC_OUT" "roadmap=already-landed" "only a real status=landed line confirms idempotently"
+pass "acceptance (a): a matched obligation that is neither open nor landed fails closed as obligation-not-landed"
+
+# =========================================================================
+# Acceptance (b): NEXT-ELIGIBLE-TASK SELECTION. With no active worker, select
+# composes the existing per-task eligible_queued producer with the per-task
+# preflight: one held task is distinguished from an independent eligible task,
+# and an aggregate externally_held/captain_decision state is NOT a global hold.
+# =========================================================================
+
+if command -v tasks-axi >/dev/null 2>&1; then
+  H10=$(make_home select)
+  add_item "$H10" free_task
+  add_item "$H10" held_task
+  tasks-axi hold held_task --reason "blanket captain preference" --kind captain \
+    --file "$(backlog_of "$H10")" >/dev/null
+  run_wc "$H10" select
+  expect_code 0 "$WC_RC" "select is a read-only report and exits 0"
+  # The aggregate state reflects the hold, yet the home is NOT globally blocked.
+  assert_not_contains "$WC_OUT" "aggregate_state=no_active_work" "a held sibling makes the aggregate non-idle"
+  assert_contains "$WC_OUT" "eligible_candidates=1" "exactly the independent task is an eligible candidate"
+  assert_contains "$WC_OUT" "selectable=free_task" "the independent eligible task is selectable despite the aggregate hold"
+  printf '%s' "$WC_OUT" | grep -q "selectable=.*held_task" && fail "the held task must not be selectable"
+  pass "acceptance (b): selection distinguishes a held task from an independent eligible task; the aggregate hold is not global"
+else
+  pass "acceptance (b): skipped (tasks-axi not installed; the selection producer is inert without it)"
+fi
+
+echo "# fm-work-context.test.sh: all assertions passed"

@@ -1,0 +1,89 @@
+{
+  "schema": "fm-accepted-owner-evidence/v1",
+  "programme_id": "cleanroom-af-package",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "work_id": "cleanroom-af-package",
+  "generation": 1,
+  "evidence_id": "slice-c-s3-pr5-landing",
+  "step": "slice-c-s3-changed-owner-evidence",
+  "owner": {
+    "kind": "pull_request_merge",
+    "ref": "sbracewell64/firstmate-cleanroom#5",
+    "url": "https://github.com/sbracewell64/firstmate-cleanroom/pull/5",
+    "title": "fix(bin): harden fm-review-diff revision pinning, lineage, and malformed-meta refusals"
+  },
+  "outcome": "MERGED_QUALIFIED",
+  "candidate": {
+    "head": "9ce75aa2edcea3e94981c35fd217102a8fe26585",
+    "merge_commit": "dc66ba5ce35be4917424a529a45e61f4a9fa556c",
+    "base_ref": "main",
+    "base_sha": "76cef8a20bea4e003d9db7c2bcbe285f8036c3ee",
+    "merged_at": "2026-09-05T22:39:29Z",
+    "merged_by": "sbracewell64",
+    "merge_method": "squash"
+  },
+  "policy": null,
+  "verifier": {
+    "tool": "gh api (GitHub REST) read by the bounded worker af-programme-binding; digests recomputed with sha256sum over the fetched bytes",
+    "observed_at": "2026-09-06T20:05:00Z",
+    "observation_class": "read-only capture; no ruling, hold, merge, or acceptance was produced by this record"
+  },
+  "qualification": {
+    "pipeline": "no-mistakes",
+    "evidence_refs": [
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/fm-review-diff-test-run.log",
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/manual-transcript-copy-detection.txt",
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/manual-transcript-could-not-observe.txt",
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/manual-transcript-lineage-and-shas.txt",
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/manual-transcript-refusals.txt",
+      "https://github.com/sbracewell64/firstmate-cleanroom/blob/d60e3e6044dcbdbbfc3a98995d724f2006f53e15/.no-mistakes/evidence/fm/s3-review-diff-hardening/regression-new-tests-vs-base-commit.log"
+    ],
+    "ci_check_runs": {
+      "head": "9ce75aa2edcea3e94981c35fd217102a8fe26585",
+      "total": 13,
+      "by_conclusion": {
+        "success": 13
+      },
+      "distinct_checks": 13,
+      "latest_run_per_check_all_success": true,
+      "superseded_runs": []
+    },
+    "landing_owner": "exact-head merge through the forge (bin/fm-pr-merge.sh records merge metadata on the task during its life; the task record was retired at teardown)",
+    "reconciliation": "reconciled from the forge pull-request record and its check runs plus the no-mistakes evidence links the pipeline wrote into the PR body; nothing here is presumed from the control-venue report"
+  },
+  "captures": [
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom/pulls/5",
+      "sha256": "31f8a2f12da691f16c185df5f6b126750fe8156f8870e1cbcf0d0f12b1d06563",
+      "bytes": 42908,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    },
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom/commits/9ce75aa2edcea3e94981c35fd217102a8fe26585/check-runs?per_page=100",
+      "sha256": "32f7b0485a720cfe9d6891d74ad8018de1995956920846b15d96b75e649a50a4",
+      "bytes": 40624,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    },
+    {
+      "kind": "api_capture",
+      "locator": "https://api.github.com/repos/sbracewell64/firstmate-cleanroom-control/issues/comments/5555276103",
+      "sha256": "65186aa24ae3db5344d672c856271ebba6b02305d219ca3a6ebc2a8ab46edb71",
+      "bytes": 3690,
+      "digest_basis": "fetched_bytes",
+      "captured_at": "2026-09-06T20:05:00Z"
+    }
+  ],
+  "sources": [],
+  "observed_bad": [],
+  "superseded_by": null,
+  "reported_in": {
+    "kind": "control_report",
+    "ref": "sbracewell64/firstmate-cleanroom-control#3#issuecomment-5555276103",
+    "url": "https://github.com/sbracewell64/firstmate-cleanroom-control/issues/3#issuecomment-5555276103",
+    "slice": "C / S3"
+  }
+}

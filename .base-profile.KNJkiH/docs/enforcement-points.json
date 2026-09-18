@@ -1,0 +1,756 @@
+{
+  "version": 1,
+  "entryPoints": [
+    {
+      "id": "bin/fm-arm-pretool-check.sh",
+      "kind": "enforced",
+      "invariant": "A primary session may not arm supervision or run a guarded tool without the pre-tool checkpoint.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".claude/settings.json",
+          "via": "production"
+        },
+        {
+          "path": ".codex/hooks.json",
+          "via": "production"
+        },
+        {
+          "path": ".cursor/hooks.json",
+          "via": "production"
+        },
+        {
+          "path": ".grok/hooks/fm-primary-pretool-check.json",
+          "via": "production"
+        },
+        {
+          "path": ".opencode/plugins/fm-primary-pretool-check.js",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backlog-transition-lib.sh:fm_backlog_close_marker_validate",
+      "kind": "enforced",
+      "invariant": "A backlog close marker is replayed only when its recorded identity, data directory, and task id still agree.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-backlog-transition-lib.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called from the staging and replay owners inside its own library; bin/fm-teardown.sh is the executable that reaches both."
+    },
+    {
+      "id": "bin/fm-captain-hold.sh:verify",
+      "kind": "enforced",
+      "invariant": "An investigation or review may not complete while a captain call it raised is still open.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-cd-pretool-check.sh",
+      "kind": "enforced",
+      "invariant": "A primary session may not leave its declared working directory through an unchecked shell command.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".claude/settings.json",
+          "via": "production"
+        },
+        {
+          "path": ".codex/hooks.json",
+          "via": "production"
+        },
+        {
+          "path": ".cursor/hooks.json",
+          "via": "production"
+        },
+        {
+          "path": ".grok/hooks/fm-primary-cd-check.json",
+          "via": "production"
+        }
+      ],
+      "rejectedCallSites": [
+        {
+          "path": "bin/fm-cd-command-policy.mjs",
+          "reason": "Names the hook owner in a // header comment; the policy module is imported by it rather than calling it."
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-check-register.sh",
+      "kind": "enforced",
+      "invariant": "The watcher executes a custom state check only against the exact bytes an intentional registration bound.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-tool-update-check.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-check-unregister.sh",
+      "kind": "operator-invoked",
+      "invariant": "A retired custom state check loses its content binding through the owner path, never a hand-composed remove.",
+      "reason": "No script calls it: bin/fm-teardown.sh removes a spawned task's check artifacts on its own path, so this is the retirement command firstmate runs for a check it registered by hand.",
+      "documentedAt": [
+        "AGENTS.md",
+        "docs/scripts.md"
+      ]
+    },
+    {
+      "id": "bin/fm-commit-identity-verify.sh",
+      "kind": "enforced",
+      "invariant": "A no-mistakes ship task's PR head carries the obligated commit identity and no contaminated commit.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-pr-check.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-cursor-lib.sh:fm_cursor_verify_executable",
+      "kind": "enforced",
+      "invariant": "A cursor launcher alias is accepted only with evidence that the executable really is cursor-agent.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-cursor-lib.sh",
+          "via": "production"
+        }
+      ],
+      "note": "The resolver that every cursor spawn traverses calls it before accepting a candidate."
+    },
+    {
+      "id": "bin/fm-doc-audience-check.sh",
+      "kind": "enforced",
+      "invariant": "Every maintained prose surface is classified exactly once and its local links resolve.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": "tests/fm-documentation-audiences.test.sh",
+          "via": "ci-suite"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-enforcement-caller-check.sh",
+      "kind": "enforced",
+      "invariant": "Every enforce-style entry point in bin/ declares a call site that still names it in executable text, rather than shipping with no declared caller at all.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": "tests/fm-enforcement-callers.test.sh",
+          "via": "ci-suite"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-gate-refuse-lib.sh:fm_refuse_if_gate_agent",
+      "kind": "enforced",
+      "invariant": "A no-mistakes gate agent may not drive fleet lifecycle commands.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-guard.sh",
+      "kind": "not-enforcement",
+      "invariant": "A fleet mutation that runs without the verified per-home lock or from a tangled checkout is announced to the operator.",
+      "reason": "An advisory reporter, not a refusal: bin/fm-guard.sh always exits 0 (its only top-level exits are the two `exit 0` statements), so no invocation can act on a failing status and a fleet mutation from a tangled checkout prints the banner and then proceeds. The lock-and-tangle invariant in its previous declaration has no blocking owner at this call site; see docs/verification/enforcing-call-sites.md."
+    },
+    {
+      "id": "bin/fm-lease-lib.sh:fm_lease_guard",
+      "kind": "enforced",
+      "invariant": "Only the actor holding a task's supervision lease may change that task.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-lease-lib.sh:fm_lease_guard_release",
+      "kind": "enforced",
+      "invariant": "A supervision lease taken for a guarded change is released on every exit path.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-lint-workflows.sh",
+      "kind": "enforced",
+      "invariant": "Tracked GitHub workflows lint clean against the pinned actionlint.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": "bin/fm-lint.sh",
+          "via": "production"
+        }
+      ],
+      "rejectedCallSites": [
+        {
+          "path": ".no-mistakes.yaml",
+          "reason": "Names the workflow linter in a # comment describing the lint step; bin/fm-lint.sh is the command the step runs."
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-lint.sh",
+      "kind": "enforced",
+      "invariant": "The tracked shell surface lints clean against one pinned ShellCheck, identically in CI and the pre-push gate.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "via": "production"
+        },
+        {
+          "path": ".no-mistakes.yaml",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-nmf-verify-input.sh",
+      "kind": "enforced",
+      "invariant": "The required no-mistakes status workflow acts only on validated input.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": ".github/workflows/no-mistakes-required.yml",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-outbound-write-lib.sh:fm_outbound_send",
+      "kind": "enforced",
+      "invariant": "Every tracked outbound write records its exact payload bytes, digest, and provider verdict in the ledger.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-backlog-handoff.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-x-reply.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-x-dismiss.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Known-good reference: the shared enforcement owner landed by PR 47 (merge 0a519ea)."
+    },
+    {
+      "id": "bin/fm-pr-check.sh",
+      "kind": "enforced",
+      "invariant": "A task's recorded PR identity is validated before a merge poll is armed for it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-pr-merge.sh",
+          "via": "production"
+        }
+      ],
+      "rejectedCallSites": [
+        {
+          "path": "bin/fm-stage.sh",
+          "reason": "Names the script inside a printf of operator next-step text, not in a command."
+        },
+        {
+          "path": "bin/fm-branch-prompt.sh",
+          "reason": "Names the script inside the quoted heredoc that renders the branch agent's tool list."
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-remote-job-lib.sh:fm_remote_job_validate_settings",
+      "kind": "enforced",
+      "invariant": "A remote job runs only with complete, well-formed transport settings.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-remote-job-lib.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by the job entry path inside its own library, which bin/fm-on.sh and the remote handoff owners traverse."
+    },
+    {
+      "id": "bin/fm-startup-memory-budget.sh:enforce",
+      "kind": "enforced",
+      "invariant": "Curated durable memory is injected at session start only while the home is within its startup-memory budget.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-session-start.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Known-good reference: the gate wired to its startup consumer by PR 46 (merge 0e826aa)."
+    },
+    {
+      "id": "bin/fm-subagent-pretool-check.sh",
+      "kind": "enforced",
+      "invariant": "A subagent may not reach the primary's guarded tool surface unchecked.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".claude/settings.json",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-test-run.sh:--check-coverage",
+      "kind": "enforced",
+      "invariant": "The complete-regression lane partition stays proven and every portable serial shard stays inside its job-cap budget.",
+      "guards": "repository",
+      "callSites": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-tool-profile.sh:--require",
+      "kind": "enforced",
+      "invariant": "A launcher or observation shell resolves the qualified tool profile before work depends on it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/enter-firstmate.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-nm-observe.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-turnend-guard.sh",
+      "kind": "enforced",
+      "invariant": "A primary turn may not end blind while fleet work is under way.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".claude/settings.json",
+          "via": "production"
+        },
+        {
+          "path": ".codex/hooks.json",
+          "via": "production"
+        },
+        {
+          "path": ".opencode/plugins/fm-primary-turnend-guard.js",
+          "via": "production"
+        },
+        {
+          "path": ".pi/extensions/fm-primary-turnend-guard.ts",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-turnend-guard-cursor.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-turnend-guard-cursor.sh",
+      "kind": "enforced",
+      "invariant": "The same turn-end guard reaches a Cursor primary through its own stop-hook owner.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".cursor/hooks.json",
+          "via": "production"
+        }
+      ],
+      "rejectedCallSites": [
+        {
+          "path": "bin/fm-supervision-instructions.sh",
+          "reason": "Names the stop-hook owner inside a printf of supervision instruction text, not in a command."
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-turnend-guard-grok.sh",
+      "kind": "enforced",
+      "invariant": "The same turn-end guard reaches a Grok primary through its registered hook.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": ".grok/hooks/fm-primary-turnend-guard.json",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-decision-hold.sh:verify",
+      "kind": "operator-invoked",
+      "invariant": "A pre-collapse decision identity still verifies against the surviving captain-hold owner.",
+      "reason": "One-release compatibility shim for briefs written before the decision collapse; the surviving owner bin/fm-captain-hold.sh:verify carries the production call site, and this surface is invoked only by an in-flight brief.",
+      "documentedAt": [
+        "docs/captain-hold-lifecycle.md"
+      ]
+    },
+    {
+      "id": "bin/fm-home-seed.sh:validate",
+      "kind": "operator-invoked",
+      "invariant": "The secondmate registry stays parseable, with absolute, unique, non-overlapping homes.",
+      "reason": "A standalone re-check surface for an operator; the same validate_registry predicate already runs inside the transactional seed path, so the invariant is enforced at the write boundary rather than here.",
+      "documentedAt": [
+        "docs/remote-secondmates.md",
+        ".agents/skills/secondmate-provisioning/SKILL.md"
+      ]
+    },
+    {
+      "id": "bin/fm-render-launcher.sh:--require-complete-config",
+      "kind": "operator-invoked",
+      "invariant": "Activation staging is refused when an isolation input is missing.",
+      "reason": "An opt-in strictness flag on a captain-authorized launcher cutover procedure that no script schedules; the procedure itself is the invoker.",
+      "documentedAt": [
+        "docs/configuration.md"
+      ]
+    },
+    {
+      "id": "bin/fm-tool-update-check.sh",
+      "kind": "not-enforcement",
+      "invariant": "Watched tooling with an available or inert update is reported to the supervisor.",
+      "reason": "A reporter, not an enforcement point: it prints a wake line and refuses nothing. Discovered only because its name carries the word check."
+    },
+    {
+      "id": "bin/backends/cmux.sh:fm_backend_cmux_refuse_denied",
+      "kind": "enforced",
+      "invariant": "A cmux operation that the daemon denied is refused with the owner action rather than retried blind.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/backends/cmux.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called from the adapter's own send and capture paths, which every cmux-backed lifecycle command traverses."
+    },
+    {
+      "id": "bin/backends/cmux.sh:fm_backend_cmux_refuse_unauth",
+      "kind": "enforced",
+      "invariant": "A cmux operation without daemon authorization is refused rather than treated as a transport error.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/backends/cmux.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called from the adapter's own send and capture paths, which every cmux-backed lifecycle command traverses."
+    },
+    {
+      "id": "bin/fm-afk-launch.sh:fm_afk_launch_record_validate_if_present",
+      "kind": "enforced",
+      "invariant": "Away mode is re-entered only when any surviving launch record is still well formed and its return catch-up has cleared.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-afk-launch.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called on both re-entry paths inside the launcher, which is the only writer of the away-mode record."
+    },
+    {
+      "id": "bin/fm-afk-return.sh:guard",
+      "kind": "enforced",
+      "invariant": "Ordinary captain work is refused while away mode is active or return catch-up is still pending.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-bearings-snapshot.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate",
+      "kind": "enforced",
+      "invariant": "A session backend is used only when an implemented adapter answers to that exact name.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-send.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate_spawn",
+      "kind": "enforced",
+      "invariant": "A task is spawned only on a backend whose adapter implements task spawning.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate_endpoint_schema",
+      "kind": "enforced",
+      "invariant": "A recorded local task endpoint has exactly one nonempty value for every field required by its backend before task endpoint validation accepts it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-backend.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Task endpoint validation calls this schema check before any runtime command or cleanup mutation."
+    },
+    {
+      "id": "bin/fm-backend.sh:fm_backend_validate_task_endpoint",
+      "kind": "enforced",
+      "invariant": "A task's recorded endpoint is proven to belong to that task before any command acts on the session it names.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-control.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-remote-secondmate-control.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_claim_stale_banner",
+      "kind": "not-enforcement",
+      "invariant": "The watcher-down banner is announced in full once per down episode and as a reminder afterwards.",
+      "reason": "Presentation bookkeeping, not a refusal: it decides how loudly the existing alarm prints and never changes whether a fleet mutation is allowed. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_clear_stale_banner",
+      "kind": "not-enforcement",
+      "invariant": "A recovered watcher clears the announced-episode marker so the next down episode announces in full.",
+      "reason": "Presentation bookkeeping, not a refusal: it removes a marker file and never changes whether a fleet mutation is allowed. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_stale_banner_seen",
+      "kind": "not-enforcement",
+      "invariant": "A read-only guard pass reports whether this down episode was already announced without claiming it.",
+      "reason": "A read-only predicate over the banner marker, not a refusal. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-guard.sh:fm_guard_stale_episode_key",
+      "kind": "not-enforcement",
+      "invariant": "One continuous watcher-down episode keys on the failing condition rather than the beacon mtime.",
+      "reason": "A pure key formatter for the banner marker, not a refusal. Discovered only because bin/fm-guard.sh namespaces its helpers fm_guard_*."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_refuse_if_default",
+      "kind": "enforced",
+      "invariant": "A lab operation never touches the shared default Herdr session.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by every mutating lab subcommand inside its own script, which is the only owner of lab sessions."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_validate_name",
+      "kind": "enforced",
+      "invariant": "A lab session is addressed only by a well-formed fm-lab-* name this script could have created.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by every lab subcommand inside its own script before the name reaches the backend."
+    },
+    {
+      "id": "bin/fm-herdr-lab.sh:fm_herdr_lab_verify_tripwire",
+      "kind": "enforced",
+      "invariant": "A lab session is destroyed only after its tripwire proves the session is the one this script created.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-herdr-lab.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by the lab teardown paths inside its own script, immediately before the destructive call."
+    },
+    {
+      "id": "bin/fm-public-followup.sh:guard-work",
+      "kind": "enforced",
+      "invariant": "Follow-on work behind a registered public loop is held until that loop's reply has landed.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-backlog-handoff.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-ff-lib.sh:validate_operational_dirs",
+      "kind": "enforced",
+      "invariant": "A secondmate home's data, state, config and projects directories resolve inside that home and nowhere else.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-ff-lib.sh",
+          "via": "production"
+        }
+      ],
+      "note": "Called by validate_secondmate_home in its own library, which bin/fm-bootstrap.sh, bin/fm-fleet-snapshot.sh, bin/fm-stow-cascade.sh and bin/fm-config-push.sh traverse."
+    },
+    {
+      "id": "bin/fm-ff-lib.sh:validate_secondmate_home",
+      "kind": "enforced",
+      "invariant": "A secondmate home is accepted only when it resolves to a real directory that is not the active firstmate home and whose marker names the expected id.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-bootstrap.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-fleet-snapshot.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-stow-cascade.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-config-push.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-secondmate-registry-lib.sh:secondmate_registry_validate_bindings",
+      "kind": "enforced",
+      "invariant": "The secondmate registry parses with unique, non-overlapping host, root and home bindings, and any expected id and home still agree with it.",
+      "guards": "runtime",
+      "callSites": [
+        {
+          "path": "bin/fm-spawn.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-promote.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-teardown.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-home-seed.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-stow-cascade.sh",
+          "via": "production"
+        },
+        {
+          "path": "bin/fm-remote-home-seed.sh",
+          "via": "production"
+        }
+      ]
+    },
+    {
+      "id": "bin/fm-wake-lib.sh:_fm_wake_require_classify",
+      "kind": "not-enforcement",
+      "invariant": "A status presentation helper runs only after bin/fm-classify-lib.sh has been sourced.",
+      "reason": "A lazy module loader, not a refusal: `require` here means import, and the function sources bin/fm-classify-lib.sh on demand rather than rejecting any input. One caller (bin/fm-wake-lib.sh's count helper) degrades to a zero count when the load fails instead of refusing, which is the opposite of a gate."
+    },
+    {
+      "id": "bin/enter-firstmate.sh:refuse-state-unwritable",
+      "kind": "not-enforcement",
+      "invariant": "A console is not started unsupervisable when the home state directory cannot be written.",
+      "reason": "Not an entry point: this is one branch label of an internal `case` on the computed cold-arm decision verb, not a subcommand any caller can name. The refusal it performs is real and belongs to bin/enter-firstmate.sh itself, which the launcher owns. Discovery reaches it because arm collection is deliberately blind to which case block an arm sits in, which is the fail-safe reading."
+    }
+  ]
+}

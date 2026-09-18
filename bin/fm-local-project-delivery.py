@@ -49,6 +49,57 @@ class NotOwner(Exception):
     pass
 
 
+class AdmissionSession:
+    def __init__(self, home: Path, root: Path, destination: Path, registry_data: bytes, registry_sha256: str):
+        self.home = home
+        self.root = root
+        self.destination = destination
+        self.registry_data = registry_data
+        self.registry_sha256 = registry_sha256
+        self.home_fd = open_directory(home)
+        self.data_fd: int | None = None
+        self.registry_fd: int | None = None
+        self.source_fd: int | None = None
+        self.destination_fd: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            self.data_fd = os.open("data", flags, dir_fd=self.home_fd)
+            self.registry_fd = os.open("projects.md", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.data_fd)
+            self.source_fd = open_directory(root)
+            self.destination_fd = open_directory(destination)
+        except BaseException:
+            self.close()
+            raise
+
+    def revalidate(self) -> None:
+        if self.data_fd is None or self.registry_fd is None or self.source_fd is None or self.destination_fd is None:
+            cno("IDENTITY_UNREADABLE", "admission snapshot is closed")
+        verify_directory_identity(self.root, self.source_fd, "source root")
+        verify_directory_identity(self.destination, self.destination_fd, "destination root")
+        before = os.fstat(self.registry_fd)
+        os.lseek(self.registry_fd, 0, os.SEEK_SET)
+        data = os.read(self.registry_fd, before.st_size)
+        after = os.fstat(self.registry_fd)
+        if before.st_size != len(data) or (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            refuse("IDENTITY_CHANGED", "project registry changed while it was read")
+        if data != self.registry_data or hashlib.sha256(data).hexdigest() != self.registry_sha256:
+            refuse("OWNER_REGISTRY_CHANGED", "project registry snapshot differs from the admission census")
+        current_registry = os.open("projects.md", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.data_fd)
+        try:
+            current = os.fstat(current_registry)
+            if (current.st_dev, current.st_ino, current.st_mode) != (before.st_dev, before.st_ino, before.st_mode):
+                refuse("IDENTITY_CHANGED", "project registry was replaced before admission publication")
+        finally:
+            os.close(current_registry)
+
+    def close(self) -> None:
+        for name in ("registry_fd", "source_fd", "destination_fd", "data_fd", "home_fd"):
+            fd = getattr(self, name, None)
+            if fd is not None:
+                os.close(fd)
+                setattr(self, name, None)
+
+
 def refuse(reason: str, detail: str) -> None:
     raise Verdict("REFUSED", reason, detail)
 
@@ -407,8 +458,9 @@ def build_candidate(
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} path is not its repository root")
     if require_cwd and Path.cwd().resolve() != repo_real:
         refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {repo_real}")
-    source_root_fd = open_directory(root)
-    destination_root_fd = open_directory(repo_real)
+    session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
+    source_root_fd = session.source_fd
+    destination_root_fd = session.destination_fd
     if not ref.startswith("refs/heads/") or not SLUG.fullmatch(ref.removeprefix("refs/heads/")):
         refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
     head = git(repo_real, "rev-parse", f"{ref}^{{commit}}")
@@ -513,9 +565,8 @@ def build_candidate(
         "manifest_sha256": manifest_sha,
         "preservation": preservation,
     }
-    os.close(source_root_fd)
-    os.close(destination_root_fd)
-    return candidate
+    session.revalidate()
+    return candidate, session
 
 
 def validate_admission(
@@ -569,7 +620,7 @@ def validate_admission(
     ref = destination.get("ref")
     if not isinstance(ref, str):
         refuse("IDENTITY_MALFORMED", "destination ref is absent")
-    rebuilt = build_candidate(
+    rebuilt, session = build_candidate(
         home=home, programme=programme, root=root, step=step,
         policy=policy, project=project, ref=ref,
         delivery_id=admission_id, maker=maker, checker=checker, route=route,
@@ -577,9 +628,10 @@ def validate_admission(
         registry_sha256=registry_sha256,
         registry_data=registry_data,
     )
-    _, current_registry_sha256, _ = registered_projects(home)
-    if current_registry_sha256 != registry_sha256:
-        refuse("OWNER_REGISTRY_CHANGED", "project registry changed during admission verification")
+    try:
+        session.revalidate()
+    finally:
+        session.close()
     if doc.get("manifest_sha256") != rebuilt["manifest_sha256"]:
         refuse("MANIFEST_DIGEST_MISMATCH", "artifact manifest digest differs from current exact family")
     if doc.get("artifacts") != rebuilt["artifacts"]:
@@ -605,13 +657,14 @@ def owner_candidates(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
     checker: str, route: str, script_dir: Path,
-) -> tuple[list[tuple[str, dict[str, Any]]], str]:
+) -> tuple[list[tuple[str, dict[str, Any], AdmissionSession]], str]:
     registered, registry_sha256, registry_data = registered_projects(home)
-    candidates: list[tuple[str, dict[str, Any]]] = []
+    candidates: list[tuple[str, dict[str, Any], AdmissionSession]] = []
     blocking: list[Verdict] = []
     for project in registered:
+        session: AdmissionSession | None = None
         try:
-            candidate = build_candidate(
+            candidate, session = build_candidate(
                 home=home, programme=programme, root=root, step=step,
                 policy=policy, project=project, ref=ref,
                 delivery_id=delivery_id, maker=maker, checker=checker, route=route,
@@ -620,12 +673,18 @@ def owner_candidates(
                 registry_data=registry_data,
                 enforce_pinned_owner=False,
             )
-            candidates.append((project, candidate))
+            candidates.append((project, candidate, session))
         except NotOwner:
+            if session is not None:
+                session.close()
             continue
         except Verdict as exc:
             blocking.append(exc)
+            if session is not None:
+                session.close()
     if blocking and candidates:
+        for _, _, session in candidates:
+            session.close()
         raise blocking[0]
     if blocking and not candidates:
         cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
@@ -643,24 +702,17 @@ def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str
             continue
 
 
-def publish(home: Path, candidate: dict[str, Any], registry_sha256: str) -> tuple[Path, str]:
-    _, current_registry_sha256, _ = registered_projects(home)
-    if current_registry_sha256 != registry_sha256:
-        refuse("OWNER_REGISTRY_CHANGED", "project registry changed before admission publication")
-    for label, identity in (("source root", candidate["source"]), ("destination root", candidate["destination"])):
-        path = Path(identity["root"])
-        if directory_identity(path) != identity["root_identity"]:
-            refuse("IDENTITY_CHANGED", f"{label} changed before admission publication")
+def publish(home: Path, candidate: dict[str, Any], session: AdmissionSession) -> tuple[Path, str]:
+    session.revalidate()
     directory = home / "data/local-project-delivery/admissions"
     final_name = f"{candidate['admission_id']}.json"
     data = json.dumps(candidate, sort_keys=True, indent=2, ensure_ascii=False).encode() + b"\n"
     reject_symlink_chain(home, ("data", "local-project-delivery", "admissions"), "admission directory")
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    home_fd = os.open(home, directory_flags)
     data_fd = local_fd = admissions_fd = temp_fd = None
     temp_name = None
     try:
-        data_fd = os.open("data", directory_flags, dir_fd=home_fd)
+        data_fd = os.dup(session.data_fd)
         try:
             os.mkdir("local-project-delivery", 0o700, dir_fd=data_fd)
         except FileExistsError:
@@ -697,7 +749,7 @@ def publish(home: Path, candidate: dict[str, Any], registry_sha256: str) -> tupl
                 os.unlink(temp_name, dir_fd=admissions_fd)
             except OSError:
                 pass
-        for fd in (admissions_fd, local_fd, data_fd, home_fd):
+        for fd in (admissions_fd, local_fd, data_fd):
             if fd is not None:
                 os.close(fd)
 
@@ -756,19 +808,27 @@ def main() -> int:
         if not candidates:
             cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
         if len(candidates) != 1:
-            refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _ in candidates)}")
-        project, candidate = candidates[0]
+            for _, _, session in candidates:
+                session.close()
+            refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _, _ in candidates)}")
+        project, candidate, session = candidates[0]
+        for other_project, _, other_session in candidates:
+            if other_project != project:
+                other_session.close()
         pinned = policy.get("owner_project")
         if pinned is not None and project != pinned:
+            session.close()
             refuse("OWNER_PROJECT_MISMATCH", f"unique lawful owner {project} is not the pinned owner {pinned}")
         if requested_project != "auto" and project != requested_project:
+            session.close()
             refuse("OWNER_PROJECT_MISMATCH", f"project {requested_project} is not the unique lawful owner {project}")
         if Path.cwd().resolve() != Path(candidate["destination"]["root"]):
+            session.close()
             refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {candidate['destination']['root']}")
-        _, current_registry_sha256, _ = registered_projects(home)
-        if current_registry_sha256 != registry_sha256:
-            refuse("OWNER_REGISTRY_CHANGED", "project registry changed during owner census")
-        path, digest = publish(home, candidate, registry_sha256)
+        try:
+            path, digest = publish(home, candidate, session)
+        finally:
+            session.close()
         print(json.dumps({"status": "ADMITTED", "reason_code": None, "path": str(path), "sha256": digest, "project": project, "head": candidate["destination"]["head"], "tree": candidate["destination"]["tree"], "manifest_sha256": candidate["manifest_sha256"]}, sort_keys=True))
         return 0
 

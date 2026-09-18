@@ -23,14 +23,16 @@ ARM_FAIL_EXIT_POLLS=400
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
 drain_and_ack() {  # <state>
-  local state=$1 out sequence generation
+  local state=$1 out sequence generation home
+  home=${state%/state}
   out="$state/.test-drain.out"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$state/.test-drain.err" || return 1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" \
+    > "$out" 2> "$state/.test-drain.err" || return 1
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out")
   rm -f "$out" "$state/.test-drain.err"
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
-  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
 }
 

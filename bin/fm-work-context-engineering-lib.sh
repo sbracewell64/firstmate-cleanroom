@@ -135,7 +135,12 @@ fm_work_context_engineering() { # <data> <id> <worker|reviewer|all> <stage|all>
     path=$(printf '%s' "$row" | jq -r .path)
     expected=$(printf '%s' "$row" | jq -r .sha256)
     fm_discipline_capture "$path" || {
-      _fm_wc_engineering_gap "unreadable-skill-source: $path"; return 3;
+      if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        _fm_wc_engineering_gap "missing-skill-source: $path"
+      else
+        _fm_wc_engineering_gap "unreadable-skill-source: $path"
+      fi
+      return 3;
     }
     actual=$FM_DISCIPLINE_CAPTURE_SHA256
     fm_discipline_capture_cleanup
@@ -223,7 +228,10 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
   fi
   index="$data/$id/engineering-evidence.json"
   generation=$(printf '%s' "$FM_WC_ENGINEERING" | jq -r .generation)
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ] || [ -n "$required" ] || [ -e "$index" ] || [ -L "$index" ]; then
+  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
+    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
+    index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
+  elif [ -n "$required" ] || [ -e "$index" ] || [ -L "$index" ]; then
     fm_discipline_capture "$index" || {
       _fm_wc_engineering_gap "engineering-evidence-unreadable: $index"; return 3;
     }
@@ -233,10 +241,6 @@ fm_work_context_engineering_evidence() { # <data> <id> <run> <actual-head>
     FM_DISCIPLINE_EVIDENCE_INDEX_PATH=$index
     FM_WC_ENGINEERING_EVIDENCE_DIGEST=$FM_DISCIPLINE_EVIDENCE_INDEX_DIGEST
     fm_discipline_capture_cleanup
-  fi
-  if [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
-    fm_discipline_evidence "$data" "$id" "$run" "$head" || return 3
-    index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
   fi
   [ -n "$required" ] || return 0
   index_json=$FM_DISCIPLINE_EVIDENCE_INDEX_JSON
@@ -307,7 +311,7 @@ fm_work_context_engineering_brief() { # <data> <id> <kind> <state>
     origin_count=$(grep -c '^origin=' "$state/$id.meta" 2>/dev/null || true)
     origin=$(fm_meta_get "$state/$id.meta" origin)
     case "$origin_count:$origin" in
-      0:) [ ! -e "$instructions" ] && [ ! -L "$instructions" ] || {
+      *:) [ ! -e "$instructions" ] && [ ! -L "$instructions" ] || {
         _fm_wc_engineering_gap 'discipline-artifact: unexpected promoted instructions shadow'; return 3;
       } ;;
       1:scout-to-ship) : ;;

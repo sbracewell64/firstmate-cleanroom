@@ -647,6 +647,15 @@ finally:
 PY
 }
 
+local_owner_directory_token() {
+  local path=$1
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+    stat -f '%d:%i:%f' "$path" 2>/dev/null
+  else
+    stat -c '%d:%i:%f' "$path" 2>/dev/null
+  fi
+}
+
 # Validate the owner-bound admission format produced before a governed local
 # delivery effect. The public admission owner re-reads the programme's exact
 # family, registered local-only destination, source bytes, candidate Git
@@ -824,7 +833,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
 validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
-  local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode
+  local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode repo_token root_token
   local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
   local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown snapshot snapshot_digest snapshot_data receipt_bytes check_bytes
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
@@ -986,6 +995,8 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
     return 0
   }
   root_real=$(CDPATH='' cd -- "$ROOT" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root is unavailable for delivery read-back"; return 0; }
+  repo_token=$(local_owner_directory_token "$repo_real") || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project identity is unavailable"; return 0; }
+  root_token=$(local_owner_directory_token "$root_real") || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root identity is unavailable"; return 0; }
   family=$(local_owner_deliverable_prefix "$sid") || { local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery is governed only for A, B, and D steps"; return 0; }
   n=$(printf '%s' "$manifest" | jq -r 'length'); j=0
   while [ "$j" -lt "$n" ]; do
@@ -1044,6 +1055,9 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
   }
   [ "$generation" = "$(printf '%s' "$receipt" | jq -r '.generation')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_GENERATION_MISMATCH "delivery receipt generation differs from its owner record"; return 0; }
   [ "$sid" = "$(printf '%s' "$doc" | jq -r '.step')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_STEP_MISMATCH "delivery record step changed during validation"; return 0; }
+  [ "$(local_owner_directory_token "$repo_real")" = "$repo_token" ] && [ "$(local_owner_directory_token "$root_real")" = "$root_token" ] || {
+    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "project or programme root changed during historical validation"; return 0
+  }
   if ! jq -e --arg programme "$(jq -r '.programme_id' "$PROGRAMME")" --arg step "$sid" --arg owner "$pin_ref" \
       --arg evidence "$pin_sha" --argjson generation "$pin_gen" --arg receipt "$receipt_actual" \
       --argjson index "$i" '

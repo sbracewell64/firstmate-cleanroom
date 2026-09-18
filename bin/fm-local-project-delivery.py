@@ -95,6 +95,11 @@ def verify_directory_identity(path: Path, fd: int, label: str) -> None:
         refuse("IDENTITY_CHANGED", f"{label} changed while it was being read")
 
 
+def directory_identity(path: Path) -> dict[str, int]:
+    value = os.stat(path, follow_symlinks=False)
+    return {"device": value.st_dev, "inode": value.st_ino, "mode": value.st_mode}
+
+
 def capture(path: Path, *, private: bool = False, anchor_fd: int | None = None, anchor_path: Path | None = None) -> tuple[bytes, str, int]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     absolute = Path(os.path.abspath(path))
@@ -494,8 +499,8 @@ def build_candidate(
         "home": str(home),
         "context": {"working_directory": str(repo_real)},
         "owner": {"project": project, "mode": "local-only", "registry_sha256": registry_sha256},
-        "source": source,
-        "destination": {"project": project, "root": str(repo_real), "ref": ref, "head": head, "tree": tree},
+        "source": {**source, "root_identity": directory_identity(root)},
+        "destination": {"project": project, "root": str(repo_real), "root_identity": directory_identity(repo_real), "ref": ref, "head": head, "tree": tree},
         "action": {
             "programme_id": programme_id,
             "programme_generation": programme_generation,
@@ -642,6 +647,10 @@ def publish(home: Path, candidate: dict[str, Any], registry_sha256: str) -> tupl
     _, current_registry_sha256, _ = registered_projects(home)
     if current_registry_sha256 != registry_sha256:
         refuse("OWNER_REGISTRY_CHANGED", "project registry changed before admission publication")
+    for label, identity in (("source root", candidate["source"]), ("destination root", candidate["destination"])):
+        path = Path(identity["root"])
+        if directory_identity(path) != identity["root_identity"]:
+            refuse("IDENTITY_CHANGED", f"{label} changed before admission publication")
     directory = home / "data/local-project-delivery/admissions"
     final_name = f"{candidate['admission_id']}.json"
     data = json.dumps(candidate, sort_keys=True, indent=2, ensure_ascii=False).encode() + b"\n"

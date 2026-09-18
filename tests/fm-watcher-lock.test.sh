@@ -865,6 +865,7 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
 
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
+  local prior_recovery_generation recovery_generation
   dir=$(make_case cycle-ledger)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -899,11 +900,21 @@ SH
   grep -qF "watcher: started pid=$successor_pid" "$armout" || fail "successor ledger cycle did not start"
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
+  prior_recovery_generation=$(recovery_marker_generation "$state/.watcher-down")
   reap "$successor_arm" HUP
   # The forced interruption is a watcher-down interval. Consume the prior
   # delivered wake before beginning independent ledger cycles, just as the
   # recovery handling turn does, so this fixture does not intentionally carry a
   # durable wake into the next arm.
+  i=0
+  while [ "$i" -lt 200 ]; do
+    recovery_generation=$(recovery_marker_generation "$state/.watcher-down")
+    [ -n "$recovery_generation" ] && [ "$recovery_generation" != "$prior_recovery_generation" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$recovery_generation" != "$prior_recovery_generation" ] \
+    || fail "forced arm interruption did not publish a new recovery generation"
   drain_and_ack "$state" || fail "recovery drain after forced arm interruption failed"
 
   # Produce enough short cycles to cross a deliberately small cap. The cap is
@@ -920,7 +931,17 @@ SH
       i=$((i + 1))
     done
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
+    prior_recovery_generation=$(recovery_marker_generation "$state/.watcher-down")
     reap "$successor_arm" HUP
+    i=0
+    while [ "$i" -lt 200 ]; do
+      recovery_generation=$(recovery_marker_generation "$state/.watcher-down")
+      [ -n "$recovery_generation" ] && [ "$recovery_generation" != "$prior_recovery_generation" ] && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    [ "$recovery_generation" != "$prior_recovery_generation" ] \
+      || fail "bounded ledger cycle $iteration did not publish a new recovery generation"
     drain_and_ack "$state" \
       || fail "recovery drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))

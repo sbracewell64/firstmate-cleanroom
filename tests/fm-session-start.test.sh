@@ -1285,7 +1285,8 @@ EOF
 }
 
 test_session_lock_concurrent_single_winner() {
-  local rec root home fakebin ready completed winners pids i pid count
+  local rec root home fakebin ready completed ready_fifo release_fifo completed_fifo
+  local completed_release_fifo winners pids i pid count
   rec=$(new_world lock-concurrency)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1294,6 +1295,11 @@ EOF
   completed="$home/done"
   winners="$home/winners"
   mkdir -p "$ready" "$completed"
+  ready_fifo="$home/ready.fifo"
+  release_fifo="$home/release.fifo"
+  completed_fifo="$home/completed.fifo"
+  completed_release_fifo="$home/completed-release.fifo"
+  mkfifo "$ready_fifo" "$release_fifo" "$completed_fifo" "$completed_release_fifo"
   : > "$winners"
   cat > "$fakebin/ps" <<'SH'
 #!/usr/bin/env bash
@@ -1331,23 +1337,47 @@ SH
     (
       harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
       : > "$home/state/harness-$harness_pid"
-      : > "$ready/$i"
-      while [ "$(find "$ready" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
-        sleep 0.01
-      done
+      printf '%s\n' ready > "$ready_fifo"
+      read -r _ < "$release_fifo"
       if FM_HOME="$home" FM_FAKE_LOCK_STATE="$home/state" \
         FM_FAKE_HARNESS_PID="$harness_pid" PATH="$fakebin:$BASE_PATH" \
         "$ROOT/bin/fm-lock.sh" >/dev/null 2>&1; then
         printf '%s\n' "$harness_pid" >> "$winners"
       fi
-      : > "$completed/$i"
-      while [ "$(find "$completed" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
-        sleep 0.01
-      done
+      printf '%s\n' completed > "$completed_fifo"
+      read -r _ < "$completed_release_fifo"
     ) &
     pids="$pids $!"
     i=$((i + 1))
   done
+  exec 3<>"$ready_fifo"
+  i=1
+  while [ "$i" -le 40 ]; do
+    read -r _ <&3
+    i=$((i + 1))
+  done
+  exec 3<&-
+  exec 4<>"$release_fifo"
+  i=1
+  while [ "$i" -le 40 ]; do
+    printf '%s\n' release >&4
+    i=$((i + 1))
+  done
+  exec 4>&-
+  exec 3<>"$completed_fifo"
+  i=1
+  while [ "$i" -le 40 ]; do
+    read -r _ <&3
+    i=$((i + 1))
+  done
+  exec 3<&-
+  exec 4<>"$completed_release_fifo"
+  i=1
+  while [ "$i" -le 40 ]; do
+    printf '%s\n' release >&4
+    i=$((i + 1))
+  done
+  exec 4>&-
   for pid in $pids; do
     wait "$pid" 2>/dev/null || true
   done

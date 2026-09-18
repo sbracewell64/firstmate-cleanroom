@@ -61,6 +61,10 @@ class AdmissionSession:
         self.registry_fd: int | None = None
         self.source_fd: int | None = None
         self.destination_fd: int | None = None
+        self.ref: str | None = None
+        self.head: str | None = None
+        self.tree: str | None = None
+        self.facts: list[dict[str, Any]] = []
         try:
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
             self.data_fd = os.open("data", flags, dir_fd=self.home_fd)
@@ -91,6 +95,21 @@ class AdmissionSession:
                 refuse("IDENTITY_CHANGED", "project registry was replaced before admission publication")
         finally:
             os.close(current_registry)
+        if self.ref is None or self.head is None or self.tree is None:
+            cno("IDENTITY_UNREADABLE", "admission Git snapshot is incomplete")
+        current_head = git(self.destination, "rev-parse", f"{self.ref}^{{commit}}")
+        current_tree = git(self.destination, "rev-parse", f"{current_head}^{{tree}}")
+        if current_head != self.head or current_tree != self.tree:
+            refuse("CANDIDATE_CHANGED", "destination ref or tree changed after the admission snapshot")
+        for fact in self.facts:
+            source_bytes, source_sha, _ = capture(fact["source"], anchor_fd=self.source_fd, anchor_path=self.root)
+            destination_bytes, destination_sha, destination_mode = capture(fact["destination"], anchor_fd=self.destination_fd, anchor_path=self.destination)
+            if source_sha != fact["source_sha"] or destination_sha != fact["destination_sha"] or destination_mode != fact["file_mode"] or source_bytes != destination_bytes:
+                refuse("SNAPSHOT_CHANGED", "admission source or destination bytes changed after the snapshot")
+            mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["path"])
+            if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
+                refuse("SNAPSHOT_CHANGED", "admission Git object changed after the snapshot")
+            parse_index_entry(self.destination, fact["path"], mode, oid)
 
     def close(self) -> None:
         for name in ("registry_fd", "source_fd", "destination_fd", "data_fd", "home_fd"):
@@ -465,6 +484,9 @@ def build_candidate(
         refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
     head = git(repo_real, "rev-parse", f"{ref}^{{commit}}")
     tree = git(repo_real, "rev-parse", f"{head}^{{tree}}")
+    session.ref = ref
+    session.head = head
+    session.tree = tree
     require_oid(head, "head")
     require_oid(tree, "tree")
 
@@ -496,6 +518,16 @@ def build_candidate(
         artifacts.append({
             "source": row["source"], "destination": row["destination"], "git_mode": mode,
             "file_mode": f"{expected_fs:04o}", "object_id": oid, "sha256": source_sha,
+        })
+        session.facts.append({
+            "source": source_path,
+            "destination": destination_file,
+            "path": row["destination"],
+            "source_sha": source_sha,
+            "destination_sha": destination_sha,
+            "file_mode": expected_fs,
+            "git_mode": mode,
+            "object_id": oid,
         })
     verify_directory_identity(root, source_root_fd, "source root")
     verify_directory_identity(repo_real, destination_root_fd, "destination root")

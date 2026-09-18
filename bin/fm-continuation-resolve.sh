@@ -788,10 +788,11 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   fi
   admission_actual=$(printf '%s' "$admission_result" | jq -r '.sha256 // ""')
   [ "$admission_actual" = "$admission_sha" ] || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the owner admission no longer has its recorded sha256"; return 0; }
-  if ! printf '%s' "$admission_result" | jq -e --arg project "$project" --arg ref "$ref" --arg head "$head" --arg tree "$tree" --arg delivery "$delivery_id" --arg maker "$maker" --arg checker "$checker" '
+  if ! printf '%s' "$admission_result" | jq -e --arg project "$project" --arg ref "$ref" --arg head "$head" --arg tree "$tree" --arg delivery "$delivery_id" --arg maker "$maker" --arg checker "$checker" --arg policy "$policy_digest" '
       .status=="ACCEPTED" and .admission.delivery_id==$delivery and .admission.owner.project==$project and
       .admission.destination.project==$project and .admission.destination.ref==$ref and .admission.destination.head==$head and .admission.destination.tree==$tree and
-      .admission.requirements.maker==$maker and .admission.requirements.checker==$checker' >/dev/null; then
+      .admission.requirements.maker==$maker and .admission.requirements.checker==$checker and
+      .admission.action.local_delivery_policy_sha256==$policy' >/dev/null; then
     local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "owner admission does not bind the receipt's exact owner, action, candidate, and separated identities"; return 0
   fi
 

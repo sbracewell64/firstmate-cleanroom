@@ -191,6 +191,7 @@ head=$(jq -r '.destination.head' "$admission")
 tree=$(jq -r '.destination.tree' "$admission")
 admission_rel=${admission#"$home/"}
 admission_sha=$(sha256_file "$admission")
+policy_digest=$(jq -r '.action.local_delivery_policy_sha256' "$admission")
 checker_rel=data/local-project-delivery/a-checker.json
 checker_file="$home/$checker_rel"
 jq -n --arg admission "$admission_sha" --arg head "$head" --arg tree "$tree" '
@@ -202,6 +203,7 @@ checker_sha=$(sha256_file "$checker_file")
 receipt_rel=data/local-project-delivery/a-delivery.json
 receipt_file="$home/$receipt_rel"
 jq -n --arg head "$head" --arg tree "$tree" --arg admission_rel "$admission_rel" --arg admission_sha "$admission_sha" \
+  --arg policy_digest "$policy_digest" \
   --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" '
   {schema:"fm-local-project-delivery-receipt/v2",delivery_id:"delivery-slice-a-s1-publication-integrity",generation:1,
    owner:{kind:"local_project_delivery",ref:"exchange-work"},
@@ -214,12 +216,12 @@ chmod 600 "$receipt_file"
 receipt_sha=$(sha256_file "$receipt_file")
 evidence="$home/programme/evidence/slice-a.json"
 jq -n --arg head "$head" --arg tree "$tree" --arg receipt_rel "$receipt_rel" --arg receipt_sha "$receipt_sha" \
-  --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" '
+  --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" --arg policy_digest "$policy_digest" '
   {schema:"fm-accepted-owner-evidence/v1",evidence_id:"delivery-slice-a-s1-publication-integrity",programme_id:"cleanroom-af-package",
    step:"slice-a-s1-publication-integrity",project:"fixture-project",work_id:"cleanroom-af-package",generation:1,
    owner:{kind:"local_project_delivery",ref:"exchange-work"},outcome:"DELIVERED_QUALIFIED",
    candidate:{head:$head,tree:$tree,delivery_id:"delivery-slice-a-s1-publication-integrity",owner_project:"exchange-work",ref:"refs/heads/main"},
-   policy:{id:"local-delivery-policy",digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+   policy:{id:"local-delivery-policy",digest:$policy_digest},
    verifier:{tool:"fm-local-project-delivery/v2"},
    qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$checker_rel,sha256:$checker_sha}]},
    delivery:{receipt:{path:$receipt_rel,sha256:$receipt_sha}},
@@ -227,10 +229,10 @@ jq -n --arg head "$head" --arg tree "$tree" --arg receipt_rel "$receipt_rel" --a
    captures:[],sources:[],observed_bad:[],superseded_by:null}' > "$evidence"
 evidence_sha=$(sha256_file "$evidence")
 tmp="$home/programme/programme.json.tmp"
-jq --arg sha "$evidence_sha" --arg head "$head" --arg tree "$tree" '
+jq --arg sha "$evidence_sha" --arg head "$head" --arg tree "$tree" --arg policy_digest "$policy_digest" '
   (.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate) +=
     {owner_ref:"exchange-work",evidence_sha256:$sha,evidence_generation:1,
-     policy_digest:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     policy_digest:$policy_digest,
      candidate:{head:$head,tree:$tree,delivery_id:"delivery-slice-a-s1-publication-integrity",owner_project:"exchange-work",ref:"refs/heads/main"}}' \
   "$home/programme/programme.json" > "$tmp" && mv "$tmp" "$home/programme/programme.json"
 cat > "$home/fake-bin/tasks-axi" <<'SH'

@@ -1794,7 +1794,10 @@ test_restart_records_whether_its_stop_was_confirmed() {
   second_err="$dir/unconfirmed.err"
 
   restart_case_arm() {
-    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=0 \
+    # Keep the fixture watcher responsive inside the production one-second
+    # restart confirmation bound; a five-second poll makes a healthy TERM
+    # look like an unconfirmed stop solely because the test is between polls.
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=0.1 FM_SIGNAL_GRACE=0 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" "$@"
   }
   resume_stopped_holder() {

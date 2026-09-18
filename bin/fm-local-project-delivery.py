@@ -515,7 +515,6 @@ def owner_candidates(
                 "OWNER_PROJECT_MISMATCH",
                 "DESTINATION_TYPE_MISMATCH",
                 "DESTINATION_MODE_MISMATCH",
-                "DESTINATION_INDEX_MISMATCH",
                 "SOURCE_DESTINATION_MISMATCH",
                 "DESTINATION_READBACK_MISMATCH",
                 "FAMILY_INCOMPLETE",
@@ -529,13 +528,26 @@ def owner_candidates(
     return candidates
 
 
+def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str) -> None:
+    current = root
+    for part in relative_parts:
+        current /= part
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                refuse("PATH_UNSAFE", f"{label} contains a symlink: {current}")
+        except FileNotFoundError:
+            continue
+
+
 def publish(home: Path, candidate: dict[str, Any]) -> tuple[Path, str]:
     directory = home / "data/local-project-delivery/admissions"
     path = directory / f"{candidate['admission_id']}.json"
+    reject_symlink_chain(home, ("data", "local-project-delivery", "admissions"), "admission directory")
     if path.exists() or path.is_symlink():
         refuse("ADMISSION_REPLAY", f"delivery identity {candidate['admission_id']} already has an admission")
     data = json.dumps(candidate, sort_keys=True, indent=2, ensure_ascii=False).encode() + b"\n"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    reject_symlink_chain(home, ("data", "local-project-delivery", "admissions"), "admission directory")
     os.chmod(directory, 0o700)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)

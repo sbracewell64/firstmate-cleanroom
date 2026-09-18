@@ -745,7 +745,13 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
 validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   case "$(printf '%s' "$1" | jq -r '.verifier.tool // ""')" in
     fm-local-project-delivery/v2) validate_local_project_delivery_v2 "$@" ;;
-    *) validate_local_project_delivery_v1 "$@" ;;
+    fm-local-project-delivery/v1)
+      validate_local_project_delivery_v1 "$@"
+      if [ "$LOCAL_OWNER_STATUS" = ACCEPTED ]; then
+        local_owner_result CNO LEGACY_REQUALIFICATION_REQUIRED "legacy local delivery evidence is readable but requires a new V2 owner-bound admission"
+      fi
+      ;;
+    *) local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery evidence names an unsupported validator" ;;
   esac
 }
 

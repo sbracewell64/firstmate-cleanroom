@@ -595,7 +595,7 @@ local_owner_private_file() {  # <path>
 validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 unknown pin_ref pin_sha pin_gen pin_policy pin_candidate
   local receipt_rel receipt_sha receipt_file receipt_actual receipt admission_rel admission_sha admission_file admission_actual admission_result admission_status admission_reason admission_detail
-  local evidence_id generation candidate head tree delivery_id project ref maker checker maker_commit privacy qualification route
+  local evidence_id generation candidate head tree delivery_id project ref maker checker maker_commit privacy qualification route policy_id policy_digest
   local check_rel check_sha check_file check_actual check_doc
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 
@@ -624,6 +624,16 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   fi
   if ! jq -e ".steps[$i].terminal_predicate.evidence_generation | type==\"number\" and isfinite and floor==. and .>=1" "$PROGRAMME" >/dev/null 2>&1; then
     local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery evidence_generation must be a positive exact integer"
+    return 0
+  fi
+  policy_id=$(printf '%s' "$doc" | jq -r '.policy.id // ""')
+  policy_digest=$(printf '%s' "$doc" | jq -r '.policy.digest // ""')
+  if ! fm_continuation_is_slug "$policy_id" || ! local_owner_sha256 "$policy_digest"; then
+    local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery policy must carry a slug id and exact sha256 digest"
+    return 0
+  fi
+  if [ "$policy_digest" != "$pin_policy" ]; then
+    local_owner_result REFUSED OWNER_EVIDENCE_POLICY_MISMATCH "record policy digest $policy_digest is not the pinned $pin_policy"
     return 0
   fi
 

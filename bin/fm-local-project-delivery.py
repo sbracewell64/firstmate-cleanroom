@@ -132,7 +132,13 @@ def safe_relative(value: Any, label: str) -> str:
 
 
 def under(root: Path, relative: str) -> Path:
-    target = root.joinpath(*PurePosixPath(relative).parts)
+    parts = PurePosixPath(relative).parts
+    target = root.joinpath(*parts)
+    current = root
+    for part in parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            refuse("PATH_UNSAFE", f"{relative} has a symlinked parent")
     parent = target.parent.resolve(strict=True)
     try:
         parent.relative_to(root)

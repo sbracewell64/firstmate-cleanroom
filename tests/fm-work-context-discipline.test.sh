@@ -232,6 +232,13 @@ test_roles_promotion_and_stable_identity() {
   tail -n +3 "$home/promoted.discipline" > "$home/promoted.fragment"
   cmp -s "$home/ship.fragment" "$home/promoted.fragment" || \
     fail "fresh ship and promoted scout received different canonical discipline"
+  FM_HOME="$home" "$BRIEF" retry-shared repo --mode local-only --discipline-fact schema >/dev/null \
+    || fail "retry fixture did not seed a persisted shared selection"
+  printf '%s\n' 'kind=scout' 'worktree=/tmp/retry-discipline-fixture' > "$home/state/retry-shared.meta"
+  FM_HOME="$home" "$PROMOTE" retry-shared --mode local-only --yolo off >/dev/null \
+    || fail "promotion retry did not reuse the persisted shared selection"
+  [ "$(level "$home/data/retry-shared/work-context.json")" = shared-boundary ] || \
+    fail "promotion retry downgraded the persisted shared selection"
   pass "discipline roles: ship/promotion parity, scout evidence subset, charter isolation and stable resume identity"
 }
 

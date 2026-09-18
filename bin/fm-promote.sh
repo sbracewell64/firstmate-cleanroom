@@ -60,6 +60,7 @@ PROOF_KIND=
 PROOF_SURFACE=
 PROOF_KIND_SET=0
 PROOF_SURFACE_SET=0
+DISCIPLINE_SELECTION_EXPLICIT=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -131,6 +132,9 @@ case "$YOLO" in
 esac
 
 ID=${POS[0]}
+if [ "${#DISCIPLINE_ARGS[@]}" -gt 0 ] || [ "$PROOF_KIND_SET" -eq 1 ] || [ "$PROOF_SURFACE_SET" -eq 1 ]; then
+  DISCIPLINE_SELECTION_EXPLICIT=1
+fi
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 CONTROL_LOCK_HELD=0
@@ -247,6 +251,23 @@ cp -p -- "$META" "$META_SNAPSHOT" || { echo "error: could not snapshot task meta
 # the --yes ban is the delivery hole this file used to leave open.
 INSTRUCTIONS="$DATA/$ID/ship-instructions.md"
 DESC="$DATA/$ID/work-context.json"
+if [ -f "$DESC" ] && [ ! -L "$DESC" ] &&
+  jq -e '.engineering.discipline != null' "$DESC" >/dev/null 2>&1; then
+  if [ "$DISCIPLINE_SELECTION_EXPLICIT" -eq 0 ]; then
+    fm_discipline_load "$DATA" "$ID" ship implementation || {
+      echo "error: ${FM_WORK_CONTEXT_DETAIL:-persisted discipline selection is invalid}" >&2
+      exit 3
+    }
+    DISCIPLINE_ARGS=()
+    while IFS= read -r fact; do
+      [ -n "$fact" ] && DISCIPLINE_ARGS+=(--fact "$fact")
+    done < <(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '.facts[]?')
+    persisted_proof_kind=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -r '.proof_kind // empty')
+    persisted_proof_surface=$(printf '%s' "$FM_DISCIPLINE_RECEIPT" | jq -j '.proof_surface // empty'; printf '\001')
+    persisted_proof_surface=${persisted_proof_surface%$'\001'}
+    [ -z "$persisted_proof_kind" ] || DISCIPLINE_ARGS+=(--proof-kind "$persisted_proof_kind" --proof-surface "$persisted_proof_surface")
+  fi
+fi
 [ -z "$PROOF_KIND" ] || DISCIPLINE_ARGS+=(--proof-kind "$PROOF_KIND")
 [ -z "$PROOF_SURFACE" ] || DISCIPLINE_ARGS+=(--proof-surface "$PROOF_SURFACE")
 fm_discipline_compile "$ID" ship implementation "${DISCIPLINE_ARGS[@]+"${DISCIPLINE_ARGS[@]}"}" || {

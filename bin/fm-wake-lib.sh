@@ -1479,6 +1479,10 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
   current=
   if fm_pid_alive "$lock_pid"; then
+    if [ -z "$recorded" ]; then
+      fm_lock_release "$steal"
+      return 1
+    fi
     if [ -n "$recorded" ]; then
       current=$(fm_pid_identity "$lock_pid" 2>/dev/null) || { fm_lock_release "$steal"; return 1; }
       [ -n "$current" ] || { fm_lock_release "$steal"; return 1; }

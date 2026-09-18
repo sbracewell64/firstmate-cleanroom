@@ -45,6 +45,10 @@ class Verdict(Exception):
         self.detail = detail
 
 
+class NotOwner(Exception):
+    pass
+
+
 def refuse(reason: str, detail: str) -> None:
     raise Verdict("REFUSED", reason, detail)
 
@@ -70,9 +74,18 @@ def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def capture(path: Path, *, private: bool = False) -> tuple[bytes, str, int]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    absolute = Path(os.path.abspath(path))
+    parts = absolute.parts
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(parts[0], directory_flags)
     try:
-        fd = os.open(path, flags)
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        fd = os.open(parts[-1], flags, dir_fd=directory_fd)
     except OSError as exc:
+        os.close(directory_fd)
         cno("SOURCE_UNREADABLE", f"cannot open {path}: {exc.strerror}")
     try:
         before = os.fstat(fd)
@@ -95,6 +108,7 @@ def capture(path: Path, *, private: bool = False) -> tuple[bytes, str, int]:
         return data, hashlib.sha256(data).hexdigest(), stat.S_IMODE(before.st_mode)
     finally:
         os.close(fd)
+        os.close(directory_fd)
 
 
 def load_json(path: Path, *, private: bool = False) -> tuple[dict[str, Any], bytes, str]:
@@ -177,7 +191,7 @@ def project_mode(script_dir: Path, home: Path, project: str) -> str:
         cno("OWNER_MISSING", f"project {project} has no readable exact registry owner: {result.stderr.decode(errors='replace').strip()}")
     mode = result.stdout.decode().strip().split()
     if not mode or mode[0] != "local-only":
-        refuse("OWNER_MODE_MISMATCH", f"project {project} is not registered local-only")
+        raise NotOwner(f"project {project} is not registered local-only")
     return mode[0]
 
 
@@ -318,6 +332,10 @@ def build_candidate(
     tree = git(repo_real, "rev-parse", f"{head}^{{tree}}")
     require_oid(head, "head")
     require_oid(tree, "tree")
+
+    top_levels = {PurePosixPath(row["destination"]).parts[0] for row in policy["artifacts"]}
+    if not any(git(repo_real, "ls-tree", "-d", head, "--", top_level) for top_level in top_levels):
+        raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
     for row in policy["artifacts"]:
@@ -494,7 +512,6 @@ def owner_candidates(
     registered, registry_sha256 = registered_projects(home)
     candidates: list[tuple[str, dict[str, Any]]] = []
     blocking: list[Verdict] = []
-    observations: list[tuple[str, dict[str, Any] | None, Verdict | None]] = []
     for project in registered:
         try:
             candidate = build_candidate(
@@ -505,21 +522,11 @@ def owner_candidates(
                 registry_sha256=registry_sha256,
                 enforce_pinned_owner=False,
             )
-            observations.append((project, candidate, None))
+            candidates.append((project, candidate))
+        except NotOwner:
+            continue
         except Verdict as exc:
-            observations.append((project, None, exc))
-            if exc.status == "CNO" or exc.reason == "DESTINATION_UNREADABLE":
-                blocking.append(exc)
-            elif exc.reason not in {
-                "OWNER_MODE_MISMATCH",
-                "DESTINATION_TYPE_MISMATCH",
-                "DESTINATION_MODE_MISMATCH",
-                "SOURCE_DESTINATION_MISMATCH",
-                "DESTINATION_READBACK_MISMATCH",
-                "FAMILY_INCOMPLETE",
-            }:
-                blocking.append(exc)
-    candidates = [(project, candidate) for project, candidate, error in observations if candidate is not None and error is None]
+            blocking.append(exc)
     if blocking and candidates:
         raise blocking[0]
     if blocking and not candidates:

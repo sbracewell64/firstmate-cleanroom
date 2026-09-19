@@ -256,8 +256,25 @@ budget_account_current_epoch() {
   return 0
 }
 
+legacy_autoarm_owner_active() {
+  local pid role recorded current owner outcome
+  pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
+  role=$(fm_lock_role "$OWNER_LOCK" 2>/dev/null || true)
+  fm_pid_alive "$pid" && [ "$role" = autoarm ] || return 1
+  recorded=$(cat "$OWNER_LOCK/pid-identity" 2>/dev/null || true)
+  if [ -n "$recorded" ]; then
+    current=$(fm_pid_identity "$pid" 2>/dev/null || true)
+    [ "$current" = "$recorded" ] || return 1
+  else
+    owner=$(_fm_autoarm_epoch_field "$STATE/.claude-autoarm-epoch" owner_pid 2>/dev/null || true)
+    outcome=$(_fm_autoarm_epoch_field "$STATE/.claude-autoarm-epoch" outcome 2>/dev/null || true)
+    [ "$owner" = "$pid" ] && [ "$outcome" = arming ] || return 1
+  fi
+  ! fm_autoarm_claim_abandoned "$STATE" "$GRACE"
+}
+
 autoarm_owns_recovery() {
-  local pid role outcome age
+  local outcome age
   fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && return 0
   # A live OPEN generation claim owns recovery: the ledger names a live,
   # identity-matched owner still arming that is not stuck (fm_autoarm_claim_open
@@ -274,10 +291,7 @@ autoarm_owns_recovery() {
   # Legacy shim: a pre-generation build's claim holds the owner lock with the
   # autoarm role for its whole cycle; defer to it under the legacy abandonment
   # proof so an upgrade mid-session cannot double-arm.
-  pid=$(cat "$OWNER_LOCK/pid" 2>/dev/null || true)
-  role=$(fm_lock_role "$OWNER_LOCK" 2>/dev/null || true)
-  if fm_pid_alive "$pid" && [ "$role" = autoarm ] \
-    && ! fm_autoarm_claim_abandoned "$STATE" "$GRACE"; then
+  if legacy_autoarm_owner_active; then
     [ ! -e "$FAILURE_NOTICE" ] || budget_account_current_epoch || true
     return 0
   fi

@@ -96,6 +96,41 @@ fm_test_cleanup() {
   fi
 }
 
+# reap <pid> [signal]: stop a background watcher, arm, or daemon this suite
+# launched, and collect it, without ever blocking unboundedly on a process that
+# did not act on its stop signal.
+#
+# The stop goes through the production confirmed-stop owner
+# (fm_stop_process_confirmed in bin/fm-wake-lib.sh), which re-delivers the signal
+# until the target is observed gone. A single delivery is not a stop: the
+# target's shell can consume a trapped signal WITHOUT running its handler and
+# carry on, and the process then keeps running with its close path - lock
+# release, downtime publication, delivery ledger - unrun. Escalating straight to
+# KILL instead collects the process but destroys exactly that close record,
+# which is what these suites assert on afterwards.
+#
+# The uncatchable KILL still backstops the bound, so a genuinely wedged target is
+# collected fast instead of holding the lane to its job cap. It is spent ONLY on a
+# target the confirmation could not see stop: once the pid is gone the shell may
+# have handed it to someone else, and a KILL then lands on a stranger.
+# FM_REAP_GRACE_POLLS (tenths of a second, default 100) bounds the confirmation.
+reap() {  # <pid> [signal]
+  local pid=$1 sig=${2:-TERM} limit=${FM_REAP_GRACE_POLLS:-100} stopped=0 identity
+  identity=$(fm_test_pid_identity "$pid") || return 1
+  if [ -z "${_FM_REAP_SCRATCH:-}" ]; then
+    # fm-wake-lib.sh creates its STATE directory at source time; the subshell
+    # below needs only its pure helpers, so it gets a throwaway one.
+    _FM_REAP_SCRATCH=$(fm_test_tmproot fm-reap-scratch) || return 1
+  fi
+  FM_STATE_OVERRIDE="$_FM_REAP_SCRATCH" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    fm_stop_process_confirmed "$2" "$5" "$3" "$4"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$pid" "$limit" "$sig" "$identity" && stopped=1
+  [ "$stopped" -eq 1 ] || kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || return 1

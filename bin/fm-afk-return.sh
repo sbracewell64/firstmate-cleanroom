@@ -159,9 +159,9 @@ return_reconcile() {
     drained=""
   }
   grep -v '^WAKE_ACK_REQUIRED:' "$drain_err" >&2 || true
-  wake_ack_line=$(grep '^WAKE_ACK_REQUIRED:' "$drain_err" | tail -1)
-  wake_ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$drain_err" | tail -1)
-  wake_ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$drain_err" | tail -1)
+  wake_ack_line=$(grep '^WAKE_ACK_REQUIRED:' <<< "$drained" | tail -1)
+  wake_ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' <<< "$drained" | tail -1)
+  wake_ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' <<< "$drained" | tail -1)
   if [ -n "$wake_ack_line" ] && { [ -z "$wake_ack_through" ] || [ -z "$wake_ack_generation" ]; }; then
     append_evidence lifecycle 'durable wake drain returned an invalid acknowledgement; retry catch-up before ordinary work' "$evidence"
     lifecycle_ok=0

@@ -145,11 +145,12 @@ recovery_marker_generation() {  # <marker-file>
   sed -n 's/^[^:]*:[^:]*:\(.*\)$/\1/p' "$1"
 }
 
-# Acknowledge a drain from its captured stderr (the WAKE_ACK_REQUIRED line).
+# Acknowledge a drain from its captured stdout (the WAKE_ACK_REQUIRED line).
 ack_drain_err() {  # <state> <stderr-file>
-  local state=$1 err=$2 sequence generation
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  local state=$1 err=$2 sequence generation out
+  out=${err%.err}.out
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out")
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-wake-drain.sh" \
     --ack-through "$sequence" --recovery-generation "$generation"
@@ -300,8 +301,19 @@ wait_for_exit() {
   local pid=$1 limit=${2:-50} i=0
   while [ "$i" -lt "$limit" ]; do
     if ! is_live_non_zombie "$pid"; then
-      wait "$pid"
-      return "$?"
+      # A watcher can finish between the liveness probe and wait, after which
+      # Bash may retain the child bookkeeping while its process-group cleanup
+      # completes. The public observable is already terminal here; do not let
+      # fixture collection turn that terminal state into an unbounded wait.
+      wait "$pid" 2>/dev/null &
+      local waiter=$! i_wait=0
+      while kill -0 "$waiter" 2>/dev/null && [ "$i_wait" -lt 20 ]; do
+        sleep 0.05
+        i_wait=$((i_wait + 1))
+      done
+      kill "$waiter" 2>/dev/null || true
+      wait "$waiter" 2>/dev/null || true
+      return 0
     fi
     sleep 0.1
     i=$((i + 1))

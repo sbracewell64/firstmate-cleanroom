@@ -115,12 +115,13 @@ wait_for_file_text() {  # <file> <fixed-text>
 }
 
 ack_wakes() {  # <state>
-  local state=$1 sequence generation err
+  local state=$1 sequence generation out err
+  out="$state/.test-ack.out"
   err="$state/.test-ack.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
-  rm -f "$err"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out")
+  rm -f "$out" "$err"
   if [ -z "$sequence" ] || [ -z "$generation" ]; then
     [ ! -s "$state/.wake-queue" ] || return 1
     case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in pending:*|announced:*) return 1 ;; esac
@@ -231,11 +232,16 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   # A process-event producer advances the same home-wide queue while the
   # observed watcher remains uninvolved, so only watcher-bound evidence can
   # distinguish this from a delivered watcher cycle.
-  append_wake "$state" check process-event "check: process-event result captured: fixture"
   kill "$SEED_PID" 2>/dev/null || true
   wait "$SEED_PID" 2>/dev/null || true
-  wait_for_exit "$ARM_PID" 120
-  status=$?
+  append_wake "$state" check process-event "check: process-event result captured: fixture"
+  i=0
+  while [ "$i" -lt 120 ] && is_live_non_zombie "$ARM_PID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  status=0
+  wait "$ARM_PID" 2>/dev/null || status=$?
   grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
     || fail "a cycle that delivered nothing must still fail loudly: $(cat "$armout")"
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
@@ -337,8 +343,8 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
     "$dir/decision-only-drain.out" >/dev/null \
     || fail "unchanged remote decision was not re-folded after a later down interval"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/decision-only-drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/decision-only-drain.err")
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/decision-only-drain.out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/decision-only-drain.out")
   [ "$sequence" = 0 ] && [ -n "$generation" ] \
     || fail "decision-only recovery did not require generation-bound post-handling acknowledgement"
   is_live_non_zombie "$decision_successor" \
@@ -357,8 +363,8 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
     "$dir/replayed-decision-drain.out" >/dev/null \
     || fail "interrupted decision recovery did not re-fold the open decision"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replayed-decision-drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replayed-decision-drain.err")
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replayed-decision-drain.out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replayed-decision-drain.out")
   [ "$sequence" = 0 ] && [ -n "$generation" ] \
     || fail "replayed decision recovery omitted its current acknowledgement generation"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
@@ -521,8 +527,8 @@ test_interrupted_handling_is_redrained_on_rearm() {
     2> "$dir/replay-drain.err" || fail "successor could not re-drain the interrupted wake"
   grep "$(printf '\tsignal\tinterrupted.status\t')" "$dir/replay-drain.out" >/dev/null \
     || fail "successor did not re-drain the still-durable wake"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replay-drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replay-drain.err")
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replay-drain.out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replay-drain.out")
   [ -n "$sequence" ] && [ -n "$generation" ] \
     || fail "re-drain did not emit a generation-bound post-handling acknowledgement command"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
@@ -658,7 +664,7 @@ test_handling_window_close_keeps_the_acknowledgement_valid() {
 
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
     || fail "handling drain did not present the durable wake"
-  pair=$(drain_ack_pair "$dir/drain.err") \
+  pair=$(drain_ack_pair "$dir/drain.out") \
     || fail "drain did not print a generation-bound acknowledgement command"
   sequence=${pair%%$'\t'*}
   generation=${pair##*$'\t'}
@@ -683,7 +689,7 @@ test_handling_window_close_keeps_the_acknowledgement_valid() {
 
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/remaining-drain.out" \
     2> "$dir/remaining-drain.err" || fail "remaining wake could not be re-drained"
-  pair=$(drain_ack_pair "$dir/remaining-drain.err") \
+  pair=$(drain_ack_pair "$dir/remaining-drain.out") \
     || fail "remaining drain did not print an acknowledgement command"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "${pair%%$'\t'*}" \
     --recovery-generation "${pair##*$'\t'}" \
@@ -723,7 +729,7 @@ test_moved_generation_acknowledgement_is_self_healing() {
   wait_for_exit "$ARM_PID" 120 || fail "fixture watcher did not deliver its first wake"
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/first-drain.out" \
     2> "$dir/first-drain.err" || fail "first drain did not present the durable wake"
-  pair=$(drain_ack_pair "$dir/first-drain.err") \
+  pair=$(drain_ack_pair "$dir/first-drain.out") \
     || fail "first drain did not print a generation-bound acknowledgement command"
   first_sequence=${pair%%$'\t'*}
   first_generation=${pair##*$'\t'}
@@ -744,9 +750,9 @@ test_moved_generation_acknowledgement_is_self_healing() {
   # Replaying the stale pair must not fail, must not over-consume, and must not
   # retire the newer episode.
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$first_sequence" \
-    --recovery-generation "$first_generation" 2> "$dir/stale-ack.err" \
+    --recovery-generation "$first_generation" > "$dir/stale-ack.out" 2> "$dir/stale-ack.err" \
     || fail "a replayed stale acknowledgement was rejected instead of degrading safely"
-  if ! grep -F 'WAKE_ACK_REQUIRED' "$dir/stale-ack.err" >/dev/null \
+  if ! grep -F 'WAKE_ACK_REQUIRED' "$dir/stale-ack.out" >/dev/null \
     || ! grep -F 're-run' "$dir/stale-ack.err" >/dev/null; then
     fail "a moved recovery generation did not name its own remedy: $(cat "$dir/stale-ack.err")"
   fi
@@ -768,7 +774,7 @@ test_moved_generation_acknowledgement_is_self_healing() {
   # Following the printed remedy closes the episode, so the loop is self-healing.
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/redrain.out" \
     2> "$dir/redrain.err" || fail "the remedy re-drain did not run"
-  pair=$(drain_ack_pair "$dir/redrain.err") \
+  pair=$(drain_ack_pair "$dir/redrain.out") \
     || fail "the remedy re-drain did not print the newer acknowledgement command"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "${pair%%$'\t'*}" \
     --recovery-generation "${pair##*$'\t'}" \

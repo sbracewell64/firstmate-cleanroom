@@ -446,10 +446,20 @@ print_memory_refused() {  # <reason>: the whole set is withheld
 }
 
 MEMORY_SNAPSHOT=''
+DRAIN_OUTFILE=''
+DRAIN_ERRFILE=''
+DRAIN_RELAYFILE=''
 
 memory_snapshot_discard() {
   [ -z "$MEMORY_SNAPSHOT" ] || rm -rf "$MEMORY_SNAPSHOT" 2>/dev/null || true
   MEMORY_SNAPSHOT=''
+  fm_programme_resolver_cleanup
+  [ -z "$DRAIN_OUTFILE" ] || rm -f -- "$DRAIN_OUTFILE" 2>/dev/null || true
+  [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE" 2>/dev/null || true
+  [ -z "$DRAIN_RELAYFILE" ] || rm -f -- "$DRAIN_RELAYFILE" 2>/dev/null || true
+  DRAIN_OUTFILE=''
+  DRAIN_ERRFILE=''
+  DRAIN_RELAYFILE=''
 }
 trap memory_snapshot_discard EXIT
 trap 'memory_snapshot_discard; exit 129' HUP
@@ -675,12 +685,21 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
+  local out rc=0 identity verdict diag='' diag_note=''
+  if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" render fm-session-start; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=''
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+  fi
+  fm_programme_relay_diagnostic "$diag" >&2
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out"
+    printf '%s\n' "$out" | fm_programme_render_non_actionable
     identity=$(fm_programme_identity_from_render "$out")
     verdict=$(fm_programme_presentation_state "$STATE" "$identity")
     case "$verdict" in
@@ -690,7 +709,8 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n' "$rc"
+    printf '%s\n' "${diag:-$diag_note}" | _fm_programme_prefix_diagnostic
   fi
 }
 
@@ -921,12 +941,68 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
-  if [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
+  # The drain owns acknowledgement authority and emits its queue rows plus its
+  # exact acknowledgement instruction on stdout. Resolver diagnostics are
+  # already prefixed by the shared presentation owner before they reach stderr.
+  DRAIN_RC=0
+  DRAIN_OUTFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-out.XXXXXX" 2>/dev/null) || DRAIN_OUTFILE=
+  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-err.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  DRAIN_RELAYFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-relay.XXXXXX" 2>/dev/null) || DRAIN_RELAYFILE=
+  DRAIN_CAPTURE_FAILED=0
+  DRAIN_CAPTURE_NOTE=
+  DRAIN_OUT_EMPTY=1
+  if [ -n "$DRAIN_OUTFILE" ] && [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_RELAYFILE" ]; then
+    "$SCRIPT_DIR/fm-wake-drain.sh" >"$DRAIN_OUTFILE" 2>"$DRAIN_ERRFILE" || DRAIN_RC=$?
+    [ -s "$DRAIN_OUTFILE" ] && DRAIN_OUT_EMPTY=0
+    if ! cat "$DRAIN_OUTFILE" >"$DRAIN_RELAYFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain output unavailable: staged stdout could not be read; no actionable authority was inferred'
+    elif [ "$DRAIN_RC" -eq 0 ] && ! cat "$DRAIN_RELAYFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain output unavailable: session stdout could not be written; no actionable authority was inferred'
+    fi
+    if ! DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null); then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_ERR='wake drain diagnostics unavailable: staged stderr could not be read; no actionable authority was inferred'
+    fi
+    if ! rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE" "$DRAIN_RELAYFILE"; then
+      DRAIN_CAPTURE_FAILED=1
+      DRAIN_CAPTURE_NOTE='wake drain capture cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_CAPTURE_NOTE" ]; then
+      if [ -n "$DRAIN_ERR" ]; then
+        DRAIN_ERR="$DRAIN_ERR"$'\n'"$DRAIN_CAPTURE_NOTE"
+      else
+        DRAIN_ERR=$DRAIN_CAPTURE_NOTE
+      fi
+    fi
+    if [ "$DRAIN_CAPTURE_FAILED" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then
+      DRAIN_RC=125
+    fi
   else
+    DRAIN_ERR='wake drain skipped: stdout and stderr diagnostic staging could not be secured; no actionable authority was inferred'
+    DRAIN_RC=125
+    if [ -n "$DRAIN_OUTFILE" ] && ! rm -f -- "$DRAIN_OUTFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_ERRFILE" ] && ! rm -f -- "$DRAIN_ERRFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+    fi
+    if [ -n "$DRAIN_RELAYFILE" ] && ! rm -f -- "$DRAIN_RELAYFILE"; then
+      DRAIN_ERR='wake drain staging cleanup failed; no actionable authority was inferred'
+    fi
+  fi
+  if [ "$DRAIN_CAPTURE_FAILED" -eq 0 ] && [ "$DRAIN_OUT_EMPTY" -eq 1 ] && [ "$DRAIN_RC" -eq 0 ]; then
     printf '(no queued wakes)\n'
   fi
+  if [ "$DRAIN_RC" -ne 0 ]; then
+    printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"
+  fi
+  [ -z "$DRAIN_CAPTURE_NOTE" ] || printf '%s\n' "$DRAIN_CAPTURE_NOTE"
+  case "$DRAIN_ERR" in
+    'wake drain diagnostics unavailable:'*) printf '%s\n' "$DRAIN_ERR" ;;
+  esac
+  [ -z "$DRAIN_ERR" ] || printf '%s\n' "$DRAIN_ERR" >&2
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

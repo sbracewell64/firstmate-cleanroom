@@ -48,10 +48,10 @@ run_watcher_once() {
   wait_for_exit "$!" 50
 }
 
-ack_handled_wakes() {  # <state> <drain-stderr>
-  local state=$1 drain_err=$2 sequence generation
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$drain_err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$drain_err")
+ack_handled_wakes() {  # <state> <drain-stdout>
+  local state=$1 drain_out=$2 sequence generation
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$drain_out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$drain_out")
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
@@ -79,7 +79,7 @@ test_routine_then_terminal_after_restart() {
   grep "$(printf '\tsignal\t')" "$drain_out" | grep -F "$status_file" >/dev/null \
     || fail "routine signal was not queued"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status_file" "$state"
-  ack_handled_wakes "$state" "$drain_err" || fail "routine wake acknowledgement failed"
+  ack_handled_wakes "$state" "$drain_out" || fail "routine wake acknowledgement failed"
   [ ! -s "$state/.subsuper-escalations" ] || fail "routine status was escalated by the daemon"
 
   # The watcher is now DOWN (one-shot exit). A terminal status lands while it is
@@ -94,7 +94,7 @@ test_routine_then_terminal_after_restart() {
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2> "$drain_err" \
     || fail "drain after terminal signal failed"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status_file" "$state"
-  ack_handled_wakes "$state" "$drain_err" || fail "terminal wake acknowledgement failed"
+  ack_handled_wakes "$state" "$drain_out" || fail "terminal wake acknowledgement failed"
   [ -s "$state/.subsuper-escalations" ] || fail "captain-relevant terminal status was not buffered"
   [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" -eq 1 ] \
     || fail "expected exactly one buffered digest after the terminal signal"

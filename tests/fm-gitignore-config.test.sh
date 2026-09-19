@@ -82,8 +82,25 @@ test_scratchpad2_does_not_dirty_porcelain() {
   pass "scratchpad2/ does not make git status --porcelain dirty"
 }
 
+test_base_profile_does_not_dirty_porcelain() {
+  local repo status
+  repo=$(mktemp -d "${TMPDIR:-/tmp}/fm-base-profile-ignore.XXXXXX")
+  git init -q "$repo"
+  cp "$ROOT/.gitignore" "$repo/.gitignore"
+  git -C "$repo" add .gitignore
+  git -C "$repo" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm 'seed gitignore'
+  mkdir -p "$repo/.base-profile.KNJkiH/tests"
+  printf 'profile copy\n' > "$repo/.base-profile.KNJkiH/tests/marker"
+  status=$(git -C "$repo" status --porcelain)
+  rm -rf "$repo"
+  [ -z "$status" ] || fail "temporary baseline profile still dirties porcelain: $status"
+  pass "temporary baseline profiles stay outside tracked status"
+}
+
 test_config_dir_ignored_as_category
 test_unrelated_path_stays_visible
 test_scratchpad_prefix_is_ignored
 test_scratchpad_prefix_ignores_no_tracked_path
 test_scratchpad2_does_not_dirty_porcelain
+test_base_profile_does_not_dirty_porcelain

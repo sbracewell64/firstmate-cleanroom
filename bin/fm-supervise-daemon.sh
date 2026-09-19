@@ -699,8 +699,21 @@ escalate_add() {  # <state> <distilled-item>
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
 programme_digest_token() {  # [<state>]
-  local out rc=0 state=${1:-} token presented pending
-  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
+  local out rc=0 state=${1:-} token presented pending errfile diag='' diag_note=''
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-supervise-daemon-resolve.XXXXXX" 2>/dev/null) || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary) || rc=$?
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
+  fi
+  # Separating the streams means ROUTING both, not discarding one, so the
+  # captured stderr is relayed here rather than dropped on a successful
+  # resolve; bin/fm-programme-projection.sh states that policy in full,
+  # including why exit 3 is the one deliberate exception.
+  [ "$rc" = 3 ] || [ -z "$diag" ] || printf '%s\n' "$diag" >&2
   case "$rc" in
     0)
       if [ -n "$state" ]; then
@@ -713,7 +726,7 @@ programme_digest_token() {  # [<state>]
       fi
       printf ' | %s' "$(_collapse_newlines "$out")" ;;
     3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
+    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$(printf '%s' "${diag:-$diag_note}" | head -c 400)")" ;;
   esac
 }
 

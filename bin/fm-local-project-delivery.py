@@ -97,8 +97,8 @@ class AdmissionSession:
             os.close(current_registry)
         if self.ref is None or self.head is None or self.tree is None:
             cno("IDENTITY_UNREADABLE", "admission Git snapshot is incomplete")
-        current_head = git(self.destination, "rev-parse", f"{self.ref}^{{commit}}")
-        current_tree = git(self.destination, "rev-parse", f"{current_head}^{{tree}}")
+        current_head = git_fd(self.destination_fd, "rev-parse", f"{self.ref}^{{commit}}")
+        current_tree = git_fd(self.destination_fd, "rev-parse", f"{current_head}^{{tree}}")
         if current_head != self.head or current_tree != self.tree:
             refuse("CANDIDATE_CHANGED", "destination ref or tree changed after the admission snapshot")
         for fact in self.facts:
@@ -106,10 +106,10 @@ class AdmissionSession:
             destination_bytes, destination_sha, destination_mode = capture(fact["destination"], anchor_fd=self.destination_fd, anchor_path=self.destination)
             if source_sha != fact["source_sha"] or destination_sha != fact["destination_sha"] or destination_mode != fact["file_mode"] or source_bytes != destination_bytes:
                 refuse("SNAPSHOT_CHANGED", "admission source or destination bytes changed after the snapshot")
-            mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["path"])
+            mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["path"], repo_fd=self.destination_fd)
             if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
                 refuse("SNAPSHOT_CHANGED", "admission Git object changed after the snapshot")
-            parse_index_entry(self.destination, fact["path"], mode, oid)
+            parse_index_entry(self.destination, fact["path"], mode, oid, repo_fd=self.destination_fd)
 
     def close(self) -> None:
         for name in ("registry_fd", "source_fd", "destination_fd", "data_fd", "home_fd"):
@@ -236,9 +236,9 @@ def load_json(path: Path, *, private: bool = False, anchor_fd: int | None = None
     return value, data, digest
 
 
-def run(args: list[str], *, cwd: Path | None = None, input_bytes: bytes | None = None) -> bytes:
+def run(args: list[str], *, cwd: Path | None = None, input_bytes: bytes | None = None, pass_fds: tuple[int, ...] = ()) -> bytes:
     try:
-        result = subprocess.run(args, cwd=cwd, input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        result = subprocess.run(args, cwd=cwd, input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, pass_fds=pass_fds)
     except OSError as exc:
         cno("IDENTITY_UNREADABLE", f"cannot run {args[0]}: {exc}")
     if result.returncode != 0:
@@ -246,8 +246,9 @@ def run(args: list[str], *, cwd: Path | None = None, input_bytes: bytes | None =
     return result.stdout
 
 
-def git(repo: Path, *args: str) -> str:
-    return run(["git", "-C", str(repo), *args]).decode().strip()
+def git_fd(fd: int, *args: str) -> str:
+    handle = f"/proc/self/fd/{fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{fd}"
+    return run(["git", "-C", handle, *args], pass_fds=(fd,)).decode().strip()
 
 
 def safe_relative(value: Any, label: str) -> str:
@@ -359,8 +360,8 @@ def registered_projects(home: Path) -> tuple[list[str], str, bytes]:
     return projects, digest, data
 
 
-def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
-    raw = run(["git", "-C", str(repo), "ls-tree", "-z", head, "--", path])
+def parse_tree_entry(repo: Path, head: str, path: str, *, repo_fd: int | None = None) -> tuple[str, str, str]:
+    raw = run(["git", "-C", (f"/proc/self/fd/{repo_fd}" if repo_fd is not None and Path("/proc/self/fd").exists() else f"/dev/fd/{repo_fd}" if repo_fd is not None else str(repo)), "ls-tree", "-z", head, "--", path], pass_fds=(repo_fd,) if repo_fd is not None else ())
     rows = [row for row in raw.split(b"\0") if row]
     if not rows:
         refuse("FAMILY_INCOMPLETE", f"candidate does not track {path}")
@@ -377,8 +378,8 @@ def parse_tree_entry(repo: Path, head: str, path: str) -> tuple[str, str, str]:
     return mode, obj_type, oid
 
 
-def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: str) -> None:
-    raw = run(["git", "-C", str(repo), "ls-files", "--stage", "-z", "--", path])
+def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: str, *, repo_fd: int | None = None) -> None:
+    raw = run(["git", "-C", (f"/proc/self/fd/{repo_fd}" if repo_fd is not None and Path("/proc/self/fd").exists() else f"/dev/fd/{repo_fd}" if repo_fd is not None else str(repo)), "ls-files", "--stage", "-z", "--", path], pass_fds=(repo_fd,) if repo_fd is not None else ())
     rows = [row for row in raw.split(b"\0") if row]
     if len(rows) != 1:
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index does not have one stage-0 entry at {path}")
@@ -390,10 +391,6 @@ def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: s
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} is unreadable")
     if found_path != path or stage != "0" or mode != expected_mode or oid != expected_oid:
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} differs from the admitted tree entry")
-
-
-def git_blob(repo: Path, head: str, path: str) -> bytes:
-    return run(["git", "-C", str(repo), "show", f"{head}:{path}"])
 
 
 def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
@@ -436,15 +433,16 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     return policy
 
 
-def source_identity(root: Path) -> dict[str, Any]:
-    result = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
+    handle = f"/proc/self/fd/{root_fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{root_fd}"
+    result = subprocess.run(["git", "-C", handle, "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, pass_fds=(root_fd,))
     if result.returncode != 0:
         return {"kind": "local-root", "root": str(root), "head": None, "tree": None}
     top = Path(result.stdout.decode().strip()).resolve()
     if top != root:
         refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is nested inside a different Git owner {top}")
-    head = git(root, "rev-parse", "HEAD^{commit}")
-    tree = git(root, "rev-parse", "HEAD^{tree}")
+    head = git_fd(root_fd, "rev-parse", "HEAD^{commit}")
+    tree = git_fd(root_fd, "rev-parse", "HEAD^{tree}")
     return {"kind": "local-git", "root": str(root), "head": head, "tree": tree}
 
 
@@ -469,21 +467,21 @@ def build_candidate(
         repo_real.relative_to(projects_real)
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
+    session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
+    source_root_fd = session.source_fd
+    destination_root_fd = session.destination_fd
     try:
-        top = Path(git(repo_real, "rev-parse", "--show-toplevel")).resolve(strict=True)
+        top = Path(git_fd(destination_root_fd, "rev-parse", "--show-toplevel")).resolve(strict=True)
     except Verdict as exc:
         cno("PROJECT_UNAVAILABLE", exc.detail)
     if top != repo_real:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} path is not its repository root")
     if require_cwd and Path.cwd().resolve() != repo_real:
         refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {repo_real}")
-    session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
-    source_root_fd = session.source_fd
-    destination_root_fd = session.destination_fd
     if not ref.startswith("refs/heads/") or not SLUG.fullmatch(ref.removeprefix("refs/heads/")):
         refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
-    head = git(repo_real, "rev-parse", f"{ref}^{{commit}}")
-    tree = git(repo_real, "rev-parse", f"{head}^{{tree}}")
+    head = git_fd(destination_root_fd, "rev-parse", f"{ref}^{{commit}}")
+    tree = git_fd(destination_root_fd, "rev-parse", f"{head}^{{tree}}")
     session.ref = ref
     session.head = head
     session.tree = tree
@@ -491,20 +489,20 @@ def build_candidate(
     require_oid(tree, "tree")
 
     top_levels = {PurePosixPath(row["destination"]).parts[0] for row in policy["artifacts"]}
-    if not any(git(repo_real, "ls-tree", "-d", head, "--", top_level) for top_level in top_levels):
+    if not any(git_fd(destination_root_fd, "ls-tree", "-d", head, "--", top_level) for top_level in top_levels):
         raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
     for row in policy["artifacts"]:
         source_path = under(root, row["source"])
         source_bytes, source_sha, _ = capture(source_path, anchor_fd=source_root_fd, anchor_path=root)
-        mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"])
+        mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"], repo_fd=destination_root_fd)
         if obj_type != "blob":
             refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
         if mode != row["git_mode"]:
             refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
-        parse_index_entry(repo_real, row["destination"], mode, oid)
-        destination_bytes = git_blob(repo_real, head, row["destination"])
+        parse_index_entry(repo_real, row["destination"], mode, oid, repo_fd=destination_root_fd)
+        destination_bytes = run(["git", "-C", f"/proc/self/fd/{destination_root_fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{destination_root_fd}", "show", f"{head}:{row['destination']}"], pass_fds=(destination_root_fd,))
         destination_sha = hashlib.sha256(destination_bytes).hexdigest()
         if source_sha != destination_sha:
             refuse("SOURCE_DESTINATION_MISMATCH", f"{row['source']} and {row['destination']} differ")
@@ -548,11 +546,11 @@ def build_candidate(
             generation = spec.get("generation")
             if spec.get("kind") != expected_kind or type(generation) is not int or generation < 1:
                 refuse("PRESERVATION_MISMATCH", f"preservation {role} has unsupported identity")
-            mode, obj_type, oid = parse_tree_entry(repo_real, head, path)
+            mode, obj_type, oid = parse_tree_entry(repo_real, head, path, repo_fd=destination_root_fd)
             if role == "current":
                 if obj_type != "blob" or mode not in ("100644", "100755"):
                     refuse("PRESERVATION_MISMATCH", f"current generation owner {path} is not a regular blob")
-                raw = git_blob(repo_real, head, path)
+                raw = run(["git", "-C", f"/proc/self/fd/{destination_root_fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{destination_root_fd}", "show", f"{head}:{path}"], pass_fds=(destination_root_fd,))
                 try:
                     doc = json.loads(raw, object_pairs_hook=object_pairs)
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
@@ -573,7 +571,7 @@ def build_candidate(
     if not isinstance(programme_generation, str) or not programme_generation:
         refuse("PROGRAMME_MALFORMED", "programme schema is required")
     manifest_sha = hashlib.sha256(canonical(artifacts)).hexdigest()
-    source = source_identity(root)
+    source = source_identity(root, session.source_fd)
     verify_directory_identity(root, source_root_fd, "source root")
     verify_directory_identity(repo_real, destination_root_fd, "destination root")
     candidate: dict[str, Any] = {
@@ -818,8 +816,8 @@ def main() -> int:
     root = Path(args.root).resolve(strict=True)
     programme, _, _ = load_json(programme_path)
     step = require_slug(args.step, "step")
-    policy = policy_for(programme, step)
 
+    policy = policy_for(programme, step)
     if args.command == "bind":
         delivery_id = require_slug(args.delivery_id, "delivery_id")
         maker = require_slug(args.maker, "maker")

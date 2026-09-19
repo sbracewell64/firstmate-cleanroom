@@ -206,6 +206,50 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
+# PR-producing delivery contracts expose one precise context pointer at their
+# existing body-preparation boundary. The trivial branch must stay on its
+# ordinary concise path, and non-PR work must not pay even the pointer cost.
+test_pr_presentation_reference_triggers_only_for_pr_work() {
+  local home skill no_mistakes direct local_brief scout
+  home="$TMP_ROOT/pr-presentation-home"
+  skill="$ROOT/.agents/skills/pr-presentation/SKILL.md"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" presentation-no some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" presentation-direct some-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" presentation-local some-proj --mode local-only >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" presentation-scout some-proj --scout >/dev/null 2>&1
+
+  no_mistakes="$home/data/presentation-no/brief.md"
+  direct="$home/data/presentation-direct/brief.md"
+  local_brief="$home/data/presentation-local/brief.md"
+  scout="$home/data/presentation-scout/brief.md"
+
+  assert_grep "At a \`public-content\` wait" "$no_mistakes" \
+    "no-mistakes brief lost the existing exact-head body-preparation boundary"
+  assert_grep "$skill" "$no_mistakes" \
+    "no-mistakes brief did not point substantial PR preparation at the tracked reference"
+  assert_grep 'Before opening the PR' "$direct" \
+    "direct-PR brief lost its existing body-preparation boundary"
+  assert_grep "$skill" "$direct" \
+    "direct-PR brief did not point substantial PR preparation at the tracked reference"
+  for brief in "$no_mistakes" "$direct"; do
+    assert_grep 'without loading detailed presentation guidance' "$brief" \
+      "trivial PR path does not stay concise"
+    assert_grep 'would otherwise make a reviewer reconstruct its shape from the diff' "$brief" \
+      "substantial PR trigger lost its reviewer-work boundary"
+  done
+  assert_no_grep 'pr-presentation/SKILL.md' "$local_brief" \
+    "local-only work received a PR-presentation pointer"
+  assert_no_grep 'pr-presentation/SKILL.md' "$scout" \
+    "scout work received a PR-presentation pointer"
+  pass "fm-brief.sh: PR presentation loads only at substantial PR body preparation"
+}
+
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
 # reference must render as plain prose with no dangling apostrophe artifact.
 test_no_mistakes_dod_wording() {
@@ -836,6 +880,7 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_pr_presentation_reference_triggers_only_for_pr_work
 test_no_mistakes_dod_wording
 test_ship_stage_contract_identical_from_brief_and_promote
 test_crewmate_text_awaits_firstmate_never_addresses_captain

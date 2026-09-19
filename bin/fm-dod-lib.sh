@@ -28,12 +28,13 @@ fm_dod_stage_cmd() {  # <task-id>
 }
 
 fm_dod_block() {  # <mode> <task-id>
-  local mode=$1 id=$2 stage
+  local mode=$1 id=$2 stage presentation_skill
   [ -n "${FM_ROOT:-}" ] && [ -n "${FM_HOME:-}" ] || {
     echo "error: fm_dod_block: the caller must resolve FM_ROOT and FM_HOME before rendering a definition of done" >&2
     return 1
   }
   stage=$(fm_dod_stage_cmd "$id")
+  presentation_skill=$(printf '%q' "$FM_ROOT/.agents/skills/pr-presentation/SKILL.md")
   case "$mode" in
     direct-PR)
       cat <<EOF
@@ -41,6 +42,8 @@ fm_dod_block() {  # <mode> <task-id>
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
+Before opening the PR, keep a trivial candidate to a concise title, a few bullets, and its actual validation without loading detailed presentation guidance.
+When a multi-file candidate or a material change to behavior, architecture, ownership, an interface, persistence, routing, lifecycle, or interaction flow would otherwise make a reviewer reconstruct its shape from the diff, read \`$presentation_skill\` and apply it to the single body you publish.
 When it is implemented and committed, record the candidate with \`$stage committed\` (it prints \`STAGE:\` and a \`next:\` line, and it is safe to repeat), then push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -74,6 +77,8 @@ You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 Include applicable Engineering context in the intent and return its bound evidence index at CI-ready.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+At a \`public-content\` wait, keep a trivial candidate to a concise title, a few bullets, and its actual validation without loading detailed presentation guidance.
+When a multi-file candidate or a material change to behavior, architecture, ownership, an interface, persistence, routing, lifecycle, or interaction flow would otherwise make a reviewer reconstruct its shape from the diff, read \`$presentation_skill\` and apply it before registering the single reviewed body for that exact head.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:

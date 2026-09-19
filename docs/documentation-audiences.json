@@ -217,6 +217,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/pr-presentation/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/quota-array-dispatch/SKILL.md",
       "audience": "agent-runtime"
     },

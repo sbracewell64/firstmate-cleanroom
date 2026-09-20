@@ -118,7 +118,8 @@
 #      local_project_delivery / DELIVERED_QUALIFIED is the private/local route.
 #      New V2 evidence is accepted only after bin/fm-local-project-delivery.py
 #      bound one immutable pre-effect admission from the step's exact
-#      terminal_predicate.local_delivery family, source root, strict registered
+#      terminal_predicate.local_delivery family, the step's declared
+#      terminal_predicate.local_delivery_source root identity, strict registered
 #      local-only destination project, candidate head/tree/ref, tracked paths,
 #      objects and modes, maker/checker requirement, and qualification route.
 #      The record exposes digests only and binds one mode-0600
@@ -126,12 +127,16 @@
 #      binds the admission by digest, distinct maker and checker identities, one
 #      mode-0600 fm-local-checker-receipt/v2, private-local/digests-only
 #      classification, and checker-attributed MATCH read-back. Every resolution
-#      re-runs the public verifier against current source and destination facts
-#      and refuses moved, replayed, forged, self-certified, wrong-family,
-#      privacy-exposing, or mismatched input; an unavailable project, admission,
-#      receipt, source, or destination is CNO. Private candidate bytes never
-#      enter the programme record or resolver output. V1 stays readable only
-#      for the historical records produced under PR #64: a step that declares a
+#      re-runs the public verifier against current source and destination facts,
+#      consuming the exact source-root identity sealed in the immutable
+#      admission rather than substituting the programme root or ambient working
+#      directory, and refusing any sealed root the step's published
+#      local_delivery_source identity does not admit. It refuses moved,
+#      replayed, forged, self-certified, wrong-family, privacy-exposing, or
+#      mismatched input; an unavailable project, admission, receipt, source, or
+#      destination is CNO. Private candidate bytes never enter the programme
+#      record or resolver output. V1 stays readable only for the historical
+#      records produced under PR #64: a step that declares a
 #      terminal_predicate.local_delivery family, or whose terminal_predicate
 #      carries no matching fm-programme-finalization/v1 canonical_finalization
 #      object, resolves CNO (LEGACY_REQUALIFICATION_REQUIRED) instead, so V1 is
@@ -748,7 +753,7 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   fi
   admission_file="$FM_HOME/$admission_rel"
   [ -e "$admission_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound owner admission $admission_rel is unavailable"; return 0; }
-  if admission_result=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-local-project-delivery.py" verify --admission "$admission_file" --programme "$PROGRAMME" --root "$ROOT" --step "$sid" 2>/dev/null); then :; else
+  if admission_result=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-local-project-delivery.py" verify --admission "$admission_file" --programme "$PROGRAMME" --root-from-admission --step "$sid" 2>/dev/null); then :; else
     admission_status=$(printf '%s' "$admission_result" | jq -r '.status // "REFUSED"' 2>/dev/null || printf REFUSED)
     admission_reason=$(printf '%s' "$admission_result" | jq -r '.reason_code // "MANIFEST_AUTHENTICITY"' 2>/dev/null || printf MANIFEST_AUTHENTICITY)
     admission_detail=$(printf '%s' "$admission_result" | jq -r '.detail // "owner admission verification failed"' 2>/dev/null || printf 'owner admission verification failed')

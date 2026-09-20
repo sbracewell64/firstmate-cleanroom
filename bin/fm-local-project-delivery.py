@@ -6,7 +6,7 @@ Usage:
       --project PROJECT|auto --ref refs/heads/BRANCH --delivery-id ID \
       --maker ID --checker ID --route independent-checker|no-mistakes
   fm-local-project-delivery.py verify --admission FILE --programme FILE \
-      --root DIR --step ID
+      (--root DIR | --root-from-admission) --step ID
   fm-local-project-delivery.py legacy-verify --programme FILE --root DIR \
       --step ID --project PROJECT --ref refs/heads/BRANCH --head OID \
       --tree OID --manifest JSON
@@ -14,7 +14,22 @@ Usage:
 FM_HOME names the operational home that owns data/projects.md and every
 published admission.
 The programme step's terminal_predicate.local_delivery object is the policy
-owner for the exact artifact family and optional destination owner.
+owner for the exact artifact family and optional destination owner, and its
+sibling terminal_predicate.local_delivery_source object is the public per-step
+source-root identity: `canonical_artifact_root` admits only a source root
+outside this home's registered project tree, `owner_project_root` admits only
+the delivery owner project's own root as an authorized same-root delivery.
+Neither names an operator-local path, so the pin stays publication-safe.
+Under `owner_project_root` the owner census evaluates only the registered
+project whose own path is that source root: it matches declared paths before
+touching the filesystem, and falls back to canonical paths when no row declares
+the root, so a symlinked registration qualifies under either spelling. A root
+that is no complete family owner's root is SOURCE_IDENTITY_MISMATCH, while an
+absent owner or family stays OWNER_MISSING, and `canonical_artifact_root`
+admissibility is decided before any registry row is read.
+That same-root admission seals the pinned candidate ref's head and tree as its
+source identity, so an unrelated local checkout in the owner project leaves
+qualification intact while movement of the pinned ref refuses.
 `bind` derives every candidate and byte identity, validates all facts before
 publishing one mode-0600 manifest at
 FM_HOME/data/local-project-delivery/admissions/<delivery-id>.json, and refuses a
@@ -22,7 +37,9 @@ reused delivery identity.
 The published manifest is one fm-local-project-delivery-admission/v1 object
 whose exact member set is owned by validate_admission().
 `verify` re-reads the same programme, source, registered project, Git objects,
-and working destination without changing state.
+and working destination without changing state. `--root-from-admission` makes a
+trusted caller consume the exact source-root identity sealed in the private
+admission; explicit `--root DIR` remains the wrong-root negative surface.
 `legacy-verify` is the retained read-back for the historical V1 receipts of
 PR #64, called only by bin/fm-continuation-resolve.sh: it re-reads that
 candidate and its destination bytes, binds and publishes no admission, and
@@ -46,6 +63,7 @@ from typing import Any
 
 SCHEMA = "fm-local-project-delivery-admission/v1"
 POLICY_SCHEMA = "fm-local-project-delivery-policy/v1"
+SOURCE_IDENTITIES = ("canonical_artifact_root", "owner_project_root")
 SLUG = re.compile(r"^[A-Za-z0-9._-]+$")
 HEX = re.compile(r"^[0-9a-f]+$")
 
@@ -264,6 +282,22 @@ def load_json(path: Path, *, private: bool = False, anchor_fd: int | None = None
     if not isinstance(value, dict):
         refuse("IDENTITY_UNREADABLE", f"{path} is not a JSON object")
     return value, data, digest
+
+
+def sealed_source_root(doc: dict[str, Any]) -> Path:
+    source = doc.get("source")
+    if not isinstance(source, dict):
+        refuse("MANIFEST_AUTHENTICITY", "admission has no sealed source identity")
+    value = source.get("root")
+    if not isinstance(value, str) or not value or "\x00" in value or not Path(value).is_absolute():
+        refuse("MANIFEST_AUTHENTICITY", "admission source root is not one absolute path")
+    try:
+        root = Path(value).resolve(strict=True)
+    except ValueError as exc:
+        refuse("MANIFEST_AUTHENTICITY", f"admission source root is not one readable path: {exc}")
+    if str(root) != value:
+        refuse("MANIFEST_AUTHENTICITY", "admission source root is not its exact resolved identity")
+    return root
 
 
 def run(args: list[str], *, cwd: Path | None = None, input_bytes: bytes | None = None, pass_fds: tuple[int, ...] = ()) -> bytes:
@@ -505,7 +539,7 @@ def verify_legacy_delivery(
         session.close()
 
 
-def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
+def terminal_predicate_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     steps = programme.get("steps")
     if not isinstance(steps, list):
         refuse("PROGRAMME_MALFORMED", "programme steps must be an array")
@@ -515,6 +549,22 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     terminal = matches[0].get("terminal_predicate")
     if not isinstance(terminal, dict) or terminal.get("kind") != "accepted_owner_evidence":
         refuse("ACTION_MISMATCH", f"step {step} is not governed by accepted owner evidence")
+    return terminal
+
+
+def source_identity_for(programme: dict[str, Any], step: str) -> str:
+    declared = terminal_predicate_for(programme, step).get("local_delivery_source")
+    if not isinstance(declared, dict):
+        refuse("REQUIRED_BINDING_MISSING", f"step {step} declares no local_delivery_source identity")
+    exact_keys(declared, {"identity"}, "local_delivery_source")
+    identity = declared.get("identity")
+    if identity not in SOURCE_IDENTITIES:
+        refuse("POLICY_UNSUPPORTED", f"step {step} source identity must be one of {', '.join(SOURCE_IDENTITIES)}")
+    return identity
+
+
+def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
+    terminal = terminal_predicate_for(programme, step)
     policy = terminal.get("local_delivery")
     if not isinstance(policy, dict) or policy.get("schema") != POLICY_SCHEMA:
         refuse("REQUIRED_BINDING_MISSING", f"step {step} has no {POLICY_SCHEMA} owner-bound family")
@@ -545,7 +595,19 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     return policy
 
 
-def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
+def projects_root(home: Path) -> Path:
+    try:
+        return (home / "projects").resolve(strict=True)
+    except OSError:
+        return home / "projects"
+
+
+def require_admissible_source_root(home: Path, identity: str, root: Path) -> None:
+    if identity == "canonical_artifact_root" and root.is_relative_to(projects_root(home)):
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
+
+
+def source_identity(root: Path, root_fd: int, pinned: tuple[str, str] | None = None) -> dict[str, Any]:
     handle = repo_handle(root_fd)
     result = subprocess.run(["git", "-C", handle, "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, pass_fds=(root_fd,))
     if result.returncode != 0:
@@ -553,8 +615,11 @@ def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
     top = Path(result.stdout.decode().strip()).resolve()
     if top != root:
         refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is nested inside a different Git owner {top}")
-    head = git_fd(root_fd, "rev-parse", "HEAD^{commit}")
-    tree = git_fd(root_fd, "rev-parse", "HEAD^{tree}")
+    if pinned is not None:
+        head, tree = pinned
+    else:
+        head = git_fd(root_fd, "rev-parse", "HEAD^{commit}")
+        tree = git_fd(root_fd, "rev-parse", "HEAD^{tree}")
     return {"kind": "local-git", "root": str(root), "head": head, "tree": tree}
 
 
@@ -571,15 +636,18 @@ def build_candidate(
         refuse("OWNER_PROJECT_MISMATCH", "policy owner_project must be a slug when present")
     if enforce_pinned_owner and pinned is not None and project != pinned:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the pinned owner {pinned}")
+    identity = source_identity_for(programme, step)
+    require_admissible_source_root(home, identity, root)
     require_slug(project, "project")
     project_mode(home, project, registry_data=registry_data)
     repo = (home / "projects" / project)
     try:
         repo_real = repo.resolve(strict=True)
-        projects_real = (home / "projects").resolve(strict=True)
-        repo_real.relative_to(projects_real)
+        repo_real.relative_to(projects_root(home))
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
+    if identity == "owner_project_root" and root != repo_real:
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
     session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
     if session_holder is not None:
         session_holder.append(session)
@@ -683,7 +751,7 @@ def build_candidate(
     if not isinstance(programme_generation, str) or not programme_generation:
         refuse("PROGRAMME_MALFORMED", "programme schema is required")
     manifest_sha = hashlib.sha256(canonical(artifacts)).hexdigest()
-    source = source_identity(root, session.source_fd)
+    source = source_identity(root, session.source_fd, (head, tree) if identity == "owner_project_root" else None)
     verify_directory_identity(root, source_root_fd, "source root")
     verify_directory_identity(repo_real, destination_root_fd, "destination root")
     candidate: dict[str, Any] = {
@@ -801,12 +869,25 @@ def validate_admission(
     return rebuilt
 
 
+def canonical_project_root(home: Path, project: str) -> Path | None:
+    try:
+        return (home / "projects" / project).resolve(strict=True)
+    except OSError:
+        return None
+
+
 def owner_candidates(
-    *, home: Path, programme: dict[str, Any], root: Path, step: str,
+    *, home: Path, programme: dict[str, Any], root: Path, declared_root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
     checker: str, route: str,
 ) -> tuple[list[tuple[str, dict[str, Any], AdmissionSession]], str]:
+    identity = source_identity_for(programme, step)
+    require_admissible_source_root(home, identity, root)
     registered, registry_sha256, registry_data = registered_projects(home)
+    if identity == "owner_project_root":
+        registered = [p for p in registered if (home / "projects" / p) in (declared_root, root)] or [
+            p for p in registered if canonical_project_root(home, p) == root
+        ]
     candidates: list[tuple[str, dict[str, Any], AdmissionSession]] = []
     blocking: list[Verdict] = []
     for project in registered:
@@ -839,6 +920,29 @@ def owner_candidates(
             session.close()
         raise blocking[0]
     return candidates, registry_sha256
+
+
+def family_owner_exists(home: Path, policy: dict[str, Any], ref: str) -> bool:
+    registered, _, registry_data = registered_projects(home)
+    for project in registered:
+        try:
+            project_mode(home, project, registry_data=registry_data)
+            repo_real = (home / "projects" / project).resolve(strict=True)
+            repo_real.relative_to(projects_root(home))
+            repo_fd = open_directory(repo_real)
+        except (NotOwner, Verdict, OSError, ValueError):
+            continue
+        try:
+            if Path(git_fd(repo_fd, "rev-parse", "--show-toplevel")).resolve(strict=True) != repo_real:
+                continue
+            head = git_fd(repo_fd, "rev-parse", f"{ref}^{{commit}}")
+            if family_is_present(head, policy["artifacts"], repo_fd=repo_fd):
+                return True
+        except (Verdict, OSError, ValueError):
+            continue
+        finally:
+            os.close(repo_fd)
+    return False
 
 
 def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str) -> None:
@@ -920,7 +1024,9 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify")
     verify.add_argument("--admission", required=True)
     verify.add_argument("--programme", required=True)
-    verify.add_argument("--root", required=True)
+    verify_root = verify.add_mutually_exclusive_group(required=True)
+    verify_root.add_argument("--root")
+    verify_root.add_argument("--root-from-admission", action="store_true")
     verify.add_argument("--step", required=True)
     legacy = sub.add_parser("legacy-verify")
     legacy.add_argument("--programme", required=True)
@@ -941,11 +1047,11 @@ def main() -> int:
         cno("HOME_UNREADABLE", "FM_HOME is required")
     home = Path(home_value).resolve(strict=True)
     programme_path = Path(args.programme).resolve(strict=True)
-    root = Path(args.root).resolve(strict=True)
     programme, _, _ = load_json(programme_path)
     step = require_slug(args.step, "step")
 
     if args.command == "legacy-verify":
+        root = Path(args.root).resolve(strict=True)
         require_slug(args.project, "project")
         try:
             manifest = json.loads(args.manifest, object_pairs_hook=object_pairs)
@@ -960,6 +1066,7 @@ def main() -> int:
 
     policy = policy_for(programme, step)
     if args.command == "bind":
+        root = Path(args.root).resolve(strict=True)
         delivery_id = require_slug(args.delivery_id, "delivery_id")
         maker = require_slug(args.maker, "maker")
         checker = require_slug(args.checker, "checker")
@@ -972,11 +1079,14 @@ def main() -> int:
         if requested_project != "auto":
             require_slug(requested_project, "project")
         candidates, registry_sha256 = owner_candidates(
-            home=home, programme=programme, root=root, step=step, policy=policy,
+            home=home, programme=programme, root=root,
+            declared_root=Path(os.path.abspath(args.root)), step=step, policy=policy,
             ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
             route=route,
         )
         if not candidates:
+            if source_identity_for(programme, step) == "owner_project_root" and family_owner_exists(home, policy, args.ref):
+                refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the root of the registered owner of the complete {step} family")
             cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
         if len(candidates) != 1:
             for _, _, session in candidates:
@@ -1007,6 +1117,7 @@ def main() -> int:
         doc, _, digest = load_json(admission_path, private=True, anchor_fd=data_fd, anchor_path=data_path)
     finally:
         os.close(data_fd)
+    root = sealed_source_root(doc) if args.root_from_admission else Path(args.root).resolve(strict=True)
     rebuilt = validate_admission(
         doc, home=home, programme=programme, root=root, step=step,
     )

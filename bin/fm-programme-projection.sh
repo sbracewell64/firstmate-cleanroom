@@ -18,11 +18,12 @@
 # script only reads:
 #   - bin/fm-continuation-resolve.sh (+ bin/fm-continuation-lib.sh) owns
 #     next_action, action_generation, classification, authority_state,
-#     reason_code, and basis_refs. Its `resolve` output is consumed verbatim;
-#     the classification tables and hold-effect law are never reimplemented
-#     here, and `--materialize` is refused because this layer has no authority
-#     to create a hold. Its exit 3 (no programme configured) is "not
-#     applicable" and is mirrored as exit 3 with nothing on stdout.
+#     reason_code, and basis_refs. Its `resolve` STDOUT is the typed result and
+#     is consumed verbatim; its stderr is diagnostics and is never folded into
+#     that document. The classification tables and hold-effect law are never
+#     reimplemented here, and `--materialize` is refused because this layer has
+#     no authority to create a hold. Its exit 3 (no programme configured) is
+#     "not applicable" and is mirrored as exit 3 with no projection on stdout.
 #   - bin/fm-captain-hold.sh owns hold durability and effect; the resolver
 #     already consumed them, so this script reads only the resolver's gating
 #     hold rows and answered-fact identities.
@@ -44,9 +45,10 @@
 # continuation"), and the file and artifact root this run used are read back
 # from its result's `programme.path` / `programme.root`, never re-located.
 #
-# Exit codes: 0 projected; 3 no programme is configured (silent, mirrors the
-# resolver); 2 usage; 1 any other error, including malformed delegation
-# configuration, which is refused rather than selected around.
+# Exit codes: 0 projected; 3 no programme is configured (no projection on
+# stdout, while any resolver diagnostic is still relayed on stderr); 2 usage; 1
+# any other error, including malformed delegation configuration, which is
+# refused rather than selected around.
 #
 # CANONICAL INPUTS, read only:
 #   1. The resolver's typed result (schema fm-continuation-resolution/v1).
@@ -121,7 +123,25 @@
 # `summary` prints the one-line token a digest can embed.
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_fm_projection_script_path() {
+  local path=$1 dir base target hops=0
+  dir=$(CDPATH='' cd -- "$(dirname -- "$path")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename -- "$path")
+  while [ -L "$dir/$base" ] && [ "$hops" -lt 16 ]; do
+    target=$(readlink -- "$dir/$base") || break
+    case "$target" in
+      /*) dir=$(CDPATH='' cd -- "$(dirname -- "$target")" 2>/dev/null && pwd -P) || break
+          base=$(basename -- "$target") ;;
+      *)  dir=$(CDPATH='' cd -- "$dir/$(dirname -- "$target")" 2>/dev/null && pwd -P) || break
+          base=$(basename -- "$target") ;;
+    esac
+    hops=$((hops + 1))
+  done
+  printf '%s/%s\n' "$dir" "$base"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_fm_projection_script_path "${BASH_SOURCE[0]}")")" && pwd -P)"
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -147,6 +167,17 @@ fail() {
   printf 'fm-programme-projection: %s\n' "$*" >&2
   exit 1
 }
+
+# The only file this read-only script ever creates: a staging file for the
+# resolver's diagnostics, removed as soon as they are read. It is staged under
+# TMPDIR, never under the home or its state directory, so the substrate this
+# script reads stays untouched. The trap covers the window where this process
+# dies between staging and reading.
+RESOLVER_ERRFILE=
+projection_cleanup() {
+  fm_programme_resolver_cleanup
+}
+trap projection_cleanup EXIT
 
 sha256_text() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
@@ -187,18 +218,53 @@ parse_common() {
 # --- the resolver's typed result -----------------------------------------------
 
 RESOLUTION=''
+# The resolver's TYPED RESULT is its stdout and nothing else; its stderr is the
+# diagnostic channel. The two are read separately and never merged, because
+# merging them makes any byte anyone in the resolver's process tree writes to
+# stderr - a git or node warning, or one of the shell's own runtime diagnostics
+# under load - part of the document this then requires to be the typed schema.
+# That turns a successful resolve into a hard refusal whose offending bytes are
+# thrown away - the SHAPE of the intermittent CI failure in this file's suite,
+# which is a real defect at this boundary either way. It is not a named cause:
+# the refusal discarded the bytes, so no CI log names an injector, and 60
+# back-to-back resolves under that suite's fixture produced clean JSON locally.
+# The failure stays UNATTRIBUTED. A recurrence reopens the investigation rather
+# than reading as already fixed. Nothing is swallowed in exchange: whatever the
+# resolver wrote to stderr is relayed to this script's stderr on every path, so a
+# real diagnostic still reaches an operator while stdout stays exactly the typed
+# document. An unparseable stdout names what it actually received, and exit 3 is
+# still mirrored with stdout left empty.
+#
+# The shared capture owner stages resolver stderr separately, relays it for every
+# resolver exit including exit 3, and refuses with a bounded diagnostic when
+# staging, reading, or cleanup fails. It never runs the projection without a
+# trustworthy capture boundary.
 read_resolution() {
-  local out rc=0
+  local out diag='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>&1) || rc=$?
+  if fm_programme_resolver_capture "$RESOLVER" resolve fm-programme-projection \
+      ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=''
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: unavailable, they could not be staged'}
+  fi
+  projection_cleanup
   case "$rc" in
-    0) ;;
-    3) printf '%s\n' "$out" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc): $out" ;;
+    0) fm_programme_relay_diagnostic "$diag" >&2 ;;
+    3) fm_programme_relay_diagnostic "$diag" >&2; exit 3 ;;
+    *)
+      fm_programme_relay_diagnostic "$diag" >&2
+      fm_programme_relay_diagnostic "$out" >&2
+      fail "resolver failed (exit $rc)"
+      ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema"
+    || { fm_programme_relay_diagnostic "$out" >&2; fail "resolver printed an unrecognized result schema on stdout"; }
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

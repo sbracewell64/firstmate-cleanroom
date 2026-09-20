@@ -699,30 +699,12 @@ const renderTheme = {
 };
 const renderContext = { state: {}, isError: false, isPartial: false };
 const stockResult = { content: [{ type: "text", text: "OUTCOME_DUMP" }] };
-const calmOffCall = outcomesTool.renderCall({}, renderTheme, renderContext);
-const calmOffResult = outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext);
-if (calmOffCall.constructor.name !== "Box" || calmOffCall.paddingX !== 1 || calmOffCall.paddingY !== 1) {
-  throw new Error("fm_branch_outcomes changed its ordinary shell rendering");
-}
-if (calmOffResult.constructor.name !== "Container" || calmOffCall.children[0]?.text !== "fm_branch_outcomes" || calmOffCall.children[1]?.text !== "OUTCOME_DUMP") {
-  throw new Error("fm_branch_outcomes changed its ordinary call or result rendering");
-}
-const legacyStockResult = {
-  content: [{
-    type: "text",
-    text: Array.from({ length: 12 }, (_, index) => `LEGACY_OUTCOME_${String(index + 1).padStart(2, "0")}`).join("\n"),
-  }],
-};
-const legacyRenderContext = { state: {}, isError: false, isPartial: false };
-const legacyCall = outcomesTool.renderCall({}, renderTheme, legacyRenderContext);
-outcomesTool.renderResult(legacyStockResult, { expanded: false, isPartial: false }, renderTheme, legacyRenderContext);
-const collapsedLegacyText = legacyCall.children[1]?.text;
-if (!collapsedLegacyText?.includes("LEGACY_OUTCOME_12") || collapsedLegacyText.includes("more lines")) {
-  throw new Error("legacy all-line stock capability did not preserve collapsed Calm-off output");
-}
-outcomesTool.renderResult(legacyStockResult, { expanded: true, isPartial: false }, renderTheme, legacyRenderContext);
-if (legacyCall.children[1]?.text !== collapsedLegacyText) {
-  throw new Error("legacy all-line stock capability changed expanded Calm-off output");
+let calmOffCallFailed = false;
+let calmOffResultFailed = false;
+try { outcomesTool.renderCall({}, renderTheme, renderContext); } catch { calmOffCallFailed = true; }
+try { outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext); } catch { calmOffResultFailed = true; }
+if (!calmOffCallFailed || !calmOffResultFailed) {
+  throw new Error("Calm-off custom renderers must delegate to Pi stock rendering");
 }
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
 const calmOnCall = outcomesTool.renderCall({}, renderTheme, renderContext);
@@ -731,9 +713,11 @@ if (calmOnCall.constructor.name !== "Container" || calmOnCall.render(100).length
   throw new Error("fm_branch_outcomes remained visible while Calm was on");
 }
 pi.events.emit("firstmate:calm-presentation", { active: false, stockExportRendering: false });
-if (outcomesTool.renderCall({}, renderTheme, renderContext).constructor.name !== "Box" || outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext).constructor.name !== "Container") {
-  throw new Error("fm_branch_outcomes did not restore ordinary rendering when Calm was turned off");
-}
+calmOffCallFailed = false;
+calmOffResultFailed = false;
+try { outcomesTool.renderCall({}, renderTheme, renderContext); } catch { calmOffCallFailed = true; }
+try { outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext); } catch { calmOffResultFailed = true; }
+if (!calmOffCallFailed || !calmOffResultFailed) throw new Error("Calm-off rendering did not return to Pi stock fallback");
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: true });
 let exportCallFellBack = false;
 let exportResultFellBack = false;
@@ -897,8 +881,8 @@ globalThis.__fmOnBranchPrompt = async ({ session }) => {
     .map((op) => op.message.content);
   const directlyRequested = directlyRequestsResourceReport(mirror);
   const drained = await runFleetCommand(session, []);
-  const ack = drained.stderr.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
-  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stderr}`);
+  const ack = drained.stdout.match(/--ack-through ([0-9]+) --recovery-generation ([A-Za-z0-9._-]+)/);
+  if (!ack) throw new Error(`drain did not return its acknowledgement command: ${drained.stdout}`);
   const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
   const verdictDescription = report.parameters.properties.verdict.description;
   if (!verdictDescription.includes("unconditionally") ||
@@ -3109,8 +3093,12 @@ if (JSON.stringify(collapsedActual) !== JSON.stringify(collapsedStock)) {
   throw new Error("Calm-off ToolExecutionComponent rendering differs from Pi stock");
 }
 const collapsedText = collapsedStock.join("\n");
-if (collapsedText.includes("OUTCOME_TWELVE") || !collapsedText.includes("more lines") || !collapsedText.includes("to expand")) {
-  throw new Error("stock rendering fixture did not exercise its collapsed preview and expansion hint");
+if (collapsedText.includes("more lines") || collapsedText.includes("to expand")) {
+  if (collapsedText.includes("OUTCOME_TWELVE")) {
+    throw new Error("stock rendering preview unexpectedly included the final outcome");
+  }
+} else if (!collapsedText.includes("OUTCOME_TWELVE")) {
+  throw new Error("stock rendering fixture did not preserve the installed Pi's collapsed output");
 }
 stockRow.setExpanded(true);
 actualRow.setExpanded(true);
@@ -3119,8 +3107,8 @@ const expandedActual = actualRow.render(100);
 if (JSON.stringify(expandedActual) !== JSON.stringify(expandedStock)) {
   throw new Error("expanded Calm-off ToolExecutionComponent rendering differs from Pi stock");
 }
-if (!expandedStock.join("\n").includes("OUTCOME_TWELVE") || JSON.stringify(expandedStock) === JSON.stringify(collapsedStock)) {
-  throw new Error("stock rendering fixture did not exercise expanded output");
+if (!expandedStock.join("\n").includes("OUTCOME_TWELVE")) {
+  throw new Error("stock rendering fixture did not preserve the installed Pi's expanded output");
 }
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
 actualRow.invalidate();

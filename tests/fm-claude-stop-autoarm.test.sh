@@ -30,6 +30,7 @@ install_autoarm_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
   cp "$ROOT/bin/fm-cursor-lib.sh" "$dir/bin/fm-cursor-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
@@ -660,7 +661,7 @@ test_single_flight_admits_exactly_one_owner() {
 # leaves behind, so this section pins the legacy shim: a live legacy owner
 # still defers the gate, and an abandoned one is reclaimed once so the home
 # re-arms - with an identity-verified live owner retired via TERM first, and
-# an identityless one reclaimed without any signalling. The generation-claim
+# a pid-reused one reclaimed without signalling the unrelated process. The generation-claim
 # section below pins the current contract.
 
 # Fabricate a held owner lock: <dir> <pid> <role>. Plain-dir shape on purpose -
@@ -697,7 +698,74 @@ epoch_field() {
     "$dir/state/.claude-autoarm-epoch" 2>/dev/null || true
 }
 
-test_abandoned_owner_claim_is_reclaimed_and_rearms() {
+monotonic_ms() {
+  perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+    'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'
+}
+
+snapshot_autoarm_surfaces() {
+  local state=$1 output=$2 root item rel type mode target digest
+  : > "$output"
+  for root in "$state/.claude-autoarm.lock" "$state/.claude-autoarm-epoch"; do
+    if [ ! -e "$root" ] && [ ! -L "$root" ]; then
+      printf 'absent\t%s\n' "${root#"$state"/}" >> "$output"
+      continue
+    fi
+    while IFS= read -r item; do
+      rel=${item#"$state"/}
+      if [ -L "$item" ]; then
+        type=symlink
+        target=$(readlink "$item")
+      elif [ -d "$item" ]; then
+        type=directory
+        target=
+      else
+        type='file'
+        target=
+      fi
+      mode=$(stat -c '%a' "$item" 2>/dev/null || stat -f '%Lp' "$item")
+      digest=
+      if [ "$type" = file ]; then
+        digest=$(shasum -a 256 "$item" 2>/dev/null | awk '{print $1}')
+        [ -n "$digest" ] || digest=$(sha256sum "$item" | awk '{print $1}')
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$type" "$rel" "$mode" "$target" "$digest" >> "$output"
+    done < <(find -P "$root" -print | sort)
+  done
+}
+
+make_timeout_fixture_path() {
+  local dir=$1 mechanism=$2 command source
+  mkdir -p "$dir"
+  for command in bash cat date dirname env mkdir mktemp od ps readlink rm sed sleep stat tr uname; do
+    source=$(command -v "$command") || continue
+    ln -s "$source" "$dir/$command"
+  done
+  case "$mechanism" in
+    timeout|gtimeout)
+      source=$(command -v "$mechanism") || return 2
+      cat > "$dir/$mechanism" <<SH
+#!/bin/bash
+printf '%s\\n' '$mechanism' >> "\${FM_TEST_TIMEOUT_MARKER:?}"
+exec '$source' "\$@"
+SH
+      chmod +x "$dir/$mechanism"
+      ;;
+    perl)
+      source=$(command -v perl) || return 2
+      cat > "$dir/perl" <<SH
+#!/bin/bash
+printf '%s\\n' perl >> "\${FM_TEST_TIMEOUT_MARKER:?}"
+exec '$source' "\$@"
+SH
+      chmod +x "$dir/perl"
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+test_abandoned_owner_claim_defers_reconciliation() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/abandoned-claim")
   : > "$dir/state/task1.meta"
@@ -706,20 +774,17 @@ test_abandoned_owner_claim_is_reclaimed_and_rearms() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$$" || fail "could not record the reused claimant identity"
   record_autoarm_epoch "$dir" 464 "$pid" rewake
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill -0 "$pid" 2>/dev/null || fail "an identityless abandoned owner must be reclaimed without being signalled"
+  kill -0 "$pid" 2>/dev/null || fail "a pid-reused owner must be reclaimed without signalling the unrelated process"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 2 "$status" "a claim whose ledger outcome is already terminal must be reclaimed, not deferred to forever"
-  [ -e "$dir/state/arm-ran" ] || fail "abandoned claim left the home unarmed with work in flight"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
-  [ "$(epoch_field "$dir" epoch)" -gt 464 ] || fail "reclaimed cycle did not advance the frozen ledger: $(epoch_field "$dir" epoch)"
-  [ "$(epoch_outcome "$dir")" = rewake ] || fail "reclaimed cycle did not record its own outcome: $(epoch_outcome "$dir")"
-  [ "$(epoch_field "$dir" owner_pid)" != "$pid" ] || fail "reclaimed ledger still names the abandoned owner"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaimed cycle left an owner lock behind"
+  expect_code 2 "$status" "a readable pid-reused claim must be reclaimed"
+  [ -e "$dir/state/arm-ran" ] || fail "reclaimed pid-reused claim did not establish the successor arm"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "reclaimed pid-reused claim retained its owner lock"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
-  pass "auto-arm: an abandoned owner claim is reclaimed so a lapsed cycle re-arms"
+  pass "auto-arm: a readable pid-reused owner is reclaimed"
 }
 
 test_arming_claim_with_fresh_beacon_is_never_reclaimed() {
@@ -799,7 +864,7 @@ test_claim_not_named_by_the_ledger_is_never_reclaimed() {
 # separates that from a real arm in progress, so keep the beacon fresh here: this
 # case must reclaim on the identity leg alone, not the stuck-arming leg. The
 # reclaim must not signal the unrelated live process that inherited the number.
-test_pid_reused_arming_claim_is_reclaimed_and_rearms() {
+test_pid_reused_arming_claim_defers_reconciliation() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/reused-pid-arming")
   : > "$dir/state/task1.meta"
@@ -815,19 +880,18 @@ test_pid_reused_arming_claim_is_reclaimed_and_rearms() {
   kill -0 "$pid" 2>/dev/null || fail "the unrelated live process inheriting the number must never be signalled"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 2 "$status" "a claim whose recorded identity no longer matches its live pid must be reclaimed, arming entry or not"
-  [ -e "$dir/state/arm-ran" ] || fail "a reused-pid claim left the home unarmed with work in flight"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
-  [ "$(epoch_field "$dir" epoch)" -gt 464 ] || fail "reclaimed cycle did not advance the frozen ledger: $(epoch_field "$dir" epoch)"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaimed cycle left an owner lock behind"
+  expect_code 2 "$status" "a reused-pid arming claim must complete stale-owner reconciliation"
+  [ -e "$dir/state/arm-ran" ] || fail "a reclaimed reused-pid claim did not establish the successor arm"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "a reused-pid claim retained its stale owner lock"
+  assert_absent "$dir/state/.claude-autoarm.lock" "a reused-pid claim retained its stale owner lock"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
-  pass "auto-arm: a claim whose pid was reused is reclaimed even while its ledger entry still reads arming"
+  pass "auto-arm: a claim whose pid was reused is reclaimed"
 }
 
 # The other ledger-blind shape: no ledger at all (a fresh or hand-cleared home)
 # plus a reused pid. Without the recorded identity nothing proves abandonment, so
 # every later firing exits at the lock and the home never re-arms.
-test_pid_reused_claim_with_no_ledger_is_reclaimed_and_rearms() {
+test_pid_reused_claim_with_no_ledger_defers_reconciliation() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/reused-pid-no-ledger")
   : > "$dir/state/task1.meta"
@@ -840,12 +904,10 @@ test_pid_reused_claim_with_no_ledger_is_reclaimed_and_rearms() {
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 2 "$status" "a reused-pid claim with no ledger to consult must still be reclaimed"
-  [ -e "$dir/state/arm-ran" ] || fail "a reused-pid claim with no ledger left the home unarmed"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
-  [ "$(epoch_outcome "$dir")" = rewake ] || fail "reclaimed cycle did not record its own outcome: $(epoch_outcome "$dir")"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaimed cycle left an owner lock behind"
-  pass "auto-arm: a reused-pid claim is reclaimed even with no ledger entry to prove it"
+  expect_code 2 "$status" "a reused-pid claim with no ledger must complete stale-owner reconciliation"
+  [ -e "$dir/state/arm-ran" ] || fail "a reused-pid claim with no ledger did not establish the successor arm"
+  assert_absent "$dir/state/.claude-autoarm.lock" "a reused-pid claim with no ledger retained its stale owner lock"
+  pass "auto-arm: a reused-pid claim with no ledger is reclaimed"
 }
 
 # The negative control for the identity leg: a claim whose recorded identity still
@@ -898,7 +960,7 @@ test_terminal_check_claim_is_never_reclaimed() {
 # A proven-stuck legacy owner that is still ALIVE and identity-verified is
 # retired with TERM before its lock is removed, because old-build code cannot
 # re-check generations and would otherwise resume and act after supersession.
-test_stuck_live_legacy_owner_is_retired_and_reclaimed() {
+test_stuck_live_legacy_owner_is_retired_and_deferred() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term")
   : > "$dir/state/task1.meta"
@@ -910,19 +972,23 @@ test_stuck_live_legacy_owner_is_retired_and_reclaimed() {
   record_autoarm_epoch "$dir" 464 "$pid" arming
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "a proven-stuck identity-verified live legacy owner must be retired and reclaimed"
-  kill -0 "$pid" 2>/dev/null && fail "the stuck legacy owner was reclaimed without being retired"
+  expect_code 0 "$status" "a proven-stuck identity-verified live legacy owner must defer reconciliation"
+  if kill -0 "$pid" 2>/dev/null; then
+    owner_state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    case "$owner_state" in
+      Z*) : ;;
+      *) fail "the stuck legacy owner was not retired" ;;
+    esac
+  fi
   wait "$pid" 2>/dev/null || true
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the legacy owner lock behind"
-  pass "auto-arm: a stuck live legacy owner is retired via TERM and its lock reclaimed"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the deferred home re-armed before reconciliation"
+  assert_present "$dir/state/.claude-autoarm.lock" "deferred reconciliation lost the legacy owner lock"
+  pass "auto-arm: a stuck live legacy owner is retired and deferred"
 }
 
 # The SIGSTOP counterfactual: a stopped legacy owner survives the bounded
-# retirement wait with TERM queued, and the reclaim must proceed anyway - a
-# pending TERM on the verified owner is retirement-safe because delivery
-# precedes any further user code when the process continues.
+# retirement wait with TERM queued, so the reclaim must wait for confirmed
+# termination rather than treating the pending signal as success.
 test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   local dir out status pid i
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term-stopped")
@@ -936,9 +1002,9 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   kill -STOP "$pid" 2>/dev/null || fail "could not stop the legacy owner fixture"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "a stopped legacy owner with TERM queued must not block the reclaim forever"
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm past the stopped owner"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the stopped owner's lock behind"
+  expect_code 0 "$status" "a stopped legacy owner with TERM queued must block reclamation"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the stopped owner was reclaimed before termination was confirmed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "reclaim removed the stopped owner's lock"
   kill -CONT "$pid" 2>/dev/null || true
   i=0
   while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
@@ -947,7 +1013,415 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   done
   kill -0 "$pid" 2>/dev/null && fail "the queued TERM did not retire the owner on continue"
   wait "$pid" 2>/dev/null || true
-  pass "auto-arm: a SIGSTOPped legacy owner is reclaimed with TERM pending and dies on continue"
+  pass "auto-arm: a SIGSTOPped legacy owner blocks until TERM termination is confirmed"
+}
+
+# Retirement is a CONFIRMED stop, so the bounded operation sends one TERM and
+# retains the claim when disappearance is not confirmed.
+write_stop_recording_owner() {  # <dir>
+  local dir=$1
+  cat > "$dir/bin/legacy-owner.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+OWNER_LOG=${OWNER_LOG:?}
+OWNER_READY=${OWNER_READY:?}
+: > "$OWNER_LOG"
+record_stop() { printf '%s\n' "$1" >> "$OWNER_LOG"; }
+trap 'record_stop TERM' TERM
+trap 'record_stop HUP' HUP
+trap 'record_stop INT' INT
+: > "$OWNER_READY"
+owner_i=0
+while [ "$owner_i" -lt 600 ]; do
+  sleep 0.1
+  owner_i=$((owner_i + 1))
+done
+SH
+  chmod +x "$dir/bin/legacy-owner.sh"
+}
+
+test_legacy_owner_retirement_sends_one_term() {
+  local dir out status pid log ready delivered i
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-retire-cadence")
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] \
+    || { kill -KILL "$pid" 2>/dev/null || true; fail "the stop-recording legacy owner never installed its traps"; }
+
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" \
+    || { kill -KILL "$pid" 2>/dev/null || true; fail "could not record a claim pid-identity"; }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+
+  export FM_STOP_REDELIVER_POLLS=11
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  unset FM_STOP_REDELIVER_POLLS
+  delivered=$(grep -c . "$log" 2>/dev/null || true)
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  expect_code 0 "$status" "a legacy owner that outlives its bounded retirement must block reclamation"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the stop-ignoring owner was reclaimed after the retirement timeout"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "the live stop-ignoring owner's lock was removed"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
+  [ -z "$out" ] || fail "a refused legacy reclaim produced a wake: $out"
+  [ "$delivered" -eq 1 ] \
+    || fail "the bounded legacy retirement sent an unexpected number of TERM signals: $delivered"
+  pass "auto-arm: legacy retirement sends one TERM within the one-second bound"
+}
+
+test_bounded_retirement_preserves_surfaces_and_deadline() {
+  local dir pid log ready recorded before after started elapsed status=0 delivered
+  dir=$(make_primary_dir "$TMP_ROOT/bounded-retirement-surfaces")
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$ready" ] && break
+    sleep 0.01
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; fail "the bounded target never became ready"; }
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "could not record the bounded target identity"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  recorded=$(fm_test_pid_identity "$pid") || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "could not read the bounded target identity"
+  }
+  before="$dir/state/surfaces-before"
+  after="$dir/state/surfaces-after"
+  snapshot_autoarm_surfaces "$dir/state" "$before"
+  started=$(monotonic_ms)
+  FM_STOP_REDELIVER_POLLS=1 FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_confirm_stop_bounded "$2" "$3"
+  ' _ "$dir/bin/fm-wake-lib.sh" "$pid" "$recorded" || status=$?
+  elapsed=$(( $(monotonic_ms) - started ))
+  snapshot_autoarm_surfaces "$dir/state" "$after"
+  delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$status" -ne 0 ] || fail "a stubborn bounded target was reported stopped"
+  [ "$elapsed" -ge 800 ] || fail "bounded retirement returned before its one-second deadline: ${elapsed}ms"
+  [ "$elapsed" -le 1300 ] || fail "bounded retirement exceeded its one-second owner: ${elapsed}ms"
+  [ "$delivered" -eq 1 ] || fail "bounded retirement delivered $delivered TERM signals"
+  cmp -s "$before" "$after" || fail "bounded retirement changed lock or ledger surfaces"
+  pass "auto-arm: bounded retirement preserves surfaces and deadline"
+}
+
+run_bounded_mechanism_case() {
+  local mechanism=$1 dir pid log ready recorded before after started elapsed status=0 delivered path
+  dir=$(make_primary_dir "$TMP_ROOT/bounded-mechanism-$mechanism")
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$ready" ] && break
+    sleep 0.01
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; fail "$mechanism target never became ready"; }
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "$mechanism target identity was unavailable"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  recorded=$(fm_test_pid_identity "$pid") || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "$mechanism target identity could not be read"
+  }
+  before="$dir/state/surfaces-before"
+  after="$dir/state/surfaces-after"
+  snapshot_autoarm_surfaces "$dir/state" "$before"
+  path="$dir/timeout-path"
+  if [ "$mechanism" = bash ]; then
+    path="$PATH"
+  else
+    make_timeout_fixture_path "$path" "$mechanism" || {
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      pass "auto-arm: CNO $mechanism timeout mechanism unavailable on this host"
+      return 0
+    }
+  fi
+  started=$(monotonic_ms)
+  FM_TIMEOUT_MECHANISM_OVERRIDE=$([ "$mechanism" = bash ] && printf bash || true) \
+    FM_TEST_TIMEOUT_MARKER="$dir/mechanism-used" FM_STATE_OVERRIDE="$dir/state" PATH="$path" \
+    bash -c '
+      . "$1"
+      fm_autoarm_confirm_stop_bounded "$2" "$3"
+    ' _ "$dir/bin/fm-wake-lib.sh" "$pid" "$recorded" || status=$?
+  elapsed=$(( $(monotonic_ms) - started ))
+  snapshot_autoarm_surfaces "$dir/state" "$after"
+  delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$status" -ne 0 ] || fail "$mechanism reported a stubborn target stopped"
+  [ "$elapsed" -ge 800 ] || fail "$mechanism returned before its one-second deadline: ${elapsed}ms"
+  [ "$elapsed" -le 1300 ] || fail "$mechanism exceeded the one-second owner: ${elapsed}ms"
+  [ "${delivered:-0}" -eq 1 ] || fail "$mechanism delivered ${delivered:-0} TERM signals"
+  cmp -s "$before" "$after" || fail "$mechanism changed lock or ledger surfaces"
+  if [ "$mechanism" != bash ]; then
+    [ "$(cat "$dir/mechanism-used" 2>/dev/null)" = "$mechanism" ] \
+      || fail "$mechanism was not selected by the timeout owner"
+  fi
+  pass "auto-arm: bounded retirement covers $mechanism timeout selection"
+}
+
+test_bounded_retirement_refuses_unproven_identity() {
+  local dir pid log ready before after status=0 dead_pid
+  dir=$(make_primary_dir "$TMP_ROOT/bounded-identity-refusal")
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$ready" ] && break
+    sleep 0.01
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; fail "identity refusal target never became ready"; }
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "identity refusal target identity was unavailable"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  before="$dir/state/surfaces-before"
+  after="$dir/state/surfaces-after"
+  snapshot_autoarm_surfaces "$dir/state" "$before"
+  FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_confirm_stop_bounded "$2" wrong-identity
+  ' _ "$dir/bin/fm-wake-lib.sh" "$pid" || status=$?
+  snapshot_autoarm_surfaces "$dir/state" "$after"
+  [ "$status" -ne 0 ] || fail "changed identity was treated as safe to signal"
+  [ ! -s "$log" ] || fail "changed identity received a TERM"
+  cmp -s "$before" "$after" || fail "changed identity changed durable surfaces"
+  sleep 0.1 &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  status=0
+  FM_TIMEOUT_MECHANISM_OVERRIDE=bash FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_confirm_stop_bounded "$2" unknown-identity
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dead_pid" || status=$?
+  [ "$status" -ne 0 ] || fail "unknown identity was treated as safe to signal"
+  delivered=$(grep -c . "$log" 2>/dev/null || true)
+  [ "${delivered:-0}" -eq 0 ] || fail "unknown identity received a TERM"
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pass "auto-arm: changed and unknown identities refuse retirement"
+}
+
+test_first_unverifiable_live_legacy_owner_retains_lock() {
+  local dir status=0
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-first-unverifiable")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' expected-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
+  IDENTITY_MARKER="$dir/state/identity-called" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_abandoned() { return 0; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { :; }
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() { return 1; }
+    fm_autoarm_release_abandoned "$2" 0
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "first unreadable identity reclaimed a live legacy owner"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "first unreadable identity lost the legacy owner lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "first unreadable identity left its mutex behind"
+  pass "auto-arm: first unreadable live identity retains its lock"
+}
+
+test_missing_live_legacy_owner_identity_retains_lock() {
+  local dir status=0
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-missing-identity")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  : > "$dir/state/.claude-autoarm.lock/pid-identity"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_abandoned() { return 0; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { :; }
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() { printf "%s\\n" current-identity; }
+    fm_autoarm_release_abandoned "$2" 0
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "live owner with missing identity was reclaimed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "live owner with missing identity lost its lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "missing-identity reclaim left its mutex behind"
+  pass "auto-arm: missing live owner identity retains the lock"
+}
+
+test_dead_autoarm_owner_reclaims_without_identity_comparison() {
+  local dir status=0 dead_pid
+  dir=$(make_primary_dir "$TMP_ROOT/dead-autoarm-owner")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  sleep 0.1 &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' autoarm > "$dir/state/.claude-autoarm.lock/role"
+  printf '%s\n' stale-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
+  record_autoarm_epoch "$dir" 466 "$dead_pid" rewake
+  touch -t 202001010000 "$dir/state/.last-watcher-beat" "$dir/state/.claude-autoarm-epoch"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -eq 0 ] || fail "dead auto-arm owner was not reclaimed"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "dead auto-arm owner lock was retained"
+  pass "auto-arm: dead owner is reclaimed"
+}
+
+test_confirmed_stop_then_dead_owner_reconciles() {
+  local dir pid status=0 second_status=0 third_status=0 marker first_gen successor_pid
+  dir=$(make_primary_dir "$TMP_ROOT/confirmed-stop-dead-reconcile")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || {
+    kill "$pid" 2>/dev/null || true
+    fail "could not record the retiring owner identity"
+  }
+  record_autoarm_epoch "$dir" 466 "$pid" rewake
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "retirement removed a live owner before confirmed stop"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "confirmed-stop attempt lost the owner lock"
+  wait "$pid" 2>/dev/null || true
+
+  marker="$dir/state/successor-claimed"
+  (
+    FM_STATE_OVERRIDE="$dir/state" bash -c '
+      . "$1"
+      fm_autoarm_release_abandoned "$2" 0 || exit 41
+      fm_autoarm_claim_next "$2" 300 || exit 42
+      printf "%s %s\n" "$FM_AUTOARM_MY_GEN" "${BASHPID:-$$}" > "$3"
+      sleep 3
+    ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" "$marker"
+  ) &
+  successor_pid=$!
+  for _ in $(seq 1 100); do
+    [ -s "$marker" ] && break
+    sleep 0.01
+  done
+  [ -s "$marker" ] || {
+    kill "$successor_pid" 2>/dev/null || true
+    wait "$successor_pid" 2>/dev/null || true
+    fail "dead-owner reconciliation did not establish a successor"
+  }
+  read -r first_gen successor_pid < "$marker"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_claim_next "$2" 300' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || second_status=$?
+  [ "$second_status" -eq 2 ] || fail "successor claim was not preserved on repeat"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 0' \
+    _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || third_status=$?
+  [ "$third_status" -ne 0 ] || fail "third stale-owner call reclaimed the live successor"
+  [ "$(epoch_field "$dir" epoch)" = "$first_gen" ] || fail "repeat reconciliation changed the successor generation"
+  kill "$successor_pid" 2>/dev/null || true
+  wait "$successor_pid" 2>/dev/null || true
+  pass "auto-arm: confirmed stop defers to idempotent dead-owner reconciliation"
+}
+
+test_later_dead_owner_reconciliation_is_idempotent() {
+  local dir dead_pid marker successor first_gen second_gen second_status=0 owner_pid
+  dir=$(make_primary_dir "$TMP_ROOT/later-dead-owner-reconciliation")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  sleep 0.1 &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' autoarm > "$dir/state/.claude-autoarm.lock/role"
+  printf '%s\n' stale-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
+  record_autoarm_epoch "$dir" 466 "$dead_pid" arming
+  touch -t 202001010000 "$dir/state/.claude-autoarm.lock" \
+    "$dir/state/.claude-autoarm.lock/pid" \
+    "$dir/state/.claude-autoarm.lock/role" \
+    "$dir/state/.claude-autoarm.lock/pid-identity" \
+    "$dir/state/.last-watcher-beat"
+  marker="$dir/state/successor-claimed"
+  (
+    FM_STATE_OVERRIDE="$dir/state" bash -c '
+      . "$1"
+      fm_autoarm_claim_next "$2" 300 || exit $?
+      printf "%s %s\n" "$FM_AUTOARM_MY_GEN" "${BASHPID:-$$}" > "$3"
+      sleep 3
+    ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" "$marker"
+  ) &
+  successor=$!
+  for _ in $(seq 1 100); do
+    [ -s "$marker" ] && break
+    sleep 0.01
+  done
+  [ -s "$marker" ] || { kill "$successor" 2>/dev/null || true; wait "$successor" 2>/dev/null || true; fail "real stale-owner reconciliation did not publish a successor"; }
+  read -r first_gen owner_pid < "$marker"
+  second_gen=$(epoch_field "$dir" epoch)
+  [ "$second_gen" = "$first_gen" ] || fail "successor claim did not publish exactly once"
+  FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_next "$2" 300
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || second_status=$?
+  second_gen=$(epoch_field "$dir" epoch)
+  [ "$second_status" -eq 2 ] || fail "a live successor was not preserved on repeat"
+  [ "$second_gen" = "$first_gen" ] || fail "repeat reconciliation duplicated the successor claim"
+  [ "$(epoch_field "$dir" owner_pid)" = "$owner_pid" ] || fail "repeat reconciliation changed the successor owner"
+  kill "$successor" 2>/dev/null || true
+  wait "$successor" 2>/dev/null || true
+  pass "auto-arm: later dead-owner reconciliation is idempotent"
+}
+
+test_unverifiable_live_legacy_owner_retains_lock() {
+  local dir status=0
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-unverifiable")
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' 12345 > "$dir/state/.claude-autoarm.lock/pid"
+  printf '%s\n' expected-identity > "$dir/state/.claude-autoarm.lock/pid-identity"
+  IDENTITY_MARKER="$dir/state/identity-called" FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_claim_abandoned() { return 0; }
+    fm_lock_try_acquire() { return 0; }
+    fm_lock_release() { :; }
+    fm_pid_alive() { return 0; }
+    fm_pid_identity() {
+      if [ ! -e "$IDENTITY_MARKER" ]; then
+        : > "$IDENTITY_MARKER"
+        printf "%s\\n" expected-identity
+      else
+        return 1
+      fi
+    }
+    fm_autoarm_release_abandoned "$2" 0
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  [ "$status" -ne 0 ] || fail "unverifiable live legacy owner was reclaimed"
+  [ -e "$dir/state/.claude-autoarm.lock" ] || fail "unverifiable live legacy owner lost its lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "unverifiable reclaim left its mutex behind"
+  pass "auto-arm: unverifiable live legacy owner retains its lock"
 }
 
 # --- generation claims: optimistic single-flight and supersession --------------
@@ -1169,16 +1643,29 @@ test_positive_recovery_budget_contention_preserves_episode
 test_owner_mutex_contention_preserves_failure_episode_reset
 test_arms_for_x_mode_poll_need_without_inflight
 test_single_flight_admits_exactly_one_owner
-test_abandoned_owner_claim_is_reclaimed_and_rearms
+test_abandoned_owner_claim_defers_reconciliation
 test_arming_claim_with_fresh_beacon_is_never_reclaimed
 test_fresh_arming_claim_with_stale_beacon_is_never_reclaimed
 test_claim_not_named_by_the_ledger_is_never_reclaimed
-test_pid_reused_arming_claim_is_reclaimed_and_rearms
-test_pid_reused_claim_with_no_ledger_is_reclaimed_and_rearms
+test_pid_reused_arming_claim_defers_reconciliation
+test_pid_reused_claim_with_no_ledger_defers_reconciliation
 test_identity_matched_arming_claim_is_never_reclaimed
 test_terminal_check_claim_is_never_reclaimed
-test_stuck_live_legacy_owner_is_retired_and_reclaimed
+test_stuck_live_legacy_owner_is_retired_and_deferred
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
+test_legacy_owner_retirement_sends_one_term
+test_bounded_retirement_preserves_surfaces_and_deadline
+test_bounded_retirement_refuses_unproven_identity
+run_bounded_mechanism_case bash
+run_bounded_mechanism_case timeout
+run_bounded_mechanism_case gtimeout
+run_bounded_mechanism_case perl
+test_first_unverifiable_live_legacy_owner_retains_lock
+test_missing_live_legacy_owner_identity_retains_lock
+test_dead_autoarm_owner_reclaims_without_identity_comparison
+test_confirmed_stop_then_dead_owner_reconciles
+test_later_dead_owner_reconciliation_is_idempotent
+test_unverifiable_live_legacy_owner_retains_lock
 test_open_generation_claim_defers_without_any_lock
 test_stuck_generation_claim_is_superseded_and_rearms
 test_identityless_ledger_never_defers

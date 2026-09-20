@@ -23,17 +23,25 @@ set -u
 . "$ROOT/bin/fm-classify-lib.sh"
 
 WATCH="$ROOT/bin/fm-watch.sh"
-DRAIN="$ROOT/bin/fm-wake-drain.sh"
+DRAIN_REAL="$ROOT/bin/fm-wake-drain.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watch-triage-tests)
+DRAIN="$TMP_ROOT/fm-wake-drain-fixture.sh"
+cat > "$DRAIN" <<SH
+#!/usr/bin/env bash
+state=\${FM_STATE_OVERRIDE:-}
+home=\${state%/state}
+FM_HOME="\$home" exec "$DRAIN_REAL" "\$@"
+SH
+chmod +x "$DRAIN"
 
 ack_stopped_cycle() {  # <state>
-  local state=$1 err sequence generation
-  err="$state/.test-cycle-drain.err"
-  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2> "$err" || return 1
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
-  rm -f "$err"
+  local state=$1 out sequence generation
+  out="$state/.test-cycle-drain.out"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2>/dev/null || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out")
+  rm -f "$out"
   [ -n "$sequence" ] && [ -n "$generation" ] || return 1
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation"
@@ -174,23 +182,8 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-# Stop a background watcher and collect it. TERM first so its EXIT trap can
-# release the lock, but never block on that: bash 5.2 (CI's ubuntu-latest) can
-# fail to run a trap that lands while it is expanding a command substitution
-# ("trap: unexpected EOF while looking for matching `)'"), and a watcher that
-# swallowed its TERM that way loops on until the job timeout. After a bounded
-# grace, KILL it; the lock library reclaims a dead holder's lock, so the next
-# watcher a case launches still starts.
-reap() {  # <pid>
-  local pid=$1 i=0
-  kill "$pid" 2>/dev/null || true
-  while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
+# Background watchers are stopped with tests/lib.sh's shared `reap`, which owns
+# the stop protocol these cases depend on.
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -894,7 +887,7 @@ test_turn_ended_churning_pane_absorbed() {
   # stale backbone, which this static fixture pane would otherwise reach.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_CONFIG_OVERRIDE="$(churn_config "$dir")" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=3 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_absorbed "$state" "$pid" "absorbed benign signal:" \
@@ -1057,7 +1050,7 @@ test_turn_ended_trailing_newline_prior_hash_surfaced() {
   export FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown codex-unverified)'
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_CONFIG_OVERRIDE="$(churn_config "$dir")" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=3 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher absorbed a turn-end backed by a newline-terminated prior hash"
@@ -1499,7 +1492,7 @@ test_turn_ended_surfaced_batch_opens_no_partial_deadline() {
   export FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown codex-unverified)'
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOWS="$(printf 'fm-codexfirst\nfm-codexsecond')" \
     FM_FAKE_TMUX_CAPTURE="$capture_file" FM_CONFIG_OVERRIDE="$(churn_config "$dir")" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=3 FM_SIGNAL_GRACE=1 \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>/dev/null &
   pid=$!
   wait_for_exit "$pid" 100 || fail "watcher absorbed a batch containing an invalid churn deadline"
@@ -3685,8 +3678,8 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
     || fail "the successor drain did not re-print the durable process-event row"
 
   pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$replay_err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_err")
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$replay_out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_out")
   [ -n "$sequence" ] && [ -n "$generation" ] \
     || fail "the replay drain omitted its post-handling acknowledgement boundary"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
@@ -3824,8 +3817,8 @@ test_procevent_surface_crash_boundaries() {
     || fail "post-marker successor drain failed"
   grep "$(printf '\tcheck\t')" "$out.replay.drain" | grep -F 'procevent fixture after-marker 1' >/dev/null \
     || fail "post-marker successor did not re-drain the durable record"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$replay_err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_err")
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$replay_out")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$replay_out")
   [ -n "$sequence" ] && [ -n "$generation" ] \
     || fail "post-marker replay omitted its post-handling acknowledgement boundary"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \

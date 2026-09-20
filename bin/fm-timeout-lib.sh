@@ -125,6 +125,112 @@ fm_run_external_timeout() {
   esac
 }
 
+fm_run_external_timeout_strict() {
+  local runner=$1 seconds=$2 status_file done_dir expired_dir runner_pid watchdog_pid runner_rc command_rc child_script
+  shift 2
+  status_file=$(mktemp "${TMPDIR:-/tmp}/fm-timeout-strict-status.XXXXXX" 2>/dev/null) || return 124
+  done_dir="${status_file}.done"
+  expired_dir="${status_file}.expired"
+  child_script=$(cat <<'EOF'
+    status_file=$1
+    done_dir=$2
+    shift 2
+    "$@"
+    command_rc=$?
+    printf "%s\n" "$command_rc" > "$status_file"
+    mkdir "$done_dir" 2>/dev/null || exit 124
+    exit "$command_rc"
+EOF
+  )
+  "$runner" -s KILL "$seconds" bash -c "$child_script" _ "$status_file" "$done_dir" "$@" &
+  runner_pid=$!
+  (
+    sleep "$seconds"
+    if [ ! -d "$done_dir" ] && mkdir "$expired_dir" 2>/dev/null; then
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    fi
+    exit 124
+  ) &
+  watchdog_pid=$!
+  if wait "$runner_pid"; then
+    runner_rc=0
+  else
+    runner_rc=$?
+  fi
+  if [ -d "$done_dir" ]; then
+    kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  else
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
+  command_rc=$(cat "$status_file" 2>/dev/null || true)
+  if [ -d "$expired_dir" ]; then
+    rm -f "$status_file" 2>/dev/null || true
+    rmdir "$done_dir" "$expired_dir" 2>/dev/null || true
+    return 124
+  fi
+  rm -f "$status_file" 2>/dev/null || true
+  rmdir "$done_dir" "$expired_dir" 2>/dev/null || true
+  case "$command_rc" in
+    ''|*[!0-9]*) ;;
+    *) [ "$command_rc" -le 255 ] && return "$command_rc" ;;
+  esac
+  case "$runner_rc" in
+    124|137)
+      kill -KILL -- "-$runner_pid" 2>/dev/null || true
+      return 124
+      ;;
+    *) return "$runner_rc" ;;
+  esac
+}
+
+fm_run_bash_timeout_strict() {
+  local seconds=$1 command_status deadline_dir done_dir child_pid watchdog_pid command_rc recorded_rc monitor_was_on=0
+  shift
+  command_status=$(mktemp "${TMPDIR:-/tmp}/fm-bash-strict-timeout-command.XXXXXX" 2>/dev/null) || return 124
+  deadline_dir="${command_status}.deadline"
+  done_dir="${command_status}.done"
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m
+  (
+    set +m
+    "$@"
+    command_rc=$?
+    printf '%s\n' "$command_rc" > "$command_status"
+    mkdir "$done_dir" 2>/dev/null || exit 124
+    exit "$command_rc"
+  ) &
+  child_pid=$!
+  (
+    set +m
+    sleep "$seconds"
+    if [ ! -d "$done_dir" ] && mkdir "$deadline_dir" 2>/dev/null; then
+      kill -KILL -- "-$child_pid" 2>/dev/null || true
+    fi
+    exit 124
+  ) &
+  watchdog_pid=$!
+  [ "$monitor_was_on" -eq 1 ] || set +m
+
+  if wait "$child_pid" 2>/dev/null; then
+    command_rc=0
+  else
+    command_rc=$?
+  fi
+  if [ -d "$deadline_dir" ]; then
+    wait "$watchdog_pid" 2>/dev/null || true
+    command_rc=124
+  else
+    kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    recorded_rc=$(cat "$command_status" 2>/dev/null || true)
+    case "$recorded_rc" in ''|*[!0-9]*) ;; *) command_rc=$recorded_rc ;; esac
+  fi
+  rm -f "$command_status" 2>/dev/null || true
+  rmdir "$done_dir" "$deadline_dir" 2>/dev/null || true
+  return "$command_rc"
+}
+
 fm_run_timed() {  # <seconds> <command...>
   local seconds=$1
   shift
@@ -136,6 +242,21 @@ fm_run_timed() {  # <seconds> <command...>
         "$seconds" "$@"
       ;;
     bash) fm_run_bash_timeout "$seconds" "$@" ;;
+    *) return 124 ;;
+  esac
+}
+
+fm_run_timed_strict() {  # <seconds> <command...>
+  local seconds=$1
+  shift
+  case "$(fm_timeout_mechanism)" in
+    timeout) fm_run_external_timeout_strict timeout "$seconds" "$@" ;;
+    gtimeout) fm_run_external_timeout_strict gtimeout "$seconds" "$@" ;;
+    perl)
+      perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+        "$seconds" "$@"
+      ;;
+    bash) fm_run_bash_timeout_strict "$seconds" "$@" ;;
     *) return 124 ;;
   esac
 }

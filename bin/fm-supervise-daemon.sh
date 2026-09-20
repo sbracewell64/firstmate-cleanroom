@@ -699,8 +699,20 @@ escalate_add() {  # <state> <distilled-item>
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
 programme_digest_token() {  # [<state>]
-  local out rc=0 state=${1:-} token presented pending
-  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
+  local out rc=0 state=${1:-} token presented pending diag='' diag_note=''
+  if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=''
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: unavailable, they could not be staged'}
+  fi
+  # Separating the streams means ROUTING both, not discarding one, so the
+  # captured stderr is relayed here rather than dropped on a successful
+  # resolve; bin/fm-programme-projection.sh states that policy in full.
+  fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)
       if [ -n "$state" ]; then
@@ -711,9 +723,9 @@ programme_digest_token() {  # [<state>]
           return 0
         fi
       fi
-      printf ' | %s' "$(_collapse_newlines "$out")" ;;
+      printf ' | %s' "$(_collapse_newlines "$out" | fm_programme_render_non_actionable)" ;;
     3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
+    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(printf '%s' "${diag:-$diag_note}" | head -c 400 | fm_programme_render_non_actionable)" ;;
   esac
 }
 
@@ -1486,8 +1498,8 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   done < "$out"
   if [ "$handled" -eq 0 ]; then handle_wake "$fallback_reason" "$state" || failed=1; fi
 
-  ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err" | tail -1)
-  ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err" | tail -1)
+  ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$out" | tail -1)
+  ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$out" | tail -1)
   grep -v '^WAKE_ACK_REQUIRED:' "$err" >&2 || true
   rm -f "$out" "$err"
   if [ "$failed" -ne 0 ]; then
@@ -1639,6 +1651,7 @@ fm_super_main() {
   local WATCHER_PID="" CUR_TMP=""
   cleanup() {
     trap - TERM INT
+    fm_programme_resolver_cleanup
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then

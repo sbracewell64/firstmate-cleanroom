@@ -29,10 +29,19 @@
 # the current state once.
 #
 # CONTRACT (fm_programme_present <state> <mode>):
-#   1. Run the resolver's `render`; exit 3 (no programme) prints nothing and
-#      returns 3; a resolver failure is itself material state, keyed by a
-#      digest of its exit code and message, so a broken pin surfaces once and
-#      then stays quiet until it changes.
+#   1. Run the resolver's `render`; exit 3 (no programme) prints no presentation
+#      on stdout and returns 3, while captured diagnostics remain visible on
+#      stderr; a resolver failure is itself material state, keyed by a
+#      digest of its exit code and the diagnostic it wrote, so a broken pin
+#      surfaces once and then stays quiet until it changes. When NO diagnostic
+#      was captured - whether because it could not be staged or because the
+#      resolver wrote none, which are the same thing here - that digest would be
+#      identical for every failure of that exit code, so this REFUSES TO DEDUPE
+#      and presents each occurrence instead. When the distinguishing input is
+#      unavailable the answer is to refuse to identify, never to fall back to a
+#      value everything shares: presenting the same failure twice is harmless,
+#      suppressing a genuinely different one is not. Do not narrow that guard to
+#      the unstageable case alone; it would re-create the collapse.
 #   2. Compare the identity with the acknowledged record AND the pending
 #      record: equal to either is unchanged -> print nothing, return 0. When
 #      it equals the pending record and the mode is `commit` (a no-ack turn
@@ -51,6 +60,12 @@
 #      and acknowledgement is not swallowed and surfaces at the next drain.
 # The branch supervision actor never presents or acknowledges programme
 # state; docs/programme-continuation.md owns the caller census.
+
+FM_PROGRAMME_PRESENTATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v fm_run_timed >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$FM_PROGRAMME_PRESENTATION_DIR/fm-timeout-lib.sh"
+fi
 
 fm_programme_presented_path() {  # <state>
   printf '%s/.programme-presented' "$1"
@@ -73,10 +88,16 @@ fm_programme_pending_identity() {  # <state>
   _fm_programme_record_identity "$(fm_programme_pending_path "$1")"
 }
 
-# The full material identity carried by a `render` text (its last line), or
-# nothing when the text carries none.
+# The full material identity carried by a `render` text (its last line), with a
+# deterministic fallback for successful renders that omit the identity line.
 fm_programme_identity_from_render() {  # <render-text>
-  printf '%s\n' "$1" | sed -n 's/^Material identity \([0-9a-f]\{64\}\) .*/\1/p' | head -1
+  local identity
+  identity=$(printf '%s\n' "$1" | sed -n 's/^Material identity \([0-9a-f]\{64\}\) .*/\1/p' | head -1)
+  if [ -n "$identity" ]; then
+    printf '%s\n' "$identity"
+  else
+    _fm_programme_sha256 "render-without-identity:$1"
+  fi
 }
 
 _fm_programme_sha256() {  # <text>
@@ -111,37 +132,81 @@ fm_programme_presentation_state() {  # <state> <identity>
   else printf 'changed'; fi
 }
 
-# Present the programme continuation once per material change. See CONTRACT.
-fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict
-  resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
-  case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  out=$("$resolver" render 2>&1) || rc=$?
-  case "$rc" in
-    0)
-      identity=$(fm_programme_identity_from_render "$out")
-      [ -n "$identity" ] || { identity=$(_fm_programme_sha256 "render-without-identity:$out"); }
-      summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)
-      ;;
-    3) return 3 ;;
-    *)
-      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$out")
-      summary="resolver failed (exit $rc)"
-      out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
-$out"
-      ;;
-  esac
-  verdict=$(fm_programme_presentation_state "$state" "$identity")
-  case "$verdict" in
-    unchanged) return 0 ;;
-    pending-ack)
-      [ "$mode" = commit ] || return 0
-      fm_programme_ack_pending "$state"
-      return $?
-      ;;
-  esac
+_fm_programme_prefix_diagnostic() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf 'resolver diagnostic: %s\n' "$line"
+  done
+}
+
+fm_programme_render_non_actionable() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf 'resolver data: %s\n' "$line"
+  done
+}
+
+fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]
+  local resolver=$1 operation=$2 prefix=$3 errfile out rc=0
+  shift 3
+  FM_PROGRAMME_RESOLVER_OUT=''
+  FM_PROGRAMME_RESOLVER_DIAG=''
+  FM_PROGRAMME_RESOLVER_RC=125
+  errfile=$(mktemp "${TMPDIR:-/tmp}/$prefix.XXXXXX" 2>/dev/null) \
+    || errfile=$(mktemp "/tmp/$prefix.XXXXXX" 2>/dev/null) \
+    || { FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: staging allocation failed'; return 125; }
+  export RESOLVER_ERRFILE="$errfile"
+  if [ "${FM_PROGRAMME_RESOLVER_BOUNDED:-0}" = 1 ]; then
+    out=$(fm_run_timed 1 "$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  else
+    out=$("$resolver" "$operation" "$@" 2>"$errfile") || rc=$?
+  fi
+  FM_PROGRAMME_RESOLVER_OUT=$out
+  if ! FM_PROGRAMME_RESOLVER_DIAG=$(cat "$errfile"); then
+    FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read'
+    if ! rm -f -- "$errfile"; then
+      FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file could not be read or removed'
+    else
+      export RESOLVER_ERRFILE=
+    fi
+    FM_PROGRAMME_RESOLVER_RC=125
+    return 125
+  fi
+  if ! rm -f -- "$errfile"; then
+    FM_PROGRAMME_RESOLVER_DIAG='resolver diagnostics: capture file cleanup failed'
+    FM_PROGRAMME_RESOLVER_RC=125
+    return 125
+  fi
+  export RESOLVER_ERRFILE=
+  FM_PROGRAMME_RESOLVER_RC=$rc
+  return 0
+}
+
+fm_programme_resolver_cleanup() {
+  [ -z "${RESOLVER_ERRFILE:-}" ] || rm -f -- "$RESOLVER_ERRFILE" 2>/dev/null || true
+  RESOLVER_ERRFILE=
+  export RESOLVER_ERRFILE
+}
+
+fm_programme_relay_diagnostic() {  # <diagnostic>
+  [ -z "$1" ] || _fm_programme_prefix_diagnostic <<< "$1"
+}
+
+_fm_programme_present_locked() {
+  local state=$1 mode=$2 identity=$3 summary=$4 out=$5 dedupe=$6 verdict pending
+  if [ "$dedupe" -eq 1 ]; then
+    verdict=$(fm_programme_presentation_state "$state" "$identity")
+    case "$verdict" in
+      unchanged) return 0 ;;
+      pending-ack)
+        [ "$mode" = commit ] || return 0
+        _fm_programme_ack_pending_locked "$state"
+        return $?
+        ;;
+    esac
+  fi
+  pending=$(fm_programme_pending_identity "$state")
+  [ -z "$pending" ] || [ "$pending" = "$identity" ] || return 0
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
-  printf '%s\n' "$out"
+  printf '%s\n' "$out" | fm_programme_render_non_actionable
   if [ "$mode" = pending ]; then
     printf 'PROGRAMME CONTINUATION: presented identity %s; it is acknowledged by the WAKE_ACK_REQUIRED command below, and state that changes before then surfaces again.\n' "${identity:0:12}"
     _fm_programme_write_record "$(fm_programme_pending_path "$state")" "$identity" "$summary" || return 1
@@ -152,11 +217,95 @@ $out"
   fi
 }
 
+# Present the programme continuation once per material change. See CONTRACT.
+fm_programme_present() {  # <state> <mode: pending|commit>
+  local state=$1 mode=$2 resolver out rc=0 identity summary diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 captured=1 lock present_rc revalidate_capture revalidate_rc revalidate_diag revalidate_out revalidate_identity revalidate_tmpdir saved_tmpdir had_tmpdir=0
+  resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
+  case "$mode" in pending|commit) ;; *) return 2 ;; esac
+  if fm_programme_resolver_capture "$resolver" render fm-programme-present; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=''
+    rc=$FM_PROGRAMME_RESOLVER_RC
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    captured=0
+  fi
+  [ -n "$diag" ] || captured=0
+  fm_programme_relay_diagnostic "$diag" >&2
+  case "$rc" in
+    0)
+      identity=$(fm_programme_identity_from_render "$out")
+      summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)
+      ;;
+    3) return 3 ;;
+    *)
+      reason=${diag:-$diag_note}
+      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$reason")
+      summary="resolver failed (exit $rc)"
+      if [ -n "$reason" ]; then
+        diagnostic_reason=$(_fm_programme_prefix_diagnostic <<< "$reason")
+      fi
+      out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
+$diagnostic_reason"
+      # With no captured diagnostic the identity cannot tell one failure of this
+      # exit code from another, so this REFUSES TO DEDUPE rather than falling back
+      # to a value every such failure shares: presenting the same failure twice is
+      # harmless, suppressing a genuinely new one is not.
+      [ "$captured" -eq 1 ] || dedupe=0
+      ;;
+  esac
+  lock="$state/.status-presentation-lock"
+  fm_lock_acquire_wait "$lock" || return 1
+  present_rc=0
+  if [ "$rc" -eq 0 ]; then
+    revalidate_tmpdir=${TMPDIR:-/tmp}
+    [ -d "$revalidate_tmpdir" ] && [ -w "$revalidate_tmpdir" ] || revalidate_tmpdir=/tmp
+    if [ "${TMPDIR+x}" = x ]; then had_tmpdir=1; saved_tmpdir=$TMPDIR; fi
+    TMPDIR=$revalidate_tmpdir
+    FM_PROGRAMME_RESOLVER_BOUNDED=1
+    fm_programme_resolver_capture "$resolver" render fm-programme-present
+    revalidate_capture=$?
+    unset FM_PROGRAMME_RESOLVER_BOUNDED
+    if [ "$had_tmpdir" -eq 1 ]; then TMPDIR=$saved_tmpdir; else unset TMPDIR; fi
+    revalidate_rc=$FM_PROGRAMME_RESOLVER_RC
+    revalidate_diag=$FM_PROGRAMME_RESOLVER_DIAG
+    fm_programme_relay_diagnostic "$revalidate_diag" >&2
+    if [ "$revalidate_capture" -ne 0 ]; then
+      present_rc=1
+    elif [ "$revalidate_rc" -ne 0 ]; then
+      present_rc=$revalidate_rc
+    else
+      revalidate_out=$FM_PROGRAMME_RESOLVER_OUT
+      revalidate_identity=$(fm_programme_identity_from_render "$revalidate_out")
+      identity=$revalidate_identity
+      out=$revalidate_out
+      summary=$(printf '%s\n' "$out" | sed -n '1,2p' | paste -sd ' ' -)
+    fi
+  fi
+  if [ "$present_rc" -eq 0 ]; then
+    _fm_programme_present_locked "$state" "$mode" "$identity" "$summary" "$out" "$dedupe"
+    present_rc=$?
+  fi
+  fm_lock_release "$lock" || [ "$present_rc" -ne 0 ] || present_rc=1
+  return "$present_rc"
+}
+
 # Acknowledge exactly the identity the drain presented; never re-resolve here.
-fm_programme_ack_pending() {  # <state>
+_fm_programme_ack_pending_locked() {  # <state>
   local pending
   pending=$(fm_programme_pending_path "$1")
   [ -f "$pending" ] || return 0
   [ -n "$(_fm_programme_record_identity "$pending")" ] || { rm -f -- "$pending"; return 0; }
   mv -f -- "$pending" "$(fm_programme_presented_path "$1")"
+}
+
+fm_programme_ack_pending() {  # <state>
+  local state=$1 lock="$1/.status-presentation-lock" rc
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_programme_ack_pending_locked "$state"
+  rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
 }

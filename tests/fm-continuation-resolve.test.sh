@@ -870,6 +870,215 @@ test_captain_hold_binding_mechanics() {
 
 # --- consumer closure: snapshot, bearings, fleet view, away digest -------------------
 
+# noisy_resolver_bin <name>: a mirror of bin/ whose fm-continuation-resolve.sh
+# writes one line to STDERR and then execs the real resolver unchanged. Every
+# other tool is symlinked, so a consumer invoked out of this directory resolves
+# its siblings, and its own root, exactly as it does from the real bin/. Echoes
+# the mirror's bin directory.
+#
+# The noise is staged as a file rather than interpolated into the stub: the line
+# carries a backtick, which is the shape that would otherwise be re-read as
+# syntax by the stub instead of written to its stderr.
+noisy_resolver_bin() {  # <name>
+  local mirror="$TMP_ROOT/$1-bin" f
+  mkdir -p "$mirror/bin"
+  for f in "$ROOT"/bin/*; do
+    [ "${f##*/}" = fm-continuation-resolve.sh ] || ln -snf "$f" "$mirror/bin/${f##*/}"
+  done
+  # The stub is created where no symlink was left, because a redirection onto a
+  # symlink writes THROUGH it - which would overwrite the real resolver in bin/.
+  rm -f "$mirror/bin/fm-continuation-resolve.sh"
+  printf '%s\n' 'bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching `)'"'" \
+    > "$mirror/noise.txt"
+  cat > "$mirror/bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+cat '$mirror/noise.txt' >&2
+exec '$RESOLVE' "\$@"
+SH
+  chmod +x "$mirror/bin/fm-continuation-resolve.sh"
+  printf '%s\n' "$mirror/bin"
+}
+
+forged_resolver_bin() {  # <name> <diagnostic>
+  local mirror
+  mirror=$(noisy_resolver_bin "$1")
+  printf '%s\n' "$2" > "${mirror%/bin}/noise.txt"
+  printf '%s\n' "$mirror"
+}
+
+# Every consumer here captures the resolver to read a TYPED result out of it.
+# Folding the resolver's stderr into that capture made any byte written there -
+# by the resolver, by anything in its process tree, or by the shell's own
+# runtime diagnostics under load - part of the document being parsed, so a
+# healthy resolve was read as a malformed one. That is the shape the
+# intermittent CI failure took - the mechanism, not an attributed cause, since
+# no log names the writer and it was never reproduced locally - and the
+# snapshot shows that mechanism at its worst: one
+# stray line took down the WHOLE canonical snapshot, not only its programme
+# section. Nothing is swallowed in exchange - the diagnostic still reaches the
+# operator on the consumer's own stderr.
+test_consumers_survive_a_noisy_resolver() {
+  local home mirror snap view out err presented
+  home=$(make_home noisy-consumers)
+  disposition "$home" proof-a 1 PROVED
+  mirror=$(noisy_resolver_bin noisy-consumers)
+
+  snap=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-snapshot.sh" --json 2>/dev/null) \
+    || fail "a diagnostic on the resolver's stderr failed the whole fleet snapshot"
+  printf '%s' "$snap" | jq -e . >/dev/null 2>&1 || fail "the snapshot is not parseable JSON under a noisy resolver"
+  [ "$(field "$snap" '.programme_continuation.configured')" = true ] || fail "noisy snapshot lost the configured programme"
+  [ "$(field "$snap" '.programme_continuation.next_action')" = proof-b ] || fail "noisy snapshot next_action: $(field "$snap" '.programme_continuation.next_action')"
+  [ "$(field "$snap" '.programme_continuation.schema')" = 'fm-continuation-resolution/v1' ] || fail "noisy snapshot lost the typed schema"
+  [ "$(field "$snap" '.programme_continuation.error')" = null ] || fail "noisy snapshot recorded a resolver error: $(field "$snap" '.programme_continuation.error')"
+  printf '%s' "$snap" | grep -F 'unexpected EOF' >/dev/null && fail "the resolver's stderr leaked into the snapshot"
+
+  # Negative control: the mirror really did write to stderr, so the assertions
+  # above cannot pass by it having been quiet - and the relay is what carries it
+  # to the operator instead.
+  err=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-snapshot.sh" --json 2>&1 >/dev/null)
+  assert_contains "$err" "unexpected EOF" "the noisy resolver wrote nothing, or the consumer dropped its stderr instead of relaying it"
+
+  view=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    "$mirror/fm-fleet-view.sh" 2>/dev/null) || fail "the fleet view failed under a noisy resolver"
+  assert_contains "$view" "cleanroom-requalification: next action proof-b - SELF_HANDLE / AUTHORIZED [STANDING_GRANT]" \
+    "the fleet view line is corrupted by the resolver's stderr"
+
+  # The presenter digests the same capture into the identity it dedupes on, so a
+  # stray line there presents a healthy programme as a resolver failure.
+  out=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 \
+    bash -c '
+      # shellcheck disable=SC1090,SC1091
+      . "$1"
+      . "$2"
+      fm_programme_present "$3" commit
+    ' _ "$mirror/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state" 2>/dev/null) \
+    || fail "the presenter failed under a noisy resolver"
+  assert_contains "$out" "next action proof-b" "the presentation is corrupted by the resolver's stderr"
+  assert_not_contains "$out" "resolver failed" "a healthy resolve was presented as a resolver failure"
+  presented=$(jq -r '.material_identity // ""' "$home/state/.programme-presented" 2>/dev/null || true)
+  [ -n "$presented" ] || fail "the presenter recorded no material identity under a noisy resolver"
+
+  pass "a diagnostic on the resolver's stderr leaves every consumer's typed reading intact and still reaches the operator"
+}
+
+test_shared_capture_reports_read_and_cleanup_failures() {
+  local case_dir fake resolver result home first second
+  case_dir="$TMP_ROOT/capture-failures"
+  fake="$case_dir/fakebin"
+  resolver="$case_dir/resolver"
+  mkdir -p "$fake" "$case_dir/tmp"
+  cat > "$resolver" <<'SH'
+#!/usr/bin/env bash
+printf 'resolver diagnostic\n' >&2
+printf 'resolver output\n'
+SH
+  chmod +x "$resolver"
+
+  cat > "$fake/cat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  *capture-read.*|*fm-programme-present.*) exit 1 ;;
+  *) exec /bin/cat "$@" ;;
+esac
+SH
+  chmod +x "$fake/cat"
+  result=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" bash -c '
+    . "$1"
+    fm_programme_resolver_capture "$2" render capture-read
+    rc=$?
+    printf "rc=%s\n%s\n" "$rc" "$FM_PROGRAMME_RESOLVER_DIAG"
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$resolver")
+  assert_contains "$result" 'rc=125' "unreadable capture file must fail the shared owner"
+  assert_contains "$result" 'capture file could not be read' "unreadable capture file must remain visible"
+
+  home=$(make_home capture-present)
+  first=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state")
+  second=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit 2>&1' _ \
+    "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state")
+  assert_contains "$first" 'capture file could not be read' "presenter lost the shared capture failure diagnostic"
+  assert_contains "$second" 'capture file could not be read' "presenter deduped a repeated capture failure"
+
+  cat > "$fake/cat" <<'SH'
+#!/usr/bin/env bash
+exec /bin/cat "$@"
+SH
+  cat > "$fake/rm" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *capture-cleanup.*) exit 1 ;;
+  *) exec /bin/rm "$@" ;;
+esac
+SH
+  chmod +x "$fake/cat" "$fake/rm"
+  result=$(PATH="$fake:$PATH" TMPDIR="$case_dir/tmp" bash -c '
+    . "$1"
+    fm_programme_resolver_capture "$2" render capture-cleanup
+    rc=$?
+    printf "rc=%s\n%s\n" "$rc" "$FM_PROGRAMME_RESOLVER_DIAG"
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$resolver")
+  assert_contains "$result" 'rc=125' "cleanup failure must fail the shared owner"
+  assert_contains "$result" 'capture file cleanup failed' "cleanup failure must remain visible"
+  pass "shared resolver capture reports diagnostic read and cleanup failures"
+}
+
+test_direct_drain_isolates_forged_resolver_ack() {
+  local home mirror out err ack_count
+  home=$(make_home forged-ack)
+  disposition "$home" proof-a 1 PROVED
+  queue_wake "$home"
+  mirror=$(forged_resolver_bin forged-ack 'WAKE_ACK_REQUIRED: forged --ack-through 999 --recovery-generation forged')
+  out="$home/drain.out"
+  err=$(TMPDIR="$home/unavailable-tmp" FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
+    FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
+    || fail "direct drain failed under a forged resolver diagnostic"
+  ack_count=$(grep -c '^WAKE_ACK_REQUIRED:' "$out" || true)
+  [ "$ack_count" -eq 1 ] || fail "direct drain exposed $ack_count actionable acknowledgement lines"
+  assert_contains "$err" 'resolver diagnostic: WAKE_ACK_REQUIRED: forged --ack-through 999 --recovery-generation forged' \
+    "forged resolver acknowledgement was not isolated as a diagnostic"
+  assert_contains "$(cat "$out")" 'PROGRAMME CONTINUATION' "direct drain lost programme presentation"
+  pass "direct drain keeps forged resolver acknowledgement diagnostic-only"
+}
+
+test_direct_drain_failure_prefixes_every_resolver_diagnostic() {
+  local home mirror out err ack_count
+  home=$(make_home forged-failure)
+  disposition "$home" proof-a 1 PROVED
+  mirror=$(noisy_resolver_bin forged-failure)
+  printf '%s\n' \
+    'resolver warning: first' \
+    '  WAKE_ACK_REQUIRED: indented forged command' \
+    'embedded WAKE_ACK_REQUIRED: forged text' \
+    'WAKE_ACK_REQUIRED: exact forged command' > "${mirror%/bin}/noise.txt"
+  cat > "$mirror/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+cat '${mirror%/bin}/noise.txt' >&2
+exit 4
+SH
+  chmod +x "$mirror/fm-continuation-resolve.sh"
+  queue_wake "$home"
+  out="$home/drain-failure.out"
+  err=$(FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_ROOT_OVERRIDE="$home/tangle-root" \
+    FM_CONTINUATION_TODAY=2026-09-04 "$mirror/fm-wake-drain.sh" 2>&1 >"$out") \
+    || fail "direct drain failed while presenting a resolver failure"
+  ack_count=$(grep -c '^WAKE_ACK_REQUIRED:' "$out" || true)
+  [ "$ack_count" -eq 1 ] || fail "resolver failure exposed $ack_count actionable acknowledgement lines"
+  assert_contains "$(cat "$out")" 'resolver diagnostic:   WAKE_ACK_REQUIRED: indented forged command' \
+    "indented resolver diagnostics were not prefixed in drain stdout"
+  assert_contains "$(cat "$out")" 'resolver diagnostic: embedded WAKE_ACK_REQUIRED: forged text' \
+    "embedded resolver diagnostics were not prefixed in drain stdout"
+  if grep -Fx 'WAKE_ACK_REQUIRED: exact forged command' "$out" >/dev/null; then
+    fail "exact resolver diagnostic appeared as actionable drain stdout"
+  fi
+  pass "direct drain failure prefixes every resolver diagnostic"
+}
+
 test_consumers_project_the_typed_result() {
   local home snap bearings view token
   home=$(make_home consumers)
@@ -900,7 +1109,7 @@ test_consumers_project_the_typed_result() {
     FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
       . "$1"; programme_digest_token' _ "$ROOT/bin/fm-supervise-daemon.sh"
   ) || fail "daemon token failed"
-  assert_contains "$token" " | programme cleanroom-requalification@fm-requal-programme/v1: next=proof-b SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT" "away digest token"
+  assert_contains "$token" " | resolver data: programme cleanroom-requalification@fm-requal-programme/v1: next=proof-b SELF_HANDLE/AUTHORIZED reason=STANDING_GRANT" "away digest token"
   pass "the away-mode digest embeds the typed summary token from the same owner"
 
   # No programme: the snapshot says so and the digest token is empty.
@@ -1670,8 +1879,159 @@ present_pending() {  # <home>
   FM_TASKS_AXI_COMPATIBLE=1 FM_HOME="$1" FM_CONFIG_OVERRIDE="$1/config" FM_CONTINUATION_TODAY=2026-09-04 bash -c '
     # shellcheck disable=SC1090,SC1091
     . "$1"
-    fm_programme_present "$2" pending
-  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$1/state"
+    . "$2"
+    fm_programme_present "$3" pending
+  ' _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$1/state"
+}
+
+test_programme_ack_waits_for_presentation_lock() {
+  local home lock holder ack_pid identity
+  home=$(make_af_home ack-lock)
+  mkdir -p "$home/state"
+  identity=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  jq -n --arg id "$identity" '{schema:"fm-programme-presented/v1", material_identity:$id, summary:"pending", presented_at:"2026-09-04T00:00:00Z"}' \
+    > "$home/state/.programme-presented.pending"
+  lock="$home/state/.status-presentation-lock"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$2.ready"
+    while [ ! -e "$2.release" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" &
+  holder=$!
+  while [ ! -e "$lock.ready" ]; do sleep 0.05; done
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    . "$2"
+    fm_programme_ack_pending "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state" &
+  ack_pid=$!
+  sleep 0.2
+  kill -0 "$ack_pid" 2>/dev/null || fail "ack did not wait for the presentation lock"
+  [ -e "$home/state/.programme-presented.pending" ] || fail "ack consumed the pending record before the presentation lock released"
+  : > "$lock.release"
+  wait "$ack_pid" || fail "ack failed after the presentation lock released"
+  wait "$holder" || fail "presentation lock holder failed"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$identity" ] \
+    || fail "ack promoted the wrong programme identity"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "ack left the pending programme record behind"
+  pass "programme acknowledgement waits for presentation serialization"
+}
+
+test_identityless_render_shares_presenter_reader_identity() {
+  local home render identity reader_state
+  home=$(make_af_home identityless-render)
+  render='Programme without an identity line.'
+  identity=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_programme_identity_from_render "$2"' \
+    _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$render")
+  [ -n "$identity" ] || fail "identity-less render did not receive a deterministic identity"
+  jq -n --arg id "$identity" '{schema:"fm-programme-presented/v1", material_identity:$id, summary:"identityless", presented_at:"2026-09-04T00:00:00Z"}' \
+    > "$home/state/.programme-presented"
+  reader_state=$(FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; fm_programme_presentation_state "$2" "$(fm_programme_identity_from_render "$3")"' \
+    _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$home/state" "$render")
+  [ "$reader_state" = unchanged ] || fail "reader did not reuse the presenter fallback identity: $reader_state"
+  pass "identity-less renders share one presenter and reader identity owner"
+}
+
+test_programme_present_waits_for_presentation_lock() {
+  local home lock holder presenter
+  home=$(make_af_home present-lock)
+  mkdir -p "$home/tangle-root"
+  write_af_accepted_evidence "$home"
+  write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED
+  lock="$home/state/.status-presentation-lock"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$2.ready"
+    while [ ! -e "$2.release" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" &
+  holder=$!
+  while [ ! -e "$lock.ready" ]; do sleep 0.05; done
+  present_pending "$home" > "$home/presenter.out" 2>&1 &
+  presenter=$!
+  sleep 0.2
+  kill -0 "$presenter" 2>/dev/null || fail "presentation returned before acquiring the serialization lock"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "presentation mutated state before acquiring the serialization lock"
+  : > "$lock.release"
+  wait "$presenter" || fail "presentation failed after the serialization lock released"
+  wait "$holder" || fail "presentation lock holder failed"
+  [ -e "$home/state/.programme-presented.pending" ] || fail "presentation did not publish after the lock released"
+  pass "programme presentation serializes its state transaction"
+}
+
+test_programme_revalidates_stale_resolver_snapshot() {
+  local home bin counter out old_identity new_identity
+  home=$(make_home stale-present)
+  bin="$home/presenter-bin"
+  mkdir -p "$bin"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$bin/fm-programme-presentation-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$bin/fm-wake-lib.sh"
+  counter="$home/resolver-count"
+  old_identity=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  new_identity=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  cat > "$bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+count=0
+[ -f '$counter' ] && count=\$(cat '$counter')
+count=\$((count + 1))
+printf '%s\\n' "\$count" > '$counter'
+if [ "\$count" -eq 1 ]; then
+  printf 'older snapshot\\nMaterial identity $old_identity older\\n'
+else
+  printf 'newer snapshot\\nMaterial identity $new_identity newer\\n'
+fi
+SH
+  chmod +x "$bin/fm-continuation-resolve.sh"
+  out=$(FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    . "$2"
+    fm_programme_present "$3" commit
+  ' _ "$bin/fm-programme-presentation-lib.sh" "$bin/fm-wake-lib.sh" "$home/state") \
+    || fail "stale snapshot presentation failed"
+  [ "$(cat "$counter")" -eq 2 ] || fail "presentation did not revalidate under the state lock"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$new_identity" ] \
+    || fail "an older resolver snapshot regressed the presented identity"
+  assert_contains "$out" "newer snapshot" "presentation did not publish the revalidated snapshot"
+  assert_not_contains "$out" "older snapshot" "presentation published the stale resolver snapshot"
+  pass "programme presentation revalidates before committing a stale-prone resolver snapshot"
+}
+
+test_programme_revalidation_preserves_no_programme_exit() {
+  local home bin counter out err status=0
+  home=$(make_home revalidation-no-programme)
+  bin="$home/presenter-bin"
+  mkdir -p "$bin" "$home/tmp"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$bin/fm-programme-presentation-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$bin/fm-wake-lib.sh"
+  counter="$home/resolver-count"
+  cat > "$bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+count=0
+[ -f '$counter' ] && count=\$(cat '$counter')
+count=\$((count + 1))
+printf '%s\n' "\$count" > '$counter'
+if [ "\$count" -eq 1 ]; then
+  printf '%s\n' 'configured snapshot' 'Material identity cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc configured'
+else
+  exit 3
+fi
+SH
+  chmod +x "$bin/fm-continuation-resolve.sh"
+  out_file="$home/presenter.out"
+  err_file="$home/presenter.err"
+  TMPDIR="$home/tmp" FM_STATE_OVERRIDE="$home/state" \
+    bash -c '. "$1"; . "$2"; fm_programme_present "$3" commit' _ \
+    "$bin/fm-programme-presentation-lib.sh" "$bin/fm-wake-lib.sh" "$home/state" \
+    >"$out_file" 2>"$err_file" || status=$?
+  expect_code 3 "$status" "revalidation no-programme result"
+  [ ! -e "$home/state/.programme-presented" ] || fail "no-programme revalidation committed a stale presentation"
+  [ -z "$(find "$home/tmp" -type f -print -quit)" ] || fail "revalidation left resolver staging files"
+  pass "programme revalidation preserves exit 3 and cleans resolver staging"
 }
 
 test_af_presentation_quiet_and_ack_race() {
@@ -1716,7 +2076,7 @@ test_af_presentation_quiet_and_ack_race() {
   assert_contains "$token" "next=pilot-f SELF_HANDLE/AUTHORIZED" "the away digest announces a material change"
   queue_wake "$home"
   out=$(run_drain "$home" 2>"$home/drain.err") || fail "wake drain failed"
-  ack=$(sed -n 's/^WAKE_ACK_REQUIRED: after handling completes run bin\/fm-wake-drain.sh //p' "$home/drain.err")
+  ack=$(sed -n 's/^WAKE_ACK_REQUIRED: after handling completes run bin\/fm-wake-drain.sh //p' <<< "$out")
   [ -n "$ack" ] || fail "the wake drain must print its acknowledgement command"
   assert_contains "$out" "next action pilot-f" "the changed state is presented with the wake"
   assert_contains "$out" "presented identity ${second:0:12}; it is acknowledged by the WAKE_ACK_REQUIRED command" "an ack turn records a pending identity"
@@ -1763,9 +2123,8 @@ test_af_presentation_quiet_and_ack_race() {
   printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "converged state stays quiet"
   pass "a no-ack turn over a lingering pending identity stays quiet, promotes exactly that identity, and the readers converge on unchanged"
 
-  # The race on a no-ack turn: the pending identity is never acknowledged
-  # when the state has moved on; the newer state is presented once and
-  # committed, and the superseded pending identity is never written as presented.
+  # The race on a no-ack turn: the pending identity remains outstanding when
+  # the state has moved on, and the newer state waits for the later drain.
   write_evidence "$home" slice-a.json slice-a pull_request_merge 'sbracewell64/firstmate-cleanroom#9' MERGED_QUALIFIED \
     '.candidate = {merge_commit:"1111111111111111111111111111111111111111"} | .qualification = {pipeline:"no-mistakes", evidence_refs:["x"]} | .generation = 2'
   fifth=$(run_resolve "$home" resolve | jq -r '.material_identity')
@@ -1776,13 +2135,20 @@ test_af_presentation_quiet_and_ack_race() {
   sixth=$(run_resolve "$home" resolve | jq -r '.material_identity')
   [ "$sixth" != "$fifth" ] && [ "$sixth" != "$fourth" ] || fail "fixture: the new hold must change the identity again"
   out=$(run_drain "$home" 2>/dev/null) || fail "race drain failed"
-  [ "$(printf '%s\n' "$out" | grep -c "PROGRAMME CONTINUATION (material state changed")" = 1 ] || fail "the newer state is presented exactly once: $out"
-  assert_contains "$out" "presented identity ${sixth:0:12} (acknowledged with this presentation" "the no-ack turn commits the newer identity"
-  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$sixth" ] || fail "the committed record is the newer identity"
-  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the superseded pending record is discarded, never promoted"
+  [ -z "$out" ] || fail "the newer state was presented before the older pending identity was acknowledged: $out"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$fourth" ] || fail "the acknowledged identity changed before the pending acknowledgement"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented.pending")" = "$fifth" ] || fail "the older pending identity was overwritten or discarded"
+  FM_STATE_OVERRIDE="$home/state" bash -c '. "$1"; . "$2"; fm_programme_ack_pending "$3"' \
+    _ "$ROOT/bin/fm-programme-presentation-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$home/state" \
+    || fail "the exact pending identity acknowledgement failed"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$fifth" ] || fail "the pending identity was not committed by its acknowledgement"
+  [ ! -e "$home/state/.programme-presented.pending" ] || fail "the acknowledged pending identity remained queued"
+  out=$(run_drain "$home" 2>/dev/null) || fail "post-ack newer-state drain failed"
+  assert_contains "$out" "presented identity ${sixth:0:12} (acknowledged with this presentation" "the newer state did not remain queued for the later drain"
+  [ "$(jq -r '.material_identity' "$home/state/.programme-presented")" = "$sixth" ] || fail "the later drain did not commit the newer identity"
   out=$(run_drain "$home" 2>/dev/null) || fail "post-race drain failed"
   printf '%s' "$out" | grep -q "PROGRAMME CONTINUATION" && fail "the committed newer state stays quiet"
-  pass "a no-ack turn never promotes a pending identity the state has moved past; it presents and commits the newer state once"
+  pass "a newer state waits behind pending acknowledgement and surfaces on the later drain"
 }
 
 timed() {  # <test-function>
@@ -1800,11 +2166,20 @@ timed test_materialize_never_rebinds_foreign_binding
 timed test_f7_scoped_hold_does_not_leak
 timed test_f8_captain_claim_without_axis_is_refused
 timed test_grant_applicability_is_cno
+timed test_programme_ack_waits_for_presentation_lock
+timed test_identityless_render_shares_presenter_reader_identity
+timed test_programme_present_waits_for_presentation_lock
+timed test_programme_revalidates_stale_resolver_snapshot
+timed test_programme_revalidation_preserves_no_programme_exit
 timed test_unreadable_inputs_are_cno
 timed test_completion_and_configuration
 timed test_render_and_check_prose
 timed test_captain_hold_binding_mechanics
 timed test_consumers_project_the_typed_result
+timed test_consumers_survive_a_noisy_resolver
+timed test_shared_capture_reports_read_and_cleanup_failures
+timed test_direct_drain_isolates_forged_resolver_ack
+timed test_direct_drain_failure_prefixes_every_resolver_diagnostic
 timed test_af_accepted_owner_evidence_yields_f
 timed test_af_landing_without_qualification_cannot_yield_f
 timed test_af_refusal_matrix

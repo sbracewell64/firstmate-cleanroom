@@ -116,6 +116,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
@@ -778,7 +779,7 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
   [ ! -e "$log" ] || fail "missing jq started a resume process"
 
   dir=$(make_primary_dir "$TMP_ROOT/grok-native-no-work")
-  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "healthy no-supervision-needed native stop must allow"
   [ -z "$out" ] || fail "no-supervision-needed native stop produced output: $out"
   pass "fm-turnend-guard-grok: missing jq and no-supervision-needed stops stay silent and bounded"
@@ -1185,6 +1186,7 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$pid" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
   out=$(run_hook_claude "$dir" false); status=$?
   count=$(sed -n '2s/^count=//p' "$dir/state/.turnend-claude-blocks")
   out2=$(run_hook_claude "$dir" false); status2=$?
@@ -1200,6 +1202,22 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   assert_present "$dir/state/.claude-autoarm-failure-notified" "live auto-arm owner cleared the failure episode"
   assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "live automatic continuation emitted the attended fail-open alarm"
   pass "fm-turnend-guard --claude: a live arming epoch advances once and repeated observation is idempotent"
+}
+
+test_hook_claude_mode_blocks_identityless_owner_from_other_epoch() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-identityless-other-epoch")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=999 outcome=arming updated_at=%s\n' "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "an identityless owner from another epoch must not suppress recovery"
+  assert_contains "$out" "TURN WOULD END BLIND" "a mismatched identityless epoch must re-block the turn"
+  pass "fm-turnend-guard --claude: identityless legacy ownership requires the current epoch PID"
 }
 
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open() {
@@ -1428,7 +1446,7 @@ test_hook_claude_mode_blocks_on_stuck_generation_claim() {
 # stop silently AND spent no attended alarm, so a genuinely broken automatic
 # mechanism stayed invisible. The guard must clear the claim and finish instead.
 test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
-  local dir out status pid
+  local dir out status pid identity
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-terminal")
   : > "$dir/state/task1.meta"
   : > "$dir/state/.claude-autoarm-failure-notified"
@@ -1436,6 +1454,8 @@ test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  identity=$(fm_test_pid_identity "$pid") || fail "could not compute abandoned claim identity"
+  printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
   printf 'epoch=3 owner_pid=%s outcome=failed-suppressed updated_at=1\n' "$pid" > "$dir/state/.claude-autoarm-epoch"
   touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
@@ -1720,6 +1740,7 @@ test_hook_claude_mode_waits_for_late_claim() {
     sleep 0.4
     sleep 60 &
     record_autoarm_owner "$dir" $!
+    printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$!" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
     printf '%s\n' $! > "$dir/holder.pid"
     wait
   ) &
@@ -1744,6 +1765,7 @@ test_hook_claude_mode_secondmate_reblocks_like_primary() {
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=%s\n' "$pid" "$(date +%s)" > "$dir/state/.claude-autoarm-epoch"
   out=$(run_hook_claude "$dir" false); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
@@ -1800,6 +1822,7 @@ test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
+test_hook_claude_mode_blocks_identityless_owner_from_other_epoch
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
 test_hook_claude_mode_allows_on_fresh_rewake_epoch

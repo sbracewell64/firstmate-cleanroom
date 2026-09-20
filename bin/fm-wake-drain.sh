@@ -35,6 +35,11 @@ ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
 
+report_ack_required() {  # <sequence> <generation>
+  printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
+    "$1" "$2"
+}
+
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
 # main (FM_SUPERVISION_ACTOR unset or "main", via fm-lease-lib.sh's fm_lease_actor
 # - the same actor identity fm-send.sh/fm-control.sh/fm-teardown.sh already use)
@@ -388,14 +393,15 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
     fi
   fi
   if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
-  print_programme_presentation "$ack_mode"
-  fm_lock_release "$lock"
+  fm_lock_release "$lock" || rc=1
+  print_programme_presentation "$ack_mode" || rc=1
   return "$rc"
 }
 
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
+  fm_programme_resolver_cleanup
   [ -z "$DRAIN_TMP" ] || rm -f -- "$DRAIN_TMP" 2>/dev/null || true
   [ -z "$DRAIN_VIEW_TMP" ] || rm -f -- "$DRAIN_VIEW_TMP" 2>/dev/null || true
   if [ "$DRAIN_LOCK_HELD" = true ]; then
@@ -477,6 +483,7 @@ if [ -n "$ACK_THROUGH" ]; then
       3) RECOVERY_ACK_MOVED=true ;;
       *)
         echo "wake drain: recovery episode could not be retired safely; re-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command" >&2
+        report_ack_required "$ACK_THROUGH" "$ACK_GENERATION" || true
         exit 1
         ;;
     esac
@@ -507,8 +514,9 @@ if [ -n "$ACK_THROUGH" ]; then
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_MOVED" = true ]; then
-    printf 'wake drain: acknowledged wakes through %s, but a newer recovery episode is pending; re-run bin/fm-wake-drain.sh and use the new WAKE_ACK_REQUIRED command\n' \
+    printf 'wake drain: acknowledged wakes through %s, but a newer recovery episode is pending; re-run bin/fm-wake-drain.sh\n' \
       "$ACK_THROUGH" >&2
+    report_ack_required "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" || true
   fi
   exit 0
 fi
@@ -532,7 +540,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     (print_status_presentation '' pending) || true
-    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
+    report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
   else
     (print_status_presentation '' commit) || true
   fi
@@ -607,8 +615,7 @@ case "$RECOVERY_MARKER_TOKEN" in
 esac
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
-printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-  "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
+report_ack_required "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
 
 (print_status_presentation "$RAW_ROWS" pending) || true
 assert_watcher_liveness

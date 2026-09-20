@@ -441,13 +441,17 @@ test_not_configured_and_summary() {
   pass "the substrate refuses --materialize because it holds no hold-creating authority"
 
   rm "$home/config/programme"
-  out=$(run_project "$home" project 2>/dev/null); rc=$?
+  out=$(run_project "$home" project 2>"$home/unconfigured.err"); rc=$?
   expect_code 3 "$rc" "no programme configured"
   [ -z "$out" ] || fail "exit 3 must print nothing on stdout: $out"
-  out=$(run_project "$home" summary 2>/dev/null); rc=$?
+  [ ! -s "$home/unconfigured.err" ] \
+    || fail "exit 3 relayed the resolver's own silent verdict as a diagnostic: $(cat "$home/unconfigured.err")"
+  out=$(run_project "$home" summary 2>"$home/unconfigured-summary.err"); rc=$?
   expect_code 3 "$rc" "summary with no programme"
   [ -z "$out" ] || fail "summary exit 3 must print nothing on stdout"
-  pass "with no programme configured the substrate exits 3 silently, mirroring the resolver"
+  [ ! -s "$home/unconfigured-summary.err" ] \
+    || fail "summary exit 3 relayed a diagnostic: $(cat "$home/unconfigured-summary.err")"
+  pass "with no programme configured the substrate exits 3 silently on both streams, mirroring the resolver"
 }
 
 # --- resolver stream ownership and signal cleanup -----------------------------

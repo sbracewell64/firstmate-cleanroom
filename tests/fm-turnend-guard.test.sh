@@ -1300,10 +1300,12 @@ test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
   pass "fm-turnend-guard --claude: fresh rewake epoch prevents a duplicate continuation for the same event"
 }
 
-# A live legacy owner whose identity cannot be verified is not collectible.
-# The guard defers to that exact retained lock; a later firing can reconcile it
-# only after liveness or positive identity supplies a safe next mutation.
-test_hook_claude_mode_defers_to_identityless_live_autoarm_claim() {
+# The 2026-08-14 lapse: a cycle armed, delivered one rewake, exited, and left its
+# owner lock behind holding a live pid. Both Stop participants read that lock as
+# "recovery is already under way", so with work in flight and a beacon 40 minutes
+# cold every turn ended blind and nothing re-armed. A stale ledger outcome for
+# the lock's own pid is the proof that no decision is in flight any more.
+test_hook_claude_mode_blocks_on_abandoned_autoarm_claim() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-claim")
   : > "$dir/state/task1.meta"
@@ -1316,10 +1318,10 @@ test_hook_claude_mode_defers_to_identityless_live_autoarm_claim() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "an identityless live legacy owner must defer guard reconciliation"
-  [ -z "$out" ] || fail "identityless live-owner deferral produced output: $out"
-  assert_present "$dir/state/.claude-autoarm.lock" "guard reconciliation collected an identityless live owner"
-  pass "fm-turnend-guard --claude: an identityless live legacy owner defers reconciliation"
+  expect_code 2 "$status" "an owner lock left behind by a finished claim must not pass for recovery under way"
+  assert_contains "$out" "TURN WOULD END BLIND" "abandoned-claim block must carry the blind-turn banner"
+  assert_contains "$out" "2 task(s) in flight" "abandoned-claim block must name the unsupervised work"
+  pass "fm-turnend-guard --claude: an abandoned auto-arm claim no longer allows a blind stop (incident regression)"
 }
 
 # The ledger-blind variant of the same lapse: a session teardown killed the claim's
@@ -1422,10 +1424,10 @@ test_hook_claude_mode_blocks_on_stuck_generation_claim() {
   pass "fm-turnend-guard --claude: a stuck generation claim no longer allows a blind stop"
 }
 
-# The same identityless live legacy owner on the terminal path remains
-# uncollectible. The guard defers without spending an attended alarm or removing
-# the lock; a later invocation must freshly prove death before collection.
-test_hook_claude_mode_terminal_fail_open_defers_to_identityless_live_claim() {
+# The same abandoned claim on the terminal path: stepping aside for it allowed the
+# stop silently AND spent no attended alarm, so a genuinely broken automatic
+# mechanism stayed invisible. The guard must clear the claim and finish instead.
+test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-terminal")
   : > "$dir/state/task1.meta"
@@ -1439,12 +1441,12 @@ test_hook_claude_mode_terminal_fail_open_defers_to_identityless_live_claim() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "the terminal guard must defer to an identityless live legacy owner"
-  [ -z "$out" ] || fail "identityless terminal live-owner deferral produced output: $out"
-  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "identityless live-owner deferral spent the attended alarm"
-  assert_present "$dir/state/.claude-autoarm.lock" "identityless terminal live-owner deferral collected the owner lock"
-  assert_absent "$dir/state/.claude-autoarm.lock.steal" "identityless terminal live-owner deferral left its serialization mutex behind"
-  pass "fm-turnend-guard --claude: the terminal path defers to an identityless live legacy owner"
+  expect_code 0 "$status" "the verified attended fail-open still ends the turn once it is spent"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "an abandoned claim suppressed the episode's attended alarm"
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "abandoned-claim terminal path did not consume the one-time alarm"
+  assert_absent "$dir/state/.claude-autoarm.lock" "abandoned-claim terminal path left the stale claim in place"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "abandoned-claim reclaim left its serialization mutex behind"
+  pass "fm-turnend-guard --claude: the terminal path clears an abandoned claim instead of stepping aside silently"
 }
 
 test_hook_claude_mode_preserves_fresh_failed_progression() {
@@ -1801,12 +1803,12 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
-test_hook_claude_mode_defers_to_identityless_live_autoarm_claim
+test_hook_claude_mode_blocks_on_abandoned_autoarm_claim
 test_hook_claude_mode_blocks_on_pid_reused_arming_claim
 test_hook_claude_mode_blocks_on_stuck_arming_claim
 test_hook_claude_mode_allows_on_open_generation_claim
 test_hook_claude_mode_blocks_on_stuck_generation_claim
-test_hook_claude_mode_terminal_fail_open_defers_to_identityless_live_claim
+test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim
 test_hook_claude_mode_preserves_fresh_failed_progression
 test_hook_claude_mode_integrated_monotonic_fail_open
 test_hook_claude_mode_recovery_contention_is_not_ordinary_allow

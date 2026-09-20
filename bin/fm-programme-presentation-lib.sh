@@ -56,9 +56,12 @@
 # typed stdout from diagnostic stderr for every resolver consumer. It stages one
 # private diagnostic file, publishes the three results in
 # FM_PROGRAMME_RESOLVER_{OUT,DIAG,RC}, and never installs a trap in this sourced
-# library. Each executable's existing cleanup owner calls
-# fm_programme_resolver_cleanup, preserving its caller's traps while making an
-# interrupted capture signal-safe.
+# library. The cleanup owner of whichever PROCESS actually staged the capture
+# calls fm_programme_resolver_cleanup, preserving its caller's traps while
+# making an interrupted capture signal-safe; a caller that captures inside a
+# subshell owns that subshell's cleanup, because the staging path never leaves
+# it. fm_programme_relay_resolver_stderr is the matching owner of which
+# diagnostics reach stderr.
 
 FM_PROGRAMME_PRESENTATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_PROGRAMME_RESOLVER_ERRFILE=
@@ -105,6 +108,15 @@ fm_programme_relay_diagnostic() {  # <diagnostic>
   while IFS= read -r line || [ -n "$line" ]; do
     printf 'resolver diagnostic: %s\n' "$line"
   done <<< "$1"
+}
+
+# Relay a capture's diagnostics to stderr under the resolver's own contract:
+# exit 3 (no programme configured) is a silent, expected verdict for every
+# consumer, so its stderr is a detail of that verdict rather than a diagnostic
+# an operator must see on each poll, drain, digest and session start.
+fm_programme_relay_resolver_stderr() {  # <rc> <diagnostic>
+  [ "$1" != 3 ] || return 0
+  fm_programme_relay_diagnostic "$2" >&2
 }
 
 fm_programme_render_non_actionable() {
@@ -184,7 +196,7 @@ fm_programme_present() {  # <state> <mode: pending|commit>
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
     rc=125
   fi
-  fm_programme_relay_diagnostic "$diag" >&2
+  fm_programme_relay_resolver_stderr "$rc" "$diag"
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")

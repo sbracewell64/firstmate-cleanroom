@@ -414,10 +414,11 @@ Observed output, before and after the model correction, then with the recorded P
 
 ### Packet-bound acknowledgement and legacy-owner collection (2026-09-20)
 
-The successor built from exact main `1b8e2149f64520cb67fea02b365dd7ad67669c56` was locally verified with the pinned ShellCheck 0.11.0, actionlint 1.7.12, and no-mistakes 1.61.0 build `7fbba0dbbf89bd57e6a000d60e5cc4dbb86a94de`.
+The successor was produced from exact accepted main `1b8e2149f64520cb67fea02b365dd7ad67669c56` (tree `2f934b074cfc1b4dbece6b1aa5e7cf865f5059eb`), which is also the pristine base every attribution below was taken on; `ee6da58d2ef7e4759bc204567ed914bfb36ffcd0` (tree `441bc383efd0d23821e18b7a84a5501c5c185c6c`, #67) landed on main meanwhile, so the single candidate commit's final ancestry is that later main, not the initial base.
+It was locally verified with the pinned ShellCheck 0.11.0, actionlint 1.7.12, and no-mistakes 1.61.0 build `7fbba0dbbf89bd57e6a000d60e5cc4dbb86a94de`.
 The deterministic packet cases prove session start, AFK return, and the away supervisor derive acknowledgement authority only from the drain's strict private packet; an empty recovery episode keeps sequence zero and its exact generation, forged stdout/stderr/resolver text is data or diagnostics, a malformed multi-record packet is refused, and partial output from a failed drain is withheld.
 The resolver cases prove typed stdout and diagnostic stderr remain separate, sourcing the shared capture owner preserves caller traps, and deterministic TERM interruption leaves no staging file.
-The legacy auto-arm cases prove an unreadable or absent live-owner identity preserves the exact lock, an identity-matched stuck owner receives TERM without same-invocation collection, and only a later invocation that freshly observes it dead may collect and re-arm.
+The legacy auto-arm cases prove an unreadable or absent live-owner identity is never signal authority yet never blocks the reclaim of a proven-abandoned claim, an identity-matched stuck owner receives one recorded TERM without same-invocation collection, a TERM that is not delivered withdraws that one-shot allowance instead of stalling the owner, and only a later invocation that freshly observes it dead may collect and re-arm.
 
 ```sh
 bin/fm-lint.sh
@@ -432,9 +433,9 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
 
 The focused groups reported zero failures, and the isolated real-Herdr lane reported `total=12 failed=0 skipped_gate=0` after the lab helper verified the default session was unchanged.
 Portable parallel lanes 1 and 2 and clean serial shard 3 also reported zero failures.
-Serial shards 1, 2, and 4 exposed nine environment- or fixture-dependent failures which reproduced with the same assertion on pristine exact base and therefore are not attributed to this candidate: concurrent remote sequence allocation, extension binding, orphan reaping, a Herdr focus fixture, a tmux smoke fixture, bootstrap tool masking, installed-Pi stock rendering, tmux process-name liveness, and Chrome-backed Calm rendering.
+Serial shards 1, 2, and 4 exposed nine environment- or fixture-dependent failures which reproduced with the same assertion on the pristine exact base `1b8e2149f64520cb67fea02b365dd7ad67669c56` and therefore are not attributed to this candidate: concurrent remote sequence allocation, extension binding, orphan reaping, a Herdr focus fixture, a tmux smoke fixture, bootstrap tool masking, installed-Pi stock rendering, tmux process-name liveness, and Chrome-backed Calm rendering.
 Those nine cases remain CNO for local candidate qualification and require clean hosted lanes; none was weakened, skipped, lengthened, or repaired in unrelated production code.
-The initial Grok no-work fixture also failed twice on candidate and twice on pristine base because ambient `FM_HOME` selected the active fleet rather than the isolated fixture; binding every Grok fixture invocation to its own home removed that masking condition and the complete candidate suite then passed twice.
+The initial Grok no-work fixture also failed twice on candidate and twice on that same pristine base because ambient `FM_HOME` selected the active fleet rather than the isolated fixture; binding every Grok fixture invocation to its own home removed that masking condition and the complete candidate suite then passed twice.
 Live Claude, Codex, OpenCode, Pi, Grok, Kimi, Cursor, Muse, Zellij, Orca, and cmux lifecycle evidence was not refreshed in this run; their portable adapter and backend consequences were inspected, while the applicable real-Herdr lane above is the only refreshed live runtime evidence.
 
 The broader relevant regression pass was rerun on 2026-08-02 without live-home or daemon mutation.

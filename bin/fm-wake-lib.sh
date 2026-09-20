@@ -1062,9 +1062,12 @@ fm_failure_episode_reset() {
 # lock carries a role file only in that legacy shape, and in the guard's own
 # short terminal-check hold): a live legacy owner still defers per the legacy
 # proof, and a proven-abandoned one is reclaimed once through the steal mutex
-# - with an identity-verified live owner retired via TERM first, because old
-# code cannot re-check generations - so an upgrade mid-session can neither
-# double-arm nor deadlock behind a hung legacy hook.
+# - an identity-verified live owner is first retired by the one recorded TERM
+# this shim ever delivers to it, because old code cannot re-check generations,
+# and is collected only by a later invocation that freshly observes it gone,
+# while an owner whose identity is absent or unreadable is never signalled and
+# is reclaimed as-is - so an upgrade mid-session can neither double-arm nor
+# deadlock behind a hung legacy hook.
 _fm_autoarm_epoch_field() {  # <epoch-file> <field>
   local file=$1 field=$2 tok
   local -a toks=()
@@ -1255,6 +1258,13 @@ fm_autoarm_reset_owned() {  # <state-dir> <gen>
 #      and either is not "arming", or is "arming" while both the ledger entry
 #      and the watcher beacon are older than the guard grace (the same stuck
 #      proof as fm_autoarm_claim_open).
+#
+# Absent or unreadable identity evidence is never authority in either
+# direction: it cannot prove abandonment on its own (step 3 needs a readable
+# mismatch), and it cannot withhold the ledger proof of steps 1, 2 and 4 -
+# a legacy lock carries no identity at all, so treating that shape as
+# undecidable would make it permanently uncollectible and put every Stop
+# participant back behind the 2026-08-14 blind-turn lapse.
 fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} epoch lock role pid owner outcome recorded current
   lock="$state/.claude-autoarm.lock"
@@ -1270,11 +1280,9 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
     ''|*[!0-9]*) return 1 ;;
   esac
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  if fm_pid_alive "$pid"; then
-    [ -n "$recorded" ] || return 1
-    current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
-    [ -n "$current" ] || return 1
-    [ "$current" = "$recorded" ] || return 0
+  if [ -n "$recorded" ] && current=$(fm_pid_identity "$pid" 2>/dev/null) \
+    && [ -n "$current" ] && [ "$current" != "$recorded" ]; then
+    return 0
   fi
   owner=$(_fm_autoarm_epoch_field "$epoch" owner_pid) || return 1
   [ "$owner" = "$pid" ] || return 1
@@ -1303,9 +1311,15 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # A later invocation may collect only after liveness reads the exact owner as
 # gone; a queued signal or a process that exits during this invocation is never
 # itself lock-reclamation authority.
-# A pid is never signalled without a verified matching identity, and a failed
-# signal or changed identity likewise defers.
-# Missing identity evidence disables both signalling and live-owner collection.
+# A pid is never signalled without a verified matching identity, and a changed
+# identity defers. The one permitted attempt is an allowance only once the
+# signal is actually delivered: the marker is published before the kill so a
+# crash in between can never yield a second TERM, and a kill that positively
+# did not happen withdraws it again rather than stalling the owner forever.
+# Absent or unreadable identity is never signal authority, and it never blocks
+# collection either: such an owner is reclaimed as-is, which is safe exactly
+# because the recorded owner is gone or was never provably this process, and
+# keeps the documented bounded upgrade-window residual instead of a deadlock.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp i
   local term_marker term_record retire_tmp confirm
@@ -1321,13 +1335,9 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  current=
-  if fm_pid_alive "$lock_pid"; then
-    [ -n "$recorded" ] || { fm_lock_release "$steal"; return 1; }
-    current=$(fm_pid_identity "$lock_pid" 2>/dev/null) || { fm_lock_release "$steal"; return 1; }
-    [ -n "$current" ] || { fm_lock_release "$steal"; return 1; }
-  fi
-  if [ -n "$recorded" ] && [ "$current" = "$recorded" ]; then
+  if [ -n "$recorded" ] && fm_pid_alive "$lock_pid" \
+    && current=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
+    && [ -n "$current" ] && [ "$current" = "$recorded" ]; then
     # A live pid still answering to the recorded identity IS the genuine
     # legacy owner (proven stuck or blocked after a terminal write).
     # Record the one permitted retirement attempt inside that exact owner's
@@ -1353,11 +1363,11 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       return 1
     fi
     # Re-check immediately after publishing the attempt and before signalling
-    # to narrow the pid-reuse window. Failure preserves the lock and marker.
-    confirm=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
-      || { fm_lock_release "$steal"; return 1; }
-    [ "$confirm" = "$recorded" ] || { fm_lock_release "$steal"; return 1; }
-    if ! kill -TERM "$lock_pid" 2>/dev/null; then
+    # to narrow the pid-reuse window. An attempt that provably delivered no
+    # signal is withdrawn again so the exact owner stays retirable.
+    confirm=$(fm_pid_identity "$lock_pid" 2>/dev/null) || confirm=
+    if [ "$confirm" != "$recorded" ] || ! kill -TERM "$lock_pid" 2>/dev/null; then
+      rm -f -- "$term_marker" 2>/dev/null || true
       fm_lock_release "$steal"
       return 1
     fi

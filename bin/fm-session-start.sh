@@ -699,7 +699,7 @@ print_programme_continuation() {
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
     rc=125
   fi
-  fm_programme_relay_diagnostic "$diag" >&2
+  fm_programme_relay_resolver_stderr "$rc" "$diag"
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then

@@ -414,6 +414,21 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
   return "$rc"
 }
 
+# The presentation runs in its own ( ) subshell so a presentation failure never
+# changes the drain's exit status. A subshell resets this shell's trapped
+# dispositions, and the resolver staging the presentation allocates belongs to
+# that process, so its signal cleanup has to be installed there - cleanup()
+# below never sees the child's FM_PROGRAMME_RESOLVER_ERRFILE.
+present_status() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
+  (
+    trap fm_programme_resolver_cleanup EXIT
+    trap 'fm_programme_resolver_cleanup; exit 129' HUP
+    trap 'fm_programme_resolver_cleanup; exit 130' INT
+    trap 'fm_programme_resolver_cleanup; exit 143' TERM
+    print_status_presentation "$@"
+  ) || true
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
@@ -555,10 +570,10 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
-    (print_status_presentation '' pending) || true
+    present_status '' pending
   else
     report_ack_none || exit 1
-    (print_status_presentation '' commit) || true
+    present_status '' commit
   fi
   assert_watcher_liveness
   exit 0
@@ -573,7 +588,7 @@ if [ "$ACTOR" = main ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     DRAIN_LOCK_HELD=false
     report_ack_none || exit 1
-    (print_status_presentation) || true
+    present_status
     assert_watcher_liveness
     exit 0
   fi
@@ -634,6 +649,6 @@ fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
 report_ack_required "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
 
-(print_status_presentation "$RAW_ROWS" pending) || true
+present_status "$RAW_ROWS" pending
 assert_watcher_liveness
 exit 0

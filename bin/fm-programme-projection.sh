@@ -214,7 +214,7 @@ read_resolution() {
     diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
     rc=125
   fi
-  fm_programme_relay_diagnostic "$diag" >&2
+  fm_programme_relay_resolver_stderr "$rc" "$diag"
   case "$rc" in
     0) ;;
     3) exit 3 ;;

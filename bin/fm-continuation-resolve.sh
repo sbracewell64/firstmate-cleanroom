@@ -132,11 +132,11 @@
 #      admission rather than substituting the programme root or ambient working
 #      directory, and refusing any sealed root the step's published
 #      local_delivery_source identity does not admit. It refuses moved,
-#      replayed, forged, self-certified,
-#      wrong-family, privacy-exposing, or mismatched input; an unavailable
-#      project, admission, receipt, source, or destination is CNO. Private candidate bytes never
-#      enter the programme record or resolver output. V1 stays readable only
-#      for the historical records produced under PR #64: a step that declares a
+#      replayed, forged, self-certified, wrong-family, privacy-exposing, or
+#      mismatched input; an unavailable project, admission, receipt, source, or
+#      destination is CNO. Private candidate bytes never enter the programme
+#      record or resolver output. V1 stays readable only for the historical
+#      records produced under PR #64: a step that declares a
 #      terminal_predicate.local_delivery family, or whose terminal_predicate
 #      carries no matching fm-programme-finalization/v1 canonical_finalization
 #      object, resolves CNO (LEGACY_REQUALIFICATION_REQUIRED) instead, so V1 is

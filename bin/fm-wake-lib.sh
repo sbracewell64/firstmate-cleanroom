@@ -295,7 +295,7 @@ fm_watcher_supervision_verdict() {
 }
 
 fm_lock_clean_known_files() {
-  local lockdir=$1
+  local lockdir=$1 stranded
   rm -f \
     "$lockdir/pid" \
     "$lockdir/fm-home" \
@@ -304,6 +304,16 @@ fm_lock_clean_known_files() {
     "$lockdir/role" \
     "$lockdir/watcher-path" \
     2>/dev/null || true
+  # The retirement marker is published through a mktemp file inside the lock.
+  # A crash between mktemp and its rename strands exactly one of those names,
+  # and an unknown leftover would keep rmdir failing forever. Only that exact
+  # shape - this prefix plus mktemp's six template characters, a regular file,
+  # never a symlink - is swept; any other unknown entry still refuses.
+  for stranded in "$lockdir"/.term-sent-identity.tmp.??????; do
+    [ -f "$stranded" ] && [ ! -L "$stranded" ] || continue
+    rm -f -- "$stranded" 2>/dev/null || true
+  done
+  return 0
 }
 
 fm_lock_set_role() {
@@ -1066,8 +1076,18 @@ fm_failure_episode_reset() {
 # this shim ever delivers to it, because old code cannot re-check generations,
 # and is collected only by a later invocation that freshly observes it gone,
 # while an owner whose identity is absent or unreadable is never signalled and
-# is reclaimed as-is - so an upgrade mid-session can neither double-arm nor
-# deadlock behind a hung legacy hook.
+# is reclaimed as-is - so an upgrade mid-session can never double-arm.
+#
+# The deferral is NOT deadlock-free, and that is the accepted trade. An
+# identity-verified live owner that survives its one TERM keeps its exact lock
+# on every later pass, so fm_autoarm_release_abandoned keeps returning 1,
+# bin/fm-turnend-guard.sh's terminal_fail_open returns 1, and the guard blocks
+# every turn end instead of spending its one attended fail-open alarm. That is
+# the SAFE direction - an unsupervised blind stop is never allowed, and the
+# operator sees a persistent block rather than silence - but a hung old-build
+# hook that ignores TERM does hold the home in that blocked state until it is
+# killed. Collecting it on evidence weaker than a fresh dead-owner observation
+# is what the packet contract forbids, so the block stands.
 _fm_autoarm_epoch_field() {  # <epoch-file> <field>
   local file=$1 field=$2 tok
   local -a toks=()

@@ -1377,6 +1377,56 @@ test_housekeeping_orca_persistent_stale_resolves_terminal() {
   pass "persistent Orca stale resolves the terminal from metadata"
 }
 
+# The away digest's only resolver capture runs inside a command substitution,
+# and this daemon runs it once per digest for its whole lifetime with no EXIT
+# trap of its own, so nothing else would sweep a staging file the parent cannot
+# see. A TERM reaching the capturing subshell must still leave none behind.
+test_interrupted_programme_digest_capture_leaves_no_staging_file() {
+  local dir state fakeroot ready block holder_pid resolver_pid
+  dir=$(make_supercase interrupted-programme-digest)
+  state="$dir/state"
+  fakeroot="$dir/fakeroot"
+  mkdir -p "$fakeroot/bin"
+  ready="$dir/resolver-ready"
+  block="$dir/resolver-block"
+  mkfifo "$ready" "$block"
+  cat > "$fakeroot/bin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$BASHPID" > "$FM_TEST_RESOLVER_PID"
+printf 'ready\n' > "$FM_TEST_READY_FIFO"
+IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
+printf 'programme continuation identity=0123456789ab\n'
+SH
+  chmod +x "$fakeroot/bin/fm-continuation-resolve.sh"
+
+  exec 9<> "$ready"
+  TMPDIR="$dir" FM_ROOT_OVERRIDE="$fakeroot" FM_TEST_READY_FIFO="$ready" \
+    FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$dir/resolver.pid" \
+    bash -c '. "$1"; . "$2"; printf "digest%s" "$(programme_digest_token "$3")"' \
+      _ "$ROOT/tests/wake-helpers.sh" "$DAEMON" "$state" \
+      >"$dir/digest.out" 2>"$dir/digest.err" &
+  holder_pid=$!
+  if ! IFS= read -r -t 30 _ready <&9; then
+    exec 9>&-
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    fail "the digest resolver never reached the deterministic interruption barrier"
+  fi
+  exec 9>&-
+  resolver_pid=$(cat "$dir/resolver.pid")
+  find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*' -print -quit | grep -q . \
+    || fail "the digest capture staged no diagnostics file; this regression's premise is stale"
+  fm_term_capture_ancestry "$resolver_pid" "$holder_pid" \
+    || fail "the digest capture no longer runs in a subshell; this regression's premise is stale"
+  kill -TERM "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  if find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*' -print -quit | grep -q .; then
+    fail "an interrupted digest capture left resolver staging files: $(find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*')"
+  fi
+  pass "an interrupted away-digest programme capture cleans its staging in the subshell that owns it"
+}
+
 test_escalate_batches_into_one_digest() {
   local dir state fakebin sent capture n
   dir=$(make_supercase batch)
@@ -2672,6 +2722,7 @@ test_housekeeping_herdr_idle_busy_record_clears_stale
 test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
+test_interrupted_programme_digest_capture_leaves_no_staging_file
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate

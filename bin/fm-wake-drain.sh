@@ -421,10 +421,7 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
 # below never sees the child's FM_PROGRAMME_RESOLVER_ERRFILE.
 present_status() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
   (
-    trap fm_programme_resolver_cleanup EXIT
-    trap 'fm_programme_resolver_cleanup; exit 129' HUP
-    trap 'fm_programme_resolver_cleanup; exit 130' INT
-    trap 'fm_programme_resolver_cleanup; exit 143' TERM
+    fm_programme_resolver_own_staging
     print_status_presentation "$@"
   ) || true
 }

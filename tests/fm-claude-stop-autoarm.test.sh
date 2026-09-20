@@ -756,6 +756,57 @@ test_unreadable_live_owner_identity_is_reclaimed_without_signalling() {
   pass "auto-arm: an unreadable live owner identity is reclaimed without any signalling"
 }
 
+# The retirement marker is published through a mktemp file INSIDE the owner
+# lock. A crash between mktemp and its rename strands that temporary, and an
+# unknown entry keeps rmdir failing, which would make the legacy lock
+# permanently uncollectible and leave the home unable to re-arm.
+test_stranded_retirement_temporary_never_blocks_collection() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/stranded-retirement-temp")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  : > "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.Ab3x9Z"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a crash-stranded retirement temporary must not make the legacy lock uncollectible"
+  [ -e "$dir/state/arm-ran" ] || fail "the stranded temporary left the home unarmed with work in flight"
+  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  assert_absent "$dir/state/.claude-autoarm.lock" "the stranded retirement temporary blocked the lock's removal"
+  pass "auto-arm: a crash-stranded retirement temporary never makes a legacy lock uncollectible"
+}
+
+# The counterfactual that keeps the sweep exact rather than a blanket wipe: a
+# name that is not precisely this prefix plus mktemp's six template characters
+# is an unknown entry, and an unknown entry still refuses collection instead of
+# being deleted out from under whoever wrote it.
+test_unknown_lock_entry_still_refuses_collection() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/unknown-lock-entry")
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  : > "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.TOOLONG7"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "an unknown lock entry must refuse collection rather than be swept"
+  [ -z "$out" ] || fail "the refused collection produced output: $out"
+  assert_absent "$dir/state/arm-ran" "the refused collection armed a competing watcher"
+  assert_present "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.TOOLONG7" \
+    "an entry outside the exact retirement-temporary shape was deleted"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "the refused collection left its serialization mutex behind"
+  pass "auto-arm: only the exact retirement-temporary shape is swept; any other unknown entry refuses"
+}
+
 test_arming_claim_with_fresh_beacon_is_never_reclaimed() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/arming-claim")
@@ -1262,6 +1313,8 @@ test_arms_for_x_mode_poll_need_without_inflight
 test_single_flight_admits_exactly_one_owner
 test_abandoned_owner_claim_is_reclaimed_and_rearms
 test_unreadable_live_owner_identity_is_reclaimed_without_signalling
+test_stranded_retirement_temporary_never_blocks_collection
+test_unknown_lock_entry_still_refuses_collection
 test_arming_claim_with_fresh_beacon_is_never_reclaimed
 test_fresh_arming_claim_with_stale_beacon_is_never_reclaimed
 test_claim_not_named_by_the_ledger_is_never_reclaimed

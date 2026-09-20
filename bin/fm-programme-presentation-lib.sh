@@ -62,6 +62,15 @@
 # subshell owns that subshell's cleanup, because the staging path never leaves
 # it. fm_programme_relay_resolver_stderr is the matching owner of which
 # diagnostics reach stderr.
+#
+# A consumer that captures in its main shell installs the cleanup in its own
+# top-level traps. A consumer that captures inside a ( ) or $( ) subshell must
+# call fm_programme_resolver_own_staging as that subshell's first statement:
+# bash resets a subshell's trapped dispositions to the ones it inherited, and
+# its FM_PROGRAMME_RESOLVER_ERRFILE assignment never reaches the parent, so the
+# parent's traps can neither see nor remove that staging file. The helper is
+# invoked BY a caller in a subshell it owns; it is never armed at source time,
+# so a sourced consumer's own traps stay untouched.
 
 FM_PROGRAMME_PRESENTATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_PROGRAMME_RESOLVER_ERRFILE=
@@ -73,6 +82,13 @@ fm_programme_resolver_cleanup() {
   [ -z "$FM_PROGRAMME_RESOLVER_ERRFILE" ] \
     || rm -f -- "$FM_PROGRAMME_RESOLVER_ERRFILE" 2>/dev/null || true
   FM_PROGRAMME_RESOLVER_ERRFILE=
+}
+
+fm_programme_resolver_own_staging() {
+  trap fm_programme_resolver_cleanup EXIT
+  trap 'fm_programme_resolver_cleanup; exit 129' HUP
+  trap 'fm_programme_resolver_cleanup; exit 130' INT
+  trap 'fm_programme_resolver_cleanup; exit 143' TERM
 }
 
 fm_programme_resolver_capture() {  # <resolver> <operation> <temp-prefix> [args...]

@@ -700,32 +700,40 @@ escalate_add() {  # <state> <distilled-item>
 # the identity the wake drain already presented (the summary carries the
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
+# The token is only ever built inside a command substitution, so the capture it
+# stages lives and dies in that subshell: it owns the staging cleanup itself
+# (bin/fm-programme-presentation-lib.sh "RESOLVER CAPTURE"). This daemon runs
+# the capture once per digest for its whole lifetime and its cleanup() runs in
+# a process that never sees the staging file, so nothing else would sweep it.
 programme_digest_token() {  # [<state>]
-  local out diag rc=0 state=${1:-} token presented pending
-  if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
-    out=$FM_PROGRAMME_RESOLVER_OUT
-    diag=$FM_PROGRAMME_RESOLVER_DIAG
-    rc=$FM_PROGRAMME_RESOLVER_RC
-  else
-    out=
-    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
-    rc=125
-  fi
-  fm_programme_relay_resolver_stderr "$rc" "$diag"
-  case "$rc" in
-    0)
-      if [ -n "$state" ]; then
-        token=$(printf '%s' "$out" | sed -n 's/.* identity=\([0-9a-f]*\).*/\1/p' | head -1)
-        presented=$(fm_programme_presented_identity "$state")
-        pending=$(fm_programme_pending_identity "$state")
-        if [ -n "$token" ] && { [ "${presented:0:12}" = "$token" ] || [ "${pending:0:12}" = "$token" ]; }; then
-          return 0
+  (
+    fm_programme_resolver_own_staging
+    local out diag rc=0 state=${1:-} token presented pending
+    if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
+      out=$FM_PROGRAMME_RESOLVER_OUT
+      diag=$FM_PROGRAMME_RESOLVER_DIAG
+      rc=$FM_PROGRAMME_RESOLVER_RC
+    else
+      out=
+      diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+      rc=125
+    fi
+    fm_programme_relay_resolver_stderr "$rc" "$diag"
+    case "$rc" in
+      0)
+        if [ -n "$state" ]; then
+          token=$(printf '%s' "$out" | sed -n 's/.* identity=\([0-9a-f]*\).*/\1/p' | head -1)
+          presented=$(fm_programme_presented_identity "$state")
+          pending=$(fm_programme_pending_identity "$state")
+          if [ -n "$token" ] && { [ "${presented:0:12}" = "$token" ] || [ "${pending:0:12}" = "$token" ]; }; then
+            exit 0
+          fi
         fi
-      fi
-      printf ' | %s' "$(_collapse_newlines "$out")" ;;
-    3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "${diag:-$out}")" ;;
-  esac
+        printf ' | %s' "$(_collapse_newlines "$out")" ;;
+      3) : ;;
+      *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "${diag:-$out}")" ;;
+    esac
+  )
 }
 
 # Flush the escalation buffer as ONE batched, single-line digest to the

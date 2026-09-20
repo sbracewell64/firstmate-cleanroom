@@ -158,6 +158,12 @@
 #   stage_attempt=<current observer attempt id>   stage_run=<current bound run id>
 #   stage_duty=validation       stage_alloc=<harness/model/effort/backend>
 #   stage_predecessor_{branch,head,tree,attempt,run,duty,alloc}=<immutable admitted predecessor>
+#   stage_successor_advance_{id,from,head,tree,attempt,run,pr,attested_head,
+#                    checked_head,input_sha}=<the one advancement of a minted
+#                    successor: a fresh attempt admitted on that exact branch
+#                    carries the current head forward from `from`, proven by the
+#                    same exact synchronized run/PR/attestation/check evidence.
+#                    The mint it advances never moves>
 #   stage_successor_{id,gen,branch,head,tree,ref,attempt,run,alloc,pipeline_submitted_head,
 #                    pipeline_current_head,pipeline_pushed_head,local_head,
 #                    remote_head,sync_state,relation,push_generation,target_kind,
@@ -1098,7 +1104,7 @@ engineering_result() {
 # --- successor transition ---------------------------------------------------
 
 successor_receipt_line() {
-  printf 'candidate-successor: task=%s gen=%s predecessor_branch=%s predecessor_head=%s predecessor_tree=%s predecessor_attempt=%s predecessor_run=%s predecessor_duty=%s predecessor_alloc=%s branch=%s head=%s tree=%s ref=%s attempt=%s run=%s alloc=%s submitted=%s current=%s pushed=%s local=%s remote=%s sync=%s relation=%s generation=%s target=%s successor=%s authority=%s action=%s pr=%s attested_head=%s checked_head=%s qualification=%s input=%s owner=worker' \
+  printf 'candidate-successor: task=%s gen=%s predecessor_branch=%s predecessor_head=%s predecessor_tree=%s predecessor_attempt=%s predecessor_run=%s predecessor_duty=%s predecessor_alloc=%s branch=%s head=%s tree=%s ref=%s attempt=%s run=%s alloc=%s submitted=%s current=%s pushed=%s local=%s remote=%s sync=%s relation=%s generation=%s target=%s successor=%s authority=%s action=%s pr=%s attested_head=%s checked_head=%s qualification=%s input=%s advance=%s advanced_from=%s advanced_head=%s advanced_tree=%s advanced_attempt=%s advanced_run=%s advanced_pr=%s advanced_attested_head=%s advanced_checked_head=%s owner=worker' \
     "$ID" "$(enc "$(meta stage_successor_gen)")" "$(enc "$(meta stage_predecessor_branch)")" "$(enc "$(short "$(meta stage_predecessor_head)")")" \
     "$(enc "$(short "$(meta stage_predecessor_tree)")")" "$(enc "$(meta stage_predecessor_attempt)")" "$(enc "$(meta stage_predecessor_run)")" \
     "$(enc "$(meta stage_predecessor_duty)")" "$(enc "$(meta stage_predecessor_alloc)")" "$(enc "$(meta stage_successor_branch)")" \
@@ -1111,7 +1117,12 @@ successor_receipt_line() {
     "$(enc "$(meta stage_successor_id)")" "$(enc "$(meta stage_successor_authority)")" "$(enc "$(meta stage_successor_action)")" \
     "$(enc "$(meta stage_successor_pr)")" "$(enc "$(short "$(meta stage_successor_attested_head)")")" \
     "$(enc "$(short "$(meta stage_successor_checked_head)")")" "$(enc "$(meta stage_successor_qualification)")" \
-    "$(enc "$(meta stage_successor_input_sha)")"
+    "$(enc "$(meta stage_successor_input_sha)")" "$(enc "$(meta stage_successor_advance_id)")" \
+    "$(enc "$(short "$(meta stage_successor_advance_from)")")" "$(enc "$(short "$(meta stage_successor_advance_head)")")" \
+    "$(enc "$(short "$(meta stage_successor_advance_tree)")")" "$(enc "$(meta stage_successor_advance_attempt)")" \
+    "$(enc "$(meta stage_successor_advance_run)")" "$(enc "$(meta stage_successor_advance_pr)")" \
+    "$(enc "$(short "$(meta stage_successor_advance_attested_head)")")" \
+    "$(enc "$(short "$(meta stage_successor_advance_checked_head)")")"
 }
 
 successor_identity() {
@@ -1192,7 +1203,13 @@ successor_record_valid() {
   expected=$(successor_identity)
   [ "$(meta stage_successor_input_sha)" = "$expected" ] || return 1
   [ "$(meta stage_successor_id)" = "successor-${expected:0:24}" ] || return 1
-  [ "$(meta stage_branch)" = "$SI_BRANCH" ] && [ "$(meta stage_head)" = "$SI_HEAD" ] && [ "$(meta stage_tree)" = "$SI_TREE" ] || return 1
+  [ "$(meta stage_branch)" = "$SI_BRANCH" ] || return 1
+  SA_FROM=; SA_HEAD=; SA_TREE=; SA_ATTEMPT=; SA_RUN=; SA_PR=; SA_ATTESTED=; SA_CHECKED=
+  if [ -n "$(meta stage_successor_advance_id)" ]; then
+    successor_advance_valid || return 1
+  elif [ "$SI_ACTION" != mint-validation-branch ]; then
+    [ "$(meta stage_head)" = "$SI_HEAD" ] && [ "$(meta stage_tree)" = "$SI_TREE" ] || return 1
+  fi
 }
 
 # A published successor replays at its exact head without borrowing any later
@@ -1200,24 +1217,60 @@ successor_record_valid() {
 # of that head on the same branch under the same bound producer: the candidate
 # may advance, the recorded successor may not. Any other head is a second
 # distinct successor, which this record cannot carry.
+# A minted successor names a BRANCH, so the fresh attempt admitted on it is
+# expected to move the candidate; the mint itself never moves. One advancement
+# may therefore carry the record's current head forward on that exact branch,
+# bound to the mint it advances and to the head it advanced from, and proven by
+# the same exact synchronized run/PR/attestation/check evidence the authenticated
+# class requires. A second one, or one on any other branch, is a replacement.
+successor_advance_identity() {
+  printf '%s\n' "$ID" "$(meta stage_successor_id)" "$(meta stage_successor_branch)" \
+    "$SA_FROM" "$SA_HEAD" "$SA_TREE" "$SA_ATTEMPT" "$SA_RUN" "$SA_PR" "$SA_ATTESTED" "$SA_CHECKED" \
+    | successor_input_identity
+}
+
+successor_advance_valid() {
+  local expected
+  SA_FROM=$(meta stage_successor_advance_from)
+  SA_HEAD=$(meta stage_successor_advance_head)
+  SA_TREE=$(meta stage_successor_advance_tree)
+  SA_ATTEMPT=$(meta stage_successor_advance_attempt)
+  SA_RUN=$(meta stage_successor_advance_run)
+  SA_PR=$(meta stage_successor_advance_pr)
+  SA_ATTESTED=$(meta stage_successor_advance_attested_head)
+  SA_CHECKED=$(meta stage_successor_advance_checked_head)
+  [ "$SI_ACTION" = mint-validation-branch ] || return 1
+  [[ "$SA_FROM" =~ ^[0-9a-f]{40}$ && "$SA_HEAD" =~ ^[0-9a-f]{40}$ && "$SA_TREE" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ "$SA_FROM" != "$SA_HEAD" ] || return 1
+  [ -n "$SA_ATTEMPT" ] && [ -n "$SA_RUN" ] || return 1
+  fm_pr_url_parse "$SA_PR" >/dev/null 2>&1 || return 1
+  [ "$SA_ATTESTED" = "$SA_HEAD" ] && [ "$SA_CHECKED" = "$SA_HEAD" ] || return 1
+  expected=$(successor_advance_identity)
+  [ "$(meta stage_successor_advance_input_sha)" = "$expected" ] || return 1
+  [ "$(meta stage_successor_advance_id)" = "advance-${expected:0:24}" ] || return 1
+  [ "$(meta stage_head)" = "$SA_HEAD" ] && [ "$(meta stage_tree)" = "$SA_TREE" ] || return 1
+}
+
 successor_replay_locked() {
-  local line
+  local line bound_head bound_tree bound_run bound_attempt
   SUCCESSOR_REPLAY_CAUSE=distinct
   successor_record_valid || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
   read_candidate
   [ "$BRANCH" = "$SI_BRANCH" ] || { SUCCESSOR_REPLAY_CAUSE=branch; return 1; }
   ! worktree_dirty || { SUCCESSOR_REPLAY_CAUSE=dirty; return 1; }
-  if [ "$HEAD" = "$SI_HEAD" ]; then
-    [ "$TREE" = "$SI_TREE" ] || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
+  bound_head=${SA_HEAD:-$SI_HEAD}; bound_tree=${SA_TREE:-$SI_TREE}
+  bound_run=${SA_RUN:-$SI_RUN}; bound_attempt=${SA_ATTEMPT:-$SI_ATTEMPT}
+  if [ "$HEAD" = "$bound_head" ]; then
+    [ "$TREE" = "$bound_tree" ] || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
   else
-    if git -C "$WT" merge-base --is-ancestor "$HEAD" "$SI_HEAD" 2>/dev/null; then
+    if git -C "$WT" merge-base --is-ancestor "$HEAD" "$bound_head" 2>/dev/null; then
       SUCCESSOR_REPLAY_CAUSE=stale; return 1
     fi
-    git -C "$WT" merge-base --is-ancestor "$SI_HEAD" "$HEAD" 2>/dev/null \
+    git -C "$WT" merge-base --is-ancestor "$bound_head" "$HEAD" 2>/dev/null \
       || { SUCCESSOR_REPLAY_CAUSE=distinct; return 1; }
     [ -n "$(obs run_id)" ] && [ -n "$(obs attempt_id)" ] \
       || { SUCCESSOR_REPLAY_CAUSE=unevaluable; return 1; }
-    [ "$(obs run_id)" = "$SI_RUN" ] && [ "$(obs attempt_id)" = "$SI_ATTEMPT" ] \
+    [ "$(obs run_id)" = "$bound_run" ] && [ "$(obs attempt_id)" = "$bound_attempt" ] \
       || { SUCCESSOR_REPLAY_CAUSE=producer; return 1; }
   fi
   SUCCESSOR_REPLAY_CAUSE=replayed
@@ -1331,19 +1384,68 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
   printf 'STAGE: %s\n' "$line"
 }
 
+# The advancement rewrites only what advances: the stage, its epoch, generation
+# and the current head/tree. Every other line of the record - the mint, the
+# immutable predecessor lineage, the landing capture, the admitted duty and
+# allocation - is carried through byte-for-byte.
+publish_advance_locked() { # <from> <head> <tree> <pr> <attested> <checked>
+  local from=$1 head=$2 tree=$3 pr=$4 attested=$5 checked=$6 tmp line
+  fm_backlog_record_present "$META" "task record" "$STATE" || return 2
+  SA_FROM=$from; SA_HEAD=$head; SA_TREE=$tree
+  SA_ATTEMPT=$(meta stage_attempt); SA_RUN=$(meta stage_run)
+  SA_PR=$pr; SA_ATTESTED=$attested; SA_CHECKED=$checked
+  [ -n "$SA_ATTEMPT" ] && [ -n "$SA_RUN" ] || return 2
+  SUCCESSOR_ADVANCE_INPUT_SHA=$(successor_advance_identity)
+  tmp="$STATE/.$ID.meta.advance.${BASHPID:-$$}"
+  grep -v -e '^stage=' -e '^stage_epoch=' -e '^stage_head=' -e '^stage_tree=' -e '^stage_gen=' \
+    -e '^stage_successor_advance_' "$META" > "$tmp" || true
+  {
+    printf 'stage=candidate-successor\n'
+    printf 'stage_epoch=%s\n' "$(now_epoch)"
+    printf 'stage_head=%s\n' "$head"
+    printf 'stage_tree=%s\n' "$tree"
+    printf 'stage_gen=%s\n' "$GEN"
+    printf 'stage_successor_advance_id=advance-%s\n' "${SUCCESSOR_ADVANCE_INPUT_SHA:0:24}"
+    printf 'stage_successor_advance_from=%s\n' "$from"
+    printf 'stage_successor_advance_head=%s\n' "$head"
+    printf 'stage_successor_advance_tree=%s\n' "$tree"
+    printf 'stage_successor_advance_attempt=%s\n' "$SA_ATTEMPT"
+    printf 'stage_successor_advance_run=%s\n' "$SA_RUN"
+    printf 'stage_successor_advance_pr=%s\n' "$pr"
+    printf 'stage_successor_advance_attested_head=%s\n' "$attested"
+    printf 'stage_successor_advance_checked_head=%s\n' "$checked"
+    printf 'stage_successor_advance_input_sha=%s\n' "$SUCCESSOR_ADVANCE_INPUT_SHA"
+  } >> "$tmp"
+  if ! fm_backlog_atomic_transition publish "$tmp" "$META" "task record" "$STATE"; then
+    rm -f -- "$tmp"
+    return 2
+  fi
+  if [ "${FM_STAGE_TEST_INTERRUPT_AFTER_SUCCESSOR_PUBLISH:-0}" = 1 ]; then
+    return 86
+  fi
+  line=$(successor_receipt_line)
+  printf '%s\n' "$line" >> "$STATUS"
+  printf 'STAGE: %s\n' "$line"
+}
+
 authenticated_successor_transition() { # <pr-url>; caller has read candidate
-  local pr=$1 lock verdict proof_rc publish_rc run submitted duty alloc run_pr expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action
+  local pr=$1 lock verdict proof_rc publish_rc run submitted duty alloc run_pr expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action advancing replay_pr
   lock=$(fm_meta_lock_path "$META") || exit 2
   fm_lock_acquire_wait "$lock"
   read_candidate
+  advancing=0
   if [ -n "$(meta stage_successor_id)" ]; then
     if ! successor_record_valid; then
       fm_lock_release "$lock"
       refuse ci-ready SUCCESSOR_COLLISION 'the recorded successor is incomplete or no longer matches its own immutable lineage'
     fi
     case "$(meta stage_successor_action)" in
-      authenticated-synchronized-successor|verified-terminal-successor)
-        if [ "$(meta stage_successor_pr)" = "$pr" ]; then
+      mint-validation-branch) replay_pr=$(meta stage_successor_advance_pr) ;;
+      *) replay_pr=$(meta stage_successor_pr) ;;
+    esac
+    case "$(meta stage_successor_action)" in
+      authenticated-synchronized-successor|verified-terminal-successor|mint-validation-branch)
+        if [ -n "$replay_pr" ] && [ "$replay_pr" = "$pr" ]; then
           if successor_replay_locked; then
             fm_lock_release "$lock"
             return 0
@@ -1363,12 +1465,27 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
           esac
         fi ;;
     esac
-    fm_lock_release "$lock"
-    refuse ci-ready SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a distinct successor needs a fresh task identity"
+    # A minted branch still owes its own pipeline run, and that run may rebase
+    # it. One advancement of the recorded mint carries the current head forward
+    # on that exact branch; anything else is a replacement the record cannot
+    # carry.
+    if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
+        && [ -z "$(meta stage_successor_advance_id)" ] \
+        && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
+      advancing=1
+    else
+      fm_lock_release "$lock"
+      refuse ci-ready SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a distinct successor needs a fresh task identity"
+    fi
   fi
   expected_head=$HEAD; expected_tree=$TREE; expected_branch=$BRANCH
-  submitted=$(stage_predecessor_head)
-  run=$(stage_predecessor_run)
+  if [ "$advancing" -eq 1 ]; then
+    submitted=$(meta stage_head)
+    run=$(meta stage_run)
+  else
+    submitted=$(stage_predecessor_head)
+    run=$(stage_predecessor_run)
+  fi
   if [ -z "$run" ] || [ -z "$submitted" ] || [ -z "$expected_head" ] || [ -z "$expected_tree" ] || [ -z "$expected_branch" ] \
       || [ -z "$(meta stage_attempt)" ] || [ -z "$(obs attempt_id)" ] || [ -z "$(obs run_id)" ]; then
     fm_lock_release "$lock"
@@ -1414,7 +1531,8 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   sync_rc=0
   fm_nm_verified_synchronized_successor "$run" "$submitted" "$expected_head" "$(meta stage_branch)" "$SUCCESSOR_SYNC" || sync_rc=$?
   action=authenticated-synchronized-successor
-  if [ "$sync_rc" -ne 0 ] && completed_successor_current "$SUCCESSOR_STATUS" "$expected_head" "$SUCCESSOR_SYNC"; then
+  if [ "$advancing" -eq 0 ] && [ "$sync_rc" -ne 0 ] \
+      && completed_successor_current "$SUCCESSOR_STATUS" "$expected_head" "$SUCCESSOR_SYNC"; then
     action=verified-terminal-successor
   fi
   run_pr=$(fm_nm_strip_quotes "$(fm_nm_field "$SUCCESSOR_STATUS" pr)")
@@ -1498,7 +1616,11 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   fi
   publish_rc=0
   SUCCESSOR_CHECKED_HEAD=$expected_head
-  publish_successor_locked "$action" "$(meta stage_branch)" "$expected_head" "$expected_tree" "refs/heads/$(meta stage_branch)" "$pr" "$SUCCESSOR_ATTESTED_HEAD" "$SUCCESSOR_CHECKED_HEAD" checks-passed || publish_rc=$?
+  if [ "$advancing" -eq 1 ]; then
+    publish_advance_locked "$submitted" "$expected_head" "$expected_tree" "$pr" "$SUCCESSOR_ATTESTED_HEAD" "$SUCCESSOR_CHECKED_HEAD" || publish_rc=$?
+  else
+    publish_successor_locked "$action" "$(meta stage_branch)" "$expected_head" "$expected_tree" "refs/heads/$(meta stage_branch)" "$pr" "$SUCCESSOR_ATTESTED_HEAD" "$SUCCESSOR_CHECKED_HEAD" checks-passed || publish_rc=$?
+  fi
   fm_lock_release "$lock"
   case "$publish_rc" in
     0) return 0 ;;
@@ -1811,7 +1933,7 @@ do_ci_ready() {
       authenticated_successor_transition "$PR_ARG"
       current=$(meta stage) ;;
     *)
-      if ! candidate_current "$(meta stage_head)" "$HEAD"; then
+      if [ -n "$(meta stage_successor_advance_id)" ] || ! candidate_current "$(meta stage_head)" "$HEAD"; then
         authenticated_successor_transition "$PR_ARG"
         current=$(meta stage)
       fi ;;

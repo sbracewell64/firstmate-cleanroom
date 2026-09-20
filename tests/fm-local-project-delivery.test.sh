@@ -446,10 +446,23 @@ expect_rejected_without_publication "A self-delivery source root" "$home" 'SOURC
   slice-a-s1-publication-integrity exchange-work a-self-root
 
 # The same pin refuses the reverse substitution: D's authorized same-root owner
-# identity is not satisfied by the canonical artifact root, so no registered
-# project owns that census.
-expect_rejected_without_publication "D canonical-root substitution" "$home" 'OWNER_MISSING' \
+# identity is not satisfied by the canonical artifact root.
+expect_rejected_without_publication "D canonical-root substitution" "$home" 'SOURCE_IDENTITY_MISMATCH' \
   bind_with_root "$repo" "$home" "$home/source" slice-d-s4-synthesis-integrity auto d-canonical-root
+
+# A forbidden source root and an absent owner are distinct authority classes for
+# the same auto-census invocation: the complete registered owner makes the root a
+# typed refusal, while no registered owner at all stays CNO OWNER_MISSING.
+out=$(bind_with_root "$repo" "$home" "$home/source" slice-d-s4-synthesis-integrity auto d-forbidden-root 2>&1); rc=$?
+[ "$rc" = 4 ] || fail "a forbidden root with a complete registered owner is not a typed refusal: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'REFUSED SOURCE_IDENTITY_MISMATCH' ] \
+  || fail "a forbidden root with a complete registered owner did not name the source identity axis: $out"
+absent=$(make_home d-owner-absent)
+out=$(bind_with_root "$absent" "$absent" "$absent/source" slice-d-s4-synthesis-integrity auto d-owner-absent 2>&1); rc=$?
+[ "$rc" = 5 ] || fail "absent D ownership is not CNO: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
+  || fail "absent D ownership did not stay one census CNO: $out"
+pass "the census separates a forbidden source root from genuinely absent ownership"
 
 # A D successor admission seals its same-root source independently of the
 # programme's canonical artifact root. The shared resolver must consume that

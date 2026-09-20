@@ -620,14 +620,6 @@ def build_candidate(
         repo_real.relative_to(projects_real)
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
-    identity = source_identity_for(programme, step)
-    if identity == "owner_project_root":
-        if root != repo_real:
-            if not enforce_pinned_owner:
-                raise NotOwner(f"project {project} is not the authorized same-root source owner")
-            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
-    elif root.is_relative_to(projects_real):
-        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
     session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
     if session_holder is not None:
         session_holder.append(session)
@@ -651,6 +643,13 @@ def build_candidate(
 
     if not family_is_present(head, policy["artifacts"], repo_fd=destination_root_fd):
         raise NotOwner(f"project {project} does not contain the governed artifact family")
+
+    identity = source_identity_for(programme, step)
+    if identity == "owner_project_root":
+        if root != repo_real:
+            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
+    elif root.is_relative_to(projects_real):
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
 
     artifacts: list[dict[str, Any]] = []
     for row in policy["artifacts"]:

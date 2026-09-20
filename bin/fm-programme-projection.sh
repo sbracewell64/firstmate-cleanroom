@@ -18,11 +18,12 @@
 # script only reads:
 #   - bin/fm-continuation-resolve.sh (+ bin/fm-continuation-lib.sh) owns
 #     next_action, action_generation, classification, authority_state,
-#     reason_code, and basis_refs. Its `resolve` output is consumed verbatim;
-#     the classification tables and hold-effect law are never reimplemented
-#     here, and `--materialize` is refused because this layer has no authority
-#     to create a hold. Its exit 3 (no programme configured) is "not
-#     applicable" and is mirrored as exit 3 with nothing on stdout.
+#     reason_code, and basis_refs. Its `resolve` STDOUT is the typed result and
+#     is consumed verbatim; its stderr is diagnostics and is never folded into
+#     that document. The classification tables and hold-effect law are never
+#     reimplemented here, and `--materialize` is refused because this layer has
+#     no authority to create a hold. Its exit 3 (no programme configured) is
+#     "not applicable" and is mirrored as exit 3 with nothing on stdout.
 #   - bin/fm-captain-hold.sh owns hold durability and effect; the resolver
 #     already consumed them, so this script reads only the resolver's gating
 #     hold rows and answered-fact identities.
@@ -148,6 +149,18 @@ fail() {
   exit 1
 }
 
+# The only file this read-only script ever creates: a staging file for the
+# resolver's diagnostics, removed as soon as they are read. It is staged under
+# TMPDIR, never under the home or its state directory, so the substrate this
+# script reads stays untouched. The trap covers the window where this process
+# dies between staging and reading.
+RESOLVER_ERRFILE=
+projection_cleanup() {
+  [ -z "$RESOLVER_ERRFILE" ] || rm -f -- "$RESOLVER_ERRFILE"
+  RESOLVER_ERRFILE=
+}
+trap projection_cleanup EXIT
+
 sha256_text() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
@@ -187,18 +200,75 @@ parse_common() {
 # --- the resolver's typed result -----------------------------------------------
 
 RESOLUTION=''
+# The resolver's TYPED RESULT is its stdout and nothing else; its stderr is the
+# diagnostic channel. The two are read separately and never merged, because
+# merging them makes any byte anyone in the resolver's process tree writes to
+# stderr - a git or node warning, or one of the shell's own runtime diagnostics
+# under load - part of the document this then requires to be the typed schema.
+# That turns a successful resolve into a hard refusal whose offending bytes are
+# thrown away - the SHAPE of the intermittent CI failure in this file's suite,
+# which is a real defect at this boundary either way. It is not a named cause:
+# the refusal discarded the bytes, so no CI log names an injector, and 60
+# back-to-back resolves under that suite's fixture produced clean JSON locally.
+# The failure stays UNATTRIBUTED. A recurrence reopens the investigation rather
+# than reading as already fixed. Nothing is swallowed in exchange: whatever the resolver wrote to stderr is relayed to this
+# script's stderr on every path, so a real diagnostic still reaches an operator
+# while stdout stays exactly the typed document. An unparseable stdout names what
+# it actually received, and exit 3 is still mirrored with stdout left empty.
+#
+# THIS SCRIPT IS THE ONLY ONE OF THE FIVE RESOLVER CALL SITES THAT RELAYS ON EXIT
+# 3, and that difference is deliberate rather than an oversight: exit 3 is the
+# ordinary "no programme configured" state, which the four embedding sites
+# (bin/fm-fleet-snapshot.sh, bin/fm-session-start.sh, bin/fm-supervise-daemon.sh,
+# bin/fm-programme-presentation-lib.sh) report typed and silently, while this
+# script mirrors the refusal to its own caller and so must carry its reason.
+# Every other rule is identical at all five: stdout is the typed result, stderr is
+# captured separately, it is relayed on exit 0 as well as on any other failure -
+# separating the streams means routing both, not discarding one - the reason for
+# a failure is read from stderr and never from stdout, and an unstageable
+# diagnostic degrades to the same "unavailable" text everywhere. Do not unify the
+# exit-3 difference away.
+#
+# Exit 3 is also why the UNSTAGEABLE path differs. This script leaves the
+# resolver's stderr unredirected there, so the diagnostic still reaches the
+# caller; the four embedding sites cannot, because an unredirected stream is
+# delivered before the exit code is known and so cannot be withheld on exit 3,
+# which would put "no programme configured" in front of an operator on every
+# ordinary call from a home that has none. They discard it instead and say so
+# through the "unavailable" text. That is a real trade between routing the
+# diagnostic and honouring the exit-3 silence, not an oversight.
+# Bash cannot separate the two streams in memory without a redirection trick, and
+# a trick in the very code whose output corruption is under investigation is not
+# worth the cleverness, so the diagnostics are staged through a file - but a
+# DIAGNOSTIC AID MUST NEVER FAIL THE OPERATION IT IS DIAGNOSING, so an
+# unstageable diagnostic degrades to "unavailable" and the resolve still runs,
+# with the resolver's stderr passing straight through to this script's stderr.
 read_resolution() {
-  local out rc=0
+  local out diag='' diag_note='' diag_suffix='' reason='' rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>&1) || rc=$?
+  RESOLVER_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-programme-projection.XXXXXX" 2>/dev/null) \
+    || RESOLVER_ERRFILE=
+  if [ -n "$RESOLVER_ERRFILE" ]; then
+    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>"$RESOLVER_ERRFILE") || rc=$?
+    diag=$(cat "$RESOLVER_ERRFILE" 2>/dev/null || true)
+  else
+    out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}) || rc=$?
+    diag_note='resolver diagnostics: unavailable, they could not be staged'
+  fi
+  reason=${diag:-$diag_note}
+  [ -z "$reason" ] || diag_suffix=" ($(printf '%s' "$reason" | head -c 400))"
+  projection_cleanup
   case "$rc" in
-    0) ;;
-    3) printf '%s\n' "$out" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc): $out" ;;
+    0) [ -z "$diag" ] || printf '%s\n' "$diag" >&2 ;;
+    3) [ -z "$diag" ] || printf '%s\n' "$diag" >&2; exit 3 ;;
+    *)
+      [ -z "$diag" ] || printf '%s\n' "$diag" >&2
+      fail "resolver failed (exit $rc):$diag_suffix${out:+ (resolver stdout: $(printf '%s' "$out" | head -c 400))}"
+      ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema"
+    || fail "resolver printed an unrecognized result schema on stdout: $(printf '%s' "$out" | head -c 400)$diag_suffix"
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

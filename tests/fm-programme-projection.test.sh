@@ -450,6 +450,98 @@ test_not_configured_and_summary() {
   pass "with no programme configured the substrate exits 3 silently, mirroring the resolver"
 }
 
+# --- the typed result is stdout; the resolver's stderr is diagnostics ---------
+
+# A resolver that returns a correct typed result on stdout while something in its
+# process tree writes to stderr must still compose. Folding the two streams
+# together made every such byte part of the document this layer requires to be
+# the typed schema, so a healthy resolve was refused as "an unrecognized result
+# schema" - the shape this suite's intermittent CI failure took - and the
+# offending bytes were discarded with it. This pins the MECHANISM, not a
+# diagnosed cause: no CI log names what wrote to that stderr, and the failure
+# was never reproduced locally, so it stays unattributed and a recurrence is a
+# reopened investigation rather than a regression of this fix. The noise here is
+# one real line from that failure's own shard, but nothing about it is special:
+# a git or node warning, or any of the shell's runtime diagnostics under load,
+# lands on the same channel.
+#
+# The same separation is what lets an exit-3 refusal still reach the caller: it
+# is the resolver's stderr, mirrored, with stdout left empty.
+test_resolver_stderr_is_not_the_typed_result() {
+  local home fakebin out err rc noise unstageable
+  home=$(make_home noisy-stderr)
+  disposition "$home" proof-a 1 PROVED
+  noise="bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching \`)'"
+  fakebin="$TMP_ROOT/noisy-resolver-bin"
+  mkdir -p "$fakebin"
+  ln -s "$PROJECT" "$fakebin/fm-programme-projection.sh"
+  # The noise is staged as a file, not interpolated into the stub: it carries a
+  # backtick, which is exactly the shape that would otherwise be re-read as
+  # syntax by the stub instead of written to its stderr.
+  printf '%s\n' "$noise" > "$fakebin/noise.txt"
+  cat > "$fakebin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+cat '$fakebin/noise.txt' >&2
+exec '$RESOLVE' "\$@"
+SH
+  chmod +x "$fakebin/fm-continuation-resolve.sh"
+
+  out=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null) \
+    || fail "a diagnostic on the resolver's stderr must not refuse a healthy typed result"
+  [ "$(field "$out" '.schema')" = fm-programme-projection/v1 ] || fail "projection schema: $(field "$out" '.schema')"
+  [ "$(field "$out" '.next_action')" = proof-b ] || fail "next action under a noisy resolver: $(field "$out" '.next_action')"
+  [ "$(field "$out" '.classification')" = SELF_HANDLE ] || fail "classification under a noisy resolver: $(field "$out" '.classification')"
+  printf '%s' "$out" | grep -F 'unexpected EOF' >/dev/null \
+    && fail "the resolver's stderr leaked into the typed result"
+  pass "a diagnostic on the resolver's stderr is kept off the typed result and the projection still composes"
+
+  # Negative control: the noise really did reach this run's stderr, so the case
+  # above cannot pass by the stub having written nothing.
+  err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null)
+  assert_contains "$err" "unexpected EOF" "the noisy resolver stub must actually write to stderr"
+
+  # A diagnostic aid must never fail the operation it is diagnosing. With nowhere
+  # to stage the resolver's stderr, the read still succeeds and the diagnostics
+  # still reach the operator - they simply pass straight through instead of being
+  # quotable back inside a refusal.
+  unstageable="$TMP_ROOT/no-such-tmpdir"
+  [ ! -e "$unstageable" ] || fail "the unstageable-diagnostics fixture must not exist"
+  out=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null) \
+    || fail "diagnostics that could not be staged failed the read they were diagnosing"
+  [ "$(field "$out" '.next_action')" = proof-b ] || fail "next action with unstageable diagnostics: $(field "$out" '.next_action')"
+  err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null)
+  assert_contains "$err" "unexpected EOF" "unstageable diagnostics still reach the operator's stderr"
+
+  # Corrupt STDOUT is still the defect it always was, and the refusal now names
+  # the bytes it received instead of discarding them.
+  cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'not a typed result\n'
+SH
+  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null); rc=$?
+  expect_code 1 "$rc" "a resolver whose stdout is not the typed schema is refused"
+  assert_contains "$err" "unrecognized result schema" "the refusal still names the schema failure"
+  assert_contains "$err" "not a typed result" "the refusal names the bytes it actually received"
+  err=$(TMPDIR="$unstageable" with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
+  assert_contains "$err" "not a typed result" "the refusal still names the bytes received when diagnostics cannot be staged"
+  assert_contains "$err" "diagnostics: unavailable" "the refusal names the diagnostics as unavailable rather than as absent"
+
+  # An exit-3 refusal is the resolver's stderr, mirrored, with stdout empty.
+  cat > "$fakebin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'fm-continuation-resolve: no programme configured\n' >&2
+exit 3
+SH
+  chmod +x "$fakebin/fm-continuation-resolve.sh"
+  out=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>/dev/null); rc=$?
+  expect_code 3 "$rc" "the resolver's exit 3 is mirrored"
+  [ -z "$out" ] || fail "exit 3 must print nothing on stdout: $out"
+  err=$(with_home "$home" "$fakebin/fm-programme-projection.sh" project 2>&1 >/dev/null) || true
+  assert_contains "$err" "no programme configured" "the exit-3 refusal is relayed from stderr"
+  pass "corrupt stdout is refused naming the bytes received, and an exit-3 refusal is still relayed"
+}
+
 # --- owner-evidence steps compose unchanged -----------------------------------------
 
 # A programme whose A-E steps are bound to accepted owner records (the A-F
@@ -531,6 +623,7 @@ timed test_composition_follows_resolver
 timed test_applicability_tuple_goes_stale
 timed test_uncomposable_records_refused
 timed test_deterministic_and_side_effect_free
+timed test_resolver_stderr_is_not_the_typed_result
 timed test_delegation_bounds
 timed test_not_configured_and_summary
 timed test_owner_evidence_programme_composes

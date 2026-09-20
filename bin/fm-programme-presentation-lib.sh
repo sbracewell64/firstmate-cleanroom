@@ -31,8 +31,16 @@
 # CONTRACT (fm_programme_present <state> <mode>):
 #   1. Run the resolver's `render`; exit 3 (no programme) prints nothing and
 #      returns 3; a resolver failure is itself material state, keyed by a
-#      digest of its exit code and message, so a broken pin surfaces once and
-#      then stays quiet until it changes.
+#      digest of its exit code and the diagnostic it wrote, so a broken pin
+#      surfaces once and then stays quiet until it changes. When NO diagnostic
+#      was captured - whether because it could not be staged or because the
+#      resolver wrote none, which are the same thing here - that digest would be
+#      identical for every failure of that exit code, so this REFUSES TO DEDUPE
+#      and presents each occurrence instead. When the distinguishing input is
+#      unavailable the answer is to refuse to identify, never to fall back to a
+#      value everything shares: presenting the same failure twice is harmless,
+#      suppressing a genuinely different one is not. Do not narrow that guard to
+#      the unstageable case alone; it would re-create the collapse.
 #   2. Compare the identity with the acknowledged record AND the pending
 #      record: equal to either is unchanged -> print nothing, return 0. When
 #      it equals the pending record and the mode is `commit` (a no-ack turn
@@ -111,12 +119,43 @@ fm_programme_presentation_state() {  # <state> <identity>
   else printf 'changed'; fi
 }
 
+_fm_programme_prefix_diagnostic() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf 'resolver diagnostic: %s\n' "$line"
+  done
+}
+
 # Present the programme continuation once per material change. See CONTRACT.
 fm_programme_present() {  # <state> <mode: pending|commit>
-  local state=$1 mode=$2 resolver out rc=0 identity summary verdict
+  local state=$1 mode=$2 resolver out rc=0 identity summary verdict errfile diag='' diag_note='' reason='' diagnostic_reason='' dedupe=1 fallback_fifo relay_pid
   resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-continuation-resolve.sh"
   case "$mode" in pending|commit) ;; *) return 2 ;; esac
-  out=$("$resolver" render 2>&1) || rc=$?
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-programme-present-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=$(mktemp "$state/.programme-present-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$resolver" render 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    fallback_fifo="$state/.programme-present-resolve.${BASHPID:-$$}.fifo"
+    if mkfifo "$fallback_fifo" 2>/dev/null; then
+      _fm_programme_prefix_diagnostic <"$fallback_fifo" >&2 &
+      relay_pid=$!
+      out=$("$resolver" render 2>"$fallback_fifo") || rc=$?
+      wait "$relay_pid" 2>/dev/null || true
+      rm -f -- "$fallback_fifo"
+    else
+      out=
+      rc=1
+      diag_note='resolver diagnostics: staging was unavailable'
+    fi
+  fi
+  if [ -n "$diag" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf 'resolver diagnostic: %s\n' "$line" >&2
+    done <<< "$diag"
+  fi
   case "$rc" in
     0)
       identity=$(fm_programme_identity_from_render "$out")
@@ -125,21 +164,32 @@ fm_programme_present() {  # <state> <mode: pending|commit>
       ;;
     3) return 3 ;;
     *)
-      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$out")
+      reason=${diag:-$diag_note}
+      identity=$(_fm_programme_sha256 "resolver-failed:$rc:$reason")
       summary="resolver failed (exit $rc)"
+      if [ -n "$reason" ]; then
+        diagnostic_reason=$(_fm_programme_prefix_diagnostic <<< "$reason")
+      fi
       out="resolver failed (exit $rc); continuation authority is unproven, not captain-gated:
-$out"
+$diagnostic_reason"
+      # With no captured diagnostic the identity cannot tell one failure of this
+      # exit code from another, so this REFUSES TO DEDUPE rather than falling back
+      # to a value every such failure shares: presenting the same failure twice is
+      # harmless, suppressing a genuinely new one is not.
+      [ -n "$diag" ] || dedupe=0
       ;;
   esac
-  verdict=$(fm_programme_presentation_state "$state" "$identity")
-  case "$verdict" in
-    unchanged) return 0 ;;
-    pending-ack)
-      [ "$mode" = commit ] || return 0
-      fm_programme_ack_pending "$state"
-      return $?
-      ;;
-  esac
+  if [ "$dedupe" -eq 1 ]; then
+    verdict=$(fm_programme_presentation_state "$state" "$identity")
+    case "$verdict" in
+      unchanged) return 0 ;;
+      pending-ack)
+        [ "$mode" = commit ] || return 0
+        _fm_programme_ack_pending_locked "$state"
+        return $?
+        ;;
+    esac
+  fi
   printf 'PROGRAMME CONTINUATION (material state changed since last presented; typed owner bin/fm-continuation-resolve.sh):\n'
   printf '%s\n' "$out"
   if [ "$mode" = pending ]; then
@@ -153,10 +203,19 @@ $out"
 }
 
 # Acknowledge exactly the identity the drain presented; never re-resolve here.
-fm_programme_ack_pending() {  # <state>
+_fm_programme_ack_pending_locked() {  # <state>
   local pending
   pending=$(fm_programme_pending_path "$1")
   [ -f "$pending" ] || return 0
   [ -n "$(_fm_programme_record_identity "$pending")" ] || { rm -f -- "$pending"; return 0; }
   mv -f -- "$pending" "$(fm_programme_presented_path "$1")"
+}
+
+fm_programme_ack_pending() {  # <state>
+  local state=$1 lock="$1/.status-presentation-lock" rc
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_programme_ack_pending_locked "$state"
+  rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
 }

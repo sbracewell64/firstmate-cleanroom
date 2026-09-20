@@ -675,12 +675,35 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
+  local out rc=0 identity verdict errfile diag='' diag_note='' fallback_fifo relay_pid
+  errfile=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=$(mktemp "$STATE/.session-start-resolve.XXXXXX" 2>/dev/null) \
+    || errfile=
+  if [ -n "$errfile" ]; then
+    out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$errfile") || rc=$?
+    diag=$(cat "$errfile" 2>/dev/null || true)
+    rm -f -- "$errfile"
+  else
+    fallback_fifo="$STATE/.session-start-resolve.${BASHPID:-$$}.fifo"
+    if mkfifo "$fallback_fifo" 2>/dev/null; then
+      _fm_programme_prefix_diagnostic <"$fallback_fifo" >&2 &
+      relay_pid=$!
+      out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>"$fallback_fifo") || rc=$?
+      wait "$relay_pid" 2>/dev/null || true
+      rm -f -- "$fallback_fifo"
+    else
+      out=
+      rc=1
+      diag_note='resolver diagnostics: staging was unavailable'
+    fi
+  fi
+  if [ -n "$diag" ]; then
+    _fm_programme_prefix_diagnostic <<< "$diag" >&2
+  fi
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out"
+    printf '%s\n' "$out" | sed 's/^WAKE_ACK_REQUIRED:/resolver data: WAKE_ACK_REQUIRED:/'
     identity=$(fm_programme_identity_from_render "$out")
     verdict=$(fm_programme_presentation_state "$STATE" "$identity")
     case "$verdict" in
@@ -690,7 +713,8 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n' "$rc"
+    printf '%s\n' "${diag:-$diag_note}" | _fm_programme_prefix_diagnostic
   fi
 }
 
@@ -921,12 +945,81 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
-  if [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
+  # The drain owns acknowledgement authority. Its stdout is the queue section,
+  # fd 3 carries a typed acknowledgement record, and stderr is diagnostic data
+  # that may include arbitrary resolver text. Keep all three apart: a diagnostic
+  # that looks exactly like WAKE_ACK_REQUIRED is still not an instruction.
+  # Empty stdout alone does not mean nothing is queued: a downtime episode can
+  # need acknowledgement even when the drain presents no rows.
+  #
+  # If either channel cannot be staged, keep stdout separate and let stderr
+  # reach the caller. Without the typed record this section claims no queue
+  # verdict or acknowledgement; the direct drain remains available to inspect.
+  DRAIN_RC=0
+  DRAIN_DIAG_STAGED=1
+  DRAIN_ACK_VALID=1
+  DRAIN_ACK_OUTSTANDING=0
+  DRAIN_ACK_SEQUENCE=
+  DRAIN_ACK_GENERATION=
+  DRAIN_ACK_RECORD=
+  DRAIN_FALLBACK_FIFO=
+  DRAIN_RELAY_PID=
+  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  DRAIN_ACKFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-ack.XXXXXX" 2>/dev/null) || DRAIN_ACKFILE=
+  if [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_ACKFILE" ]; then
+    DRAIN_OUT=$(FM_WAKE_DRAIN_ACK_FD=3 "$SCRIPT_DIR/fm-wake-drain.sh" 3>"$DRAIN_ACKFILE" 2>"$DRAIN_ERRFILE") || DRAIN_RC=$?
+    DRAIN_DIAG=$(cat "$DRAIN_ERRFILE" 2>/dev/null) || DRAIN_DIAG_STAGED=0
+    DRAIN_ACK_RECORD=$(cat "$DRAIN_ACKFILE" 2>/dev/null) || DRAIN_ACK_VALID=0
+    rm -f -- "$DRAIN_ERRFILE" "$DRAIN_ACKFILE"
+    if [ -n "$DRAIN_ACK_RECORD" ]; then
+      IFS=$'\t' read -r DRAIN_ACK_SCHEMA DRAIN_ACK_SEQUENCE DRAIN_ACK_GENERATION <<< "$DRAIN_ACK_RECORD"
+      if [ "$DRAIN_ACK_SCHEMA" = fm-wake-ack-v1 ] \
+        && [[ "$DRAIN_ACK_SEQUENCE" =~ ^[0-9]+$ ]] \
+        && [[ "$DRAIN_ACK_GENERATION" =~ ^[A-Za-z0-9._-]+$ ]] \
+        && [ "$DRAIN_ACK_RECORD" = "$(printf 'fm-wake-ack-v1\t%s\t%s' "$DRAIN_ACK_SEQUENCE" "$DRAIN_ACK_GENERATION")" ]; then
+        DRAIN_ACK_OUTSTANDING=1
+      else
+        DRAIN_ACK_VALID=0
+      fi
+    fi
   else
-    printf '(no queued wakes)\n'
+    [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE"
+    [ -z "$DRAIN_ACKFILE" ] || rm -f -- "$DRAIN_ACKFILE"
+    DRAIN_FALLBACK_FIFO="$STATE/.session-start-drain.${BASHPID:-$$}.fifo"
+    if mkfifo "$DRAIN_FALLBACK_FIFO" 2>/dev/null; then
+      _fm_programme_prefix_diagnostic <"$DRAIN_FALLBACK_FIFO" >&2 &
+      DRAIN_RELAY_PID=$!
+      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>"$DRAIN_FALLBACK_FIFO") || DRAIN_RC=$?
+      wait "$DRAIN_RELAY_PID" 2>/dev/null || true
+      rm -f -- "$DRAIN_FALLBACK_FIFO"
+    else
+      DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>/dev/null) || DRAIN_RC=$?
+      printf '%s\n' 'wake drain diagnostics: staging was unavailable' >&2
+    fi
+    DRAIN_DIAG=
+    DRAIN_DIAG_STAGED=0
   fi
+  if [ "$DRAIN_RC" -ne 0 ]; then
+    printf 'wake drain failed (exit %s); its result is not a usable wake-queue verdict.\n' "$DRAIN_RC"
+  fi
+  if [ "$DRAIN_DIAG_STAGED" -eq 0 ]; then
+    printf 'wake drain diagnostics or acknowledgement status could not be staged, so this section has no usable queue verdict; any stderr went to this hook stderr.\n'
+  elif [ "$DRAIN_ACK_VALID" -eq 0 ]; then
+    printf 'wake drain returned an invalid acknowledgement status; its result is not a usable wake-queue verdict.\n'
+  elif [ "$DRAIN_RC" -eq 0 ]; then
+    if [ -n "$DRAIN_OUT" ]; then
+      printf '%s\n' "$DRAIN_OUT"
+    elif [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
+      printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
+    else
+      printf '(no queued wakes)\n'
+    fi
+    if [ "$DRAIN_ACK_OUTSTANDING" -eq 1 ]; then
+      printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
+        "$DRAIN_ACK_SEQUENCE" "$DRAIN_ACK_GENERATION"
+    fi
+  fi
+  [ -z "$DRAIN_DIAG" ] || printf '%s\n' "$DRAIN_DIAG" | _fm_programme_prefix_diagnostic >&2
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

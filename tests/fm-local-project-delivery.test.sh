@@ -483,6 +483,9 @@ mkdir -p "$master"; git -C "$master" init -q -b master
 printf 'unrelated\n' > "$master/README.md"
 git -C "$master" add .
 git -C "$master" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m unrelated
+printf '%s\n' '- retired-work [local-only] - registered row whose directory is gone (added 2026-09-20)' >> "$home/data/projects.md"
+printf '%s\n' '- escaped-work [local-only] - registered row resolving outside the projects tree (added 2026-09-20)' >> "$home/data/projects.md"
+ln -s "$home/source" "$home/projects/escaped-work"
 out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto delivery-d-unrelated) \
   || fail "unrelated registered projects blocked the lawful same-root D bind: $out"
 [ "$(printf '%s' "$out" | jq -r '.status + " " + .project')" = 'ADMITTED synthesis-work' ] \
@@ -490,6 +493,44 @@ out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto
 [ "$(jq -r '.artifacts | length' "$(printf '%s' "$out" | jq -r '.path')")" = 7 ] \
   || fail "the admitted same-root candidate is not the complete family"
 pass "unrelated registered projects do not block the same-root owner census"
+
+# The same-root admission seals the pinned candidate ref, so an unrelated local
+# checkout in the owner project leaves qualification intact while movement of
+# the pinned ref itself refuses.
+home=$(make_home d-head-stability)
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto delivery-d-head) \
+  || fail "same-root D bind failed: $out"
+admission=$(printf '%s' "$out" | jq -r '.path')
+[ "$(jq -r '.source.head + " " + .source.tree' "$admission")" = "$(jq -r '.destination.head + " " + .destination.tree' "$admission")" ] \
+  || fail "the same-root admission did not seal the pinned candidate ref as its source identity"
+git -C "$repo" checkout -q -b feature-x
+printf 'unrelated\n' > "$repo/unrelated.txt"
+git -C "$repo" add unrelated.txt
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m unrelated
+[ "$(git -C "$repo" rev-parse HEAD)" != "$(git -C "$repo" rev-parse refs/heads/main)" ] \
+  || fail "the checkout fixture did not move the ambient HEAD off the pinned ref"
+sealed=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root-from-admission --step slice-d-s4-synthesis-integrity) \
+  || fail "an unrelated checkout in the owner project broke D qualification: $sealed"
+[ "$(printf '%s' "$sealed" | jq -r '.status')" = ACCEPTED ] || fail "checkout-only movement changed the sealed verdict"
+pass "an unrelated checkout in the same-root owner project does not change qualification"
+
+git -C "$repo" checkout -q main
+printf 'advance\n' > "$repo/advance.txt"
+git -C "$repo" add advance.txt
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m advance
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root-from-admission --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "the moved pinned ref still verified: $out"
+assert_contains "$out" 'CANDIDATE_HEAD_MISMATCH' "pinned ref drift did not refuse as a moved candidate"
+pass "movement of the pinned candidate ref refuses the same-root admission"
 
 # A complete family under a non-local-only posture is not a lawful owner, so it
 # is genuine owner absence rather than a source-root refusal.

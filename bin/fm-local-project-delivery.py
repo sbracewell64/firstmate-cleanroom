@@ -24,6 +24,9 @@ Under `owner_project_root` the owner census admits only the project that is that
 exact source root and skips every other registered project before probing its
 Git identity, ref, or family; a root that is no complete family owner's root is
 SOURCE_IDENTITY_MISMATCH, while an absent owner or family stays OWNER_MISSING.
+That same-root admission seals the pinned candidate ref's head and tree as its
+source identity, so an unrelated local checkout in the owner project leaves
+qualification intact while movement of the pinned ref refuses.
 `bind` derives every candidate and byte identity, validates all facts before
 publishing one mode-0600 manifest at
 FM_HOME/data/local-project-delivery/admissions/<delivery-id>.json, and refuses a
@@ -589,7 +592,7 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     return policy
 
 
-def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
+def source_identity(root: Path, root_fd: int, pinned: tuple[str, str] | None = None) -> dict[str, Any]:
     handle = repo_handle(root_fd)
     result = subprocess.run(["git", "-C", handle, "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, pass_fds=(root_fd,))
     if result.returncode != 0:
@@ -597,8 +600,11 @@ def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
     top = Path(result.stdout.decode().strip()).resolve()
     if top != root:
         refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is nested inside a different Git owner {top}")
-    head = git_fd(root_fd, "rev-parse", "HEAD^{commit}")
-    tree = git_fd(root_fd, "rev-parse", "HEAD^{tree}")
+    if pinned is not None:
+        head, tree = pinned
+    else:
+        head = git_fd(root_fd, "rev-parse", "HEAD^{commit}")
+        tree = git_fd(root_fd, "rev-parse", "HEAD^{tree}")
     return {"kind": "local-git", "root": str(root), "head": head, "tree": tree}
 
 
@@ -618,16 +624,17 @@ def build_candidate(
     require_slug(project, "project")
     project_mode(home, project, registry_data=registry_data)
     repo = (home / "projects" / project)
+    identity = source_identity_for(programme, step)
+    if identity == "owner_project_root" and not enforce_pinned_owner and root != repo:
+        raise NotOwner(f"project {project} is not the source root of this same-root delivery")
     try:
         repo_real = repo.resolve(strict=True)
         projects_real = (home / "projects").resolve(strict=True)
         repo_real.relative_to(projects_real)
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
-    if source_identity_for(programme, step) == "owner_project_root":
+    if identity == "owner_project_root":
         if root != repo_real:
-            if not enforce_pinned_owner:
-                raise NotOwner(f"project {project} is not the source root of this same-root delivery")
             refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
     elif root.is_relative_to(projects_real):
         refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
@@ -734,7 +741,7 @@ def build_candidate(
     if not isinstance(programme_generation, str) or not programme_generation:
         refuse("PROGRAMME_MALFORMED", "programme schema is required")
     manifest_sha = hashlib.sha256(canonical(artifacts)).hexdigest()
-    source = source_identity(root, session.source_fd)
+    source = source_identity(root, session.source_fd, (head, tree) if identity == "owner_project_root" else None)
     verify_directory_identity(root, source_root_fd, "source root")
     verify_directory_identity(repo_real, destination_root_fd, "destination root")
     candidate: dict[str, Any] = {

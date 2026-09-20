@@ -184,6 +184,18 @@ verify=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
 [ "$(printf '%s' "$verify" | jq -r '.status')" = ACCEPTED ] || fail "positive verify was not accepted"
 pass "bind publishes one private owner-bound A manifest and verify replays its exact identities"
 
+registry_home=$(make_home registry-snapshot)
+registry_out=$(bind "$registry_home" slice-a-s1-publication-integrity) || fail "registry snapshot setup bind failed: $registry_out"
+registry_admission=$(printf '%s' "$registry_out" | jq -r '.path')
+printf '%s\n' '- unrelated-project [local-only] - unrelated fixture (added 2026-09-18)' >> "$registry_home/data/projects.md"
+registry_before=$(sha256_file "$registry_admission")
+registry_out=$(FM_HOME="$registry_home" "$DELIVERY" verify --admission "$registry_admission" \
+  --programme "$registry_home/programme/programme.json" --root "$registry_home/source" --step slice-a-s1-publication-integrity 2>&1); registry_rc=$?
+[ "$registry_rc" -ne 0 ] || fail "registry snapshot mutation unexpectedly verified: $registry_out"
+assert_contains "$registry_out" 'MANIFEST_AUTHENTICITY' "registry snapshot mutation did not invalidate the old admission"
+[ "$(sha256_file "$registry_admission")" = "$registry_before" ] || fail "registry snapshot refusal changed the immutable admission"
+pass "verify rejects an admission after an unrelated registry snapshot change"
+
 # The programme continuation public interface accepts V2 only when the private
 # delivery and checker receipts bind this exact pre-effect admission.
 mkdir -p "$home/data/local-project-delivery" "$home/fake-bin"
@@ -295,18 +307,19 @@ expect_rejected_without_publication "missing D owner" "$home" 'OWNER_MISSING' \
 # Verification is the public negative surface for independently load-bearing
 # source, destination, mode, programme, family, and manifest identities.
 mutate_case() { # <name> <expected> <mutation command>
-  local name=$1 expected=$2 mutation=$3 h a out rc before
+  local name=$1 expected=$2 mutation=$3 h a out rc post_mutation after
   h=$(make_home "$name")
   out=$(bind "$h" slice-a-s1-publication-integrity) || fail "$name setup bind failed: $out"
   a=$(printf '%s' "$out" | jq -r '.path')
-  before=$(sha256_file "$a")
   bash -c "$mutation" _ "$h" "$a"
+  post_mutation=$(sha256_file "$a")
   out=$(FM_HOME="$h" "$DELIVERY" verify --admission "$a" --programme "$h/programme/programme.json" \
     --root "$h/source" --step slice-a-s1-publication-integrity 2>&1); rc=$?
   [ "$rc" -ne 0 ] || fail "$name unexpectedly verified: $out"
   assert_contains "$out" "$expected" "$name did not isolate its expected axis"
   [ -f "$a" ] || fail "$name removed the adverse immutable evidence"
-  [ -n "$before" ] || fail "$name setup identity was empty"
+  after=$(sha256_file "$a")
+  [ "$after" = "$post_mutation" ] || fail "$name changed the immutable admission while refusing"
   pass "$name cannot qualify through verify"
 }
 

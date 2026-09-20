@@ -817,7 +817,7 @@ project_local_delivery_v1_projection() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id legacy_result status reason detail
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc manifest receipt_actual check_actual
-  local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown snapshot snapshot_digest snapshot_data receipt_bytes check_bytes
+  local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown snapshot snapshot_data receipt_bytes check_bytes
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 
   unknown=$(printf '%s' "$doc" | jq -r '[keys[]] - ["candidate","captures","delivery","evidence_id","generation","observed_bad","outcome","owner","policy","privacy","programme_id","project","qualification","schema","sources","step","superseded_by","verifier","work_id"] | join(",")')

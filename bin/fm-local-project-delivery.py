@@ -384,7 +384,7 @@ def parse_tree_entry(repo: Path, head: str, path: str, *, repo_fd: int | None = 
     return mode, obj_type, oid
 
 
-def family_is_present(repo: Path, head: str, artifacts: list[dict[str, str]], *, repo_fd: int) -> bool:
+def family_is_present(head: str, artifacts: list[dict[str, str]], *, repo_fd: int) -> bool:
     for row in artifacts:
         raw = run(["git", "-C", repo_handle(repo_fd), "ls-tree", "-z", head, "--", row["destination"]], pass_fds=(repo_fd,))
         if not any(raw.split(b"\0")):
@@ -420,7 +420,7 @@ def git_blob_oid(data: bytes, repo_fd: int) -> str:
 
 def verify_legacy_delivery(
     *, home: Path, root: Path, step: str, project: str, ref: str,
-    head: str, tree: str, manifest: list[Any], script_dir: Path,
+    head: str, tree: str, manifest: list[Any],
 ) -> None:
     require_slug(project, "project")
     require_oid(head, "head")
@@ -549,7 +549,7 @@ def source_identity(root: Path, root_fd: int) -> dict[str, Any]:
 def build_candidate(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], project: str, ref: str,
-    delivery_id: str, maker: str, checker: str, route: str, script_dir: Path,
+    delivery_id: str, maker: str, checker: str, route: str,
     require_cwd: bool, registry_sha256: str, enforce_pinned_owner: bool = True,
     registry_data: bytes | None = None,
     session_holder: list[AdmissionSession] | None = None,
@@ -591,7 +591,7 @@ def build_candidate(
     require_oid(head, "head")
     require_oid(tree, "tree")
 
-    if not family_is_present(repo_real, head, policy["artifacts"], repo_fd=destination_root_fd):
+    if not family_is_present(head, policy["artifacts"], repo_fd=destination_root_fd):
         raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
@@ -703,7 +703,7 @@ def build_candidate(
 
 def validate_admission(
     doc: dict[str, Any], *, home: Path, programme: dict[str, Any],
-    root: Path, step: str, script_dir: Path,
+    root: Path, step: str,
 ) -> dict[str, Any]:
     exact_keys(doc, {"schema", "admission_id", "delivery_id", "home", "context", "owner", "source", "destination", "action", "requirements", "qualification", "artifacts", "manifest_sha256", "preservation"}, "admission")
     if doc.get("schema") != SCHEMA:
@@ -758,7 +758,7 @@ def validate_admission(
             home=home, programme=programme, root=root, step=step,
             policy=policy, project=project, ref=ref,
             delivery_id=admission_id, maker=maker, checker=checker, route=route,
-            script_dir=script_dir, require_cwd=False,
+            require_cwd=False,
             registry_sha256=registry_sha256,
             registry_data=registry_data,
             session_holder=session_holder,
@@ -795,20 +795,19 @@ def validate_admission(
 def owner_candidates(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
-    checker: str, route: str, script_dir: Path,
+    checker: str, route: str,
 ) -> tuple[list[tuple[str, dict[str, Any], AdmissionSession]], str]:
     registered, registry_sha256, registry_data = registered_projects(home)
     candidates: list[tuple[str, dict[str, Any], AdmissionSession]] = []
     blocking: list[Verdict] = []
     for project in registered:
-        session: AdmissionSession | None = None
         session_holder: list[AdmissionSession] = []
         try:
             candidate, session = build_candidate(
                 home=home, programme=programme, root=root, step=step,
                 policy=policy, project=project, ref=ref,
                 delivery_id=delivery_id, maker=maker, checker=checker, route=route,
-                script_dir=script_dir, require_cwd=False,
+                require_cwd=False,
                 registry_sha256=registry_sha256,
                 registry_data=registry_data,
                 enforce_pinned_owner=False,
@@ -929,7 +928,6 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    script_dir = Path(__file__).resolve().parent
     home_value = os.environ.get("FM_HOME")
     if not home_value:
         cno("HOME_UNREADABLE", "FM_HOME is required")
@@ -947,7 +945,7 @@ def main() -> int:
             refuse("IDENTITY_UNREADABLE", f"legacy manifest is not unambiguous JSON: {exc}")
         verify_legacy_delivery(
             home=home, root=root, step=step, project=args.project, ref=args.ref,
-            head=args.head, tree=args.tree, manifest=manifest, script_dir=script_dir,
+            head=args.head, tree=args.tree, manifest=manifest,
         )
         print(json.dumps({"status": "ACCEPTED", "reason_code": None}, sort_keys=True))
         return 0
@@ -968,7 +966,7 @@ def main() -> int:
         candidates, registry_sha256 = owner_candidates(
             home=home, programme=programme, root=root, step=step, policy=policy,
             ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
-            route=route, script_dir=script_dir,
+            route=route,
         )
         if not candidates:
             cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
@@ -1002,7 +1000,7 @@ def main() -> int:
     finally:
         os.close(data_fd)
     rebuilt = validate_admission(
-        doc, home=home, programme=programme, root=root, step=step, script_dir=script_dir,
+        doc, home=home, programme=programme, root=root, step=step,
     )
     print(json.dumps({"status": "ACCEPTED", "reason_code": None, "path": str(admission_path.resolve()), "sha256": digest, "admission": rebuilt}, sort_keys=True))
     return 0

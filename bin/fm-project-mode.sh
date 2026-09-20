@@ -31,13 +31,10 @@
 #
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
-# --require-registered is retained for mechanical and test callers that need
-# missing/unreadable-registry and absent-project cases to become refusals.
-#
-# Without --require-registered, an unknown/missing project or unknown mode falls
+# An unknown/missing project or unknown mode falls
 # back to "no-mistakes off" and warns to stderr, so a typo never silently drops
 # the gate.
-# Usage: fm-project-mode.sh [--require-registered] [--raw] <project-name>
+# Usage: fm-project-mode.sh [--raw] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,24 +43,18 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-REQUIRE_REGISTERED=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --raw) RAW=1; shift ;;
-    --require-registered) REQUIRE_REGISTERED=1; shift ;;
     --) shift; break ;;
-    -*) echo "usage: fm-project-mode.sh [--require-registered] [--raw] <project-name>" >&2; exit 2 ;;
+    -*) echo "usage: fm-project-mode.sh [--raw] <project-name>" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-NAME=${1:?usage: fm-project-mode.sh [--require-registered] [--raw] <project-name>}
-[ "$#" -eq 1 ] || { echo "usage: fm-project-mode.sh [--require-registered] [--raw] <project-name>" >&2; exit 2; }
+NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+[ "$#" -eq 1 ] || { echo "usage: fm-project-mode.sh [--raw] <project-name>" >&2; exit 2; }
 
 if [ ! -r "$REG" ]; then
-  if [ "$REQUIRE_REGISTERED" -eq 1 ]; then
-    echo "error: no readable project registry at $REG; cannot prove $NAME is registered" >&2
-    exit 1
-  fi
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
@@ -86,10 +77,6 @@ parsed=$(awk -v n="$NAME" '
 ' "$REG")
 
 if [ -z "$parsed" ]; then
-  if [ "$REQUIRE_REGISTERED" -eq 1 ]; then
-    echo "error: project \"$NAME\" is not registered in $REG" >&2
-    exit 1
-  fi
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0

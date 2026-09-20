@@ -20,10 +20,12 @@ source-root identity: `canonical_artifact_root` admits only a source root
 outside this home's registered project tree, `owner_project_root` admits only
 the delivery owner project's own root as an authorized same-root delivery.
 Neither names an operator-local path, so the pin stays publication-safe.
-Under `owner_project_root` the owner census admits only the project that is that
-exact source root and skips every other registered project before probing its
-Git identity, ref, or family; a root that is no complete family owner's root is
-SOURCE_IDENTITY_MISMATCH, while an absent owner or family stays OWNER_MISSING.
+Under `owner_project_root` the owner census evaluates only the registered
+project whose own path is that source root as declared or as resolved, so a
+symlinked registration still qualifies through its canonical target, and it
+skips every other row before touching the filesystem; a root that is no
+complete family owner's root is SOURCE_IDENTITY_MISMATCH, while an absent owner
+or family stays OWNER_MISSING.
 That same-root admission seals the pinned candidate ref's head and tree as its
 source identity, so an unrelated local checkout in the owner project leaves
 qualification intact while movement of the pinned ref refuses.
@@ -625,8 +627,6 @@ def build_candidate(
     project_mode(home, project, registry_data=registry_data)
     repo = (home / "projects" / project)
     identity = source_identity_for(programme, step)
-    if identity == "owner_project_root" and not enforce_pinned_owner and root != repo:
-        raise NotOwner(f"project {project} is not the source root of this same-root delivery")
     try:
         repo_real = repo.resolve(strict=True)
         projects_real = (home / "projects").resolve(strict=True)
@@ -860,14 +860,17 @@ def validate_admission(
 
 
 def owner_candidates(
-    *, home: Path, programme: dict[str, Any], root: Path, step: str,
+    *, home: Path, programme: dict[str, Any], root: Path, declared_root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
     checker: str, route: str,
 ) -> tuple[list[tuple[str, dict[str, Any], AdmissionSession]], str]:
     registered, registry_sha256, registry_data = registered_projects(home)
+    same_root = source_identity_for(programme, step) == "owner_project_root"
     candidates: list[tuple[str, dict[str, Any], AdmissionSession]] = []
     blocking: list[Verdict] = []
     for project in registered:
+        if same_root and (home / "projects" / project) not in (declared_root, root):
+            continue
         session_holder: list[AdmissionSession] = []
         try:
             candidate, session = build_candidate(
@@ -904,7 +907,9 @@ def family_owner_exists(home: Path, policy: dict[str, Any], ref: str) -> bool:
     for project in registered:
         try:
             project_mode(home, project, registry_data=registry_data)
-            repo_fd = open_directory((home / "projects" / project).resolve(strict=True))
+            repo_real = (home / "projects" / project).resolve(strict=True)
+            repo_real.relative_to((home / "projects").resolve(strict=True))
+            repo_fd = open_directory(repo_real)
         except (NotOwner, Verdict, OSError, ValueError):
             continue
         try:
@@ -1052,7 +1057,8 @@ def main() -> int:
         if requested_project != "auto":
             require_slug(requested_project, "project")
         candidates, registry_sha256 = owner_candidates(
-            home=home, programme=programme, root=root, step=step, policy=policy,
+            home=home, programme=programme, root=root,
+            declared_root=Path(os.path.abspath(args.root)), step=step, policy=policy,
             ref=args.ref, delivery_id=delivery_id, maker=maker, checker=checker,
             route=route,
         )

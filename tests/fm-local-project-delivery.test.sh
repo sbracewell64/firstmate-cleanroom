@@ -494,6 +494,53 @@ out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto
   || fail "the admitted same-root candidate is not the complete family"
 pass "unrelated registered projects do not block the same-root owner census"
 
+# A registered project whose entry is a symlink is still its own source root:
+# the census evaluates the declared owner and compares canonical paths.
+home=$(make_home d-symlinked-owner)
+repo="$home/projects/real-synthesis"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture reached through a symlinked entry (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+ln -s "$repo" "$home/projects/synthesis-work"
+out=$(bind_with_root "$home/projects/synthesis-work" "$home" "$home/projects/synthesis-work" \
+  slice-d-s4-synthesis-integrity auto delivery-d-symlinked) \
+  || fail "the symlinked owner entry did not admit its own source root: $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .project')" = 'ADMITTED synthesis-work' ] \
+  || fail "the census did not admit the symlinked registered owner: $out"
+[ "$(jq -r '.destination.root' "$(printf '%s' "$out" | jq -r '.path')")" = "$repo" ] \
+  || fail "the admission did not bind the canonical owner root"
+pass "a symlinked owner registration qualifies through its canonical root"
+
+# The declared owner itself escaping the registered project tree stays
+# unevaluable rather than being silently skipped or blamed on the root.
+home=$(make_home d-escaped-owner)
+outside="$home/outside-synthesis"
+printf '%s\n' '- synthesis-work [local-only] - owner entry resolving outside the projects tree (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$outside"; git -C "$outside" init -q -b main
+cp -R "$home/source/artifacts" "$outside/"
+chmod 755 "$outside/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$outside" add .
+git -C "$outside" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+ln -s "$outside" "$home/projects/synthesis-work"
+out=$(bind_with_root "$home/projects/synthesis-work" "$home" "$home/projects/synthesis-work" \
+  slice-d-s4-synthesis-integrity auto delivery-d-escaped 2>&1); rc=$?
+[ "$rc" = 5 ] || fail "an owner entry resolving outside the projects tree is not CNO: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO PROJECT_UNAVAILABLE' ] \
+  || fail "the escaped declared owner was not reported as unevaluable: $out"
+pass "a declared owner resolving outside the projects tree stays CNO PROJECT_UNAVAILABLE"
+
+# The same containment rule applies when classifying an empty census: a family
+# that only exists outside the registered project tree is no lawful owner, so a
+# forbidden root there is absence rather than a source-root refusal.
+out=$(bind_with_root "$home" "$home" "$home/source" slice-d-s4-synthesis-integrity auto d-escaped-census 2>&1); rc=$?
+[ "$rc" = 5 ] || fail "a family reachable only outside the projects tree is not absent ownership: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
+  || fail "an escaped family owner was counted as a lawful owner: $out"
+pass "a family outside the registered project tree stays CNO OWNER_MISSING"
+
 # The same-root admission seals the pinned candidate ref, so an unrelated local
 # checkout in the owner project leaves qualification intact while movement of
 # the pinned ref itself refuses.

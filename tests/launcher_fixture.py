@@ -3,9 +3,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 BASH = os.environ.get('FM_TEST_BASH', 'bash')
 
@@ -147,7 +149,39 @@ print(json.dumps(out))
         p = self.root/'effects'
         return p.read_text() if p.exists() else ''
 
+    def detached(self):
+        """PIDs still running inside this fixture; every one carries its FIXTURE_ROOT."""
+        marker = ('FIXTURE_ROOT=' + str(self.root)).encode() + b'\0'
+        mine = os.getpid()
+        live = []
+        for entry in Path('/proc').glob('[0-9]*'):
+            if int(entry.name) == mine:
+                continue
+            try:
+                environ = (entry/'environ').read_bytes()
+            except OSError:
+                continue
+            if marker in environ:
+                live.append(int(entry.name))
+        return live
+
     def close(self):
         if self.server:
             self.server.terminate(); self.server.wait(timeout=5)
+        # A console run that reaches preparation arms its supervision under
+        # setsid, so the cold-start owner and watcher survive the run and keep
+        # writing under this root. Removing the root out from under them loses
+        # the race (rmtree sees an entry reappear) and leaks them into the
+        # session, so stop them first; SIGKILL leaves nothing to re-fork.
+        deadline = time.monotonic() + 10
+        while True:
+            live = self.detached()
+            if not live or time.monotonic() > deadline:
+                break
+            for pid in live:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            time.sleep(0.05)
         self.tmp.cleanup()

@@ -58,6 +58,28 @@ class StartupBoundaryTests(unittest.TestCase):
         self.assertEqual(record['launch_stage'], 'exited')
         self.assertEqual(record['exit_rc'], 0)
 
+    def test_armed_supervision_does_not_outlive_the_console_run(self):
+        # A console that reaches preparation arms a cold-start owner and watcher
+        # detached under setsid, so they outlive the run. Nothing may still be
+        # running inside the run's home once it is torn down: survivors keep
+        # writing there and race the removal of that tree.
+        other = LauncherFixture(ENTRY)
+        self.addCleanup(other.close)  # a failure before the close below must not leak either
+        (other.home/'state/worker.meta').write_text(
+            'backend=herdr\nendpoint_task_id=worker\nwindow=synthetic:w9:p2\n'
+            'worktree=/tmp/worker\nproject=/tmp/project\nherdr_session=synthetic\n'
+            'herdr_workspace_id=w9\nherdr_tab_id=w9:t2\nherdr_pane_id=w9:p2\n')
+        harness = other.tools/'bin/synthetic-harness'
+        other.script(harness, 'exit 0\n')
+        result = other.run('--console', HERDR_PANE_ID='w7:p1', HERDR_SESSION='synthetic',
+                           HERDR_SOCKET_PATH='/synthetic.sock', FM_HARNESS=str(harness))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(other.detached(), 'the console armed no detached supervision to tear down')
+        root = other.root
+        other.close()
+        self.assertEqual(other.detached(), [])
+        self.assertFalse(root.exists())
+
     def test_inherited_harness_keeps_selected_model_through_guard(self):
         result = self.console(FM_HARNESS='codex')
         self.assertNotEqual(result.returncode, 0)

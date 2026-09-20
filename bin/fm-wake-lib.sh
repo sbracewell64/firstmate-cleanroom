@@ -1399,15 +1399,18 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # A later invocation may collect only after liveness reads the exact owner as
 # gone; a queued signal or a process that exits during this invocation is never
 # itself lock-reclamation authority.
-# A pid is never signalled without a verified matching identity, and a changed
-# identity defers. The one permitted attempt is an allowance only once the
-# signal is actually delivered: the marker is published before the kill so a
-# crash in between can never yield a second TERM, and a kill that positively
-# did not happen withdraws it again rather than stalling the owner forever.
-# Absent or unreadable identity is never signal authority, and it never blocks
-# collection either: such an owner is reclaimed as-is, which is safe exactly
-# because the recorded owner is gone or was never provably this process, and
-# keeps the documented bounded upgrade-window residual instead of a deadlock.
+# A pid is never signalled without a verified matching identity, and an
+# identity that changes mid-procedure - between publishing the attempt and the
+# kill - withdraws that attempt and defers. The one permitted attempt is an
+# allowance only once the signal is actually delivered: the marker is published
+# before the kill so a crash in between can never yield a second TERM, and a
+# kill that positively did not happen withdraws it again rather than stalling
+# the owner forever.
+# An identity that is absent, unreadable, or no longer matched by its live pid
+# is never signal authority, and it never blocks collection either: such an
+# owner is reclaimed as-is, which is safe exactly because the recorded owner is
+# gone or was never provably this process, and keeps the documented bounded
+# upgrade-window residual instead of a deadlock.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp
   local term_marker term_record retire_tmp confirm

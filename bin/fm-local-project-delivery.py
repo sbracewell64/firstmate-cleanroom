@@ -333,11 +333,13 @@ def project_mode(home: Path, project: str, registry_data: bytes | None = None) -
                 entries.append("no-mistakes")
                 continue
             tokens = annotation.split()
-            mode = "no-mistakes"
-            if tokens and tokens[0] != "+yolo":
-                mode = tokens[0]
-            if mode not in {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}:
-                mode = "no-mistakes"
+            modes = {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}
+            valid = not tokens or tokens == ["+yolo"] or (
+                len(tokens) in (1, 2) and tokens[0] in modes and (len(tokens) == 1 or tokens[1] == "+yolo")
+            )
+            if not valid:
+                refuse("OWNER_MODE_MALFORMED", f"project {project} has contradictory registry posture")
+            mode = "no-mistakes" if not tokens or tokens == ["+yolo"] else tokens[0]
             entries.append(mode)
     except (UnicodeError, Verdict) as exc:
         if isinstance(exc, Verdict):
@@ -345,8 +347,6 @@ def project_mode(home: Path, project: str, registry_data: bytes | None = None) -
         cno("OWNER_MISSING", f"project registry is unreadable: {exc}")
     if len(entries) != 1:
         cno("OWNER_MISSING", f"project {project} does not have one readable registry posture")
-    if entries[0] not in {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}:
-        refuse("OWNER_MODE_MALFORMED", f"project {project} has unsupported registry posture {entries[0]}")
     if entries[0] != "local-only":
         raise NotOwner(f"project {project} is not registered local-only")
     return "local-only"
@@ -827,11 +827,9 @@ def owner_candidates(
             for held in session_holder:
                 held.close()
             raise
-    if blocking and candidates:
+    if blocking:
         for _, _, session in candidates:
             session.close()
-        raise blocking[0]
-    if blocking:
         raise blocking[0]
     return candidates, registry_sha256
 

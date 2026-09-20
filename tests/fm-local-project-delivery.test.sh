@@ -268,6 +268,20 @@ home=$(make_home wrong-project)
 expect_rejected_without_publication "wrong project" "$home" 'OWNER_PROJECT_MISMATCH' \
   bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project other-owner --ref refs/heads/main --delivery-id wrong-project --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
 
+home=$(make_home missing-registered-row)
+printf '%s\n' '- ghost-work [local-only] - unavailable registered owner (added 2026-09-18)' >> "$home/data/projects.md"
+expect_rejected_without_publication "missing registered project" "$home" 'PROJECT_UNAVAILABLE' \
+  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main --delivery-id missing-registered-row --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+
+home=$(make_home missing-requested-ref)
+expect_rejected_without_publication "missing requested ref" "$home" 'IDENTITY_UNREADABLE' \
+  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/missing --delivery-id missing-requested-ref --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+
+home=$(make_home contradictory-registry-mode)
+sed -i 's/\[local-only\]/[local-only direct-PR]/' "$home/data/projects.md"
+expect_rejected_without_publication "contradictory registry mode" "$home" 'OWNER_MODE_MALFORMED' \
+  bind "$home" slice-a-s1-publication-integrity
+
 home=$(make_home collapsed)
 expect_rejected_without_publication "maker/checker collapse" "$home" 'MAKER_CHECKER_COLLAPSE' \
   bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main --delivery-id collapsed --maker same --checker same --route independent-checker' _ "$home" "$DELIVERY"

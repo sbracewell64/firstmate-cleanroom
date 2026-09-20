@@ -549,14 +549,6 @@ local_owner_relative_path() {  # <path> <data|content>
   case "$class:$path" in data:data/*.json|content:*) return 0 ;; *) return 1 ;; esac
 }
 
-local_owner_deliverable_prefix() {  # <step-id>
-  case "$1" in
-    slice-a|slice-b) printf 'exchange/' ;;
-    slice-d) printf 'artifacts/synthesis/' ;;
-    *) return 1 ;;
-  esac
-}
-
 local_owner_path_has_no_symlink_parents() {  # <root> <relative-path>
   local root=$1 path=$2 part current=$1 index=0 last
   local -a parts
@@ -645,31 +637,6 @@ try:
 finally:
     os.close(directory_fd)
 PY
-}
-
-local_owner_directory_token() {
-  local path=$1
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
-    stat -f '%d:%i:%f' "$path" 2>/dev/null
-  else
-    stat -c '%d:%i:%f' "$path" 2>/dev/null
-  fi
-}
-
-local_owner_fd_token() {
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
-    stat -f '%d:%i:%f' "$1" 2>/dev/null
-  else
-    stat -Lc '%d:%i:%f' "$1" 2>/dev/null
-  fi
-}
-
-local_owner_fd_path() {
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
-    printf '/dev/fd/%s' "$1"
-  else
-    printf '/proc/%s/fd/%s' "${BASHPID:-$$}" "$1"
-  fi
 }
 
 # Validate the owner-bound admission format produced before a governed local
@@ -849,8 +816,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
 project_local_delivery_v1_projection() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id legacy_result status reason detail
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
-  local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode repo_token root_token repo_path_token root_path_token repo_fd root_fd repo_handle root_handle
-  local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
+  local check_rel check_sha check_file check_doc manifest receipt_actual check_actual
   local pin_ref pin_sha pin_gen pin_policy pin_candidate unknown snapshot snapshot_digest snapshot_data receipt_bytes check_bytes
   LOCAL_OWNER_STATUS=''; LOCAL_OWNER_REASON=''; LOCAL_OWNER_DETAIL=''
 

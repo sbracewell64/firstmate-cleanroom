@@ -130,8 +130,12 @@
 #      and refuses moved, replayed, forged, self-certified, wrong-family,
 #      privacy-exposing, or mismatched input; an unavailable project, admission,
 #      receipt, source, or destination is CNO. Private candidate bytes never
-#      enter the programme record or resolver output. V1 stays readable for
-#      records produced under PR #64 but is not a path around V2 admission.
+#      enter the programme record or resolver output. V1 stays readable only
+#      for the historical records produced under PR #64: a step that declares a
+#      terminal_predicate.local_delivery family, or whose terminal_predicate
+#      carries no matching fm-programme-finalization/v1 canonical_finalization
+#      object, resolves CNO (LEGACY_REQUALIFICATION_REQUIRED) instead, so V1 is
+#      never a path around V2 admission.
 #   3. Durable hold state through tasks-axi in FM_HOME, the same backlog the
 #      captain-hold owner (bin/fm-captain-hold.sh) writes. A hold binds to an
 #      action only through the typed `Continuation-binding:` body line that

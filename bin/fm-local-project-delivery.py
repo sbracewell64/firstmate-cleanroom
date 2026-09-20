@@ -7,14 +7,26 @@ Usage:
       --maker ID --checker ID --route independent-checker|no-mistakes
   fm-local-project-delivery.py verify --admission FILE --programme FILE \
       --root DIR --step ID
+  fm-local-project-delivery.py legacy-verify --programme FILE --root DIR \
+      --step ID --project PROJECT --ref refs/heads/BRANCH --head OID \
+      --tree OID --manifest JSON
 
+FM_HOME names the operational home that owns data/projects.md and every
+published admission.
 The programme step's terminal_predicate.local_delivery object is the policy
 owner for the exact artifact family and optional destination owner.
 `bind` derives every candidate and byte identity, validates all facts before
-publishing one mode-0600 manifest under FM_HOME/data/local-project-delivery,
-and refuses a reused delivery identity.
+publishing one mode-0600 manifest at
+FM_HOME/data/local-project-delivery/admissions/<delivery-id>.json, and refuses a
+reused delivery identity.
+The published manifest is one fm-local-project-delivery-admission/v1 object
+whose exact member set is owned by validate_admission().
 `verify` re-reads the same programme, source, registered project, Git objects,
 and working destination without changing state.
+`legacy-verify` is the retained read-back for the historical V1 receipts of
+PR #64, called only by bin/fm-continuation-resolve.sh: it re-reads that
+candidate and its destination bytes, binds and publishes no admission, and
+admits nothing new.
 
 Exit 0 means ADMITTED/ACCEPTED, 4 is a typed REFUSED result, and 5 is CNO.
 Every invocation prints exactly one JSON result.

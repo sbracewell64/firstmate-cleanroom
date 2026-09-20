@@ -75,11 +75,11 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 39 | 1058502 ms (~1058.5 s) |
-| `portable-serial-2of4` | 40 | 1058496 ms (~1058.5 s) |
-| `portable-serial-3of4` | 41 | 1058513 ms (~1058.5 s) |
-| `portable-serial-4of4` | 41 | 1058512 ms (~1058.5 s) |
-| imbalance | | 17 ms |
+| `portable-serial-1of4` | 41 | 1078513 ms (~1078.5 s) |
+| `portable-serial-2of4` | 41 | 1078499 ms (~1078.5 s) |
+| `portable-serial-3of4` | 41 | 1078499 ms (~1078.5 s) |
+| `portable-serial-4of4` | 42 | 1078512 ms (~1078.5 s) |
+| imbalance | | 14 ms |
 
 The single longest script, `tests/fm-watch-triage.test.sh` at 265573 ms, is the floor for any shard count.
 

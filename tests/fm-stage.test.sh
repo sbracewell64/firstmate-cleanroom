@@ -1313,10 +1313,24 @@ test_terminal_branch_requires_one_minted_successor() {
   expect_code 1 "$rc" "a second distinct minted successor must refuse: $out"
   assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'second minted successor refusal was not typed'
 
-  # The same branch with its PR still open and unmerged is reusable, so the run
-  # that ended without advancing does not strand the task.
+  # A red run that committed a fix leaves the branch ahead of what it pushed.
+  # That is recoverable by pushing, so it reads as unprovable and names the head
+  # that disagrees - never as a spent task identity.
   FM_FAKE_PR_STATE=open FM_FAKE_PR_MERGED=false
   export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
+  git -C "$wt" commit -q --allow-empty -m 'fix commit the red run left behind'
+  before=$(cat "$STATE/terminal-branch.meta")
+  out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "an unpushed fix commit must not spend the task identity: $out"
+  assert_contains "$out" 'SUCCESSOR_CNO' 'an unpushed minted-branch head was not typed as unevaluable'
+  assert_not_contains "$out" 'SUCCESSOR_EXHAUSTED' 'an unpushed minted-branch head was reported as a spent identity'
+  assert_contains "$out" "$(git -C "$wt" rev-parse HEAD | cut -c1-12)" \
+    'the unprovable-reuse refusal did not name the candidate head that disagrees'
+  [ "$(cat "$STATE/terminal-branch.meta")" = "$before" ] || fail 'a refused unprovable reuse mutated the record'
+  git -C "$wt" reset -q --hard "$head"
+
+  # The same branch with its PR still open and unmerged is reusable, so the run
+  # that ended without advancing does not strand the task.
   out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
   expect_code 0 "$rc" "a reusable minted branch must carry another attempt: $out"
   assert_contains "$out" 'STAGE: validation-admitted:' 'the reusable minted branch was not re-admitted'
@@ -1450,6 +1464,16 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   out=$("$STAGE" landed-mint show 2>&1)
   assert_contains "$out" "landed_head=${submitted:0:12}" 'the record no longer reports the head that landed'
 
+  # The retry path answers the same way rather than naming a command that can
+  # only refuse again.
+  before=$(cat "$STATE/landed-mint.meta")
+  out=$("$STAGE" landed-mint committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "a landed branch must not be re-admitted: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'the landed retry was not typed as exhausted'
+  assert_contains "$out" 'fresh task identity' 'the landed retry did not name the supported way forward'
+  assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'the landed retry named a successor command that refuses'
+  [ "$(cat "$STATE/landed-mint.meta")" = "$before" ] || fail 'a refused landed retry mutated the terminal record'
+
   # The same holds one stage earlier: a branch that has landed but is not yet
   # activated is equally final for this purpose.
   make_task landing-mint no-mistakes "$wt"
@@ -1474,6 +1498,11 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a landing-stage mint was not typed as exhausted'
   [ "$(cat "$STATE/landing-mint.meta")" = "$before" ] || fail 'a refused landing-stage mint mutated the record'
   [ "$(meta_get landing-mint stage)" = landing ] || fail 'a refused landing-stage mint reopened the stage'
+  out=$("$STAGE" landing-mint committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "a branch at landing must not be re-admitted: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'the landing-stage retry was not typed as exhausted'
+  assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'the landing-stage retry named a successor command that refuses'
+  [ "$(cat "$STATE/landing-mint.meta")" = "$before" ] || fail 'a refused landing-stage retry mutated the record'
 
   FM_FAKE_AXI_STATUS=''
   FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BRANCH='' FM_FAKE_PR_HEAD='' FM_FAKE_PR_BODY=''

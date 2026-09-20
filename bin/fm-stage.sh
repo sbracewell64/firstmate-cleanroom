@@ -1760,34 +1760,52 @@ EOF
 # 0 when this record's own minted branch can still carry another attempt: the
 # worker holds custody, the branch is clean and synchronized with nothing the
 # pipeline has yet to land, and the PR its last run opened is still open and
-# unmerged. 1 when it is provably not reusable - a merged, closed or moved
-# branch is finished and needs a fresh task identity - and 2 when none of that
-# can be evaluated.
+# unmerged. 1 when the branch is FINISHED - it is not the branch this record
+# minted, or the PR it was opened for has been merged or closed - so further
+# work needs a fresh task identity. 2, with MINTED_REUSE_DETAIL naming what
+# disagrees, when reuse simply cannot be proven yet: an unreadable proof, or
+# heads that do not agree, which is what a red run that committed a fix leaves
+# behind and is cleared by pushing rather than by abandoning the task.
 minted_branch_reusable() { # <bound-status> <pr-url>
-  local output=$1 pr=$2 proof value rc=0
+  local output=$1 pr=$2 proof facet local_head remote_head current_head pushed_head value rc=0
+  MINTED_REUSE_DETAIL='reuse could not be evaluated'
   [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
   [ -n "$(meta stage_successor_branch)" ] || return 1
   [ "$BRANCH" = "$(meta stage_successor_branch)" ] || return 1
-  [ "$(fm_nm_branch_sync_state "$output")" != pipeline_owned ] || return 1
-  ! worktree_dirty || return 1
-  proof=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || return 2
+  if [ "$(fm_nm_branch_sync_state "$output")" = pipeline_owned ]; then
+    MINTED_REUSE_DETAIL='the pipeline still holds custody of the branch'; return 2
+  fi
+  if worktree_dirty; then
+    MINTED_REUSE_DETAIL='the worktree has uncommitted changes'; return 2
+  fi
+  proof=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || {
+    MINTED_REUSE_DETAIL='the synchronization proof could not be read'; return 2
+  }
   value=$(fm_nm_sync_scalar "$proof" '' state) || return 2
-  [ "$value" = synchronized ] || return 1
+  if [ "$value" != synchronized ]; then
+    MINTED_REUSE_DETAIL="branch synchronization reads $value, not synchronized"; return 2
+  fi
   value=$(fm_nm_sync_scalar "$proof" '' relation) || return 2
-  [ "$value" = equal ] || return 1
+  if [ "$value" != equal ]; then
+    MINTED_REUSE_DETAIL="the branch relation reads $value, not equal"; return 2
+  fi
   value=$(fm_nm_sync_scalar "$proof" local branch) || return 2
   [ "$value" = "$BRANCH" ] || return 1
-  value=$(fm_nm_sync_scalar "$proof" local head) || return 2
-  [ "$value" = "$HEAD" ] || return 1
   value=$(fm_nm_sync_scalar "$proof" local clean raw) || return 2
-  [ "$value" = true ] || return 1
-  value=$(fm_nm_sync_scalar "$proof" remote observed_head) || return 2
-  [ "$value" = "$HEAD" ] || return 1
-  value=$(fm_nm_sync_scalar "$proof" pipeline current_head) || return 2
-  [ "$value" = "$HEAD" ] || return 1
-  value=$(fm_nm_sync_scalar "$proof" pipeline pushed_head) || return 2
-  [ "$value" = "$HEAD" ] || return 1
+  if [ "$value" != true ]; then
+    MINTED_REUSE_DETAIL='the branch owner does not report a clean worktree'; return 2
+  fi
+  local_head=$(fm_nm_sync_scalar "$proof" local head) || return 2
+  remote_head=$(fm_nm_sync_scalar "$proof" remote observed_head) || return 2
+  current_head=$(fm_nm_sync_scalar "$proof" pipeline current_head) || return 2
+  pushed_head=$(fm_nm_sync_scalar "$proof" pipeline pushed_head) || return 2
+  for facet in "local:$local_head" "remote:$remote_head" "pipeline current:$current_head" "pipeline pushed:$pushed_head"; do
+    [ "${facet#*:}" = "$HEAD" ] && continue
+    MINTED_REUSE_DETAIL="the ${facet%%:*} head $(short "${facet#*:}") is not the candidate head $(short "$HEAD")"
+    return 2
+  done
   pr_open_for_branch "$pr" "$BRANCH" || rc=$?
+  [ "$rc" -ne 2 ] || MINTED_REUSE_DETAIL='the PR identity the branch was opened for could not be read'
   return "$rc"
 }
 
@@ -1840,6 +1858,13 @@ do_committed() {
       fi
       if [ -n "$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")" ]; then
         if ! retry_follows_own_successor; then
+          # A landed branch is final wherever it is read from, so this answers
+          # with the same verdict the mint itself gives rather than naming a
+          # command that would only refuse again.
+          case "$current" in
+            landing|activated)
+              refuse committed SUCCESSOR_EXHAUSTED "stage=$current already landed $(dash "$(meta stage_branch)"); that evidence is final and further validation work needs a fresh task identity" ;;
+          esac
           # A run that ended without advancing does not consume the branch it
           # ran on. The minted branch carries another attempt when it is
           # provably still reusable, and says so by name when it is not.
@@ -1847,7 +1872,7 @@ do_committed() {
           minted_branch_reusable "$output" "$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")" || reuse_rc=$?
           case "$reuse_rc" in
             0) ;;
-            2) refuse committed SUCCESSOR_CNO "the minted validation branch $(dash "$(meta stage_successor_branch)") could not be proven reusable for another attempt" ;;
+            2) refuse committed SUCCESSOR_CNO "the minted validation branch $(dash "$(meta stage_successor_branch)") could not be proven reusable: $MINTED_REUSE_DETAIL" ;;
             *)
               [ -z "$(meta stage_successor_id)" ] \
                 || refuse committed SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"

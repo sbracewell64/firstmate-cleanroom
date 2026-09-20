@@ -546,7 +546,7 @@ local_owner_oid() {
   esac
 }
 
-local_owner_relative_path() {  # <path> <data|content>
+local_owner_relative_path() {  # <path> <data>
   local path=$1 class=$2
   case "$path" in ''|.|..|/*|*//*|../*|*/../*|*/..|./*|*/./*|*/.) return 1 ;; esac
   case "$path" in *[!A-Za-z0-9._/-]*) return 1 ;; esac

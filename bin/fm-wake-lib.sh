@@ -294,21 +294,47 @@ fm_watcher_supervision_verdict() {
   return 0
 }
 
+FM_LOCK_KNOWN_FILES='pid fm-home pid-identity term-sent-identity role watcher-path'
+
+# Every entry a lock directory is allowed to carry. The fixed names above, plus
+# the retirement marker's own mktemp staging: that marker is published through
+# a mktemp file INSIDE the lock, and a crash between mktemp and its rename
+# strands exactly one of those names. Only that exact shape - this prefix plus
+# mktemp's six template characters, a regular file, never a symlink - counts as
+# classifiable; anything else makes the lock uncensusable.
+fm_lock_entry_is_known() {  # <lockdir> <entry-path>
+  local entry=$2 name=${2##*/} known
+  for known in $FM_LOCK_KNOWN_FILES; do
+    [ "$name" != "$known" ] || return 0
+  done
+  case "$name" in
+    .term-sent-identity.tmp.??????)
+      [ -f "$entry" ] && [ ! -L "$entry" ]
+      return
+      ;;
+  esac
+  return 1
+}
+
+# Refuse the census unless EVERY entry is classifiable. fm_lock_remove_path
+# asks this BEFORE it deletes anything, because clearing a lock's pid, role and
+# pid-identity and only then discovering rmdir cannot finish would leave a
+# directory that no later claim can classify, signal, collect or re-arm - the
+# owner evidence would be gone while the lock itself survived forever.
+fm_lock_entries_all_known() {  # <lockdir>
+  local lockdir=$1 entry
+  for entry in "$lockdir"/* "$lockdir"/.[!.]* "$lockdir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    fm_lock_entry_is_known "$lockdir" "$entry" || return 1
+  done
+  return 0
+}
+
 fm_lock_clean_known_files() {
-  local lockdir=$1 stranded
-  rm -f \
-    "$lockdir/pid" \
-    "$lockdir/fm-home" \
-    "$lockdir/pid-identity" \
-    "$lockdir/term-sent-identity" \
-    "$lockdir/role" \
-    "$lockdir/watcher-path" \
-    2>/dev/null || true
-  # The retirement marker is published through a mktemp file inside the lock.
-  # A crash between mktemp and its rename strands exactly one of those names,
-  # and an unknown leftover would keep rmdir failing forever. Only that exact
-  # shape - this prefix plus mktemp's six template characters, a regular file,
-  # never a symlink - is swept; any other unknown entry still refuses.
+  local lockdir=$1 stranded known
+  for known in $FM_LOCK_KNOWN_FILES; do
+    rm -f "$lockdir/$known" 2>/dev/null || true
+  done
   for stranded in "$lockdir"/.term-sent-identity.tmp.??????; do
     [ -f "$stranded" ] && [ ! -L "$stranded" ] || continue
     rm -f -- "$stranded" 2>/dev/null || true
@@ -451,15 +477,30 @@ fm_lock_try_create() {
 }
 
 fm_lock_remove_path() {
-  local lockdir=$1 ownerdir
+  local lockdir=$1 ownerdir known value i
+  local -a saved_names=() saved_values=()
   if [ -L "$lockdir" ]; then
     ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
     rm -f "$lockdir" 2>/dev/null || return 1
     [ -n "$ownerdir" ] && fm_lock_discard_owner "$ownerdir"
     return 0
   fi
+  fm_lock_entries_all_known "$lockdir" || return 1
+  for known in $FM_LOCK_KNOWN_FILES; do
+    [ -f "$lockdir/$known" ] && [ ! -L "$lockdir/$known" ] || continue
+    value=$(cat "$lockdir/$known" 2>/dev/null) || return 1
+    saved_names+=("$known")
+    saved_values+=("$value")
+  done
   fm_lock_clean_known_files "$lockdir"
-  rmdir "$lockdir" 2>/dev/null
+  rmdir "$lockdir" 2>/dev/null && return 0
+  # The census passed but removal still failed (a racing writer, an unwritable
+  # parent). Put the classifiable evidence back so the surviving lock stays a
+  # claim a later invocation can classify rather than an anonymous husk.
+  for (( i = 0; i < ${#saved_names[@]}; i++ )); do
+    printf '%s\n' "${saved_values[$i]}" > "$lockdir/${saved_names[$i]}" 2>/dev/null || true
+  done
+  return 1
 }
 
 fm_lock_mid_acquire_is_fresh() {

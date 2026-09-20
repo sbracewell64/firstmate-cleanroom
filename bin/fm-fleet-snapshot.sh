@@ -170,10 +170,6 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"  # presented-identity read for the programme row
-trap fm_programme_resolver_cleanup EXIT
-trap 'fm_programme_resolver_cleanup; exit 129' HUP
-trap 'fm_programme_resolver_cleanup; exit 130' INT
-trap 'fm_programme_resolver_cleanup; exit 143' TERM
 
 usage() {
   cat <<'EOF'

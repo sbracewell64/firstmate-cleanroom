@@ -2,9 +2,10 @@
 # fm-programme-presentation-lib.sh - the quiet-presentation contract for the
 # typed programme continuation: present a material change ONCE, stay quiet on
 # unchanged state, and acknowledge only the identity that was actually
-# presented. Sourced by bin/fm-wake-drain.sh (presenter and acknowledger),
-# bin/fm-session-start.sh, bin/fm-fleet-snapshot.sh, and
-# bin/fm-supervise-daemon.sh (readers).
+# presented. Sourced by bin/fm-wake-drain.sh (presenter and acknowledger), and
+# by bin/fm-session-start.sh, bin/fm-programme-projection.sh,
+# bin/fm-fleet-snapshot.sh and bin/fm-supervise-daemon.sh (readers) - the same
+# five consumers docs/programme-continuation.md censuses.
 #
 # WHY THIS EXISTS. Callers that re-present the programme's typed result on
 # every poll produced the repeated idle loop the handoff-liveness

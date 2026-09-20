@@ -784,27 +784,76 @@ test_stranded_retirement_temporary_never_blocks_collection() {
 # The counterfactual that keeps the sweep exact rather than a blanket wipe: a
 # name that is not precisely this prefix plus mktemp's six template characters
 # is an unknown entry, and an unknown entry still refuses collection instead of
-# being deleted out from under whoever wrote it.
-test_unknown_lock_entry_still_refuses_collection() {
-  local dir out status pid
+# being deleted out from under whoever wrote it. The refusal has to happen
+# BEFORE any owner evidence is deleted, or the surviving directory becomes a
+# claim nothing can classify: no role file means no later invocation can even
+# recognise it as an auto-arm claim, so the home could never collect or re-arm.
+test_unknown_lock_entry_refuses_with_its_claim_intact() {
+  local dir out status pid lock
   dir=$(make_primary_dir "$TMP_ROOT/unknown-lock-entry")
+  lock="$dir/state/.claude-autoarm.lock"
   : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
   write_arm_fixture "$dir" actionable
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
   record_autoarm_epoch "$dir" 464 "$pid" rewake
-  : > "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.TOOLONG7"
+  : > "$lock/.term-sent-identity.tmp.TOOLONG7"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
   expect_code 0 "$status" "an unknown lock entry must refuse collection rather than be swept"
   [ -z "$out" ] || fail "the refused collection produced output: $out"
   assert_absent "$dir/state/arm-ran" "the refused collection armed a competing watcher"
-  assert_present "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.TOOLONG7" \
+  assert_present "$lock/.term-sent-identity.tmp.TOOLONG7" \
     "an entry outside the exact retirement-temporary shape was deleted"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "the refused collection left its serialization mutex behind"
-  pass "auto-arm: only the exact retirement-temporary shape is swept; any other unknown entry refuses"
+  [ "$(cat "$lock/pid" 2>/dev/null)" = "$pid" ] \
+    || fail "the refused collection destroyed the owner pid it could not remove"
+  [ "$(cat "$lock/role" 2>/dev/null)" = autoarm ] \
+    || fail "the refused collection destroyed the role file, leaving an unclassifiable claim"
+
+  # Once the unclassifiable entry is gone the very same claim must collect, so
+  # the refusal is a deferral rather than a permanent wedge.
+  rm -f "$lock/.term-sent-identity.tmp.TOOLONG7"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "the preserved claim did not collect once its unknown entry was gone"
+  [ -e "$dir/state/arm-ran" ] || fail "the preserved claim never re-armed the home"
+  assert_absent "$lock" "the preserved claim was not collected after its unknown entry was gone"
+  pass "auto-arm: an unknown lock entry refuses collection with its claim intact and collectible"
+}
+
+# The independent mutation for the other half of the boundary: the census
+# passes, so evidence IS deleted, and removal still fails (an unwritable
+# parent). The classifiable evidence has to come back rather than leave an
+# anonymous husk behind.
+test_failed_lock_removal_restores_classifiable_evidence() {
+  local dir state lock status identity pid
+  dir=$(make_primary_dir "$TMP_ROOT/failed-lock-removal")
+  state="$dir/state"
+  lock="$state/.claude-autoarm.lock"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record the owner identity"
+  identity=$(cat "$lock/pid-identity")
+  chmod a-w "$state" || fail "could not make the lock's parent unwritable"
+  status=0
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_lock_remove_path "$2"' \
+    _ "$dir/bin/fm-wake-lib.sh" "$lock" || status=$?
+  chmod u+w "$state" || fail "could not restore the lock parent's mode"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 1 "$status" "a removal that could not finish must report failure"
+  assert_present "$lock" "the fixture did not reproduce a removal failure"
+  [ "$(cat "$lock/pid" 2>/dev/null)" = "$pid" ] \
+    || fail "a failed removal left the surviving lock without its owner pid"
+  [ "$(cat "$lock/role" 2>/dev/null)" = autoarm ] \
+    || fail "a failed removal left the surviving lock without its role"
+  [ "$(cat "$lock/pid-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed removal destroyed the owner's identity evidence"
+  pass "fm-lock: a removal that fails after the census puts its classifiable evidence back"
 }
 
 test_arming_claim_with_fresh_beacon_is_never_reclaimed() {
@@ -1314,7 +1363,8 @@ test_single_flight_admits_exactly_one_owner
 test_abandoned_owner_claim_is_reclaimed_and_rearms
 test_unreadable_live_owner_identity_is_reclaimed_without_signalling
 test_stranded_retirement_temporary_never_blocks_collection
-test_unknown_lock_entry_still_refuses_collection
+test_unknown_lock_entry_refuses_with_its_claim_intact
+test_failed_lock_removal_restores_classifiable_evidence
 test_arming_claim_with_fresh_beacon_is_never_reclaimed
 test_fresh_arming_claim_with_stale_beacon_is_never_reclaimed
 test_claim_not_named_by_the_ledger_is_never_reclaimed

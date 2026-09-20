@@ -1468,8 +1468,9 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 # This member is only ever built inside a command substitution, so the capture
 # it stages lives and dies in that subshell: it owns the staging cleanup itself
-# (bin/fm-programme-presentation-lib.sh "RESOLVER CAPTURE"), because the traps
-# above run in a process that never sees this file.
+# (bin/fm-programme-presentation-lib.sh "RESOLVER CAPTURE"). This script
+# installs no traps at all, so that subshell's own cleanup is the ONLY thing on
+# any path that can remove the staging file.
 programme_continuation_json() {
   (
     fm_programme_resolver_own_staging

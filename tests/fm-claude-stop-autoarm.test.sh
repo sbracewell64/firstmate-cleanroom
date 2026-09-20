@@ -858,6 +858,41 @@ test_failed_lock_removal_restores_classifiable_evidence() {
   pass "fm-lock: a removal that fails after the census puts its classifiable evidence back"
 }
 
+# The one recorded TERM allowance is owner evidence too: a collection attempt
+# that ends up failing must leave the marker exactly where it was, or the next
+# invocation sees no record and signals the very same owner a second time.
+# An unclassifiable entry makes the census refuse, which is the documented way
+# collection fails after the marker was already delivered.
+test_failed_collection_retains_the_delivered_term_marker() {
+  local dir state lock status identity pid
+  dir=$(make_primary_dir "$TMP_ROOT/failed-collection-term-marker")
+  state="$dir/state"
+  lock="$state/.claude-autoarm.lock"
+  # A dead recorded owner skips the identity branch, so this exercises the
+  # collect path that reaches the marker rather than the retirement path.
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record the owner identity"
+  identity=$(cat "$lock/pid-identity")
+  printf '%s\n' "$identity" > "$lock/term-sent-identity"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  : > "$lock/held-by-an-unclassifiable-entry"
+  status=0
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 300' \
+    _ "$dir/bin/fm-wake-lib.sh" "$state" || status=$?
+  expect_code 1 "$status" "a collection that could not finish must report failure"
+  assert_present "$lock" "the fixture did not reproduce a failed collection"
+  [ "$(cat "$lock/term-sent-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed collection spent the owner's one recorded TERM allowance"
+  [ "$(cat "$lock/pid-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed collection destroyed the owner's identity evidence"
+  assert_absent "$state/.claude-autoarm.lock.steal" "the failed collection left its serialization mutex behind"
+  pass "auto-arm: a failed collection retains the delivered TERM marker"
+}
+
 # fm_lock_try_create publishes with `ln -s "$ownerdir" "$lockdir"`. When a
 # directory-shaped lock exists at that path, ln instead drops the link INSIDE
 # it, and a process killed before fm_lock_remove_stray_owner_link runs strands
@@ -1096,7 +1131,7 @@ test_terminal_check_claim_is_never_reclaimed() {
 # retired with TERM before its lock is removed, because old-build code cannot
 # re-check generations and would otherwise resume and act after supersession.
 test_stuck_live_legacy_owner_is_retired_and_deferred() {
-  local dir out status pid i
+  local dir out status pid term_status
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -1108,13 +1143,9 @@ test_stuck_live_legacy_owner_is_retired_and_deferred() {
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
   expect_code 0 "$status" "a proven-stuck identity-verified live legacy owner must defer reconciliation"
-  i=0
-  while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  kill -0 "$pid" 2>/dev/null && fail "the stuck legacy owner was not retired"
-  wait "$pid" 2>/dev/null || true
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the stuck legacy owner was not retired by TERM (wait reported $term_status)"
   [ ! -e "$dir/state/arm-ran" ] || fail "the deferred home re-armed before a fresh dead-owner observation"
   assert_present "$dir/state/.claude-autoarm.lock" "deferred reconciliation lost the legacy owner lock"
 
@@ -1131,7 +1162,7 @@ test_stuck_live_legacy_owner_is_retired_and_deferred() {
 # later firing signals it again, and its lock is held until an invocation
 # freshly observes it gone - the queued TERM itself is never collection proof.
 test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
-  local dir out status pid i
+  local dir out status pid term_status
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term-stopped")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -1157,13 +1188,9 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   [ "$(find "$dir/state/.claude-autoarm.lock" -maxdepth 1 -type f -name 'term-sent-identity' | wc -l | tr -d ' ')" = 1 ] \
     || fail "a later firing published more than one retirement marker"
   kill -CONT "$pid" 2>/dev/null || true
-  i=0
-  while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  kill -0 "$pid" 2>/dev/null && fail "the queued TERM did not retire the owner on continue"
-  wait "$pid" 2>/dev/null || true
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the queued TERM did not retire the owner on continue (wait reported $term_status)"
   pass "auto-arm: a SIGSTOPped legacy owner retains its lock until TERM is delivered and death is observed"
 }
 
@@ -1172,7 +1199,7 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
 # because a retained marker would short-circuit every later firing and strand
 # the exact owner's lock forever.
 test_undelivered_term_withdraws_the_retirement_allowance() {
-  local dir pid status marker i
+  local dir pid status marker term_status
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term-undelivered")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -1204,13 +1231,9 @@ test_undelivered_term_withdraws_the_retirement_allowance() {
   expect_code 1 "$status" "the retry still defers collection to a later dead-owner observation"
   [ "$(cat "$marker" 2>/dev/null)" = "$(cat "$dir/state/.claude-autoarm.lock/pid-identity")" ] \
     || fail "the withdrawn allowance was not available to a later retirement attempt"
-  i=0
-  while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  kill -0 "$pid" 2>/dev/null && fail "the retried TERM did not retire the exact owner"
-  wait "$pid" 2>/dev/null || true
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the retried TERM did not retire the exact owner (wait reported $term_status)"
   pass "auto-arm: a TERM that was never delivered withdraws its one-shot retirement allowance"
 }
 
@@ -1440,6 +1463,7 @@ test_foreign_owner_shaped_link_still_refuses_collection
 test_stranded_retirement_temporary_never_blocks_collection
 test_unknown_lock_entry_refuses_with_its_claim_intact
 test_failed_lock_removal_restores_classifiable_evidence
+test_failed_collection_retains_the_delivered_term_marker
 test_arming_claim_with_fresh_beacon_is_never_reclaimed
 test_fresh_arming_claim_with_stale_beacon_is_never_reclaimed
 test_claim_not_named_by_the_ledger_is_never_reclaimed

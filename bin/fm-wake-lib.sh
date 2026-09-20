@@ -1484,8 +1484,13 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     fi
     rm -f "$tmp" 2>/dev/null || true
   fi
+  # Validate the marker's shape but never delete it here: it is one of
+  # FM_LOCK_KNOWN_FILES, so fm_lock_remove_path saves it before the census and
+  # restores it when removal fails. Removing it first would spend the owner's
+  # one recorded TERM allowance on a lock that then survives, and the next
+  # invocation would signal that same owner a second time.
   if [ -e "$term_marker" ] || [ -L "$term_marker" ]; then
-    if [ ! -f "$term_marker" ] || [ -L "$term_marker" ] || ! rm -f -- "$term_marker"; then
+    if [ ! -f "$term_marker" ] || [ -L "$term_marker" ]; then
       fm_lock_release "$steal"
       return 1
     fi

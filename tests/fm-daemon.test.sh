@@ -1418,7 +1418,11 @@ SH
     || fail "the digest capture staged no diagnostics file; this regression's premise is stale"
   fm_term_capture_ancestry "$resolver_pid" "$holder_pid" \
     || fail "the digest capture no longer runs in a subshell; this regression's premise is stale"
-  kill -TERM "$holder_pid" 2>/dev/null || true
+  # The staging owner is a grandchild this shell cannot wait on, and the holder
+  # traps nothing, so signalling it would kill it before that grandchild
+  # finished and leave this assertion racing the cleanup. Waiting instead
+  # orders them: the digest command substitution only ends when its last writer
+  # - the staging owner, after its cleanup - closes the pipe.
   wait "$holder_pid" 2>/dev/null || true
 
   if find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*' -print -quit | grep -q .; then

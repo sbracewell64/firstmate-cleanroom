@@ -999,7 +999,7 @@ test_synchronized_rebased_successor_transition() {
   saved_meta=$(cat "$STATE/synchronized-successor.meta")
   saved_obs=$(cat "$STATE/synchronized-successor.nm-observe")
   saved_status=$(cat "$STATE/synchronized-successor.status")
-  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head truncated-pr-read stale-engineering-context; do
+  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head truncated-pr-read stale-engineering-context unevaluable-allocation; do
     printf '%s\n' "$saved_meta" > "$STATE/synchronized-successor.meta"
     printf '%s\n' "$saved_obs" > "$STATE/synchronized-successor.nm-observe"
     printf '%s\n' "$saved_status" > "$STATE/synchronized-successor.status"
@@ -1037,6 +1037,7 @@ test_synchronized_rebased_successor_transition() {
       stale-expected-head) git -C "$wt" commit -q --allow-empty -m 'moved after proof' ;;
       truncated-pr-read) FM_FAKE_GH_AXI_RAW_LIMIT=32 ;;
       stale-engineering-context) sed 's/^stage_context=.*/stage_context=changed-since-admission/' "$STATE/synchronized-successor.meta" > "$STATE/.meta" && mv "$STATE/.meta" "$STATE/synchronized-successor.meta" ;;
+      unevaluable-allocation) grep -v -e '^harness=' -e '^model=' -e '^effort=' -e '^stage_alloc=' -e '^stage_predecessor_alloc=' "$STATE/synchronized-successor.meta" > "$STATE/.meta" && mv "$STATE/.meta" "$STATE/synchronized-successor.meta" ;;
     esac
     export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_SYNC_RC FM_FAKE_CI_LOGS FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_HEAD FM_FAKE_PR_BODY FM_FAKE_GH_AXI_RAW_LIMIT
     case_meta=$(cat "$STATE/synchronized-successor.meta")
@@ -1045,7 +1046,7 @@ test_synchronized_rebased_successor_transition() {
     out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
     expect_code 1 "$rc" "synchronized successor must refuse $mutation: $out"
     case "$mutation" in
-      branch-name-only|pr-only|green-only|truncated-pr-read) assert_contains "$out" 'SUCCESSOR_CNO' "$mutation was not typed as unevaluable identity" ;;
+      branch-name-only|pr-only|green-only|truncated-pr-read|unevaluable-allocation) assert_contains "$out" 'SUCCESSOR_CNO' "$mutation was not typed as unevaluable identity" ;;
       stale-engineering-context) assert_contains "$out" 'ENGINEERING_CONTEXT' "$mutation was not typed as a stale admitted contract" ;;
       *) assert_contains "$out" 'SUCCESSOR_CONTRADICTION' "$mutation was not typed as contradictory identity" ;;
     esac
@@ -1056,6 +1057,23 @@ test_synchronized_rebased_successor_transition() {
     unset FM_FAKE_GH_AXI_RAW_LIMIT
     git -C "$wt" reset -q --hard "$head"
   done
+  # A record admitted before duty and allocation were recorded is the shape this
+  # change targets. It still transitions, but only by migrating both from the
+  # durable evidence that wrote them, and the migrated values are what the one
+  # atomic publication makes immutable.
+  grep -v -e '^stage_duty=' -e '^stage_alloc=' <<<"$saved_meta" > "$STATE/synchronized-successor.meta"
+  printf '%s\n' "$saved_obs" > "$STATE/synchronized-successor.nm-observe"
+  printf '%s\n' "$saved_status" > "$STATE/synchronized-successor.status"
+  FM_FAKE_AXI_STATUS=$(run_toon "$incident_run" "$incident_branch" ci "$head" '' "$incident_pr")
+  FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0
+  FM_FAKE_CI_LOGS='all CI checks passed - still monitoring until merged or closed'
+  FM_FAKE_PR_STATE=open FM_FAKE_PR_MERGED=false FM_FAKE_PR_HEAD=$head
+  FM_FAKE_PR_BODY=$(printf 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"%s"} -->' "$head")
+  export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_SYNC_RC FM_FAKE_CI_LOGS FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
+  out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
+  expect_code 0 "$rc" "a record admitted before duty and allocation were recorded must migrate them: $out"
+  [ "$(meta_get synchronized-successor stage_predecessor_duty)" = validation ] || fail 'the migrated duty was not bound into the immutable record'
+  [ "$(meta_get synchronized-successor stage_predecessor_alloc)" = echo/default/low/tmux ] || fail 'the migrated allocation was not bound into the immutable record'
   printf '%s\n' "$saved_meta" > "$STATE/synchronized-successor.meta"
   printf '%s\n' "$saved_obs" > "$STATE/synchronized-successor.nm-observe"
   printf '%s\n' "$saved_status" > "$STATE/synchronized-successor.status"
@@ -1105,6 +1123,22 @@ test_synchronized_rebased_successor_transition() {
   expect_code 0 "$rc" "successor replay must be idempotent: $out"
   [ "$(cat "$STATE/synchronized-successor.meta")" = "$before" ] || fail 'successor replay mutated the authoritative record'
   [ "$(grep -c '^candidate-successor:' "$STATE/synchronized-successor.status")" = 1 ] || fail 'successor replay duplicated its receipt'
+  # A replay blocked by something the worker can clear is reported by that
+  # cause. Telling the worker the task is spent would be wrong remediation.
+  printf 'scratch\n' > "$wt/scratch.txt"
+  out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
+  expect_code 1 "$rc" "a dirty worktree must not read as a spent successor: $out"
+  assert_contains "$out" 'UNCOMMITTED' 'a dirty replay was not typed by its own cause'
+  assert_not_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a recoverable replay failure claimed the task identity was spent'
+  rm -f "$wt/scratch.txt"
+  out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
+  expect_code 0 "$rc" "clearing the worktree must restore the idempotent replay: $out"
+  git -C "$wt" reset -q --hard "$head^"
+  out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
+  expect_code 1 "$rc" "a head behind the recorded successor must not read as a spent successor: $out"
+  assert_contains "$out" 'STALE_CANDIDATE' 'a regressed head was not typed by its own cause'
+  assert_not_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a regressed head claimed the task identity was spent'
+  git -C "$wt" reset -q --hard "$head"
   cp "$STATE/synchronized-successor.meta" "$STATE/synchronized-successor.meta.valid"
   sed "s/^stage_predecessor_head=.*/stage_predecessor_head=$foreign_head/" "$STATE/synchronized-successor.meta.valid" > "$STATE/synchronized-successor.meta"
   out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
@@ -1349,7 +1383,7 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture
 # Terminal successors need the producer's explicit verified readback, not the
 # active-only exemption or ordinary synchronized equality.
 test_completed_successor_stage() {
-  local wt submitted head out rc proof saved_meta saved_obs mutation valid_status desc indent
+  local wt submitted head out rc proof saved_meta saved_obs mutation valid_status desc indent terminal_attestation
   wt="$TMP_ROOT/wt-terminal"
   make_worktree "$wt" fm/terminal
   submitted=$(git -C "$wt" rev-parse HEAD)
@@ -1373,8 +1407,12 @@ EOF
   git -C "$wt" rebase new-base >/dev/null 2>&1 || fail 'terminal fixture rebase'
   head=$(git -C "$wt" rev-parse HEAD)
   git -C "$wt" update-ref refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 "$submitted"
-  FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/terminal completed "$head" passed)
+  FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/terminal completed "$head" passed https://github.com/o/r/pull/9)
   valid_status=$FM_FAKE_AXI_STATUS
+  terminal_attestation=$(printf 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"%s"} -->' "$head")
+  FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9
+  FM_FAKE_PR_BRANCH=fm/terminal FM_FAKE_PR_HEAD=$head FM_FAKE_PR_BODY=$terminal_attestation
+  export FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
   jq --arg head "$head" '.task="terminal" | .run="01TERMINAL00000000000000001" | .head=$head' \
     "$DATA/engineering/valid-evidence.json" > "$DATA/terminal/engineering-evidence.json"
   cp "$DATA/terminal/engineering-evidence.json" "$DATA/terminal/valid-evidence.json"
@@ -1423,14 +1461,23 @@ EOF
   [ "$(meta_get terminal stage_predecessor_head)" = "$submitted" ] || fail 'admission replaced the original candidate instead of preserving it'
   [ "$(meta_get terminal stage_successor_action)" = verified-terminal-successor ] || fail 'the terminal rebase was not typed by its own action'
   [ "$(meta_get terminal stage_successor_head)" = "$head" ] || fail 'the typed successor head was not bound'
+  # A record asserting bound authority and checks-passed must have proven the
+  # PR identity it names, not merely parsed the argument it was handed.
+  [ "$(meta_get terminal stage_successor_pr)" = https://github.com/o/r/pull/9 ] || fail 'the terminal successor bound no PR identity'
+  [ "$(meta_get terminal stage_successor_attested_head)" = "$head" ] || fail 'the terminal successor recorded no attested head'
+  [ "$(meta_get terminal stage_successor_checked_head)" = "$head" ] || fail 'the terminal successor recorded no checked head'
   [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
   [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
-  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean padded-run padded-head padded-ref duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
+  for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean padded-run padded-head padded-ref duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence run-pr-missing foreign-pr-head missing-pr-attestation; do
     printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
     printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
     FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
+    FM_FAKE_PR_HEAD=$head; FM_FAKE_PR_BRANCH=fm/terminal; FM_FAKE_PR_BODY=$terminal_attestation
     case "$mutation" in
       absent) FM_FAKE_SYNC='' ;;
+      run-pr-missing) FM_FAKE_AXI_STATUS=$(run_toon 01TERMINAL00000000000000001 fm/terminal completed "$head" passed) ;;
+      foreign-pr-head) FM_FAKE_PR_HEAD=$submitted ;;
+      missing-pr-attestation) FM_FAKE_PR_BODY='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)' ;;
       scalar-successor) FM_FAKE_SYNC=${proof/  successor:/  successor: false} ;;
       scalar-pipeline) FM_FAKE_SYNC=${proof/  pipeline:/  pipeline: unavailable} ;;
       scalar-local) FM_FAKE_SYNC=${proof/  local:/  local: false} ;;
@@ -1477,6 +1524,7 @@ branch_sync: false" ;;
       manual-rewrite) git -C "$wt" update-ref refs/heads/fm/terminal "$submitted" ;;
       missing-anchor) git -C "$wt" update-ref -d refs/no-mistakes/sync-anchor/01TERMINAL00000000000000001 ;;
     esac
+    export FM_FAKE_PR_HEAD FM_FAKE_PR_BRANCH FM_FAKE_PR_BODY
     out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
     expect_code 1 "$rc" "terminal successor refuses $mutation: $out"
     # wrong-evidence corrupts the engineering evidence, not the successor
@@ -1498,6 +1546,8 @@ branch_sync: false" ;;
     cp "$DATA/terminal/valid-evidence.json" "$DATA/terminal/engineering-evidence.json"
   done
   FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
+  FM_FAKE_PR_HEAD=$head; FM_FAKE_PR_BRANCH=fm/terminal; FM_FAKE_PR_BODY=$terminal_attestation
+  export FM_FAKE_PR_HEAD FM_FAKE_PR_BRANCH FM_FAKE_PR_BODY
   out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "valid terminal successor remains admissible: $out"
   printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
@@ -1507,7 +1557,22 @@ branch_sync: false" ;;
   FM_FAKE_SYNC=${FM_FAKE_SYNC/target_ref: refs\/heads\/fm\/terminal/target_ref: \"refs\/heads\/fm\/terminal\"}
   out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "exact quoted terminal identities remain admissible: $out"
+  # An unrelated but perfectly parseable PR is never recorded as bound
+  # authority: the record would be immutable and would assert checks-passed
+  # over an identity it had not proven.
+  printf '%s\n' "$saved_meta" > "$STATE/terminal.meta"
+  printf '%s\n' "$saved_obs" > "$STATE/terminal.nm-observe"
+  FM_FAKE_SYNC=$proof; FM_FAKE_SYNC_RC=0; FM_FAKE_AXI_STATUS=$valid_status
+  FM_FAKE_PR_HEAD=$head; FM_FAKE_PR_BRANCH=fm/terminal; FM_FAKE_PR_BODY=$terminal_attestation
+  export FM_FAKE_PR_HEAD FM_FAKE_PR_BRANCH FM_FAKE_PR_BODY
+  out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/999 2>&1); rc=$?
+  expect_code 1 "$rc" "an unrelated PR identity must refuse the terminal successor: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'an unproven PR identity was not typed as contradictory'
+  [ -z "$(meta_get terminal stage_successor_id)" ] || fail 'an unproven PR identity was recorded as bound authority'
+  [ "$(meta_get terminal stage)" = validation-running ] || fail 'an unproven PR identity admitted a stage'
   FM_FAKE_SYNC=''; FM_FAKE_SYNC_RC=0
+  FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BRANCH='' FM_FAKE_PR_HEAD='' FM_FAKE_PR_BODY=''
+  export FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
   pass 'completed same-run successor requires verified exact bindings and preserves original candidate'
 }
 test_completed_successor_stage

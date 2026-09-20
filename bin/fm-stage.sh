@@ -434,6 +434,31 @@ stage_predecessor_attempt() {
   if [ -n "$value" ]; then printf '%s' "$value"; else meta stage_attempt; fi
 }
 
+# The admitted duty and allocation are bindings, not defaults. A record that
+# predates them may still be migrated, but only from the explicit durable
+# evidence that wrote them in the first place; a record that carries neither
+# cannot be evaluated and says so rather than manufacturing agreement.
+stage_bound_duty() {
+  local duty
+  duty=$(meta stage_predecessor_duty); [ -n "$duty" ] || duty=$(meta stage_duty)
+  if [ -z "$duty" ]; then
+    [ "$MODE" = no-mistakes ] && [ "$KIND" = ship ] || return 1
+    duty=validation
+  fi
+  printf '%s' "$duty"
+}
+
+stage_bound_alloc() {
+  local alloc
+  alloc=$(meta stage_predecessor_alloc); [ -n "$alloc" ] || alloc=$(meta stage_alloc)
+  if [ -z "$alloc" ]; then
+    [ -n "$(meta harness)" ] && [ -n "$(meta model)" ] && [ -n "$(meta effort)" ] || return 1
+    [ -n "$(fm_backend_of_meta "$META")" ] || return 1
+    alloc=$(alloc_identity)
+  fi
+  printf '%s' "$alloc"
+}
+
 stage_predecessor_run() {
   local value
   value=$(meta stage_predecessor_run)
@@ -507,16 +532,18 @@ bound_run_status() {
 
 # Only CI-ready may consume a completed successor. The bound run read comes
 # from bound_run_status; sync-check supplies fresh qualification readback.
-completed_successor_current() { # <bound-run-toon> <expected-current-head>
-  local output=$1 head=$2 home proof run_head
+completed_successor_current() { # <bound-run-toon> <expected-current-head> [sync-toon]
+  local output=$1 head=$2 proof=${3:-} home run_head
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" status)")" = completed ] || return 1
   [ "$(fm_nm_strip_quotes "$(fm_nm_field "$output" outcome)")" = passed ] || return 1
   run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
   [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$head" ] || return 1
-  home=$(obs nm_home)
-  case "$home" in /*) ;; *) return 1 ;; esac
-  [ -d "$home" ] || return 1
-  proof=$(NM_HOME="$home" fm_nm_run_checked "$WT" 10 axi sync --check) || return 1
+  if [ -z "$proof" ]; then
+    home=$(obs nm_home)
+    case "$home" in /*) ;; *) return 1 ;; esac
+    [ -d "$home" ] || return 1
+    proof=$(NM_HOME="$home" fm_nm_run_checked "$WT" 10 axi sync --check) || return 1
+  fi
   fm_nm_verified_terminal_successor "$WT" "$(obs run_id)" "$(meta stage_head)" "$head" "$(meta stage_branch)" "$proof"
 }
 
@@ -1104,7 +1131,8 @@ successor_record_valid() {
     verified-terminal-successor)
       fm_pr_url_parse "$SI_PR" >/dev/null 2>&1 || return 1
       [ -z "$SI_PIPELINE_SUBMITTED$SI_PIPELINE_CURRENT$SI_PIPELINE_PUSHED$SI_LOCAL$SI_REMOTE" ] || return 1
-      [ -z "$SI_SYNC$SI_RELATION$SI_PUSH_GENERATION$SI_TARGET_KIND$SI_ATTESTED$SI_CHECKED" ] || return 1
+      [ -z "$SI_SYNC$SI_RELATION$SI_PUSH_GENERATION$SI_TARGET_KIND" ] || return 1
+      [ "$SI_ATTESTED" = "$SI_HEAD" ] && [ "$SI_CHECKED" = "$SI_HEAD" ] || return 1
       [ "$SI_QUALIFICATION" = checks-passed ] || return 1
       ;;
     mint-validation-branch)
@@ -1127,17 +1155,25 @@ successor_record_valid() {
 # distinct successor, which this record cannot carry.
 successor_replay_locked() {
   local line
-  successor_record_valid || return 1
+  SUCCESSOR_REPLAY_CAUSE=distinct
+  successor_record_valid || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
   read_candidate
-  [ "$BRANCH" = "$SI_BRANCH" ] || return 1
-  ! worktree_dirty || return 1
+  [ "$BRANCH" = "$SI_BRANCH" ] || { SUCCESSOR_REPLAY_CAUSE=branch; return 1; }
+  ! worktree_dirty || { SUCCESSOR_REPLAY_CAUSE=dirty; return 1; }
   if [ "$HEAD" = "$SI_HEAD" ]; then
-    [ "$TREE" = "$SI_TREE" ] || return 1
+    [ "$TREE" = "$SI_TREE" ] || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
   else
-    git -C "$WT" merge-base --is-ancestor "$SI_HEAD" "$HEAD" 2>/dev/null || return 1
-    [ -n "$(obs run_id)" ] && [ "$(obs run_id)" = "$SI_RUN" ] || return 1
-    [ -n "$(obs attempt_id)" ] && [ "$(obs attempt_id)" = "$SI_ATTEMPT" ] || return 1
+    if git -C "$WT" merge-base --is-ancestor "$HEAD" "$SI_HEAD" 2>/dev/null; then
+      SUCCESSOR_REPLAY_CAUSE=stale; return 1
+    fi
+    git -C "$WT" merge-base --is-ancestor "$SI_HEAD" "$HEAD" 2>/dev/null \
+      || { SUCCESSOR_REPLAY_CAUSE=distinct; return 1; }
+    [ -n "$(obs run_id)" ] && [ -n "$(obs attempt_id)" ] \
+      || { SUCCESSOR_REPLAY_CAUSE=unevaluable; return 1; }
+    [ "$(obs run_id)" = "$SI_RUN" ] && [ "$(obs attempt_id)" = "$SI_ATTEMPT" ] \
+      || { SUCCESSOR_REPLAY_CAUSE=producer; return 1; }
   fi
+  SUCCESSOR_REPLAY_CAUSE=replayed
   line=$(successor_receipt_line)
   grep -Fxq "$line" "$STATUS" 2>/dev/null || printf '%s\n' "$line" >> "$STATUS"
   printf 'STAGE_UNCHANGED: %s\n' "$line"
@@ -1152,8 +1188,8 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
   predecessor_tree=$(meta stage_predecessor_tree); [ -n "$predecessor_tree" ] || predecessor_tree=$(meta stage_tree)
   predecessor_attempt=$(stage_predecessor_attempt)
   predecessor_run=$(stage_predecessor_run)
-  predecessor_duty=$(meta stage_predecessor_duty); [ -n "$predecessor_duty" ] || predecessor_duty=$(meta stage_duty); [ -n "$predecessor_duty" ] || predecessor_duty=validation
-  predecessor_alloc=$(meta stage_predecessor_alloc); [ -n "$predecessor_alloc" ] || predecessor_alloc=$(meta stage_alloc); [ -n "$predecessor_alloc" ] || predecessor_alloc=$(alloc_identity)
+  predecessor_duty=$(stage_bound_duty) || return 2
+  predecessor_alloc=$(stage_bound_alloc) || return 2
   pipeline_submitted=; pipeline_current=; pipeline_pushed=; local_head=; remote_head=; sync_state=; relation=; push_generation=; target_kind=
   authority=fm-stage/no-mistakes-bound-run
   if [ "$action" = authenticated-synchronized-successor ]; then
@@ -1249,7 +1285,7 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
 }
 
 authenticated_successor_transition() { # <pr-url>; caller has read candidate
-  local pr=$1 lock verdict proof_rc publish_rc run submitted duty expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action
+  local pr=$1 lock verdict proof_rc publish_rc run submitted duty alloc run_pr expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action
   lock=$(fm_meta_lock_path "$META") || exit 2
   fm_lock_acquire_wait "$lock"
   read_candidate
@@ -1260,9 +1296,24 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     fi
     case "$(meta stage_successor_action)" in
       authenticated-synchronized-successor|verified-terminal-successor)
-        if [ "$(meta stage_successor_pr)" = "$pr" ] && successor_replay_locked; then
+        if [ "$(meta stage_successor_pr)" = "$pr" ]; then
+          if successor_replay_locked; then
+            fm_lock_release "$lock"
+            return 0
+          fi
           fm_lock_release "$lock"
-          return 0
+          # A replay that did not happen is reported by what actually stopped
+          # it. Exhaustion is reserved for a head that is genuinely a second
+          # distinct successor, because it is the one cause no local repair
+          # can clear.
+          case "$SUCCESSOR_REPLAY_CAUSE" in
+            dirty) refuse ci-ready UNCOMMITTED 'the worktree must be clean to replay the recorded successor' ;;
+            unevaluable) refuse ci-ready SUCCESSOR_CNO 'the bound run or attempt identity could not be evaluated to replay the recorded successor' ;;
+            branch) refuse ci-ready SUCCESSOR_CONTRADICTION "the live branch is not $(dash "$(meta stage_successor_branch)"), the branch the recorded successor bound" ;;
+            producer) refuse ci-ready SUCCESSOR_CONTRADICTION 'a different run or attempt produced the head that advanced past the recorded successor' ;;
+            stale) refuse ci-ready STALE_CANDIDATE "head $(short "$HEAD") is behind the recorded successor $(short "$(meta stage_successor_head)")" ;;
+            invalid-record) refuse ci-ready SUCCESSOR_COLLISION 'the recorded successor is incomplete or no longer matches its own immutable lineage' ;;
+          esac
         fi ;;
     esac
     fm_lock_release "$lock"
@@ -1271,16 +1322,22 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   expected_head=$HEAD; expected_tree=$TREE; expected_branch=$BRANCH
   submitted=$(stage_predecessor_head)
   run=$(stage_predecessor_run)
-  duty=$(meta stage_predecessor_duty); [ -n "$duty" ] || duty=$(meta stage_duty); [ -n "$duty" ] || duty=validation
   if [ -z "$run" ] || [ -z "$submitted" ] || [ -z "$expected_head" ] || [ -z "$expected_tree" ] || [ -z "$expected_branch" ] \
       || [ -z "$(meta stage_attempt)" ] || [ -z "$(obs attempt_id)" ] || [ -z "$(obs run_id)" ]; then
     fm_lock_release "$lock"
     refuse ci-ready SUCCESSOR_CNO 'the predecessor, successor, attempt, or run identity could not be evaluated'
   fi
+  duty=$(stage_bound_duty) || {
+    fm_lock_release "$lock"
+    refuse ci-ready SUCCESSOR_CNO 'the admitted validation duty is not recorded and no durable evidence establishes it'
+  }
+  alloc=$(stage_bound_alloc) || {
+    fm_lock_release "$lock"
+    refuse ci-ready SUCCESSOR_CNO 'the admitted allocation identity is not recorded and no durable evidence establishes it'
+  }
   if [ "$duty" != validation ] || [ "$(meta stage_attempt)" != "$(obs attempt_id)" ] || [ "$run" != "$(obs run_id)" ] \
       || [ "$submitted" != "$(obs candidate_head)" ] || [ "$(meta stage_branch)" != "$(obs candidate_branch)" ] \
-      || [ "$(obs entrypoint)" != stage ] \
-      || { [ -n "$(meta stage_alloc)" ] && [ "$(meta stage_alloc)" != "$(alloc_identity)" ]; }; then
+      || [ "$(obs entrypoint)" != stage ] || [ "$alloc" != "$(alloc_identity)" ]; then
     fm_lock_release "$lock"
     refuse ci-ready SUCCESSOR_CONTRADICTION 'predecessor head, branch, attempt, run, duty, allocation, or entrypoint no longer matches the bound validation'
   fi
@@ -1302,17 +1359,19 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     fm_lock_release "$lock"
     refuse ci-ready SUCCESSOR_CNO 'synchronization identity could not be evaluated'
   }
-  # Two non-ancestor classes reach this one owner, told apart by the bound run
-  # itself: a terminal run whose own preserved-anchor read-back qualifies the
-  # rewritten head, and the live synchronized class that must additionally
-  # prove an open attested PR. Neither advances the candidate except here.
+  # Two non-ancestor classes reach this one owner. The live synchronized class
+  # carries the stronger proof, so it is tried first and owns any state both
+  # could project; the terminal class answers only for a run whose own
+  # preserved-anchor read-back qualifies the rewritten head. Both bind a proven
+  # PR identity, and neither advances the candidate except here.
+  sync_rc=0
+  fm_nm_verified_synchronized_successor "$run" "$submitted" "$expected_head" "$(meta stage_branch)" "$SUCCESSOR_SYNC" || sync_rc=$?
   action=authenticated-synchronized-successor
-  if completed_successor_current "$SUCCESSOR_STATUS" "$expected_head"; then
+  if [ "$sync_rc" -ne 0 ] && completed_successor_current "$SUCCESSOR_STATUS" "$expected_head" "$SUCCESSOR_SYNC"; then
     action=verified-terminal-successor
   fi
+  run_pr=$(fm_nm_strip_quotes "$(fm_nm_field "$SUCCESSOR_STATUS" pr)")
   if [ "$action" = authenticated-synchronized-successor ]; then
-    sync_rc=0
-    fm_nm_verified_synchronized_successor "$run" "$submitted" "$expected_head" "$(meta stage_branch)" "$SUCCESSOR_SYNC" || sync_rc=$?
     case "$sync_rc" in
       0) ;;
       2) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'local, remote, pipeline, submitted, current, pushed, branch, or cleanliness identity could not be evaluated' ;;
@@ -1338,6 +1397,22 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       2) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'the live PR identity or attestation could not be evaluated' ;;
       *) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CONTRADICTION 'the live PR identity, branch, state, head, or no-mistakes attestation disagrees' ;;
     esac
+  else
+    if [ -z "$run_pr" ]; then
+      fm_lock_release "$lock"
+      refuse ci-ready SUCCESSOR_CNO 'the exact bound run names no PR identity to bind the terminal successor to'
+    fi
+    if [ "$run_pr" != "$pr" ]; then
+      fm_lock_release "$lock"
+      refuse ci-ready SUCCESSOR_CONTRADICTION 'the bound run does not name this exact PR identity'
+    fi
+    proof_rc=0
+    successor_pr_attestation "$pr" "$(meta stage_branch)" "$expected_head" any || proof_rc=$?
+    case "$proof_rc" in
+      0) ;;
+      2) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'the live PR identity or attestation could not be evaluated' ;;
+      *) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CONTRADICTION 'the live PR identity, branch, head, or no-mistakes attestation disagrees' ;;
+    esac
   fi
   # Final effect-boundary read-back. Network and Git evidence were acquired
   # above while the task record lock was held; repeat the mutable branch/remote
@@ -1348,11 +1423,11 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     fm_lock_release "$lock"
     refuse ci-ready SUCCESSOR_CONTRADICTION 'the local branch, head, tree, or cleanliness changed during successor verification'
   fi
+  final_sync=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || {
+    fm_lock_release "$lock"
+    refuse ci-ready SUCCESSOR_CNO 'final synchronization read-back could not be evaluated'
+  }
   if [ "$action" = authenticated-synchronized-successor ]; then
-    final_sync=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || {
-      fm_lock_release "$lock"
-      refuse ci-ready SUCCESSOR_CNO 'final synchronization read-back could not be evaluated'
-    }
     sync_rc=0
     fm_nm_verified_synchronized_successor "$run" "$submitted" "$expected_head" "$(meta stage_branch)" "$final_sync" || sync_rc=$?
     case "$sync_rc" in
@@ -1362,7 +1437,7 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     esac
     SUCCESSOR_SYNC=$final_sync
   else
-    completed_successor_current "$SUCCESSOR_STATUS" "$expected_head" || {
+    completed_successor_current "$SUCCESSOR_STATUS" "$expected_head" "$final_sync" || {
       fm_lock_release "$lock"
       refuse ci-ready SUCCESSOR_CONTRADICTION 'the terminal successor read-back moved before publication'
     }
@@ -1375,12 +1450,8 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     refuse ci-ready ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt'
   fi
   publish_rc=0
-  if [ "$action" = authenticated-synchronized-successor ]; then
-    SUCCESSOR_CHECKED_HEAD=$expected_head
-    publish_successor_locked authenticated-synchronized-successor "$(meta stage_branch)" "$expected_head" "$expected_tree" "refs/heads/$(meta stage_branch)" "$pr" "$SUCCESSOR_ATTESTED_HEAD" "$SUCCESSOR_CHECKED_HEAD" checks-passed || publish_rc=$?
-  else
-    publish_successor_locked verified-terminal-successor "$(meta stage_branch)" "$expected_head" "$expected_tree" "refs/heads/$(meta stage_branch)" "$pr" '' '' checks-passed || publish_rc=$?
-  fi
+  SUCCESSOR_CHECKED_HEAD=$expected_head
+  publish_successor_locked "$action" "$(meta stage_branch)" "$expected_head" "$expected_tree" "refs/heads/$(meta stage_branch)" "$pr" "$SUCCESSOR_ATTESTED_HEAD" "$SUCCESSOR_CHECKED_HEAD" checks-passed || publish_rc=$?
   fm_lock_release "$lock"
   case "$publish_rc" in
     0) return 0 ;;

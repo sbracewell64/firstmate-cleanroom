@@ -6,7 +6,7 @@ Usage:
       --project PROJECT|auto --ref refs/heads/BRANCH --delivery-id ID \
       --maker ID --checker ID --route independent-checker|no-mistakes
   fm-local-project-delivery.py verify --admission FILE --programme FILE \
-      --root DIR --step ID
+      (--root DIR | --root-from-admission) --step ID
   fm-local-project-delivery.py legacy-verify --programme FILE --root DIR \
       --step ID --project PROJECT --ref refs/heads/BRANCH --head OID \
       --tree OID --manifest JSON
@@ -22,7 +22,9 @@ reused delivery identity.
 The published manifest is one fm-local-project-delivery-admission/v1 object
 whose exact member set is owned by validate_admission().
 `verify` re-reads the same programme, source, registered project, Git objects,
-and working destination without changing state.
+and working destination without changing state. `--root-from-admission` makes a
+trusted caller consume the exact source-root identity sealed in the private
+admission; explicit `--root DIR` remains the wrong-root negative surface.
 `legacy-verify` is the retained read-back for the historical V1 receipts of
 PR #64, called only by bin/fm-continuation-resolve.sh: it re-reads that
 candidate and its destination bytes, binds and publishes no admission, and
@@ -264,6 +266,19 @@ def load_json(path: Path, *, private: bool = False, anchor_fd: int | None = None
     if not isinstance(value, dict):
         refuse("IDENTITY_UNREADABLE", f"{path} is not a JSON object")
     return value, data, digest
+
+
+def sealed_source_root(doc: dict[str, Any]) -> Path:
+    source = doc.get("source")
+    if not isinstance(source, dict):
+        refuse("MANIFEST_AUTHENTICITY", "admission has no sealed source identity")
+    value = source.get("root")
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        refuse("MANIFEST_AUTHENTICITY", "admission source root is not one absolute path")
+    root = Path(value).resolve(strict=True)
+    if str(root) != value:
+        refuse("MANIFEST_AUTHENTICITY", "admission source root is not its exact resolved identity")
+    return root
 
 
 def run(args: list[str], *, cwd: Path | None = None, input_bytes: bytes | None = None, pass_fds: tuple[int, ...] = ()) -> bytes:
@@ -920,7 +935,9 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify")
     verify.add_argument("--admission", required=True)
     verify.add_argument("--programme", required=True)
-    verify.add_argument("--root", required=True)
+    verify_root = verify.add_mutually_exclusive_group(required=True)
+    verify_root.add_argument("--root")
+    verify_root.add_argument("--root-from-admission", action="store_true")
     verify.add_argument("--step", required=True)
     legacy = sub.add_parser("legacy-verify")
     legacy.add_argument("--programme", required=True)
@@ -941,11 +958,11 @@ def main() -> int:
         cno("HOME_UNREADABLE", "FM_HOME is required")
     home = Path(home_value).resolve(strict=True)
     programme_path = Path(args.programme).resolve(strict=True)
-    root = Path(args.root).resolve(strict=True)
     programme, _, _ = load_json(programme_path)
     step = require_slug(args.step, "step")
 
     if args.command == "legacy-verify":
+        root = Path(args.root).resolve(strict=True)
         require_slug(args.project, "project")
         try:
             manifest = json.loads(args.manifest, object_pairs_hook=object_pairs)
@@ -960,6 +977,7 @@ def main() -> int:
 
     policy = policy_for(programme, step)
     if args.command == "bind":
+        root = Path(args.root).resolve(strict=True)
         delivery_id = require_slug(args.delivery_id, "delivery_id")
         maker = require_slug(args.maker, "maker")
         checker = require_slug(args.checker, "checker")
@@ -1007,6 +1025,7 @@ def main() -> int:
         doc, _, digest = load_json(admission_path, private=True, anchor_fd=data_fd, anchor_path=data_path)
     finally:
         os.close(data_fd)
+    root = sealed_source_root(doc) if args.root_from_admission else Path(args.root).resolve(strict=True)
     rebuilt = validate_admission(
         doc, home=home, programme=programme, root=root, step=step,
     )

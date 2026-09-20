@@ -1,0 +1,53 @@
+{
+  "schema": "fm-accepted-owner-evidence/v1",
+  "evidence_id": "af-b-s2-delivery-g2",
+  "programme_id": "cleanroom-af-package",
+  "step": "slice-b-s2-reference-catalog",
+  "project": "sbracewell64/firstmate-cleanroom",
+  "work_id": "cleanroom-af-package",
+  "generation": 2,
+  "owner": {
+    "kind": "local_project_delivery",
+    "ref": "exchange-work"
+  },
+  "outcome": "DELIVERED_QUALIFIED",
+  "candidate": {
+    "head": "1d2a6a7fc361551958cae8eb0048e8e529dde767",
+    "tree": "44ef428d51457b4888e086aaffe49137fbd4e1e8",
+    "delivery_id": "af-b-s2-delivery-g2",
+    "owner_project": "exchange-work",
+    "ref": "refs/heads/main"
+  },
+  "policy": {
+    "id": "local-delivery-policy",
+    "digest": "53179280b0b7b669cfa11bbbfca834cc78fcdaa5b6fc3944eed252a22eac30fa"
+  },
+  "verifier": {
+    "tool": "fm-local-project-delivery/v2"
+  },
+  "qualification": {
+    "pipeline": "independent-checker",
+    "outcome": "checks-passed",
+    "evidence_refs": [
+      {
+        "path": "data/af-programme-binding/local-project-delivery/slice-b-s2-checker-g2.json",
+        "sha256": "361f31aa227287fb5e1fea9881cf6dc69e30c077601c80240034ec1fcbd07a76"
+      }
+    ]
+  },
+  "delivery": {
+    "receipt": {
+      "path": "data/af-programme-binding/local-project-delivery/slice-b-s2-delivery-g2.json",
+      "sha256": "e420613f7d12f710a1bd54830b7b0ea902520d590d737909f75161c750e7f1dd"
+    }
+  },
+  "privacy": {
+    "classification": "private_local",
+    "exposure": "digests_only",
+    "published_private_bytes": false
+  },
+  "captures": [],
+  "sources": [],
+  "observed_bad": [],
+  "superseded_by": null
+}

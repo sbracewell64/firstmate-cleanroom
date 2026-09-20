@@ -427,4 +427,155 @@ out=$(cd "$repo" && FM_HOME="$home" "$DELIVERY" bind --programme "$home/programm
 [ "$(jq -r '.artifacts | length' "$(printf '%s' "$out" | jq -r '.path')")" = 7 ] || fail "D admission did not bind the complete family"
 pass "D auto-owner selection admits exactly one complete registered local-only family"
 
+# A D successor admission seals its same-root source independently of the
+# programme's canonical artifact root. The shared resolver must consume that
+# sealed identity rather than substitute its one ambient/global root.
+home=$(make_home d-sealed-root)
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+out=$(cd "$repo" && FM_HOME="$home" "$DELIVERY" bind --programme "$home/programme/programme.json" \
+  --root "$repo" --step slice-d-s4-synthesis-integrity --project auto --ref refs/heads/main \
+  --delivery-id delivery-d-sealed --maker maker-one --checker checker-one --route independent-checker) \
+  || fail "same-root D bind failed: $out"
+admission=$(printf '%s' "$out" | jq -r '.path')
+admission_sha=$(sha256_file "$admission")
+head=$(jq -r '.destination.head' "$admission")
+tree=$(jq -r '.destination.tree' "$admission")
+policy_digest=$(jq -r '.action.local_delivery_policy_sha256' "$admission")
+registry_generation=$(jq -r '.owner.registry_sha256' "$admission")
+sealed=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root-from-admission --step slice-d-s4-synthesis-integrity) \
+  || fail "same-root D sealed verification failed: $sealed"
+[ "$(printf '%s' "$sealed" | jq -r '.status')" = ACCEPTED ] || fail "same-root D sealed verification was not accepted"
+pass "sealed verification consumes the D admission source root without ambient substitution"
+
+# Wrong-root negative 1: the canonical seed root is not a fallback for the
+# admitted repaired/same-root candidate.
+printf '#!/usr/bin/env python3\nprint("defective canonical")\n' > "$home/source/artifacts/synthesis/bin/synthesis-integrity.py"
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root "$home/source" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "canonical seed root unexpectedly verified the same-root D admission"
+assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "canonical seed root fallback did not refuse"
+pass "wrong-root negative: canonical seed root fallback refuses"
+
+# Wrong-root negative 2: cwd and an ambient root variable cannot replace the
+# source root sealed in the admission.
+mkdir -p "$home/ambient/artifacts/synthesis/bin"
+printf 'ambient\n' > "$home/ambient/artifacts/synthesis/bin/synthesis-integrity.py"
+sealed=$(cd "$home/ambient" && FM_PROGRAMME_ROOT="$home/ambient" FM_HOME="$home" "$DELIVERY" verify \
+  --admission "$admission" --programme "$home/programme/programme.json" --root-from-admission \
+  --step slice-d-s4-synthesis-integrity) || fail "ambient cwd/root displaced sealed verification: $sealed"
+[ "$(printf '%s' "$sealed" | jq -r '.status')" = ACCEPTED ] || fail "ambient cwd/root changed sealed verification outcome"
+out=$(cd "$home/ambient" && FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root "$PWD" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "ambient cwd/root substitution unexpectedly verified"
+assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "ambient cwd/root substitution did not refuse"
+pass "wrong-root negative: ambient cwd and root substitution refuses"
+
+# Wrong-root negative 3: a source-root edit to another project is not accepted
+# as the sealed project/root identity.
+wrong="$home/projects/wrong-synthesis"
+cp -R "$repo" "$wrong"
+mutated="$home/data/local-project-delivery/admissions/delivery-d-wrong-project.json"
+jq --arg root "$wrong" '.admission_id="delivery-d-wrong-project" | .delivery_id="delivery-d-wrong-project" | .source.root=$root' "$admission" > "$mutated"
+chmod 600 "$mutated"
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$mutated" --programme "$home/programme/programme.json" \
+  --root-from-admission --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "mismatched project/root admission unexpectedly verified"
+assert_contains "$out" 'MANIFEST_AUTHENTICITY' "mismatched project/root did not refuse as an identity mismatch"
+pass "wrong-root negative: mismatched project id and root refuses"
+
+checker_rel=data/local-project-delivery/d-sealed-checker.json
+checker_file="$home/$checker_rel"
+jq -n --arg admission "$admission_sha" --arg head "$head" --arg tree "$tree" '
+  {schema:"fm-local-checker-receipt/v2",receipt_id:"checker-d-sealed",admission_sha256:$admission,
+   candidate:{head:$head,tree:$tree},maker:{id:"maker-one"},checker:{id:"checker-one"},
+   pipeline:"independent-checker",outcome:"checks-passed"}' > "$checker_file"
+chmod 600 "$checker_file"
+checker_sha=$(sha256_file "$checker_file")
+receipt_rel=data/local-project-delivery/d-sealed-delivery.json
+receipt_file="$home/$receipt_rel"
+jq -n --arg head "$head" --arg tree "$tree" --arg admission_rel "${admission#"$home/"}" --arg admission_sha "$admission_sha" \
+  --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" '
+  {schema:"fm-local-project-delivery-receipt/v2",delivery_id:"delivery-d-sealed",generation:1,
+   owner:{kind:"local_project_delivery",ref:"synthesis-work"},
+   candidate:{head:$head,tree:$tree,delivery_id:"delivery-d-sealed",owner_project:"synthesis-work",ref:"refs/heads/main"},
+   admission:{path:$admission_rel,sha256:$admission_sha},maker:{id:"maker-one",commit:$head},checker:{id:"checker-one"},
+   privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+   qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$checker_rel,sha256:$checker_sha}]},
+   read_back:{status:"MATCH",observer:"checker-one"}}' > "$receipt_file"
+chmod 600 "$receipt_file"
+receipt_sha=$(sha256_file "$receipt_file")
+evidence="$home/programme/evidence/slice-d.json"
+jq -n --arg head "$head" --arg tree "$tree" --arg receipt_rel "$receipt_rel" --arg receipt_sha "$receipt_sha" \
+  --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" --arg policy_digest "$policy_digest" '
+  {schema:"fm-accepted-owner-evidence/v1",evidence_id:"delivery-d-sealed",programme_id:"cleanroom-af-package",
+   step:"slice-d-s4-synthesis-integrity",project:"fixture-project",work_id:"cleanroom-af-package",generation:1,
+   owner:{kind:"local_project_delivery",ref:"synthesis-work"},outcome:"DELIVERED_QUALIFIED",
+   candidate:{head:$head,tree:$tree,delivery_id:"delivery-d-sealed",owner_project:"synthesis-work",ref:"refs/heads/main"},
+   policy:{id:"local-delivery-policy",digest:$policy_digest},verifier:{tool:"fm-local-project-delivery/v2"},
+   qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$checker_rel,sha256:$checker_sha}]},
+   delivery:{receipt:{path:$receipt_rel,sha256:$receipt_sha}},
+   privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+   captures:[],sources:[],observed_bad:[],superseded_by:null}' > "$evidence"
+evidence_sha=$(sha256_file "$evidence")
+tmp="$home/programme/programme.json.tmp"
+jq --arg sha "$evidence_sha" --arg head "$head" --arg tree "$tree" --arg policy "$policy_digest" '
+  .steps = [.steps[] | select(.id=="slice-d-s4-synthesis-integrity") | del(.depends_on)] |
+  (.steps[0].terminal_predicate) +=
+    {owner_ref:"synthesis-work",evidence_sha256:$sha,evidence_generation:1,policy_digest:$policy,
+     candidate:{head:$head,tree:$tree,delivery_id:"delivery-d-sealed",owner_project:"synthesis-work",ref:"refs/heads/main"}}' \
+  "$home/programme/programme.json" > "$tmp" && mv "$tmp" "$home/programme/programme.json"
+mkdir -p "$home/fake-bin"
+cat > "$home/fake-bin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = list ] || exit 1
+printf 'count: 0\n'
+SH
+chmod +x "$home/fake-bin/tasks-axi"
+resolved=$(PATH="$home/fake-bin:$PATH" FM_HOME="$home" FM_CONTINUATION_TODAY=2026-09-20 \
+  "$ROOT/bin/fm-continuation-resolve.sh" resolve --programme "$home/programme/programme.json" --root "$home/source") \
+  || fail "sealed-root resolver integration failed: $resolved"
+[ "$(printf '%s' "$resolved" | jq -r '.next_action // "COMPLETE"')" = COMPLETE ] \
+  || fail "resolver substituted the canonical root for D: $(printf '%s' "$resolved" | jq -c '{next_action,reason_code,cno}')"
+[ "$(printf '%s' "$resolved" | jq -r '.completed | map(.id) | join(",")')" = slice-d-s4-synthesis-integrity ] \
+  || fail "resolver did not complete the same-root D admission"
+pass "shared continuation verification consumes the exact source root sealed in the D admission"
+
+# Wrong-root negative 4: stale registry generation remains a refusal.
+printf '%s\n' '- later-owner [local-only] - later generation (added 2026-09-20)' >> "$home/data/projects.md"
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" --programme "$home/programme/programme.json" \
+  --root-from-admission --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "stale registry generation unexpectedly verified"
+assert_contains "$out" 'MANIFEST_AUTHENTICITY' "stale registry generation did not refuse"
+pass "wrong-root negative: stale registry generation refuses"
+
+# Wrong-root negative 5: records from the prior registry generation cannot be
+# mixed with a current-generation successor.
+mixed=$(PATH="$home/fake-bin:$PATH" FM_HOME="$home" FM_CONTINUATION_TODAY=2026-09-20 \
+  "$ROOT/bin/fm-continuation-resolve.sh" resolve --programme "$home/programme/programme.json" --root "$home/source") \
+  || fail "mixed-generation resolver invocation failed structurally: $mixed"
+[ "$(printf '%s' "$mixed" | jq -r '.authority_state + " " + .reason_code')" = 'CNO OWNER_EVIDENCE_CANDIDATE_MISMATCH' ] \
+  || fail "mixed registry generation did not stop continuation: $(printf '%s' "$mixed" | jq -c '{authority_state,reason_code,cno}')"
+pass "wrong-root negative: A/B/D records mixed across registry generations refuse"
+
+# Wrong-root negative 6: a positive admission cannot later be verified through
+# a different source root.
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+  --programme "$home/programme/programme.json" --root "$home/source" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" -ne 0 ] || fail "successful admission later verified against another root"
+assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "post-admission wrong-root verification did not refuse"
+pass "wrong-root negative: successful admission followed by another-root verification refuses"
+
+# The sealed D admission itself carries the retained session's registry
+# generation; this literal makes the mixed-generation expectation independent
+# of resolver presentation.
+[ "$registry_generation" != "$(sha256_file "$home/data/projects.md")" ] \
+  || fail "registry mutation did not create the intended successor-generation mismatch"
+
 printf '\n# fm-local-project-delivery.test.sh: all assertions passed\n'

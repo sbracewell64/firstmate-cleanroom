@@ -595,6 +595,21 @@ advance_owns_current_attempt() {
   [ "$(meta stage_successor_advance_run)" = "$(meta stage_run)" ]
 }
 
+# The head the observer bound for the attempt that owns the current candidate.
+# The observer records what its attempt was ADMITTED at and never moves that,
+# while a successor transition deliberately carries the record's head past it,
+# so every reader that compares against the observer asks here rather than
+# re-deriving the expectation from whatever the record now calls current.
+bound_observer_head() {
+  if bound_run_uses_predecessor; then
+    stage_predecessor_head
+  elif advance_owns_current_attempt; then
+    meta stage_successor_advance_from
+  else
+    meta stage_head
+  fi
+}
+
 bound_run_status() {
   local run output duty expected_head expected_branch
   run=$(obs run_id)
@@ -605,13 +620,11 @@ bound_run_status() {
   if bound_run_uses_predecessor; then
     [ "$run" = "$(stage_predecessor_run)" ] || return 1
     [ "$(stage_predecessor_attempt)" = "$(obs attempt_id)" ] || return 1
-    expected_head=$(stage_predecessor_head)
     expected_branch=$(stage_predecessor_branch)
   else
-    expected_head=$(meta stage_head)
     expected_branch=$(meta stage_branch)
-    ! advance_owns_current_attempt || expected_head=$(meta stage_successor_advance_from)
   fi
+  expected_head=$(bound_observer_head)
   [ "$expected_head" = "$(obs candidate_head)" ] || return 1
   [ "$expected_branch" = "$(obs candidate_branch)" ] || return 1
   [ "$(obs entrypoint)" = stage ] || return 1
@@ -1101,7 +1114,7 @@ engineering_context_discipline() { # <transition>
       refuse "$transition" DISCIPLINE_IDENTITY 'admitted discipline requires branch/head/tree in the stage receipt'
     fi
     observer_candidate=$(obs candidate_head)
-    if bound_run_uses_predecessor; then expected_observer=$(stage_predecessor_head); else expected_observer=$recorded_head; fi
+    expected_observer=$(bound_observer_head)
     [ -z "$observer_candidate" ] || [ "$observer_candidate" = "$expected_observer" ] || \
       refuse "$transition" DISCIPLINE_IDENTITY 'observer candidate does not match the admitted discipline predecessor'
     actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -1505,46 +1518,44 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       fm_lock_release "$lock"
       refuse ci-ready SUCCESSOR_COLLISION 'the recorded successor is incomplete or no longer matches its own immutable lineage'
     fi
-    case "$(meta stage_successor_action)" in
-      mint-validation-branch) replay_pr=$(meta stage_successor_advance_pr) ;;
-      *) replay_pr=$(meta stage_successor_pr) ;;
-    esac
-    case "$(meta stage_successor_action)" in
-      authenticated-synchronized-successor|verified-terminal-successor|mint-validation-branch)
-        if [ -n "$replay_pr" ] && [ "$replay_pr" = "$pr" ]; then
-          if successor_replay_locked; then
-            fm_lock_release "$lock"
-            return 0
-          fi
-          fm_lock_release "$lock"
-          # A replay that did not happen is reported by what actually stopped
-          # it. Exhaustion is reserved for a head that is genuinely a second
-          # distinct successor, because it is the one cause no local repair
-          # can clear.
-          case "$SUCCESSOR_REPLAY_CAUSE" in
-            dirty) refuse ci-ready UNCOMMITTED 'the worktree must be clean to replay the recorded successor' ;;
-            unevaluable) refuse ci-ready SUCCESSOR_CNO 'the bound run or attempt identity could not be evaluated to replay the recorded successor' ;;
-            branch) refuse ci-ready SUCCESSOR_CONTRADICTION "the live branch is not $(dash "$(meta stage_successor_branch)"), the branch the recorded successor bound" ;;
-            producer) refuse ci-ready SUCCESSOR_CONTRADICTION 'a different run or attempt produced the head that advanced past the recorded successor' ;;
-            stale) refuse ci-ready STALE_CANDIDATE "head $(short "$HEAD") is behind the recorded successor $(short "$SUCCESSOR_REPLAY_HEAD")" ;;
-            invalid-record) refuse ci-ready SUCCESSOR_COLLISION 'the recorded successor is incomplete or no longer matches its own immutable lineage' ;;
-          esac
-        fi ;;
-    esac
-    # A minted branch still owes its own pipeline runs, and those runs rebase
-    # it. One advancement of the recorded mint per admitted attempt carries the
-    # current head forward on that exact branch through this owner; the next one
-    # needs its own admission and its own run, and another branch is a
-    # replacement the record cannot carry at all.
+    # A minted successor names a BRANCH, so an attempt that does not own the
+    # recorded advancement is not replaying it: it is the next advance of that
+    # branch, whether its run rebased the head or merely committed onto it. The
+    # replay's cause taxonomy belongs to the classes whose successor is final.
     if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
-        && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
-      if advance_owns_current_attempt; then
-        fm_lock_release "$lock"
+        && [ "$BRANCH" = "$(meta stage_successor_branch)" ] \
+        && [ "$HEAD" != "$(meta stage_successor_advance_head)" ] \
+        && ! advance_owns_current_attempt; then
+      advancing=1
+    fi
+    if [ "$advancing" -eq 0 ]; then
+      case "$(meta stage_successor_action)" in
+        mint-validation-branch) replay_pr=$(meta stage_successor_advance_pr) ;;
+        *) replay_pr=$(meta stage_successor_pr) ;;
+      esac
+      if [ -n "$replay_pr" ] && [ "$replay_pr" = "$pr" ]; then
+        if successor_replay_locked; then
+          fm_lock_release "$lock"
+          return 0
+        fi
+        # A replay that did not happen is reported by what actually stopped
+        # it. Exhaustion is reserved for a head that is genuinely a second
+        # distinct successor, because it is the one cause no local repair
+        # can clear.
+        case "$SUCCESSOR_REPLAY_CAUSE" in
+          dirty) fm_lock_release "$lock"; refuse ci-ready UNCOMMITTED 'the worktree must be clean to replay the recorded successor' ;;
+          unevaluable) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'the bound run or attempt identity could not be evaluated to replay the recorded successor' ;;
+          branch) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CONTRADICTION "the live branch is not $(dash "$(meta stage_successor_branch)"), the branch the recorded successor bound" ;;
+          producer) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CONTRADICTION 'a different run or attempt produced the head that advanced past the recorded successor' ;;
+          stale) fm_lock_release "$lock"; refuse ci-ready STALE_CANDIDATE "head $(short "$HEAD") is behind the recorded successor $(short "$SUCCESSOR_REPLAY_HEAD")" ;;
+          invalid-record) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_COLLISION 'the recorded successor is incomplete or no longer matches its own immutable lineage' ;;
+        esac
+      fi
+      fm_lock_release "$lock"
+      if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
+          && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
         refuse ci-ready SUCCESSOR_EXHAUSTED "attempt $(dash "$(meta stage_attempt)") already advanced $(dash "$(meta stage_successor_branch)") to $(short "$(meta stage_successor_advance_head)"); a further advance needs a fresh \`$SELF_CMD committed --retry\` admission and its own run"
       fi
-      advancing=1
-    else
-      fm_lock_release "$lock"
       refuse ci-ready SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a distinct successor needs a fresh task identity"
     fi
   fi
@@ -1723,6 +1734,57 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
 # owner last bound - the mint itself, or the advancement that mint's branch last
 # took. Either is a point this owner issued, so the next attempt admits from it
 # instead of being told the successor is spent.
+# 0 when the PR at <url> is still an open, unmerged PR for <branch>, 1 when it
+# is provably not, and 2 when that identity cannot be evaluated. A merged or
+# closed PR means the branch it was opened for is finished, whatever its refs
+# still say.
+pr_open_for_branch() { # <url> <branch>
+  local row number state merged head branch url pipeline block64
+  row=$(gh_axi_pr_row "$1") || return 2
+  IFS=$(printf '\t') read -r number state merged head branch url pipeline block64 <<EOF
+$row
+EOF
+  [ -n "$number" ] && [ -n "$state" ] && [ -n "$merged" ] || return 2
+  fm_pr_url_parse "$1" >/dev/null 2>&1 || return 2
+  [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 1
+  [ "$branch" = "$2" ] || return 1
+  [ "$state" = open ] && [ "$merged" = false ]
+}
+
+# 0 when this record's own minted branch can still carry another attempt: the
+# worker holds custody, the branch is clean and synchronized with nothing the
+# pipeline has yet to land, and the PR its last run opened is still open and
+# unmerged. 1 when it is provably not reusable - a merged, closed or moved
+# branch is finished and needs a fresh task identity - and 2 when none of that
+# can be evaluated.
+minted_branch_reusable() { # <bound-status> <pr-url>
+  local output=$1 pr=$2 proof value rc=0
+  [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
+  [ -n "$(meta stage_successor_branch)" ] || return 1
+  [ "$BRANCH" = "$(meta stage_successor_branch)" ] || return 1
+  [ "$(fm_nm_branch_sync_state "$output")" != pipeline_owned ] || return 1
+  ! worktree_dirty || return 1
+  proof=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || return 2
+  value=$(fm_nm_sync_scalar "$proof" '' state) || return 2
+  [ "$value" = synchronized ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" '' relation) || return 2
+  [ "$value" = equal ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" local branch) || return 2
+  [ "$value" = "$BRANCH" ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" local head) || return 2
+  [ "$value" = "$HEAD" ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" local clean raw) || return 2
+  [ "$value" = true ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" remote observed_head) || return 2
+  [ "$value" = "$HEAD" ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" pipeline current_head) || return 2
+  [ "$value" = "$HEAD" ] || return 1
+  value=$(fm_nm_sync_scalar "$proof" pipeline pushed_head) || return 2
+  [ "$value" = "$HEAD" ] || return 1
+  pr_open_for_branch "$pr" "$BRANCH" || rc=$?
+  return "$rc"
+}
+
 retry_follows_own_successor() {
   [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
   if [ "$(meta stage)" = candidate-successor ] \
@@ -1740,7 +1802,7 @@ terminal_successor_required() { # <bound-status>
 # --- transitions ------------------------------------------------------------
 
 do_committed() {
-  local current recorded_head output holds
+  local current recorded_head output holds reuse_rc
   require_ship committed
   engineering_context committed
   require_worktree committed
@@ -1768,9 +1830,19 @@ do_committed() {
       fi
       if [ -n "$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")" ]; then
         if ! retry_follows_own_successor; then
-          [ -z "$(meta stage_successor_id)" ] \
-            || refuse committed SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"
-          refuse committed SUCCESSOR_REQUIRED "the terminal published validation branch is non-reusable; run \`$SELF_CMD successor\`, then re-run committed --retry"
+          # A run that ended without advancing does not consume the branch it
+          # ran on. The minted branch carries another attempt when it is
+          # provably still reusable, and says so by name when it is not.
+          reuse_rc=0
+          minted_branch_reusable "$output" "$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")" || reuse_rc=$?
+          case "$reuse_rc" in
+            0) ;;
+            2) refuse committed SUCCESSOR_CNO "the minted validation branch $(dash "$(meta stage_successor_branch)") could not be proven reusable for another attempt" ;;
+            *)
+              [ -z "$(meta stage_successor_id)" ] \
+                || refuse committed SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"
+              refuse committed SUCCESSOR_REQUIRED "the terminal published validation branch is non-reusable; run \`$SELF_CMD successor\`, then re-run committed --retry" ;;
+          esac
         fi
       fi
     fi

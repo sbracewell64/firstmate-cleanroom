@@ -1204,7 +1204,7 @@ test_synchronized_rebased_successor_transition
 # command owns the deterministic branch name and its crash journal; admission
 # remains a later committed --retry transition.
 test_terminal_branch_requires_one_minted_successor() {
-  local wt head out rc before terminal_outcome
+  local wt head out rc before terminal_outcome reuse_proof
   wt="$TMP_ROOT/wt-terminal-branch"
   make_worktree "$wt" fm/terminal-branch
   head=$(git -C "$wt" rev-parse HEAD)
@@ -1264,15 +1264,67 @@ test_terminal_branch_requires_one_minted_successor() {
   [ "$(meta_get terminal-branch stage_run)" = 01TERMINALBRANCHNEXT ] || fail 'current run did not advance after final admission'
   [ "$(meta_get terminal-branch stage_predecessor_run)" = 01TERMINALBRANCH ] || fail 'current run advance rewrote predecessor lineage'
   FM_FAKE_AXI_STATUS=$(run_toon 01TERMINALBRANCHNEXT fm/terminal-branch-successor completed "$head" passed https://github.com/o/r/pull/10)
+  # A run that ended without advancing does not consume the branch it ran on, so
+  # whether another attempt may follow is a question about the branch. Nothing
+  # here can answer it yet, and an unprovable answer is unevaluable rather than
+  # an assumed verdict in either direction.
+  FM_FAKE_SYNC=''
+  export FM_FAKE_SYNC
   out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
-  expect_code 1 "$rc" "the minted branch cannot be reused after its own terminal publication: $out"
-  # The two commands must agree: a spent successor is never answered by naming a
-  # command that will itself refuse.
+  expect_code 1 "$rc" "an unprovable branch state must refuse a further attempt: $out"
+  assert_contains "$out" 'SUCCESSOR_CNO' 'an unprovable minted-branch reuse was not typed as unevaluable'
+  assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'an unprovable reuse was answered by requiring another successor'
+
+  reuse_proof="branch_sync:
+  state: synchronized
+  changed: false
+  local:
+    branch: fm/terminal-branch-successor
+    head: $head
+    clean: true
+  pipeline:
+    run: 01TERMINALBRANCHNEXT
+    status: completed
+    submitted_head: $head
+    current_head: $head
+    pushed_head: $head
+    push_generation: 2
+  target:
+    kind: upstream
+    ref: refs/heads/fm/terminal-branch-successor
+  remote:
+    observed_head: $head
+    freshness: live
+  relation: equal
+  safety: already_synchronized
+  pr_state: open"
+  # A branch whose PR the pipeline already merged is finished: the next attempt
+  # needs a fresh task identity, and the two commands agree about that.
+  FM_FAKE_SYNC=$reuse_proof
+  FM_FAKE_PR_NUMBER=10 FM_FAKE_PR_URL=https://github.com/o/r/pull/10
+  FM_FAKE_PR_BRANCH=fm/terminal-branch-successor FM_FAKE_PR_HEAD=$head
+  FM_FAKE_PR_STATE=closed FM_FAKE_PR_MERGED=true
+  export FM_FAKE_SYNC FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
+  out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "a merged minted branch cannot carry another attempt: $out"
   assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a spent successor was not typed as exhausted'
   assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'a spent successor was answered by requiring another one'
   out=$("$STAGE" terminal-branch successor 2>&1); rc=$?
   expect_code 1 "$rc" "a second distinct minted successor must refuse: $out"
   assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'second minted successor refusal was not typed'
+
+  # The same branch with its PR still open and unmerged is reusable, so the run
+  # that ended without advancing does not strand the task.
+  FM_FAKE_PR_STATE=open FM_FAKE_PR_MERGED=false
+  export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
+  out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "a reusable minted branch must carry another attempt: $out"
+  assert_contains "$out" 'STAGE: validation-admitted:' 'the reusable minted branch was not re-admitted'
+  [ "$(meta_get terminal-branch stage_branch)" = fm/terminal-branch-successor ] || fail 'the further attempt left the minted branch'
+  [ "$(meta_get terminal-branch stage_predecessor_run)" = 01TERMINALBRANCH ] || fail 'the further attempt erased predecessor run lineage'
+  FM_FAKE_SYNC=''
+  FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BRANCH='' FM_FAKE_PR_HEAD=''
+  export FM_FAKE_SYNC FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD
   pass 'terminal validation branch requires one explicit crash-safe successor and refuses name collisions'
 }
 test_terminal_branch_requires_one_minted_successor
@@ -1617,7 +1669,7 @@ test_minted_branch_advances_through_the_owner() {
   FM_FAKE_SYNC_RC=0; FM_FAKE_PR_STATE=open
   export FM_FAKE_SYNC_RC FM_FAKE_PR_STATE
 
-  # The same attempt has now spent its advancement: another rebase under it is
+  # The same attempt has now spent its advancement: another head under it is
   # refused, and the refusal names the supported way forward rather than telling
   # the worker the task is over.
   before=$(cat "$STATE/minted-advance.meta")
@@ -1649,11 +1701,14 @@ test_minted_branch_advances_through_the_owner() {
   export FM_FAKE_AXI_STATUS
   out=$("$STAGE" minted-advance running --run "$run3" 2>&1); rc=$?
   expect_code 0 "$rc" "the fresh attempt must bind its own run: $out"
-  git -C "$wt" rebase minted-advance-main >/dev/null 2>&1 || fail 'minted-advance third-run rebase'
+  # This run does not rewrite ancestry - it pushes an ordinary fix commit. An
+  # advance is about who produced the head, not about how Git got there.
+  git -C "$wt" commit -q --allow-empty -m 'pipeline fix commit on the advanced branch'
   head3=$(git -C "$wt" rev-parse HEAD)
   tree3=$(git -C "$wt" rev-parse 'HEAD^{tree}')
-  [ "$head3" != "$head2" ] || fail 'the third-run rebase did not move the head'
-  git -C "$wt" merge-base --is-ancestor "$head2" "$head3" && fail 'the third-run rebase did not rewrite ancestry'
+  [ "$head3" != "$head2" ] || fail 'the fix commit did not move the head'
+  git -C "$wt" merge-base --is-ancestor "$head2" "$head3" \
+    || fail 'the fix-commit fixture is not a descendant of the advanced head'
   proof="branch_sync:
   state: synchronized
   changed: false

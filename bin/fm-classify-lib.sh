@@ -157,6 +157,7 @@ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 # are percent-encoded (bin/fm-stage.sh owns the field inventory), and
 # status_stage_field reads one field back.
 #   candidate-committed  progress  the candidate branch, head, and tree are recorded
+#   candidate-successor  progress  the owner advanced to one authenticated or newly minted successor
 #   validation-pending   wait      validation is not admitted (a hold or capacity is
 #                                  missing); the worker waits and firstmate acts
 #   validation-admitted  progress  the lifecycle admitted validation on that candidate
@@ -170,12 +171,12 @@ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 # classifies exactly like `done:`. The table decides, never the receipt text, so a
 # FM_CAPTAIN_RE override does not change how a stage line reads.
 # shellcheck disable=SC2034 # Read by consumers that enumerate the vocabulary, not this lib.
-FM_CLASSIFY_STAGE_VERBS='candidate-committed validation-pending validation-admitted validation-running ci-ready landing activated'
+FM_CLASSIFY_STAGE_VERBS='candidate-committed candidate-successor validation-pending validation-admitted validation-running ci-ready landing activated'
 
 # Print progress|wait|terminal for a stage verb; 1 (nothing printed) otherwise.
 status_stage_class() {  # <verb>
   case "$1" in
-    candidate-committed|validation-admitted|validation-running|landing) printf 'progress' ;;
+    candidate-committed|candidate-successor|validation-admitted|validation-running|landing) printf 'progress' ;;
     validation-pending) printf 'wait' ;;
     ci-ready|activated) printf 'terminal' ;;
     *) return 1 ;;

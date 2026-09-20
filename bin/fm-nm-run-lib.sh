@@ -272,11 +272,59 @@ fm_nm_sync_scalar() { # <sync-toon> <section-or-empty> <key> [raw]
   printf '%s' "$raw"
 }
 
-# Completed non-ancestor admission is separate from active run attribution.
-# The tooling service owns qualification; CI-ready checks its fresh successor
-# projection against the bound attempt and actual clean caller/preservation.
-# Ordinary equality, a local anchor, or completed status alone grants nothing.
-# No teardown or ordinary run-attribution caller uses this predicate.
+# Non-ancestor admission is separate from ordinary run attribution.
+# The stage owner consumes this exact synchronized projection only together with
+# the bound run, exact PR attestation, and canonical checks-green verdict. This
+# predicate grants no qualification by itself and no teardown caller uses it.
+# Returns 0 for an exact match, 1 for a readable contradiction, and 2 when a
+# required identity cannot be evaluated. The stage owner preserves that typed
+# distinction in its public refusal.
+fm_nm_verified_synchronized_successor() { # <run> <submitted> <head> <branch> <sync-toon>
+  local run=$1 submitted=$2 head=$3 branch=$4 output=$5 generation actual changed value
+  [[ "$submitted" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 2
+  [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] && [ -n "$branch" ] || return 2
+  [ "$submitted" != "$head" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" '' state) || return 2
+  [ "$value" = synchronized ] || return 1
+  changed=$(fm_nm_sync_scalar "$output" '' changed raw) || return 2
+  [ "$changed" = false ] || return 1
+  value=$(fm_nm_sync_scalar "$output" '' relation) || return 2
+  [ "$value" = equal ] || return 1
+  value=$(fm_nm_sync_scalar "$output" '' safety) || return 2
+  [ "$value" = already_synchronized ] || return 1
+  value=$(fm_nm_sync_scalar "$output" pipeline run) || return 2
+  [ "$value" = "$run" ] || return 1
+  actual=$(fm_nm_sync_scalar "$output" pipeline status) || return 2
+  case "$actual" in running|completed) ;; *) return 1 ;; esac
+  value=$(fm_nm_sync_scalar "$output" pipeline submitted_head) || return 2
+  [ "$value" = "$submitted" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" pipeline current_head) || return 2
+  [ "$value" = "$head" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" pipeline pushed_head) || return 2
+  [ "$value" = "$head" ] || return 1
+  generation=$(fm_nm_sync_scalar "$output" pipeline push_generation raw) || return 2
+  [[ "$generation" =~ ^[1-9][0-9]*$ ]] || return 2
+  actual=$(fm_nm_sync_scalar "$output" target kind) || return 2
+  case "$actual" in upstream|fork) ;; *) return 1 ;; esac
+  value=$(fm_nm_sync_scalar "$output" target ref) || return 2
+  [ "$value" = "refs/heads/$branch" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" remote freshness) || return 2
+  [ "$value" = live ] || return 1
+  value=$(fm_nm_sync_scalar "$output" remote observed_head) || return 2
+  [ "$value" = "$head" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" local branch) || return 2
+  [ "$value" = "$branch" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" local head) || return 2
+  [ "$value" = "$head" ] || return 1
+  value=$(fm_nm_sync_scalar "$output" local clean raw) || return 2
+  [ "$value" = true ] || return 1
+  value=$(fm_nm_sync_scalar "$output" '' pr_state) || return 2
+  [ "$value" = open ]
+}
+
+# Completed non-ancestor admission additionally accepts the tooling service's
+# own preserved-anchor projection. Kept for callers whose local branch has not
+# already synchronized to the qualified head.
 fm_nm_verified_terminal_successor() { # <worktree> <run> <submitted> <head> <branch> <sync-toon>
   local wt=$1 run=$2 submitted=$3 head=$4 branch=$5 output=$6 generation fingerprint anchor actual dirty
   [[ "$submitted" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1

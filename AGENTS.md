@@ -355,7 +355,7 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 
 ### Validate
 
-A ship task moves through explicit lifecycle stages that only `bin/fm-stage.sh` issues, each as a distinct status verb with a transition receipt: `candidate-committed`, then `validation-pending` or `validation-admitted`, `validation-running`, `ci-ready`, `landing`, and `activated`; `bin/fm-classify-lib.sh` owns how each verb classifies.
+A ship task moves through explicit lifecycle stages that only `bin/fm-stage.sh` issues, each as a distinct status verb with a transition receipt: `candidate-committed`, then `validation-pending` or `validation-admitted`, `validation-running`, an optional `candidate-successor`, `ci-ready`, `landing`, and `activated`; `bin/fm-classify-lib.sh` owns how each verb classifies.
 For a no-mistakes ship, the worker's own stage command admits validation after its implementation commit when the task's delivery contract and recorded dispatch already admit it, admitting the launch through the observer and binding the run it becomes, so the worker starts the pipeline without a steer; a `validation-pending` receipt names the open hold or missing capacity that stopped it, and firstmate clears that rather than sending the invocation.
 `docs/no-mistakes-observation.md` owns the coverage census, and a launch the observer refused is an environment blocker, not a reason to skip the step.
 The task worker that starts a no-mistakes run drives the pipeline and owns every `no-mistakes axi run` and `no-mistakes axi respond` call through the next gate or outcome.

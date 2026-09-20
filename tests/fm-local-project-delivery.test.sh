@@ -48,6 +48,7 @@ write_programme() { # <home>
         "kind": "accepted_owner_evidence",
         "evidence": "evidence/slice-a.json",
         "accept": ["DELIVERED_QUALIFIED"],
+        "local_delivery_source": {"identity": "canonical_artifact_root"},
         "local_delivery": {
           "schema": "fm-local-project-delivery-policy/v1",
           "owner_project": "exchange-work",
@@ -73,6 +74,7 @@ write_programme() { # <home>
         "kind": "accepted_owner_evidence",
         "evidence": "evidence/slice-b.json",
         "accept": ["DELIVERED_QUALIFIED"],
+        "local_delivery_source": {"identity": "canonical_artifact_root"},
         "local_delivery": {
           "schema": "fm-local-project-delivery-policy/v1",
           "owner_project": "exchange-work",
@@ -97,6 +99,7 @@ write_programme() { # <home>
         "kind": "accepted_owner_evidence",
         "evidence": "evidence/slice-d.json",
         "accept": ["DELIVERED_QUALIFIED"],
+        "local_delivery_source": {"identity": "owner_project_root"},
         "local_delivery": {
           "schema": "fm-local-project-delivery-policy/v1",
           "maker_checker": "distinct",
@@ -166,6 +169,14 @@ bind() { # <home> <step> [extra args...]
   shift 2
   bind_as "$home/projects/exchange-work" "$home" "$step" exchange-work refs/heads/main \
     "delivery-${step}" maker-one checker-one "$@"
+}
+
+bind_with_root() { # <cwd> <home> <root> <step> <project> <delivery-id>
+  local cwd=$1 home=$2 root=$3 step=$4 project=$5 delivery_id=$6
+  (cd "$cwd" && FM_HOME="$home" "$DELIVERY" bind \
+    --programme "$home/programme/programme.json" --root "$root" --step "$step" \
+    --project "$project" --ref refs/heads/main --delivery-id "$delivery_id" \
+    --maker maker-one --checker checker-one --route independent-checker)
 }
 
 expect_rejected_without_publication() { # <label> <home> <expected> <command...>
@@ -420,12 +431,25 @@ chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
 git -C "$repo" add .
 git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
 out=$(cd "$repo" && FM_HOME="$home" "$DELIVERY" bind --programme "$home/programme/programme.json" \
-  --root "$home/source" --step slice-d-s4-synthesis-integrity --project auto --ref refs/heads/main \
+  --root "$repo" --step slice-d-s4-synthesis-integrity --project auto --ref refs/heads/main \
   --delivery-id delivery-d --maker maker-one --checker checker-one --route independent-checker) \
   || fail "complete D family did not admit: $out"
 [ "$(printf '%s' "$out" | jq -r '.project')" = synthesis-work ] || fail "D auto-owner did not select the complete lawful owner"
 [ "$(jq -r '.artifacts | length' "$(printf '%s' "$out" | jq -r '.path')")" = 7 ] || fail "D admission did not bind the complete family"
 pass "D auto-owner selection admits exactly one complete registered local-only family"
+
+# The public per-step source-root identity refuses a self-delivery whose source
+# root is the destination project itself: with source and destination the same
+# working files no byte or read-back mismatch could ever fire.
+expect_rejected_without_publication "A self-delivery source root" "$home" 'SOURCE_IDENTITY_MISMATCH' \
+  bind_with_root "$home/projects/exchange-work" "$home" "$home/projects/exchange-work" \
+  slice-a-s1-publication-integrity exchange-work a-self-root
+
+# The same pin refuses the reverse substitution: D's authorized same-root owner
+# identity is not satisfied by the canonical artifact root, so no registered
+# project owns that census.
+expect_rejected_without_publication "D canonical-root substitution" "$home" 'OWNER_MISSING' \
+  bind_with_root "$repo" "$home" "$home/source" slice-d-s4-synthesis-integrity auto d-canonical-root
 
 # A D successor admission seals its same-root source independently of the
 # programme's canonical artifact root. The shared resolver must consume that
@@ -460,7 +484,7 @@ printf '#!/usr/bin/env python3\nprint("defective canonical")\n' > "$home/source/
 out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
   --programme "$home/programme/programme.json" --root "$home/source" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
 [ "$rc" -ne 0 ] || fail "canonical seed root unexpectedly verified the same-root D admission"
-assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "canonical seed root fallback did not refuse"
+assert_contains "$out" 'SOURCE_IDENTITY_MISMATCH' "canonical seed root fallback did not refuse"
 pass "wrong-root negative: canonical seed root fallback refuses"
 
 # Wrong-root negative 2: cwd and an ambient root variable cannot replace the
@@ -474,7 +498,7 @@ sealed=$(cd "$home/ambient" && FM_PROGRAMME_ROOT="$home/ambient" FM_HOME="$home"
 out=$(cd "$home/ambient" && FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
   --programme "$home/programme/programme.json" --root "$PWD" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
 [ "$rc" -ne 0 ] || fail "ambient cwd/root substitution unexpectedly verified"
-assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "ambient cwd/root substitution did not refuse"
+assert_contains "$out" 'SOURCE_IDENTITY_MISMATCH' "ambient cwd/root substitution did not refuse"
 pass "wrong-root negative: ambient cwd and root substitution refuses"
 
 # Wrong-root negative 3: a source-root edit to another project is not accepted
@@ -487,8 +511,27 @@ chmod 600 "$mutated"
 out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$mutated" --programme "$home/programme/programme.json" \
   --root-from-admission --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
 [ "$rc" -ne 0 ] || fail "mismatched project/root admission unexpectedly verified"
-assert_contains "$out" 'MANIFEST_AUTHENTICITY' "mismatched project/root did not refuse as an identity mismatch"
+assert_contains "$out" 'SOURCE_IDENTITY_MISMATCH' "mismatched project/root did not refuse as an identity mismatch"
 pass "wrong-root negative: mismatched project id and root refuses"
+
+# A sealed root that is not one readable absolute path is the same typed
+# authenticity refusal, never an untyped interpreter failure.
+null_root="$home/data/local-project-delivery/admissions/delivery-d-null-root.json"
+python3 - "$admission" "$null_root" <<'NULLROOT'
+import json, sys
+
+doc = json.load(open(sys.argv[1]))
+doc["admission_id"] = doc["delivery_id"] = "delivery-d-null-root"
+doc["source"]["root"] = doc["source"]["root"] + "\x00b"
+open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(doc, sort_keys=True, indent=2) + "\n")
+NULLROOT
+chmod 600 "$null_root"
+out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$null_root" --programme "$home/programme/programme.json" \
+  --root-from-admission --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
+[ "$rc" = 4 ] || fail "malformed sealed root did not return one typed refusal: rc=$rc $out"
+assert_contains "$out" 'MANIFEST_AUTHENTICITY' "malformed sealed root did not refuse as an authenticity mismatch"
+case "$out" in *Traceback*) fail "malformed sealed root escaped as an untyped traceback: $out" ;; esac
+pass "wrong-root negative: a malformed sealed source root is the typed authenticity refusal"
 
 checker_rel=data/local-project-delivery/d-sealed-checker.json
 checker_file="$home/$checker_rel"
@@ -555,27 +598,143 @@ out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" --programme "$
 assert_contains "$out" 'MANIFEST_AUTHENTICITY' "stale registry generation did not refuse"
 pass "wrong-root negative: stale registry generation refuses"
 
-# Wrong-root negative 5: records from the prior registry generation cannot be
-# mixed with a current-generation successor.
-mixed=$(PATH="$home/fake-bin:$PATH" FM_HOME="$home" FM_CONTINUATION_TODAY=2026-09-20 \
-  "$ROOT/bin/fm-continuation-resolve.sh" resolve --programme "$home/programme/programme.json" --root "$home/source") \
-  || fail "mixed-generation resolver invocation failed structurally: $mixed"
-[ "$(printf '%s' "$mixed" | jq -r '.authority_state + " " + .reason_code')" = 'CNO OWNER_EVIDENCE_CANDIDATE_MISMATCH' ] \
-  || fail "mixed registry generation did not stop continuation: $(printf '%s' "$mixed" | jq -c '{authority_state,reason_code,cno}')"
-pass "wrong-root negative: A/B/D records mixed across registry generations refuse"
-
 # Wrong-root negative 6: a positive admission cannot later be verified through
 # a different source root.
 out=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
   --programme "$home/programme/programme.json" --root "$home/source" --step slice-d-s4-synthesis-integrity 2>&1); rc=$?
 [ "$rc" -ne 0 ] || fail "successful admission later verified against another root"
-assert_contains "$out" 'SOURCE_DESTINATION_MISMATCH' "post-admission wrong-root verification did not refuse"
+assert_contains "$out" 'SOURCE_IDENTITY_MISMATCH' "post-admission wrong-root verification did not refuse"
 pass "wrong-root negative: successful admission followed by another-root verification refuses"
 
-# The sealed D admission itself carries the retained session's registry
-# generation; this literal makes the mixed-generation expectation independent
-# of resolver presentation.
+# The sealed D admission itself carries the registry generation it was bound
+# under; this literal makes the stale-registry expectation above independent of
+# resolver presentation.
 [ "$registry_generation" != "$(sha256_file "$home/data/projects.md")" ] \
   || fail "registry mutation did not create the intended successor-generation mismatch"
+
+# Qualify one admitted delivery the way its owners do: a private checker
+# receipt, a private delivery receipt that binds the admission by digest, the
+# public digests-only owner record, and the programme pins for that record.
+qualify_local_delivery() { # <home> <step> <admission> <project> <delivery-id> <generation>
+  local home=$1 step=$2 admission=$3 project=$4 delivery=$5 generation=$6
+  local head tree admission_rel admission_sha policy_digest checker_rel checker_file checker_sha
+  local receipt_rel receipt_file receipt_sha evidence_rel evidence evidence_sha tmp
+  head=$(jq -r '.destination.head' "$admission")
+  tree=$(jq -r '.destination.tree' "$admission")
+  admission_rel=${admission#"$home/"}
+  admission_sha=$(sha256_file "$admission")
+  policy_digest=$(jq -r '.action.local_delivery_policy_sha256' "$admission")
+  mkdir -p "$home/data/local-project-delivery"
+  checker_rel="data/local-project-delivery/$delivery-checker.json"
+  checker_file="$home/$checker_rel"
+  jq -n --arg admission "$admission_sha" --arg head "$head" --arg tree "$tree" --arg delivery "$delivery" '
+    {schema:"fm-local-checker-receipt/v2",receipt_id:("checker-"+$delivery),admission_sha256:$admission,
+     candidate:{head:$head,tree:$tree},maker:{id:"maker-one"},checker:{id:"checker-one"},
+     pipeline:"independent-checker",outcome:"checks-passed"}' > "$checker_file"
+  chmod 600 "$checker_file"
+  checker_sha=$(sha256_file "$checker_file")
+  receipt_rel="data/local-project-delivery/$delivery-delivery.json"
+  receipt_file="$home/$receipt_rel"
+  jq -n --arg head "$head" --arg tree "$tree" --arg admission_rel "$admission_rel" --arg admission_sha "$admission_sha" \
+    --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" --arg project "$project" \
+    --arg delivery "$delivery" --argjson generation "$generation" '
+    {schema:"fm-local-project-delivery-receipt/v2",delivery_id:$delivery,generation:$generation,
+     owner:{kind:"local_project_delivery",ref:$project},
+     candidate:{head:$head,tree:$tree,delivery_id:$delivery,owner_project:$project,ref:"refs/heads/main"},
+     admission:{path:$admission_rel,sha256:$admission_sha},maker:{id:"maker-one",commit:$head},checker:{id:"checker-one"},
+     privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+     qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$checker_rel,sha256:$checker_sha}]},
+     read_back:{status:"MATCH",observer:"checker-one"}}' > "$receipt_file"
+  chmod 600 "$receipt_file"
+  receipt_sha=$(sha256_file "$receipt_file")
+  evidence_rel=$(jq -r --arg step "$step" '.steps[] | select(.id==$step) | .terminal_predicate.evidence' "$home/programme/programme.json")
+  evidence="$home/programme/$evidence_rel"
+  jq -n --arg head "$head" --arg tree "$tree" --arg receipt_rel "$receipt_rel" --arg receipt_sha "$receipt_sha" \
+    --arg checker_rel "$checker_rel" --arg checker_sha "$checker_sha" --arg policy_digest "$policy_digest" \
+    --arg step "$step" --arg project "$project" --arg delivery "$delivery" --argjson generation "$generation" '
+    {schema:"fm-accepted-owner-evidence/v1",evidence_id:$delivery,programme_id:"cleanroom-af-package",
+     step:$step,project:"fixture-project",work_id:"cleanroom-af-package",generation:$generation,
+     owner:{kind:"local_project_delivery",ref:$project},outcome:"DELIVERED_QUALIFIED",
+     candidate:{head:$head,tree:$tree,delivery_id:$delivery,owner_project:$project,ref:"refs/heads/main"},
+     policy:{id:"local-delivery-policy",digest:$policy_digest},verifier:{tool:"fm-local-project-delivery/v2"},
+     qualification:{pipeline:"independent-checker",outcome:"checks-passed",evidence_refs:[{path:$checker_rel,sha256:$checker_sha}]},
+     delivery:{receipt:{path:$receipt_rel,sha256:$receipt_sha}},
+     privacy:{classification:"private_local",exposure:"digests_only",published_private_bytes:false},
+     captures:[],sources:[],observed_bad:[],superseded_by:null}' > "$evidence"
+  evidence_sha=$(sha256_file "$evidence")
+  tmp="$home/programme/programme.json.tmp"
+  jq --arg step "$step" --arg sha "$evidence_sha" --arg head "$head" --arg tree "$tree" \
+    --arg policy_digest "$policy_digest" --arg project "$project" --arg delivery "$delivery" \
+    --argjson generation "$generation" '
+    (.steps[] | select(.id==$step) | .terminal_predicate) +=
+      {owner_ref:$project,evidence_sha256:$sha,evidence_generation:$generation,policy_digest:$policy_digest,
+       candidate:{head:$head,tree:$tree,delivery_id:$delivery,owner_project:$project,ref:"refs/heads/main"}}' \
+    "$home/programme/programme.json" > "$tmp" && mv "$tmp" "$home/programme/programme.json"
+}
+
+# Mixed A/B/D registry generations. A and B qualify together under one registry
+# snapshot; registering D's owner advances that snapshot, so the current D
+# record cannot complete alongside the earlier A and B records even though it
+# verifies on its own; only restarting the complete successor sequence under the
+# current snapshot resolves all three.
+home=$(make_home mixed-generations)
+mkdir -p "$home/fake-bin"
+cat > "$home/fake-bin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = list ] || exit 1
+printf 'count: 0\n'
+SH
+chmod +x "$home/fake-bin/tasks-axi"
+resolve_mixed() {
+  PATH="$home/fake-bin:$PATH" FM_HOME="$home" FM_CONTINUATION_TODAY=2026-09-20 \
+    "$ROOT/bin/fm-continuation-resolve.sh" resolve --programme "$home/programme/programme.json" --root "$home/source"
+}
+out=$(bind_with_root "$home/projects/exchange-work" "$home" "$home/source" \
+  slice-a-s1-publication-integrity exchange-work mixed-a-g1) || fail "generation-1 A bind failed: $out"
+qualify_local_delivery "$home" slice-a-s1-publication-integrity "$(printf '%s' "$out" | jq -r '.path')" exchange-work mixed-a-g1 1
+out=$(bind_with_root "$home/projects/exchange-work" "$home" "$home/source" \
+  slice-b-s2-reference-catalog exchange-work mixed-b-g1) || fail "generation-1 B bind failed: $out"
+qualify_local_delivery "$home" slice-b-s2-reference-catalog "$(printf '%s' "$out" | jq -r '.path')" exchange-work mixed-b-g1 1
+resolved=$(resolve_mixed) || fail "generation-1 A/B resolver integration failed: $resolved"
+[ "$(printf '%s' "$resolved" | jq -r '.completed | map(.id) | join(",")')" = 'slice-a-s1-publication-integrity,slice-b-s2-reference-catalog' ] \
+  || fail "same-snapshot A and B did not complete: $(printf '%s' "$resolved" | jq -c '.completed')"
+[ "$(printf '%s' "$resolved" | jq -r '.next_action')" = slice-d-s4-synthesis-integrity ] \
+  || fail "unbound D is not the next action: $(printf '%s' "$resolved" | jq -c '{next_action,reason_code}')"
+pass "A and B qualify together under one registry snapshot"
+
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto mixed-d-g1) \
+  || fail "successor-snapshot D bind failed: $out"
+admission_d=$(printf '%s' "$out" | jq -r '.path')
+qualify_local_delivery "$home" slice-d-s4-synthesis-integrity "$admission_d" synthesis-work mixed-d-g1 1
+sealed=$(FM_HOME="$home" "$DELIVERY" verify --admission "$admission_d" \
+  --programme "$home/programme/programme.json" --root-from-admission --step slice-d-s4-synthesis-integrity) \
+  || fail "current-generation D admission does not verify on its own: $sealed"
+[ "$(printf '%s' "$sealed" | jq -r '.status')" = ACCEPTED ] || fail "current-generation D admission was not accepted"
+mixed=$(resolve_mixed) || fail "mixed-generation resolver invocation failed structurally: $mixed"
+[ "$(printf '%s' "$mixed" | jq -r '.completed | length')" = 0 ] \
+  || fail "mixed registry generations still completed steps: $(printf '%s' "$mixed" | jq -c '.completed')"
+[ "$(printf '%s' "$mixed" | jq -r '.next_action + " " + .reason_code')" = 'slice-a-s1-publication-integrity OWNER_EVIDENCE_CANDIDATE_MISMATCH' ] \
+  || fail "mixed registry generations did not stop continuation: $(printf '%s' "$mixed" | jq -c '{next_action,authority_state,reason_code,cno}')"
+pass "A/B/D records mixed across registry generations refuse while the current D record verifies alone"
+
+out=$(bind_with_root "$home/projects/exchange-work" "$home" "$home/source" \
+  slice-a-s1-publication-integrity exchange-work mixed-a-g2) || fail "successor A bind failed: $out"
+qualify_local_delivery "$home" slice-a-s1-publication-integrity "$(printf '%s' "$out" | jq -r '.path')" exchange-work mixed-a-g2 2
+out=$(bind_with_root "$home/projects/exchange-work" "$home" "$home/source" \
+  slice-b-s2-reference-catalog exchange-work mixed-b-g2) || fail "successor B bind failed: $out"
+qualify_local_delivery "$home" slice-b-s2-reference-catalog "$(printf '%s' "$out" | jq -r '.path')" exchange-work mixed-b-g2 2
+resolved=$(resolve_mixed) || fail "successor sequence resolver integration failed: $resolved"
+[ "$(printf '%s' "$resolved" | jq -r '.completed | map(.id) | join(",")')" = 'slice-a-s1-publication-integrity,slice-b-s2-reference-catalog,slice-d-s4-synthesis-integrity' ] \
+  || fail "the restarted successor sequence did not complete A/B/D: $(printf '%s' "$resolved" | jq -c '.completed')"
+[ "$(printf '%s' "$resolved" | jq -r '.next_action // "COMPLETE"')" = COMPLETE ] \
+  || fail "the restarted successor sequence did not exhaust the programme: $(printf '%s' "$resolved" | jq -c '{next_action,reason_code}')"
+pass "restarting the complete successor sequence under the current snapshot qualifies A/B/D"
 
 printf '\n# fm-local-project-delivery.test.sh: all assertions passed\n'

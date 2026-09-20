@@ -118,7 +118,8 @@
 #      local_project_delivery / DELIVERED_QUALIFIED is the private/local route.
 #      New V2 evidence is accepted only after bin/fm-local-project-delivery.py
 #      bound one immutable pre-effect admission from the step's exact
-#      terminal_predicate.local_delivery family, source root, strict registered
+#      terminal_predicate.local_delivery family, the step's declared
+#      terminal_predicate.local_delivery_source root identity, strict registered
 #      local-only destination project, candidate head/tree/ref, tracked paths,
 #      objects and modes, maker/checker requirement, and qualification route.
 #      The record exposes digests only and binds one mode-0600
@@ -129,7 +130,9 @@
 #      re-runs the public verifier against current source and destination facts,
 #      consuming the exact source-root identity sealed in the immutable
 #      admission rather than substituting the programme root or ambient working
-#      directory. It refuses moved, replayed, forged, self-certified,
+#      directory, and refusing any sealed root the step's published
+#      local_delivery_source identity does not admit. It refuses moved,
+#      replayed, forged, self-certified,
 #      wrong-family, privacy-exposing, or mismatched input; an unavailable
 #      project, admission, receipt, source, or destination is CNO. Private candidate bytes never
 #      enter the programme record or resolver output. V1 stays readable only

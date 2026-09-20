@@ -240,6 +240,9 @@
             }
           }
         },
+        "local_delivery_source": {
+          "identity": "canonical_artifact_root"
+        },
         "owner_ref": "exchange-work",
         "evidence_sha256": "4eeab92ad02c98e9ee2572eadfab0d438bfec7c1e3485a1ff18517b71356b52e",
         "evidence_generation": 2,
@@ -328,6 +331,9 @@
               "generation": 6
             }
           }
+        },
+        "local_delivery_source": {
+          "identity": "canonical_artifact_root"
         },
         "owner_ref": "exchange-work",
         "evidence_sha256": "3a70ebc79adb9bce1d26f8db4b73bc5eb2293dd766d059aaecb7f94b8e8ea9ea",
@@ -424,6 +430,9 @@
               "git_mode": "100644"
             }
           ]
+        },
+        "local_delivery_source": {
+          "identity": "owner_project_root"
         },
         "owner_ref": "synthesis-work",
         "evidence_sha256": "e27a280ab894dccb8a242dd602907910c9c7091f209e0c384b865b824ca915aa",

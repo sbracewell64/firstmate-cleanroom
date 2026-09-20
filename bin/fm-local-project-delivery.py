@@ -14,7 +14,12 @@ Usage:
 FM_HOME names the operational home that owns data/projects.md and every
 published admission.
 The programme step's terminal_predicate.local_delivery object is the policy
-owner for the exact artifact family and optional destination owner.
+owner for the exact artifact family and optional destination owner, and its
+sibling terminal_predicate.local_delivery_source object is the public per-step
+source-root identity: `canonical_artifact_root` admits only a source root
+outside this home's registered project tree, `owner_project_root` admits only
+the delivery owner project's own root as an authorized same-root delivery.
+Neither names an operator-local path, so the pin stays publication-safe.
 `bind` derives every candidate and byte identity, validates all facts before
 publishing one mode-0600 manifest at
 FM_HOME/data/local-project-delivery/admissions/<delivery-id>.json, and refuses a
@@ -48,6 +53,7 @@ from typing import Any
 
 SCHEMA = "fm-local-project-delivery-admission/v1"
 POLICY_SCHEMA = "fm-local-project-delivery-policy/v1"
+SOURCE_IDENTITIES = ("canonical_artifact_root", "owner_project_root")
 SLUG = re.compile(r"^[A-Za-z0-9._-]+$")
 HEX = re.compile(r"^[0-9a-f]+$")
 
@@ -273,9 +279,12 @@ def sealed_source_root(doc: dict[str, Any]) -> Path:
     if not isinstance(source, dict):
         refuse("MANIFEST_AUTHENTICITY", "admission has no sealed source identity")
     value = source.get("root")
-    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+    if not isinstance(value, str) or not value or "\x00" in value or not Path(value).is_absolute():
         refuse("MANIFEST_AUTHENTICITY", "admission source root is not one absolute path")
-    root = Path(value).resolve(strict=True)
+    try:
+        root = Path(value).resolve(strict=True)
+    except ValueError as exc:
+        refuse("MANIFEST_AUTHENTICITY", f"admission source root is not one readable path: {exc}")
     if str(root) != value:
         refuse("MANIFEST_AUTHENTICITY", "admission source root is not its exact resolved identity")
     return root
@@ -520,7 +529,7 @@ def verify_legacy_delivery(
         session.close()
 
 
-def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
+def terminal_predicate_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     steps = programme.get("steps")
     if not isinstance(steps, list):
         refuse("PROGRAMME_MALFORMED", "programme steps must be an array")
@@ -530,6 +539,22 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     terminal = matches[0].get("terminal_predicate")
     if not isinstance(terminal, dict) or terminal.get("kind") != "accepted_owner_evidence":
         refuse("ACTION_MISMATCH", f"step {step} is not governed by accepted owner evidence")
+    return terminal
+
+
+def source_identity_for(programme: dict[str, Any], step: str) -> str:
+    declared = terminal_predicate_for(programme, step).get("local_delivery_source")
+    if not isinstance(declared, dict):
+        refuse("REQUIRED_BINDING_MISSING", f"step {step} declares no local_delivery_source identity")
+    exact_keys(declared, {"identity"}, "local_delivery_source")
+    identity = declared.get("identity")
+    if identity not in SOURCE_IDENTITIES:
+        refuse("POLICY_UNSUPPORTED", f"step {step} source identity must be one of {', '.join(SOURCE_IDENTITIES)}")
+    return identity
+
+
+def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
+    terminal = terminal_predicate_for(programme, step)
     policy = terminal.get("local_delivery")
     if not isinstance(policy, dict) or policy.get("schema") != POLICY_SCHEMA:
         refuse("REQUIRED_BINDING_MISSING", f"step {step} has no {POLICY_SCHEMA} owner-bound family")
@@ -595,6 +620,14 @@ def build_candidate(
         repo_real.relative_to(projects_real)
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
+    identity = source_identity_for(programme, step)
+    if identity == "owner_project_root":
+        if root != repo_real:
+            if not enforce_pinned_owner:
+                raise NotOwner(f"project {project} is not the authorized same-root source owner")
+            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
+    elif root.is_relative_to(projects_real):
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
     session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
     if session_holder is not None:
         session_holder.append(session)

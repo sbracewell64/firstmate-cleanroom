@@ -487,6 +487,24 @@ admitted_alloc_receipt() { # <attempt> <branch>
   printf '%s' "$found"
 }
 
+# 0 when the receipt log actually records this attempt being admitted on this
+# branch at this head. An advancement is anchored to that receipt as well as to
+# the observer and the run's own submitted head: three independent witnesses of
+# the same admission, all of which must agree.
+admitted_receipt_present() { # <attempt> <branch> <head>
+  local line
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
+  [ -f "$STATUS" ] || return 1
+  while IFS= read -r line; do
+    [ "$(status_line_stage "$line" 2>/dev/null || true)" = validation-admitted ] || continue
+    [ "$(status_stage_field "$line" attempt)" = "$1" ] || continue
+    [ "$(status_stage_field "$line" branch)" = "$2" ] || continue
+    [ "$(status_stage_field "$line" head)" = "$(short "$3")" ] || continue
+    return 0
+  done < "$STATUS"
+  return 1
+}
+
 stage_bound_alloc() {
   local alloc
   alloc=$(meta stage_predecessor_alloc); [ -n "$alloc" ] || alloc=$(meta stage_alloc)
@@ -561,9 +579,20 @@ identified_terminal_descendant() { # <bound-run-toon> <branch> <predecessor-head
 bound_run_uses_predecessor() {
   case "$(meta stage_successor_action)" in
     authenticated-synchronized-successor|verified-terminal-successor) return 0 ;;
-    mint-validation-branch) [ "$(meta stage)" = candidate-successor ] ;;
+    mint-validation-branch)
+      [ -z "$(meta stage_successor_advance_id)" ] && [ "$(meta stage)" = candidate-successor ] ;;
     *) return 1 ;;
   esac
+}
+
+# 0 when the record's current attempt is the one whose advancement moved the
+# current head. The observer still names the head that attempt was ADMITTED at,
+# which the advancement deliberately left behind, so every bound-run read has to
+# compare against that head rather than the one the advance published.
+advance_owns_current_attempt() {
+  [ -n "$(meta stage_successor_advance_id)" ] || return 1
+  [ "$(meta stage_successor_advance_attempt)" = "$(meta stage_attempt)" ] || return 1
+  [ "$(meta stage_successor_advance_run)" = "$(meta stage_run)" ]
 }
 
 bound_run_status() {
@@ -581,6 +610,7 @@ bound_run_status() {
   else
     expected_head=$(meta stage_head)
     expected_branch=$(meta stage_branch)
+    ! advance_owns_current_attempt || expected_head=$(meta stage_successor_advance_from)
   fi
   [ "$expected_head" = "$(obs candidate_head)" ] || return 1
   [ "$expected_branch" = "$(obs candidate_branch)" ] || return 1
@@ -1465,7 +1495,7 @@ publish_advance_locked() { # <from> <head> <tree> <pr> <attested> <checked> <dut
 }
 
 authenticated_successor_transition() { # <pr-url>; caller has read candidate
-  local pr=$1 lock verdict proof_rc publish_rc run submitted duty alloc run_pr expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action advancing replay_pr alloc_rc submitted_anchor
+  local pr=$1 lock verdict proof_rc publish_rc run submitted duty alloc run_pr expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc action advancing replay_pr alloc_rc
   lock=$(fm_meta_lock_path "$META") || exit 2
   fm_lock_acquire_wait "$lock"
   read_candidate
@@ -1502,11 +1532,16 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
         fi ;;
     esac
     # A minted branch still owes its own pipeline runs, and those runs rebase
-    # it. Each advancement of the recorded mint carries the current head forward
-    # on that exact branch through this owner; another branch is a replacement
-    # the record cannot carry.
+    # it. One advancement of the recorded mint per admitted attempt carries the
+    # current head forward on that exact branch through this owner; the next one
+    # needs its own admission and its own run, and another branch is a
+    # replacement the record cannot carry at all.
     if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
         && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
+      if advance_owns_current_attempt; then
+        fm_lock_release "$lock"
+        refuse ci-ready SUCCESSOR_EXHAUSTED "attempt $(dash "$(meta stage_attempt)") already advanced $(dash "$(meta stage_successor_branch)") to $(short "$(meta stage_successor_advance_head)"); a further advance needs a fresh \`$SELF_CMD committed --retry\` admission and its own run"
+      fi
       advancing=1
     else
       fm_lock_release "$lock"
@@ -1548,19 +1583,16 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       refuse ci-ready SUCCESSOR_CNO 'the admitted allocation identity is not recorded and no durable evidence establishes it'
     }
   fi
-  # The observer binds the head its attempt was ADMITTED at, and that head is
-  # where the attempt's first advancement starts. Every later advancement starts
-  # exactly where the previous one ended, so the chain stays anchored to the
-  # observer without pretending the observer moved.
-  submitted_anchor=$(obs candidate_head)
-  if [ "$advancing" -eq 1 ] && [ -n "$(meta stage_successor_advance_id)" ]; then
-    submitted_anchor=$(meta stage_successor_advance_head)
-  fi
   if [ "$duty" != validation ] || [ "$(meta stage_attempt)" != "$(obs attempt_id)" ] || [ "$run" != "$(obs run_id)" ] \
-      || [ "$submitted" != "$submitted_anchor" ] || [ "$(meta stage_branch)" != "$(obs candidate_branch)" ] \
+      || [ "$submitted" != "$(obs candidate_head)" ] || [ "$(meta stage_branch)" != "$(obs candidate_branch)" ] \
       || [ "$(obs entrypoint)" != stage ] || [ "$alloc" != "$(alloc_identity)" ]; then
     fm_lock_release "$lock"
     refuse ci-ready SUCCESSOR_CONTRADICTION 'predecessor head, branch, attempt, run, duty, allocation, or entrypoint no longer matches the bound validation'
+  fi
+  if [ "$advancing" -eq 1 ] \
+      && ! admitted_receipt_present "$(meta stage_attempt)" "$(meta stage_branch)" "$submitted"; then
+    fm_lock_release "$lock"
+    refuse ci-ready SUCCESSOR_CNO 'no admitting receipt records the advancing attempt being admitted on this branch at this head'
   fi
   SUCCESSOR_STATUS=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi status --run "$run") || {
     fm_lock_release "$lock"
@@ -1687,6 +1719,20 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   esac
 }
 
+# 0 when the current attempt and run are the ones this record's own successor
+# owner last bound - the mint itself, or the advancement that mint's branch last
+# took. Either is a point this owner issued, so the next attempt admits from it
+# instead of being told the successor is spent.
+retry_follows_own_successor() {
+  [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
+  if [ "$(meta stage)" = candidate-successor ] \
+      && [ "$(meta stage_attempt)" = "$(meta stage_successor_attempt)" ] \
+      && [ "$(meta stage_run)" = "$(meta stage_successor_run)" ]; then
+    return 0
+  fi
+  advance_owns_current_attempt
+}
+
 terminal_successor_required() { # <bound-status>
   ! fm_nm_run_is_active "$1"
 }
@@ -1721,10 +1767,7 @@ do_committed() {
         refuse committed RUN_ACTIVE 'the bound run retains custody; existing stage bindings preserved'
       fi
       if [ -n "$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")" ]; then
-        if [ "$(meta stage_successor_action)" != mint-validation-branch ] \
-            || [ "$current" != candidate-successor ] \
-            || [ "$(meta stage_attempt)" != "$(meta stage_successor_attempt)" ] \
-            || [ "$(meta stage_run)" != "$(meta stage_successor_run)" ]; then
+        if ! retry_follows_own_successor; then
           [ -z "$(meta stage_successor_id)" ] \
             || refuse committed SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"
           refuse committed SUCCESSOR_REQUIRED "the terminal published validation branch is non-reusable; run \`$SELF_CMD successor\`, then re-run committed --retry"

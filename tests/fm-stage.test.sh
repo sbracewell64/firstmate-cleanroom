@@ -1489,10 +1489,10 @@ test_admitted_allocation_is_captured_once
 # attempt admitted on that branch may carry the current head forward through the
 # same owner on the same exact synchronized proof. Anything else stays exhausted.
 test_minted_branch_advances_through_the_owner() {
-  local wt base admitted head2 tree2 out rc proof before branch minted run1 run2 pr1 pr2 mint_id head3 tree3
+  local wt base admitted head2 tree2 out rc proof before branch minted run1 run2 run3 pr1 pr2 mint_id head3 tree3
   branch=fm/minted-advance
   minted=fm/minted-advance-successor
-  run1=01MINTEDADVANCEONE; run2=01MINTEDADVANCETWO
+  run1=01MINTEDADVANCEONE; run2=01MINTEDADVANCETWO; run3=01MINTEDADVANCETHREE
   pr1=https://github.com/o/r/pull/31
   pr2=https://github.com/o/r/pull/32
   wt="$TMP_ROOT/wt-minted-advance"
@@ -1617,9 +1617,10 @@ test_minted_branch_advances_through_the_owner() {
   FM_FAKE_SYNC_RC=0; FM_FAKE_PR_STATE=open
   export FM_FAKE_SYNC_RC FM_FAKE_PR_STATE
 
-  # The same branch rebases again, and again it advances through the same owner:
-  # the mint is spent, the branch is not. The interruption barrier proves the
-  # advancement's own crash window recovers rather than stranding the record.
+  # The same attempt has now spent its advancement: another rebase under it is
+  # refused, and the refusal names the supported way forward rather than telling
+  # the worker the task is over.
+  before=$(cat "$STATE/minted-advance.meta")
   git -C "$wt" checkout -q minted-advance-main
   git -C "$wt" commit -q --allow-empty -m 'second upstream'
   git -C "$wt" checkout -q "$minted"
@@ -1627,13 +1628,97 @@ test_minted_branch_advances_through_the_owner() {
   head3=$(git -C "$wt" rev-parse HEAD)
   tree3=$(git -C "$wt" rev-parse 'HEAD^{tree}')
   [ "$head3" != "$head2" ] || fail 'the second rebase did not move the head'
-  proof=${proof//$head2/$head3}
-  proof=${proof//submitted_head: $admitted/submitted_head: $head2}
-  FM_FAKE_AXI_STATUS=$(run_toon "$run2" "$minted" ci "$head3" '' "$pr2")
+  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
+  expect_code 1 "$rc" "a second advance under the same attempt must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a spent per-attempt advance was not typed as exhausted'
+  assert_contains "$out" 'committed --retry' 'the spent-advance refusal did not name the supported way forward'
+  [ "$(cat "$STATE/minted-advance.meta")" = "$before" ] || fail 'a refused second advance under the same attempt mutated the record'
+
+  # That way forward is real: the advanced branch admits a fresh attempt at the
+  # head its own advancement published, and that attempt binds its own run.
+  FM_FAKE_AXI_STATUS=$(run_toon "$run2" "$minted" completed "$head2" passed "$pr2")
+  export FM_FAKE_AXI_STATUS
+  git -C "$wt" reset -q --hard "$head2"
+  out=$("$STAGE" minted-advance committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "an advanced minted branch must admit a fresh attempt: $out"
+  assert_contains "$out" 'STAGE: validation-admitted:' 'the advanced minted branch was not re-admitted'
+  [ "$(meta_get minted-advance stage_head)" = "$head2" ] || fail 'the fresh attempt was not admitted at the advanced head'
+  [ "$(obs_get minted-advance candidate_head)" = "$head2" ] || fail 'the observer did not bind the advanced head'
+  [ "$(meta_get minted-advance stage_successor_id)" = "$mint_id" ] || fail 'the fresh admission replaced the minted successor identity'
+  FM_FAKE_AXI_STATUS=$(run_toon "$run3" "$minted" reviewing "$head2")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" minted-advance running --run "$run3" 2>&1); rc=$?
+  expect_code 0 "$rc" "the fresh attempt must bind its own run: $out"
+  git -C "$wt" rebase minted-advance-main >/dev/null 2>&1 || fail 'minted-advance third-run rebase'
+  head3=$(git -C "$wt" rev-parse HEAD)
+  tree3=$(git -C "$wt" rev-parse 'HEAD^{tree}')
+  [ "$head3" != "$head2" ] || fail 'the third-run rebase did not move the head'
+  git -C "$wt" merge-base --is-ancestor "$head2" "$head3" && fail 'the third-run rebase did not rewrite ancestry'
+  proof="branch_sync:
+  state: synchronized
+  changed: false
+  local:
+    branch: $minted
+    head: $head3
+    clean: true
+  pipeline:
+    run: $run3
+    status: running
+    submitted_head: $head2
+    current_head: $head3
+    pushed_head: $head3
+    push_generation: 3
+  target:
+    kind: upstream
+    ref: refs/heads/$minted
+  remote:
+    observed_head: $head3
+    freshness: live
+  relation: equal
+  safety: already_synchronized
+  pr_state: open
+  successor:
+    verified: false"
+  FM_FAKE_AXI_STATUS=$(run_toon "$run3" "$minted" ci "$head3" '' "$pr2")
   FM_FAKE_SYNC=$proof
   FM_FAKE_PR_HEAD=$head3
   FM_FAKE_PR_BODY=$(printf 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"%s"} -->' "$head3")
   export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
+
+  # The allocation an advancement binds is evidence, so it must be able to
+  # disagree: a worker relaunched again before CI-ready refuses.
+  before=$(cat "$STATE/minted-advance.meta")
+  sed 's/^model=.*/model=drifted/' "$STATE/minted-advance.meta" > "$STATE/.minted-advance.rewrite"
+  mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.meta"
+  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
+  expect_code 1 "$rc" "an allocation that drifted from the admitting receipt must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a drifted advancement allocation was not typed as contradictory'
+  printf '%s\n' "$before" > "$STATE/minted-advance.meta"
+
+  # A record that disagrees with the receipt that admitted it about what it runs
+  # under is a contradiction, not a licence to pick either value.
+  sed 's|^stage_alloc=.*|stage_alloc=echo/forged/low/tmux|' "$STATE/minted-advance.meta" > "$STATE/.minted-advance.rewrite"
+  mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.meta"
+  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
+  expect_code 1 "$rc" "a record that disagrees with its admitting receipt must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a forged advancement allocation was not typed as contradictory'
+  printf '%s\n' "$before" > "$STATE/minted-advance.meta"
+
+  # An advance is anchored to the receipt that admitted its attempt as well as
+  # to the observer, so a log with no such admission is unevaluable, not proven.
+  cp "$STATE/minted-advance.status" "$STATE/minted-advance.status.keep"
+  sed "/^validation-admitted:/s| head=$(printf '%s' "$head2" | cut -c1-12)| head=000000000000|" \
+    "$STATE/minted-advance.status" > "$STATE/.minted-advance.rewrite"
+  mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.status"
+  grep -q "^validation-admitted:.* attempt=$(obs_get minted-advance attempt_id) " "$STATE/minted-advance.status" \
+    || fail 'the unanchored-advance control removed the admitting receipt instead of moving its head'
+  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
+  expect_code 1 "$rc" "an advance whose admitting receipt names another head must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_CNO' 'an unanchored advance was not typed as unevaluable identity'
+  mv "$STATE/minted-advance.status.keep" "$STATE/minted-advance.status"
+
+  # The fresh attempt's own advance publishes atomically, and its crash window
+  # recovers rather than stranding the record.
   out=$(FM_STAGE_TEST_INTERRUPT_AFTER_SUCCESSOR_PUBLISH=1 "$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
   expect_code 86 "$rc" "an interrupted advancement must stop after its atomic publication: $out"
   [ "$(meta_get minted-advance stage_successor_advance_head)" = "$head3" ] || fail 'the interrupted advancement was not atomically authoritative'
@@ -1642,54 +1727,21 @@ test_minted_branch_advances_through_the_owner() {
   out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
   expect_code 0 "$rc" "an interrupted advancement must recover idempotently: $out"
   [ "$(meta_get minted-advance stage_successor_advance_from)" = "$head2" ] || fail 'the second advancement did not bind the head it advanced from'
+  [ "$(meta_get minted-advance stage_successor_advance_run)" = "$run3" ] || fail 'the second advancement did not bind its own run'
   [ "$(meta_get minted-advance stage_successor_id)" = "$mint_id" ] || fail 'a further advancement replaced the minted successor identity'
   [ "$(meta_get minted-advance stage_tree)" = "$tree3" ] || fail 'the second advancement did not carry the current tree forward'
   [ "$(grep -c '^candidate-successor:' "$STATE/minted-advance.status")" = 3 ] || fail 'the recovered advancement did not append its own receipt'
-
-  # The allocation the advancement binds is evidence, so it must be able to
-  # disagree: a worker relaunched again before CI-ready refuses.
-  before=$(cat "$STATE/minted-advance.meta")
-  sed 's/^model=.*/model=drifted/' "$STATE/minted-advance.meta" > "$STATE/.minted-advance.rewrite"
-  mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.meta"
-  git -C "$wt" checkout -q minted-advance-main
-  git -C "$wt" commit -q --allow-empty -m 'third upstream'
-  git -C "$wt" checkout -q "$minted"
-  git -C "$wt" rebase minted-advance-main >/dev/null 2>&1 || fail 'minted-advance third rebase'
-  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
-  expect_code 1 "$rc" "an allocation that drifted from the admitting receipt must refuse: $out"
-  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a drifted advancement allocation was not typed as contradictory'
-  git -C "$wt" reset -q --hard "$head3"
-  printf '%s\n' "$before" > "$STATE/minted-advance.meta"
-
-  # A record that disagrees with the receipt that admitted it about what it runs
-  # under is a contradiction, not a licence to pick either value.
-  sed 's|^stage_alloc=.*|stage_alloc=echo/forged/low/tmux|' "$STATE/minted-advance.meta" > "$STATE/.minted-advance.rewrite"
-  mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.meta"
-  git -C "$wt" checkout -q minted-advance-main
-  git -C "$wt" commit -q --allow-empty -m 'fourth upstream'
-  git -C "$wt" checkout -q "$minted"
-  git -C "$wt" rebase minted-advance-main >/dev/null 2>&1 || fail 'minted-advance fourth rebase'
-  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
-  expect_code 1 "$rc" "a record that disagrees with its admitting receipt must refuse: $out"
-  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a forged advancement allocation was not typed as contradictory'
-  git -C "$wt" reset -q --hard "$head3"
-  printf '%s\n' "$before" > "$STATE/minted-advance.meta"
 
   # A record whose current head later moved is not a corrupt record: the
   # advancement's immutable lineage stands on its own, so the refusal names what
   # actually disagrees rather than claiming the lineage is broken.
   before=$(cat "$STATE/minted-advance.meta")
-  git -C "$wt" checkout -q minted-advance-main
-  git -C "$wt" commit -q --allow-empty -m 'fifth upstream'
-  git -C "$wt" checkout -q "$minted"
-  git -C "$wt" rebase minted-advance-main >/dev/null 2>&1 || fail 'minted-advance fifth rebase'
   sed "s|^stage_head=.*|stage_head=$admitted|" "$STATE/minted-advance.meta" > "$STATE/.minted-advance.rewrite"
   mv "$STATE/.minted-advance.rewrite" "$STATE/minted-advance.meta"
   out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
-  expect_code 1 "$rc" "a moved current head must refuse: $out"
+  expect_code 0 "$rc" "a moved current head must not invalidate the advancement's own lineage: $out"
   assert_not_contains "$out" 'SUCCESSOR_COLLISION' 'a moved current head was reported as a corrupt successor lineage'
-  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a moved current head was not typed as contradictory'
-  git -C "$wt" reset -q --hard "$head3"
+  assert_contains "$out" 'candidate-successor:' 'the advancement did not replay against the head it recorded'
   printf '%s\n' "$before" > "$STATE/minted-advance.meta"
 
   # Exhaustion is reserved for a true replacement: another branch entirely.

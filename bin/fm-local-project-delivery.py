@@ -21,11 +21,12 @@ outside this home's registered project tree, `owner_project_root` admits only
 the delivery owner project's own root as an authorized same-root delivery.
 Neither names an operator-local path, so the pin stays publication-safe.
 Under `owner_project_root` the owner census evaluates only the registered
-project whose own path is that source root as declared or as resolved, so a
-symlinked registration still qualifies through its canonical target, and it
-skips every other row before touching the filesystem; a root that is no
-complete family owner's root is SOURCE_IDENTITY_MISMATCH, while an absent owner
-or family stays OWNER_MISSING.
+project whose own path is that source root: it matches declared paths before
+touching the filesystem, and falls back to canonical paths when no row declares
+the root, so a symlinked registration qualifies under either spelling. A root
+that is no complete family owner's root is SOURCE_IDENTITY_MISMATCH, while an
+absent owner or family stays OWNER_MISSING, and `canonical_artifact_root`
+admissibility is decided before any registry row is read.
 That same-root admission seals the pinned candidate ref's head and tree as its
 source identity, so an unrelated local checkout in the owner project leaves
 qualification intact while movement of the pinned ref refuses.
@@ -594,6 +595,18 @@ def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     return policy
 
 
+def projects_root(home: Path) -> Path:
+    try:
+        return (home / "projects").resolve(strict=True)
+    except OSError:
+        return home / "projects"
+
+
+def require_admissible_source_root(home: Path, identity: str, root: Path) -> None:
+    if identity == "canonical_artifact_root" and root.is_relative_to(projects_root(home)):
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
+
+
 def source_identity(root: Path, root_fd: int, pinned: tuple[str, str] | None = None) -> dict[str, Any]:
     handle = repo_handle(root_fd)
     result = subprocess.run(["git", "-C", handle, "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, pass_fds=(root_fd,))
@@ -623,21 +636,18 @@ def build_candidate(
         refuse("OWNER_PROJECT_MISMATCH", "policy owner_project must be a slug when present")
     if enforce_pinned_owner and pinned is not None and project != pinned:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} is not the pinned owner {pinned}")
+    identity = source_identity_for(programme, step)
+    require_admissible_source_root(home, identity, root)
     require_slug(project, "project")
     project_mode(home, project, registry_data=registry_data)
     repo = (home / "projects" / project)
-    identity = source_identity_for(programme, step)
     try:
         repo_real = repo.resolve(strict=True)
-        projects_real = (home / "projects").resolve(strict=True)
-        repo_real.relative_to(projects_real)
+        repo_real.relative_to(projects_root(home))
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
-    if identity == "owner_project_root":
-        if root != repo_real:
-            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
-    elif root.is_relative_to(projects_real):
-        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
+    if identity == "owner_project_root" and root != repo_real:
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
     session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
     if session_holder is not None:
         session_holder.append(session)
@@ -859,18 +869,28 @@ def validate_admission(
     return rebuilt
 
 
+def canonical_project_root(home: Path, project: str) -> Path | None:
+    try:
+        return (home / "projects" / project).resolve(strict=True)
+    except OSError:
+        return None
+
+
 def owner_candidates(
     *, home: Path, programme: dict[str, Any], root: Path, declared_root: Path, step: str,
     policy: dict[str, Any], ref: str, delivery_id: str, maker: str,
     checker: str, route: str,
 ) -> tuple[list[tuple[str, dict[str, Any], AdmissionSession]], str]:
+    identity = source_identity_for(programme, step)
+    require_admissible_source_root(home, identity, root)
     registered, registry_sha256, registry_data = registered_projects(home)
-    same_root = source_identity_for(programme, step) == "owner_project_root"
+    if identity == "owner_project_root":
+        registered = [p for p in registered if (home / "projects" / p) in (declared_root, root)] or [
+            p for p in registered if canonical_project_root(home, p) == root
+        ]
     candidates: list[tuple[str, dict[str, Any], AdmissionSession]] = []
     blocking: list[Verdict] = []
     for project in registered:
-        if same_root and (home / "projects" / project) not in (declared_root, root):
-            continue
         session_holder: list[AdmissionSession] = []
         try:
             candidate, session = build_candidate(
@@ -908,15 +928,17 @@ def family_owner_exists(home: Path, policy: dict[str, Any], ref: str) -> bool:
         try:
             project_mode(home, project, registry_data=registry_data)
             repo_real = (home / "projects" / project).resolve(strict=True)
-            repo_real.relative_to((home / "projects").resolve(strict=True))
+            repo_real.relative_to(projects_root(home))
             repo_fd = open_directory(repo_real)
         except (NotOwner, Verdict, OSError, ValueError):
             continue
         try:
+            if Path(git_fd(repo_fd, "rev-parse", "--show-toplevel")).resolve(strict=True) != repo_real:
+                continue
             head = git_fd(repo_fd, "rev-parse", f"{ref}^{{commit}}")
             if family_is_present(head, policy["artifacts"], repo_fd=repo_fd):
                 return True
-        except Verdict:
+        except (Verdict, OSError, ValueError):
             continue
         finally:
             os.close(repo_fd)

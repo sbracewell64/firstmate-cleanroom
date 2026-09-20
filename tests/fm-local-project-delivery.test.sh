@@ -445,6 +445,26 @@ expect_rejected_without_publication "A self-delivery source root" "$home" 'SOURC
   bind_with_root "$home/projects/exchange-work" "$home" "$home/projects/exchange-work" \
   slice-a-s1-publication-integrity exchange-work a-self-root
 
+# That refusal is decided before any registry row is read, so neither a stale
+# row ordered ahead of the owner nor a registry without any lawful owner can
+# preempt it with another authority class.
+forbidden=$(make_home a-forbidden-root)
+printf '%s\n%s\n' \
+  '- retired-work [local-only] - registered row whose directory is gone (added 2026-09-20)' \
+  '- exchange-work [local-only] - fixture owner (added 2026-09-18)' > "$forbidden/data/projects.md"
+out=$(bind_with_root "$forbidden/projects/exchange-work" "$forbidden" "$forbidden/projects/exchange-work" \
+  slice-a-s1-publication-integrity exchange-work a-stale-row-first 2>&1); rc=$?
+[ "$rc" = 4 ] || fail "a stale row ahead of the owner changed the forbidden-root authority class: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'REFUSED SOURCE_IDENTITY_MISMATCH' ] \
+  || fail "the forbidden canonical root was not the reported axis: $out"
+printf '%s\n' '- exchange-work [no-mistakes] - no lawful local-only owner (added 2026-09-18)' > "$forbidden/data/projects.md"
+out=$(bind_with_root "$forbidden/projects/exchange-work" "$forbidden" "$forbidden/projects/exchange-work" \
+  slice-a-s1-publication-integrity exchange-work a-no-lawful-owner 2>&1); rc=$?
+[ "$rc" = 4 ] || fail "a registry with no lawful owner changed the forbidden-root authority class: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'REFUSED SOURCE_IDENTITY_MISMATCH' ] \
+  || fail "the forbidden canonical root was reported as absent ownership: $out"
+pass "a forbidden canonical source root refuses independently of the registry"
+
 # The same pin refuses the reverse substitution: D's authorized same-root owner
 # identity is not satisfied by the canonical artifact root.
 expect_rejected_without_publication "D canonical-root substitution" "$home" 'SOURCE_IDENTITY_MISMATCH' \
@@ -514,6 +534,12 @@ out=$(bind_with_root "$home/projects/synthesis-work" "$home" "$home/projects/syn
   || fail "the admission did not bind the canonical owner root"
 pass "a symlinked owner registration qualifies through its canonical root"
 
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto delivery-d-canonical-name) \
+  || fail "the symlinked owner did not admit its canonical spelling: $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .project')" = 'ADMITTED synthesis-work' ] \
+  || fail "naming the owner by its canonical target did not select the registered owner: $out"
+pass "the same owner qualifies when named by its canonical target"
+
 # The declared owner itself escaping the registered project tree stays
 # unevaluable rather than being silently skipped or blamed on the root.
 home=$(make_home d-escaped-owner)
@@ -540,6 +566,24 @@ out=$(bind_with_root "$home" "$home" "$home/source" slice-d-s4-synthesis-integri
 [ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
   || fail "an escaped family owner was counted as a lawful owner: $out"
 pass "a family outside the registered project tree stays CNO OWNER_MISSING"
+
+# The empty-census owner probe applies the census's own repository-root law: a
+# registered entry that resolves inside another project's repository is not the
+# owner of that repository's family.
+home=$(make_home d-nested-entry)
+alpha="$home/projects/alpha"
+printf '%s\n' '- beta [local-only] - entry resolving inside another project repository (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$alpha/sub"; git -C "$alpha" init -q -b main
+cp -R "$home/source/artifacts" "$alpha/sub/"
+chmod 755 "$alpha/sub/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$alpha" add .
+git -C "$alpha" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m nested
+ln -s "$alpha/sub" "$home/projects/beta"
+out=$(bind_with_root "$home" "$home" "$home/source" slice-d-s4-synthesis-integrity auto d-nested-entry 2>&1); rc=$?
+[ "$rc" = 5 ] || fail "an entry inside another repository was counted as a family owner: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
+  || fail "the nested registered entry was not treated as absent ownership: $out"
+pass "a registered entry that is not its own repository root is no family owner"
 
 # The same-root admission seals the pinned candidate ref, so an unrelated local
 # checkout in the owner project leaves qualification intact while movement of

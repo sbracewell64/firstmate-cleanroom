@@ -104,7 +104,11 @@ class AdmissionSession:
             refuse("CANDIDATE_CHANGED", "destination ref or tree changed after the admission snapshot")
         for fact in self.facts:
             if fact.get("legacy"):
-                source_bytes, source_sha, _ = capture(fact["source"], anchor_fd=self.destination_fd, anchor_path=self.destination)
+                source_bytes = run(
+                    ["git", "-C", repo_handle(self.destination_fd), "show", f"{self.head}:{fact['source_path']}"],
+                    pass_fds=(self.destination_fd,),
+                )
+                source_sha = hashlib.sha256(source_bytes).hexdigest()
                 destination_bytes, destination_sha, destination_mode = capture(fact["destination"], anchor_fd=self.source_fd, anchor_path=self.root)
                 mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["source_path"], repo_fd=self.destination_fd)
                 if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
@@ -117,7 +121,7 @@ class AdmissionSession:
                 if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
                     refuse("SNAPSHOT_CHANGED", "admission Git object changed after the snapshot")
                 parse_index_entry(self.destination, fact["path"], mode, oid, repo_fd=self.destination_fd)
-            if source_sha != fact["source_sha"] or destination_sha != fact["destination_sha"] or destination_mode != fact["file_mode"] or source_bytes != destination_bytes:
+            if source_sha != fact["source_sha"] or source_bytes != fact.get("source_object_bytes", source_bytes) or destination_sha != fact["destination_sha"] or destination_mode != fact["file_mode"] or source_bytes != destination_bytes:
                 refuse("SNAPSHOT_CHANGED", "admission source or destination bytes changed after the snapshot")
 
     def close(self) -> None:
@@ -206,9 +210,9 @@ def capture(path: Path, *, private: bool = False, anchor_fd: int | None = None, 
             directory_fd = next_fd
         fd = os.open(parts[-1], flags, dir_fd=directory_fd)
     except OSError as exc:
+        os.close(directory_fd)
         if exc.errno == errno.ELOOP:
             refuse("IDENTITY_TYPE_MISMATCH", f"{path} is a symlink object")
-        os.close(directory_fd)
         cno("SOURCE_UNREADABLE", f"cannot open {path}: {exc.strerror}")
     try:
         before = os.fstat(fd)
@@ -329,11 +333,12 @@ def project_mode(home: Path, project: str, registry_data: bytes | None = None) -
                 entries.append("no-mistakes")
                 continue
             tokens = annotation.split()
-            modes = {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}
-            recognized = [token for token in tokens if token in modes]
-            if len(recognized) != 1 or any(token != "+yolo" and token not in modes for token in tokens) or tokens.count("+yolo") > 1:
-                refuse("OWNER_MODE_MALFORMED", f"project {project} has ambiguous registry posture")
-            entries.append(recognized[0])
+            mode = "no-mistakes"
+            if tokens and tokens[0] != "+yolo":
+                mode = tokens[0]
+            if mode not in {"no-mistakes", "direct-PR", "local-only", "no-mistakes-prod-only"}:
+                mode = "no-mistakes"
+            entries.append(mode)
     except (UnicodeError, Verdict) as exc:
         if isinstance(exc, Verdict):
             raise
@@ -377,6 +382,14 @@ def parse_tree_entry(repo: Path, head: str, path: str, *, repo_fd: int | None = 
     if found_path != path:
         refuse("DESTINATION_PATH_MISMATCH", f"candidate returned {found_path}, not {path}")
     return mode, obj_type, oid
+
+
+def family_is_present(repo: Path, head: str, artifacts: list[dict[str, str]], *, repo_fd: int) -> bool:
+    for row in artifacts:
+        raw = run(["git", "-C", repo_handle(repo_fd), "ls-tree", "-z", head, "--", row["destination"]], pass_fds=(repo_fd,))
+        if not any(raw.split(b"\0")):
+            return False
+    return True
 
 
 def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: str, *, repo_fd: int | None = None) -> None:
@@ -468,9 +481,10 @@ def verify_legacy_delivery(
             if index_oid != destination_oid or destination_oid != source_oid:
                 refuse("CANDIDATE_MISMATCH", f"delivery destination {destination} is not the exact tracked candidate object")
             session.facts.append({
-                "legacy": True, "source": under(repo, source), "destination": destination_path,
+                "legacy": True, "destination": destination_path,
                 "source_path": source, "destination_path": destination,
                 "source_sha": expected, "destination_sha": expected,
+                "source_object_bytes": source_bytes,
                 "file_mode": expected_fs, "git_mode": source_mode,
                 "object_id": source_oid, "destination_object_id": destination_oid,
             })
@@ -577,8 +591,7 @@ def build_candidate(
     require_oid(head, "head")
     require_oid(tree, "tree")
 
-    top_levels = {PurePosixPath(row["destination"]).parts[0] for row in policy["artifacts"]}
-    if not any(git_fd(destination_root_fd, "ls-tree", "-d", head, "--", top_level) for top_level in top_levels):
+    if not family_is_present(repo_real, head, policy["artifacts"], repo_fd=destination_root_fd):
         raise NotOwner(f"project {project} does not contain the governed artifact family")
 
     artifacts: list[dict[str, Any]] = []
@@ -809,8 +822,6 @@ def owner_candidates(
         except Verdict as exc:
             for held in session_holder:
                 held.close()
-            if exc.reason == "FAMILY_INCOMPLETE":
-                continue
             blocking.append(exc)
         except BaseException:
             for held in session_holder:
@@ -820,8 +831,8 @@ def owner_candidates(
         for _, _, session in candidates:
             session.close()
         raise blocking[0]
-    if blocking and not candidates:
-        cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
+    if blocking:
+        raise blocking[0]
     return candidates, registry_sha256
 
 
@@ -968,9 +979,6 @@ def main() -> int:
                 session.close()
             refuse("OWNER_AMBIGUOUS", f"more than one project owns the complete {step} family: {','.join(name for name, _, _ in candidates)}")
         project, candidate, session = candidates[0]
-        for other_project, _, other_session in candidates:
-            if other_project != project:
-                other_session.close()
         pinned = policy.get("owner_project")
         if pinned is not None and project != pinned:
             session.close()

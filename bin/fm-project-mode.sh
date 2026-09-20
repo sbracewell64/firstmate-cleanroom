@@ -9,8 +9,7 @@
 # bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
 # The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
 # bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init),
-# bin/fm-spawn.sh's advisory registry-deviation notice, and
-# bin/fm-local-project-delivery.py (strict local-owner admission).
+# bin/fm-spawn.sh's advisory registry-deviation notice.
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
@@ -32,9 +31,8 @@
 #
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
-# --require-registered changes only the missing/unreadable-registry and absent-
-# project cases into refusals, for an authority boundary that cannot treat the
-# conservative delivery default as proof that a project is registered.
+# --require-registered is retained for mechanical and test callers that need
+# missing/unreadable-registry and absent-project cases to become refusals.
 #
 # Without --require-registered, an unknown/missing project or unknown mode falls
 # back to "no-mistakes off" and warns to stderr, so a typo never silently drops

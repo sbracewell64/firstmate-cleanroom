@@ -546,7 +546,7 @@ local_owner_relative_path() {  # <path> <data|content>
   local path=$1 class=$2
   case "$path" in ''|.|..|/*|*//*|../*|*/../*|*/..|./*|*/./*|*/.) return 1 ;; esac
   case "$path" in *[!A-Za-z0-9._/-]*) return 1 ;; esac
-  case "$class:$path" in data:data/*.json|content:*) return 0 ;; *) return 1 ;; esac
+  case "$class:$path" in data:data/*.json) return 0 ;; *) return 1 ;; esac
 }
 
 local_owner_path_has_no_symlink_parents() {  # <root> <relative-path>

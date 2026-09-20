@@ -272,9 +272,14 @@ expect_rejected_without_publication "wrong working directory" "$home" 'WORKING_D
   --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main \
   --delivery-id wrong-cwd --maker maker-one --checker checker-one --route independent-checker
 
-home=$(make_home wrong-home); other=$(make_home other-home)
-expect_rejected_without_publication "wrong home" "$other" 'WORKING_DIRECTORY_MISMATCH' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$2" "$3" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main --delivery-id wrong-home --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$other" "$DELIVERY"
+home=$(make_home wrong-home-source)
+out=$(bind "$home" slice-a-s1-publication-integrity) || fail "wrong-home setup bind failed: $out"
+admission=$(printf '%s' "$out" | jq -r '.path')
+other=$(make_home wrong-home-target)
+mkdir -p "$other/data/local-project-delivery/admissions"
+cp "$admission" "$other/data/local-project-delivery/admissions/$(basename "$admission")"
+expect_rejected_without_publication "wrong home" "$other" 'HOME_MISMATCH' \
+  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" verify --admission "$1/data/local-project-delivery/admissions/$(basename "$3")" --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity' _ "$other" "$DELIVERY" "$admission"
 
 home=$(make_home wrong-project)
 expect_rejected_without_publication "wrong project" "$home" 'OWNER_PROJECT_MISMATCH' \

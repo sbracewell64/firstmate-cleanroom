@@ -309,18 +309,6 @@
       "note": "Known-good reference: the shared enforcement owner landed by PR 47 (merge 0a519ea)."
     },
     {
-      "id": "bin/fm-local-project-delivery.py:registry-snapshot",
-      "kind": "enforced",
-      "invariant": "An authority-bound local delivery parses one retained exact project registry snapshot and never resolves the conservative unregistered-project default.",
-      "guards": "runtime",
-      "callSites": [
-        {
-          "path": "bin/fm-local-project-delivery.py",
-          "via": "production"
-        }
-      ]
-    },
-    {
       "id": "bin/fm-pr-check.sh",
       "kind": "enforced",
       "invariant": "A task's recorded PR identity is validated before a merge poll is armed for it.",

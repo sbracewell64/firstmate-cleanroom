@@ -8,7 +8,7 @@
 # yolo are resolved by firstmate at intake and passed explicitly to
 # bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
 # The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
-# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init),
+# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init), and
 # bin/fm-spawn.sh's advisory registry-deviation notice.
 #
 # Registry line format (data/projects.md):
@@ -31,10 +31,9 @@
 #
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
-# An unknown/missing project or unknown mode falls
-# back to "no-mistakes off" and warns to stderr, so a typo never silently drops
-# the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+#
+# An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
+# to stderr, so a typo never silently drops the gate.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,18 +42,13 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --raw) RAW=1; shift ;;
-    --) shift; break ;;
-    -*) echo "usage: fm-project-mode.sh [--raw] <project-name>" >&2; exit 2 ;;
-    *) break ;;
-  esac
-done
+if [ "${1:-}" = "--raw" ]; then
+  RAW=1
+  shift
+fi
 NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
-[ "$#" -eq 1 ] || { echo "usage: fm-project-mode.sh [--raw] <project-name>" >&2; exit 2; }
 
-if [ ! -r "$REG" ]; then
+if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0

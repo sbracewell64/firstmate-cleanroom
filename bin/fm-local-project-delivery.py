@@ -110,17 +110,17 @@ class AdmissionSession:
                 )
                 source_sha = hashlib.sha256(source_bytes).hexdigest()
                 destination_bytes, destination_sha, destination_mode = capture(fact["destination"], anchor_fd=self.source_fd, anchor_path=self.root)
-                mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["source_path"], repo_fd=self.destination_fd)
+                mode, obj_type, oid = parse_tree_entry(self.head, fact["source_path"], repo_fd=self.destination_fd)
                 if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
                     refuse("SNAPSHOT_CHANGED", "legacy candidate Git object changed after the snapshot")
-                parse_index_entry(self.root, fact["destination_path"], mode, fact["destination_object_id"], repo_fd=self.source_fd)
+                parse_index_entry(fact["destination_path"], mode, fact["destination_object_id"], repo_fd=self.source_fd)
             else:
                 source_bytes, source_sha, _ = capture(fact["source"], anchor_fd=self.source_fd, anchor_path=self.root)
                 destination_bytes, destination_sha, destination_mode = capture(fact["destination"], anchor_fd=self.destination_fd, anchor_path=self.destination)
-                mode, obj_type, oid = parse_tree_entry(self.destination, self.head, fact["path"], repo_fd=self.destination_fd)
+                mode, obj_type, oid = parse_tree_entry(self.head, fact["path"], repo_fd=self.destination_fd)
                 if obj_type != "blob" or mode != fact["git_mode"] or oid != fact["object_id"]:
                     refuse("SNAPSHOT_CHANGED", "admission Git object changed after the snapshot")
-                parse_index_entry(self.destination, fact["path"], mode, oid, repo_fd=self.destination_fd)
+                parse_index_entry(fact["path"], mode, oid, repo_fd=self.destination_fd)
             if source_sha != fact["source_sha"] or source_bytes != fact.get("source_object_bytes", source_bytes) or destination_sha != fact["destination_sha"] or destination_mode != fact["file_mode"] or source_bytes != destination_bytes:
                 refuse("SNAPSHOT_CHANGED", "admission source or destination bytes changed after the snapshot")
 
@@ -366,8 +366,8 @@ def registered_projects(home: Path) -> tuple[list[str], str, bytes]:
     return projects, digest, data
 
 
-def parse_tree_entry(repo: Path, head: str, path: str, *, repo_fd: int | None = None) -> tuple[str, str, str]:
-    raw = run(["git", "-C", repo_handle(repo_fd) if repo_fd is not None else str(repo), "ls-tree", "-z", head, "--", path], pass_fds=(repo_fd,) if repo_fd is not None else ())
+def parse_tree_entry(head: str, path: str, *, repo_fd: int) -> tuple[str, str, str]:
+    raw = run(["git", "-C", repo_handle(repo_fd), "ls-tree", "-z", head, "--", path], pass_fds=(repo_fd,))
     rows = [row for row in raw.split(b"\0") if row]
     if not rows:
         refuse("FAMILY_INCOMPLETE", f"candidate does not track {path}")
@@ -392,14 +392,14 @@ def family_is_present(head: str, artifacts: list[dict[str, str]], *, repo_fd: in
     return True
 
 
-def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: str, *, repo_fd: int | None = None) -> None:
-    mode, oid = index_entry(repo, path, repo_fd=repo_fd)
+def parse_index_entry(path: str, expected_mode: str, expected_oid: str, *, repo_fd: int) -> None:
+    mode, oid = index_entry(path, repo_fd=repo_fd)
     if mode != expected_mode or oid != expected_oid:
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} differs from the admitted tree entry")
 
 
-def index_entry(repo: Path, path: str, *, repo_fd: int | None = None) -> tuple[str, str]:
-    raw = run(["git", "-C", repo_handle(repo_fd) if repo_fd is not None else str(repo), "ls-files", "--stage", "-z", "--", path], pass_fds=(repo_fd,) if repo_fd is not None else ())
+def index_entry(path: str, *, repo_fd: int) -> tuple[str, str]:
+    raw = run(["git", "-C", repo_handle(repo_fd), "ls-files", "--stage", "-z", "--", path], pass_fds=(repo_fd,))
     rows = [row for row in raw.split(b"\0") if row]
     if len(rows) != 1:
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index does not have one stage-0 entry at {path}")
@@ -461,7 +461,7 @@ def verify_legacy_delivery(
                 refuse("IDENTITY_MALFORMED", f"manifest {index} sha256 is not exact")
             if not source.startswith(family) or not destination.startswith(family):
                 refuse("PATH_UNSAFE", f"manifest {index} is outside the governed family")
-            source_mode, source_type, source_oid = parse_tree_entry(repo, head, source, repo_fd=session.destination_fd)
+            source_mode, source_type, source_oid = parse_tree_entry(head, source, repo_fd=session.destination_fd)
             if source_type != "blob" or source_mode not in ("100644", "100755"):
                 refuse("CANDIDATE_MISMATCH", f"candidate source {source} is not a governed regular-file object")
             source_bytes = run(["git", "-C", repo_handle(session.destination_fd), "show", f"{head}:{source}"], pass_fds=(session.destination_fd,))
@@ -471,7 +471,7 @@ def verify_legacy_delivery(
             destination_bytes, destination_sha, destination_mode_fs = capture(destination_path, anchor_fd=session.source_fd, anchor_path=root)
             if destination_sha != expected or destination_bytes != source_bytes:
                 refuse("READBACK_MISMATCH", f"delivery destination {destination} does not match the exact candidate bytes")
-            index_mode, index_oid = index_entry(root, destination, repo_fd=session.source_fd)
+            index_mode, index_oid = index_entry(destination, repo_fd=session.source_fd)
             if index_mode not in ("100644", "100755") or index_mode != source_mode:
                 refuse("CANDIDATE_MISMATCH", f"delivery destination {destination} has the wrong tracked mode")
             expected_fs = 0o755 if index_mode == "100755" else 0o644
@@ -550,7 +550,7 @@ def build_candidate(
     *, home: Path, programme: dict[str, Any], root: Path, step: str,
     policy: dict[str, Any], project: str, ref: str,
     delivery_id: str, maker: str, checker: str, route: str,
-    require_cwd: bool, registry_sha256: str, enforce_pinned_owner: bool = True,
+    registry_sha256: str, enforce_pinned_owner: bool = True,
     registry_data: bytes | None = None,
     session_holder: list[AdmissionSession] | None = None,
 ) -> dict[str, Any]:
@@ -579,8 +579,6 @@ def build_candidate(
         cno("PROJECT_UNAVAILABLE", exc.detail)
     if top != repo_real:
         refuse("OWNER_PROJECT_MISMATCH", f"project {project} path is not its repository root")
-    if require_cwd and Path.cwd().resolve() != repo_real:
-        refuse("WORKING_DIRECTORY_MISMATCH", f"bind must run from {repo_real}")
     if not ref.startswith("refs/heads/") or not SLUG.fullmatch(ref.removeprefix("refs/heads/")):
         refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
     head = git_fd(destination_root_fd, "rev-parse", f"{ref}^{{commit}}")
@@ -598,12 +596,12 @@ def build_candidate(
     for row in policy["artifacts"]:
         source_path = under(root, row["source"])
         source_bytes, source_sha, _ = capture(source_path, anchor_fd=source_root_fd, anchor_path=root)
-        mode, obj_type, oid = parse_tree_entry(repo_real, head, row["destination"], repo_fd=destination_root_fd)
+        mode, obj_type, oid = parse_tree_entry(head, row["destination"], repo_fd=destination_root_fd)
         if obj_type != "blob":
             refuse("DESTINATION_TYPE_MISMATCH", f"{row['destination']} is {obj_type}, not blob")
         if mode != row["git_mode"]:
             refuse("DESTINATION_MODE_MISMATCH", f"{row['destination']} is mode {mode}, expected {row['git_mode']}")
-        parse_index_entry(repo_real, row["destination"], mode, oid, repo_fd=destination_root_fd)
+        parse_index_entry(row["destination"], mode, oid, repo_fd=destination_root_fd)
         destination_bytes = run(["git", "-C", repo_handle(destination_root_fd), "show", f"{head}:{row['destination']}"], pass_fds=(destination_root_fd,))
         destination_sha = hashlib.sha256(destination_bytes).hexdigest()
         if source_sha != destination_sha:
@@ -648,7 +646,7 @@ def build_candidate(
             generation = spec.get("generation")
             if spec.get("kind") != expected_kind or type(generation) is not int or generation < 1:
                 refuse("PRESERVATION_MISMATCH", f"preservation {role} has unsupported identity")
-            mode, obj_type, oid = parse_tree_entry(repo_real, head, path, repo_fd=destination_root_fd)
+            mode, obj_type, oid = parse_tree_entry(head, path, repo_fd=destination_root_fd)
             if role == "current":
                 if obj_type != "blob" or mode not in ("100644", "100755"):
                     refuse("PRESERVATION_MISMATCH", f"current generation owner {path} is not a regular blob")
@@ -758,7 +756,6 @@ def validate_admission(
             home=home, programme=programme, root=root, step=step,
             policy=policy, project=project, ref=ref,
             delivery_id=admission_id, maker=maker, checker=checker, route=route,
-            require_cwd=False,
             registry_sha256=registry_sha256,
             registry_data=registry_data,
             session_holder=session_holder,
@@ -807,7 +804,6 @@ def owner_candidates(
                 home=home, programme=programme, root=root, step=step,
                 policy=policy, project=project, ref=ref,
                 delivery_id=delivery_id, maker=maker, checker=checker, route=route,
-                require_cwd=False,
                 registry_sha256=registry_sha256,
                 registry_data=registry_data,
                 enforce_pinned_owner=False,

@@ -75,12 +75,35 @@ chmod +x "$FAKEBIN/no-mistakes"
 cat > "$FAKEBIN/gh-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
-body=${FM_FAKE_PR_BODY:-}
-body64=$(printf '%s' "$body" | base64 | tr -d '\n')
-row=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-  "${FM_FAKE_PR_NUMBER:-9}" "${FM_FAKE_PR_STATE:-open}" "${FM_FAKE_PR_MERGED:-false}" \
-  "${FM_FAKE_PR_HEAD:-}" "${FM_FAKE_PR_BRANCH:-}" "${FM_FAKE_PR_URL:-https://github.com/o/r/pull/9}" "$body64")
-printf 'api_response:\n  body: %s\n  truncated: false\n' "$(printf '%s' "$row" | jq -Rs .)"
+# gh-axi's own raw-output truncation limit.
+LIMIT=${FM_FAKE_GH_AXI_RAW_LIMIT:-4000}
+[ "${1:-}" = api ] || { printf 'error: "unknown command %s for gh-axi"\n' "${1:-}"; exit 2; }
+shift
+filter=''
+path=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --jq) filter=${2:-}; shift 2 ;;
+    --field|--header|--template) shift 2 ;;
+    --paginate) shift ;;
+    --*) printf 'error: "unknown flag %s for gh-axi api. Supported flags: --field, --header, --jq, --template, --paginate"\n' "$1"; exit 2 ;;
+    *) path=$1; shift ;;
+  esac
+done
+[ -n "$path" ] && [ -n "$filter" ] || { printf 'error: "missing api path or filter"\n'; exit 2; }
+pr=$(jq -n \
+  --argjson number "${FM_FAKE_PR_NUMBER:-9}" \
+  --arg state "${FM_FAKE_PR_STATE:-open}" \
+  --argjson merged "${FM_FAKE_PR_MERGED:-false}" \
+  --arg sha "${FM_FAKE_PR_HEAD:-}" \
+  --arg ref "${FM_FAKE_PR_BRANCH:-}" \
+  --arg url "${FM_FAKE_PR_URL:-https://github.com/o/r/pull/9}" \
+  --arg body "${FM_FAKE_PR_BODY:-}" \
+  '{number:$number,state:$state,merged:$merged,head:{sha:$sha,ref:$ref},html_url:$url,body:$body}') || exit 2
+row=$(printf '%s' "$pr" | jq -r "$filter") || exit 2
+truncated=false
+if [ "${#row}" -gt "$LIMIT" ]; then row=${row:0:LIMIT}; truncated=true; fi
+printf 'api_response:\n  body: %s\n  truncated: %s\n' "$(printf '%s' "$row" | jq -Rs .)" "$truncated"
 SH
 chmod +x "$FAKEBIN/gh-axi"
 export PATH="$FAKEBIN:$PATH"
@@ -976,7 +999,7 @@ test_synchronized_rebased_successor_transition() {
   saved_meta=$(cat "$STATE/synchronized-successor.meta")
   saved_obs=$(cat "$STATE/synchronized-successor.nm-observe")
   saved_status=$(cat "$STATE/synchronized-successor.status")
-  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head; do
+  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head truncated-pr-read; do
     printf '%s\n' "$saved_meta" > "$STATE/synchronized-successor.meta"
     printf '%s\n' "$saved_obs" > "$STATE/synchronized-successor.nm-observe"
     printf '%s\n' "$saved_status" > "$STATE/synchronized-successor.status"
@@ -1012,21 +1035,23 @@ test_synchronized_rebased_successor_transition() {
       green-only) FM_FAKE_SYNC='' ;;
       patch-equivalent-foreign) git -C "$wt" reset -q --hard "$foreign_head" ;;
       stale-expected-head) git -C "$wt" commit -q --allow-empty -m 'moved after proof' ;;
+      truncated-pr-read) FM_FAKE_GH_AXI_RAW_LIMIT=32 ;;
     esac
-    export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_SYNC_RC FM_FAKE_CI_LOGS FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
+    export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_SYNC_RC FM_FAKE_CI_LOGS FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_HEAD FM_FAKE_PR_BODY FM_FAKE_GH_AXI_RAW_LIMIT
     case_meta=$(cat "$STATE/synchronized-successor.meta")
     case_obs=$(cat "$STATE/synchronized-successor.nm-observe")
     case_status=$(cat "$STATE/synchronized-successor.status")
     out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
     expect_code 1 "$rc" "synchronized successor must refuse $mutation: $out"
     case "$mutation" in
-      branch-name-only|pr-only|green-only) assert_contains "$out" 'SUCCESSOR_CNO' "$mutation was not typed as unevaluable identity" ;;
+      branch-name-only|pr-only|green-only|truncated-pr-read) assert_contains "$out" 'SUCCESSOR_CNO' "$mutation was not typed as unevaluable identity" ;;
       *) assert_contains "$out" 'SUCCESSOR_CONTRADICTION' "$mutation was not typed as contradictory identity" ;;
     esac
     [ "$(cat "$STATE/synchronized-successor.meta")" = "$case_meta" ] || fail "$mutation mutated stage authority"
     [ "$(cat "$STATE/synchronized-successor.nm-observe")" = "$case_obs" ] || fail "$mutation mutated observer authority"
     [ "$(cat "$STATE/synchronized-successor.status")" = "$case_status" ] || fail "$mutation appended a stage receipt"
     rm -f "$wt/dirty.txt"
+    unset FM_FAKE_GH_AXI_RAW_LIMIT
     git -C "$wt" reset -q --hard "$head"
   done
   printf '%s\n' "$saved_meta" > "$STATE/synchronized-successor.meta"
@@ -1170,6 +1195,86 @@ test_terminal_branch_requires_one_minted_successor() {
   pass 'terminal validation branch requires one explicit crash-safe successor and refuses name collisions'
 }
 test_terminal_branch_requires_one_minted_successor
+
+# The pipeline's own fix commits routinely advance the predecessor branch while
+# validation runs, so the mint bases on the head this bound run actually
+# validated rather than on the head that was submitted - and refuses any head it
+# did not. The admitted predecessor and the landing capture are immutable facts
+# of the record and survive the transition untouched.
+test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
+  local wt submitted advanced out rc
+
+  wt="$TMP_ROOT/wt-advanced"
+  make_worktree "$wt" fm/advanced
+  make_task advanced no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=''
+  out=$("$STAGE" advanced committed 2>&1); rc=$?
+  expect_code 0 "$rc" "advanced fixture admission: $out"
+  submitted=$(meta_get advanced stage_head)
+  FM_FAKE_AXI_STATUS=$(run_toon 01ADVANCED fm/advanced reviewing "$submitted")
+  out=$("$STAGE" advanced running --run 01ADVANCED 2>&1); rc=$?
+  expect_code 0 "$rc" "advanced fixture binding: $out"
+  git -C "$wt" commit -q --allow-empty -m 'no-mistakes(review): pipeline fix'
+  advanced=$(git -C "$wt" rev-parse HEAD)
+  [ "$advanced" != "$submitted" ] || fail 'the fixture must advance the predecessor branch'
+  FM_FAKE_AXI_STATUS=$(run_toon 01ADVANCED fm/advanced completed "$advanced" passed https://github.com/o/r/pull/11)
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" advanced committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "an advanced terminal branch must still require a successor: $out"
+  assert_contains "$out" 'reason=SUCCESSOR_REQUIRED' 'advanced terminal refusal was not typed'
+
+  # A head the bound run never validated is refused without any branch effect,
+  # so SUCCESSOR_REQUIRED and the mint never point at each other.
+  git -C "$wt" reset -q --hard "$submitted^"
+  out=$("$STAGE" advanced successor 2>&1); rc=$?
+  expect_code 1 "$rc" "a head the bound run never validated must refuse the mint: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'unvalidated mint refusal was not typed'
+  [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/advanced-successor 2>/dev/null || true)" ] \
+    || fail 'a refused mint created its successor branch anyway'
+  git -C "$wt" reset -q --hard "$advanced"
+
+  out=$("$STAGE" advanced successor 2>&1); rc=$?
+  expect_code 0 "$rc" "the mint must adopt the validated descendant the pipeline advanced to: $out"
+  [ "$(meta_get advanced stage_branch)" = fm/advanced-successor ] || fail 'the minted branch was not published'
+  [ "$(meta_get advanced stage_head)" = "$advanced" ] || fail 'the mint did not adopt the validated descendant head'
+  [ "$(meta_get advanced stage_successor_head)" = "$advanced" ] || fail 'the successor head was not bound to the validated descendant'
+  [ "$(git -C "$wt" rev-parse refs/heads/fm/advanced-successor)" = "$advanced" ] \
+    || fail 'the minted branch does not name the validated descendant'
+  [ "$(meta_get advanced stage_predecessor_head)" = "$submitted" ] || fail 'the admitted predecessor head was not preserved'
+  [ "$(meta_get advanced stage_predecessor_branch)" = fm/advanced ] || fail 'the admitted predecessor branch was not preserved'
+  out=$("$STAGE" advanced committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "the minted descendant branch must admit a fresh attempt: $out"
+  assert_contains "$out" 'STAGE: validation-admitted:' 'the minted descendant was not admitted'
+
+  wt="$TMP_ROOT/wt-landed-mint"
+  make_worktree "$wt" fm/landed-mint
+  make_task landed-mint no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=''
+  out=$("$STAGE" landed-mint committed 2>&1); rc=$?
+  expect_code 0 "$rc" "landed-mint fixture admission: $out"
+  submitted=$(meta_get landed-mint stage_head)
+  FM_FAKE_AXI_STATUS=$(run_toon 01LANDEDMINT fm/landed-mint reviewing "$submitted")
+  out=$("$STAGE" landed-mint running --run 01LANDEDMINT 2>&1); rc=$?
+  expect_code 0 "$rc" "landed-mint fixture binding: $out"
+  printf 'pr_head=%s\n' "$submitted" >> "$STATE/landed-mint.meta"
+  out=$("$STAGE" landed-mint landing --pr https://github.com/o/r/pull/12 2>&1); rc=$?
+  expect_code 0 "$rc" "landed-mint landing: $out"
+  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the landing fixture captured no landed head'
+  FM_FAKE_AXI_STATUS=$(run_toon 01LANDEDMINT fm/landed-mint completed "$submitted" passed https://github.com/o/r/pull/12)
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" landed-mint successor 2>&1); rc=$?
+  expect_code 0 "$rc" "a landed branch must mint its successor: $out"
+  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the mint erased the immutable landing capture'
+  [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the mint erased the landing provenance'
+  [ "$(meta_get landed-mint stage_reason)" = 'landed-head:pr-head' ] || fail 'the mint erased the recorded landing narration'
+  [ "$(grep -c '^stage_landed_head=' "$STATE/landed-mint.meta")" = 1 ] || fail 'the mint shadowed the landing capture instead of carrying it'
+  out=$("$STAGE" landed-mint show 2>&1)
+  assert_contains "$out" "landed_head=${submitted:0:12}" 'the minted record no longer reports the head that landed'
+  FM_FAKE_AXI_STATUS=''
+  export FM_FAKE_AXI_STATUS
+  pass 'the successor mint adopts only the validated candidate and preserves predecessor and landing evidence'
+}
+test_successor_mints_the_validated_candidate_and_keeps_the_capture
 
 # Terminal successors need the producer's explicit verified readback, not the
 # active-only exemption or ordinary synchronized equality.

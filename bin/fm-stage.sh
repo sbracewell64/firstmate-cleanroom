@@ -520,44 +520,48 @@ sha256_text() {
 }
 
 base64_decode() {
-  base64 --decode 2>/dev/null || base64 -D 2>/dev/null
+  local payload
+  payload=$(cat)
+  printf '%s' "$payload" | base64 --decode 2>/dev/null && return 0
+  printf '%s' "$payload" | base64 -D 2>/dev/null
 }
 
+# gh-axi wraps a non-JSON --jq result in an api_response envelope and truncates
+# the raw body past its own limit, so the row carries only the small facts the
+# attestation is read from - never the whole PR description, which routinely
+# exceeds that limit. A truncated envelope is unevaluable, never a disagreement.
 gh_axi_pr_row() { # <canonical GitHub PR URL>
-  local output encoded
+  local output encoded truncated
   command -v gh-axi >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
   fm_pr_url_parse "$1" >/dev/null 2>&1 || return 1
   [ "$FM_PR_PROVIDER" = github ] || return 1
   output=$(gh-axi api "/repos/$FM_PR_OWNER/$FM_PR_REPO/pulls/$FM_PR_NUMBER" --jq \
-    '[.number, .state, .merged, .head.sha, .head.ref, .html_url, (.body // "" | @base64)] | @tsv' --full 2>/dev/null) || return 1
+    '[.number, .state, .merged, .head.sha, .head.ref, .html_url,
+      ((.body // "") | contains("Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)")),
+      ((.body // "") | split("<!-- no-mistakes-pipeline-attestation:v1 ")[1] // "" | split(" -->")[0] | @base64)] | @tsv' 2>/dev/null) || return 1
+  truncated=$(printf '%s\n' "$output" | sed -n 's/^  truncated: //p' | head -1)
+  [ "$truncated" = false ] || return 1
   encoded=$(printf '%s\n' "$output" | sed -n 's/^  body: //p' | head -1)
   [ -n "$encoded" ] || return 1
   printf '%s' "$encoded" | jq -r . 2>/dev/null
 }
 
 successor_pr_attestation() { # <url> <branch> <head>; sets SUCCESSOR_ATTESTED_HEAD
-  local row number state merged head branch url body64 body rest block
+  local row number state merged head branch url pipeline block64 block
   row=$(gh_axi_pr_row "$1") || return 2
-  IFS=$(printf '\t') read -r number state merged head branch url body64 <<EOF
+  IFS=$(printf '\t') read -r number state merged head branch url pipeline block64 <<EOF
 $row
 EOF
-  [ -n "$number" ] && [ -n "$body64" ] || return 2
+  [ -n "$number" ] && [ -n "$pipeline" ] || return 2
   fm_pr_url_parse "$1" >/dev/null 2>&1 || return 2
   [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 1
   [ "$state" = open ] && [ "$merged" = false ] || return 1
   [ "$head" = "$3" ] && [ "$branch" = "$2" ] || return 1
-  body=$(printf '%s' "$body64" | base64_decode) || return 2
-  case "$body" in
-    *'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'*) ;;
-    *) return 1 ;;
-  esac
-  case "$body" in
-    *'<!-- no-mistakes-pipeline-attestation:v1 '*) ;;
-    *) return 1 ;;
-  esac
-  rest=${body#*'<!-- no-mistakes-pipeline-attestation:v1 '}
-  case "$rest" in *' -->'*) block=${rest%%' -->'*} ;; *) return 1 ;; esac
+  [ "$pipeline" = true ] || return 1
+  [ -n "$block64" ] || return 1
+  block=$(printf '%s' "$block64" | base64_decode) || return 2
+  [ -n "$block" ] || return 1
   SUCCESSOR_ATTESTED_HEAD=$(printf '%s' "$block" | sed -n 's/.*"head_sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)
   [ "$SUCCESSOR_ATTESTED_HEAD" = "$3" ]
 }
@@ -1058,7 +1062,7 @@ successor_replay_locked() {
 
 publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attested> <checked> <qualification>
   local action=$1 branch=$2 head=$3 tree=$4 ref=$5 pr=$6 attested=$7 checked=$8 qualification=$9
-  local predecessor_branch predecessor_head predecessor_tree predecessor_attempt predecessor_run predecessor_duty predecessor_alloc tmp line
+  local predecessor_branch predecessor_head predecessor_tree predecessor_attempt predecessor_run predecessor_duty predecessor_alloc tmp line captured
   local pipeline_submitted pipeline_current pipeline_pushed local_head remote_head sync_state relation push_generation target_kind authority
   predecessor_branch=$(stage_predecessor_branch)
   predecessor_head=$(stage_predecessor_head)
@@ -1094,6 +1098,13 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
     successor_replay_locked || return 3
     return 0
   fi
+  if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
+    return 2
+  fi
+  # The landing capture and its provenance are immutable once recorded, so a
+  # successor transition carries them forward rather than re-emitting a record
+  # that says nothing landed.
+  captured=$(grep -E '^stage_(landed_head(_source|_confirmed)?|reason)=' "$META" 2>/dev/null || true)
   tmp="$STATE/.$ID.meta.successor.${BASHPID:-$$}"
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
@@ -1111,6 +1122,7 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
     printf 'stage_attempt=%s\n' "$(meta stage_attempt)"
     printf 'stage_run=%s\n' "$(meta stage_run)"
     printf 'stage_pr=%s\n' "$pr"
+    [ -z "$captured" ] || printf '%s\n' "$captured"
     printf 'stage_predecessor_branch=%s\n' "$predecessor_branch"
     printf 'stage_predecessor_head=%s\n' "$predecessor_head"
     printf 'stage_predecessor_tree=%s\n' "$predecessor_tree"
@@ -1317,7 +1329,7 @@ do_committed() {
 }
 
 do_successor() {
-  local current output lock journal new_branch old_branch old_head existing publish_rc
+  local current output lock journal new_branch old_branch old_head base_head existing publish_rc
   require_ship successor
   [ "$MODE" = no-mistakes ] || refuse successor NOT_ADMITTED "mode=$MODE has no validation successor"
   require_worktree successor
@@ -1357,9 +1369,21 @@ do_successor() {
   old_branch=$(meta stage_branch); old_head=$(meta stage_head)
   new_branch="${old_branch}-successor"
   journal="$STATE/.$ID.stage-successor-branch"
-  if [ "$BRANCH" != "$old_branch" ] || [ "$HEAD" != "$old_head" ]; then
-    [ "$BRANCH" = "$new_branch" ] && [ "$HEAD" = "$old_head" ] && [ -f "$journal" ] && [ ! -L "$journal" ] \
+  # The pipeline's own fix commits routinely advance the predecessor branch past
+  # the admitted head, so the mint bases on whatever the lifecycle's currentness
+  # owner already accepts as this bound run's candidate - never on a foreign or
+  # unproven head, and never in place of the immutable admitted predecessor.
+  base_head=$old_head
+  if [ "$BRANCH" = "$old_branch" ] && [ "$HEAD" != "$old_head" ]; then
+    candidate_current "$old_head" "$HEAD" ci-ready \
       || refuse successor SUCCESSOR_CONTRADICTION 'the live branch or head moved from the recorded predecessor'
+    base_head=$HEAD
+  fi
+  if [ "$BRANCH" != "$old_branch" ] || [ "$HEAD" != "$base_head" ]; then
+    [ "$BRANCH" = "$new_branch" ] && [ -f "$journal" ] && [ ! -L "$journal" ] \
+      && [ -n "$HEAD" ] && [ "$HEAD" = "$(fm_meta_get "$journal" successor_head)" ] \
+      || refuse successor SUCCESSOR_CONTRADICTION 'the live branch or head moved from the recorded predecessor'
+    base_head=$HEAD
   fi
   lock=$(fm_meta_lock_path "$META") || exit 2
   fm_lock_acquire_wait "$lock"
@@ -1368,7 +1392,7 @@ do_successor() {
       && [ "$(fm_meta_get "$journal" predecessor_branch)" = "$old_branch" ] \
       && [ "$(fm_meta_get "$journal" predecessor_head)" = "$old_head" ] \
       && [ "$(fm_meta_get "$journal" successor_branch)" = "$new_branch" ] \
-      && [ "$(fm_meta_get "$journal" successor_head)" = "$old_head" ] || {
+      && [ "$(fm_meta_get "$journal" successor_head)" = "$base_head" ] || {
         fm_lock_release "$lock"
         refuse successor SUCCESSOR_COLLISION 'an incompatible interrupted successor transaction already exists'
       }
@@ -1381,13 +1405,13 @@ do_successor() {
     {
       umask 077
       printf 'record=fm-stage-successor-prepare/v1\npredecessor_branch=%s\npredecessor_head=%s\nsuccessor_branch=%s\nsuccessor_head=%s\n' \
-        "$old_branch" "$old_head" "$new_branch" "$old_head" > "$journal.${BASHPID:-$$}"
+        "$old_branch" "$old_head" "$new_branch" "$base_head" > "$journal.${BASHPID:-$$}"
       mv "$journal.${BASHPID:-$$}" "$journal"
     }
   fi
   existing=$(git -C "$WT" rev-parse --verify --quiet "refs/heads/$new_branch^{commit}" 2>/dev/null || true)
   if [ -n "$existing" ]; then
-    if [ "$existing" != "$old_head" ]; then
+    if [ "$existing" != "$base_head" ]; then
       fm_lock_release "$lock"
       refuse successor SUCCESSOR_COLLISION "successor branch $new_branch already names a distinct head"
     fi
@@ -1396,7 +1420,7 @@ do_successor() {
       refuse successor SUCCESSOR_COLLISION "successor branch $new_branch exists but cannot be checked out"
     }
   else
-    git -C "$WT" switch -q -c "$new_branch" "$old_head" 2>/dev/null || {
+    git -C "$WT" switch -q -c "$new_branch" "$base_head" 2>/dev/null || {
       fm_lock_release "$lock"
       refuse successor SUCCESSOR_COLLISION "successor branch $new_branch could not be created"
     }

@@ -408,6 +408,23 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+test_project_mode_rejects_unreadable_registry() {
+  local home out status
+  home="$TMP_ROOT/project-mode-unreadable/home"
+  mkdir -p "$home/data"
+  printf '%s\n' '- exact [local-only] - fixture (added 2026-01-01)' > "$home/data/projects.md"
+  chmod 000 "$home/data/projects.md"
+  if [ "$(id -u)" -eq 0 ] && command -v runuser >/dev/null 2>&1; then
+    chmod 755 "$TMP_ROOT" "$home" "$home/data"
+    out=$(runuser -u nobody -- env FM_HOME="$home" "$PROJECT_MODE" exact 2>&1); status=$?
+  else
+    out=$(FM_HOME="$home" "$PROJECT_MODE" exact 2>&1); status=$?
+  fi
+  [ "$status" -ne 0 ] || fail "unreadable registry synthesized a default posture"
+  chmod 600 "$home/data/projects.md"
+  pass "fm-project-mode: a present unreadable registry fails closed"
+}
+
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
@@ -417,4 +434,5 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
+test_project_mode_rejects_unreadable_registry
 echo "# all fm-task-delivery tests passed"

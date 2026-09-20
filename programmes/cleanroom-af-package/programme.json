@@ -206,7 +206,40 @@
           "MERGED_QUALIFIED",
           "ADOPT_OPTION",
           "DELIVERED_QUALIFIED"
-        ]
+        ],
+        "local_delivery": {
+          "schema": "fm-local-project-delivery-policy/v1",
+          "owner_project": "exchange-work",
+          "maker_checker": "distinct",
+          "qualification_routes": [
+            "independent-checker",
+            "no-mistakes"
+          ],
+          "artifacts": [
+            {
+              "source": "exchange/bin/render-manifest.py",
+              "destination": "exchange/bin/render-manifest.py",
+              "git_mode": "100755"
+            },
+            {
+              "source": "exchange/bin/exchange-current.py",
+              "destination": "exchange/bin/exchange-current.py",
+              "git_mode": "100755"
+            }
+          ],
+          "preservation": {
+            "current": {
+              "kind": "json_generation",
+              "path": "exchange/chatgpt-project/PROJECT-SOURCE-MANIFEST.json",
+              "generation": 7
+            },
+            "rollback": {
+              "kind": "git_tree",
+              "path": "exchange/chatgpt-project/upload.gen6",
+              "generation": 6
+            }
+          }
+        }
       },
       "phase": "package-qualification",
       "depends_on": [
@@ -256,7 +289,35 @@
           "MERGED_QUALIFIED",
           "ADOPT_OPTION",
           "DELIVERED_QUALIFIED"
-        ]
+        ],
+        "local_delivery": {
+          "schema": "fm-local-project-delivery-policy/v1",
+          "owner_project": "exchange-work",
+          "maker_checker": "distinct",
+          "qualification_routes": [
+            "independent-checker",
+            "no-mistakes"
+          ],
+          "artifacts": [
+            {
+              "source": "exchange/bin/render-check-catalog.py",
+              "destination": "exchange/bin/render-check-catalog.py",
+              "git_mode": "100755"
+            }
+          ],
+          "preservation": {
+            "current": {
+              "kind": "json_generation",
+              "path": "exchange/chatgpt-project/PROJECT-SOURCE-MANIFEST.json",
+              "generation": 7
+            },
+            "rollback": {
+              "kind": "git_tree",
+              "path": "exchange/chatgpt-project/upload.gen6",
+              "generation": 6
+            }
+          }
+        }
       },
       "phase": "package-qualification",
       "depends_on": [
@@ -296,7 +357,52 @@
           "MERGED_QUALIFIED",
           "ADOPT_OPTION",
           "DELIVERED_QUALIFIED"
-        ]
+        ],
+        "local_delivery": {
+          "schema": "fm-local-project-delivery-policy/v1",
+          "maker_checker": "distinct",
+          "qualification_routes": [
+            "independent-checker",
+            "no-mistakes"
+          ],
+          "artifacts": [
+            {
+              "source": "artifacts/synthesis/bin/synthesis-integrity.py",
+              "destination": "artifacts/synthesis/bin/synthesis-integrity.py",
+              "git_mode": "100755"
+            },
+            {
+              "source": "artifacts/synthesis/synthesis-keys.tsv",
+              "destination": "artifacts/synthesis/synthesis-keys.tsv",
+              "git_mode": "100644"
+            },
+            {
+              "source": "artifacts/synthesis/sources/ANTI-SLOP-2026-09-05__F2.txt",
+              "destination": "artifacts/synthesis/sources/ANTI-SLOP-2026-09-05__F2.txt",
+              "git_mode": "100644"
+            },
+            {
+              "source": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__L2.txt",
+              "destination": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__L2.txt",
+              "git_mode": "100644"
+            },
+            {
+              "source": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__L3.txt",
+              "destination": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__L3.txt",
+              "git_mode": "100644"
+            },
+            {
+              "source": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__W1.txt",
+              "destination": "artifacts/synthesis/sources/LLM-WIKI-2026-09-05__W1.txt",
+              "git_mode": "100644"
+            },
+            {
+              "source": "artifacts/plans/programme-authority-manager-loop-study.md",
+              "destination": "artifacts/plans/programme-authority-manager-loop-study.md",
+              "git_mode": "100644"
+            }
+          ]
+        }
       },
       "phase": "package-qualification",
       "depends_on": [

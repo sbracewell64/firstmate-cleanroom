@@ -34,6 +34,10 @@
 #
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
+# An absent registry takes that same documented fallback, but a present registry that
+# cannot be read or parsed is fail-closed: the awk parse below dies under `set -eu`, so
+# callers get a nonzero exit and never a synthesized permissive posture
+# (tests/fm-task-delivery.test.sh::test_project_mode_rejects_unreadable_registry).
 # Usage: fm-project-mode.sh [--raw] <project-name>
 set -eu
 

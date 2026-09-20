@@ -270,7 +270,7 @@ family_for_basename() {
     fm-harness-adapter-references.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
-    fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
+    fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|fm-local-project-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|fm-continuation-lib.test.sh|fm-tool-profile.test.sh|\
     fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-workflow-yaml.test.sh)

@@ -893,11 +893,12 @@ def owner_candidates(
 
 
 def family_owner_exists(home: Path, policy: dict[str, Any], ref: str) -> bool:
-    registered, _, _ = registered_projects(home)
+    registered, _, registry_data = registered_projects(home)
     for project in registered:
         try:
+            project_mode(home, project, registry_data=registry_data)
             repo_fd = open_directory((home / "projects" / project).resolve(strict=True))
-        except (OSError, ValueError):
+        except (NotOwner, Verdict, OSError, ValueError):
             continue
         try:
             head = git_fd(repo_fd, "rev-parse", f"{ref}^{{commit}}")

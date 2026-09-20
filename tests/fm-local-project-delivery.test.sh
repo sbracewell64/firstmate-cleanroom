@@ -491,6 +491,22 @@ out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto
   || fail "the admitted same-root candidate is not the complete family"
 pass "unrelated registered projects do not block the same-root owner census"
 
+# A complete family under a non-local-only posture is not a lawful owner, so it
+# is genuine owner absence rather than a source-root refusal.
+home=$(make_home d-posture-owner)
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [no-mistakes] - complete family under the wrong posture (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-posture-owner 2>&1); rc=$?
+[ "$rc" = 5 ] || fail "a complete family under a non-local-only posture is not CNO: rc=$rc $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
+  || fail "a non-local-only complete family was not reported as absent lawful ownership: $out"
+pass "a complete family registered outside local-only stays CNO OWNER_MISSING"
+
 # A D successor admission seals its same-root source independently of the
 # programme's canonical artifact root. The shared resolver must consume that
 # sealed identity rather than substitute its one ambient/global root.

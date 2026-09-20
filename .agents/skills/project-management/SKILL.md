@@ -39,8 +39,10 @@ Before dispatching work or applying a delivery effect whose programme evidence w
 The command derives and publishes one immutable owner-bound manifest only after the programme action, strict project registration and `local-only` posture, source identity and bytes, destination root and Git candidate, tracked paths and modes, maker/checker separation, qualification route, and complete family agree.
 Run it from the destination project's repository root.
 Use `--project auto` only when the programme policy does not pin an owner; zero complete registered owners is CNO, while more than one is an ambiguity refusal.
+Under `owner_project_root` the admissible owner is the one project whose root is that exact source root, so a forbidden root refuses `SOURCE_IDENTITY_MISMATCH` while genuine owner or family absence stays CNO.
 A refusal publishes nothing, and an existing delivery identity is a replay refusal rather than a new admission.
 The command header owns the manifest schema, exact flags, result codes, and verification mechanics, while the programme step's `terminal_predicate.local_delivery` object owns the required family and any pinned destination or preservation identity.
+Every such step also declares the required sibling `terminal_predicate.local_delivery_source` identity, either `canonical_artifact_root` for a source root outside the home's registered project tree or `owner_project_root` for the owner project's own root as an authorized same-root delivery, and a step that declares none refuses `REQUIRED_BINDING_MISSING` at bind and at every later verification.
 
 ## Delivery posture
 

@@ -464,6 +464,33 @@ out=$(bind_with_root "$absent" "$absent" "$absent/source" slice-d-s4-synthesis-i
   || fail "absent D ownership did not stay one census CNO: $out"
 pass "the census separates a forbidden source root from genuinely absent ownership"
 
+# An unrelated registered project neither blocks nor relabels a lawful same-root
+# bind: the census skips every project that is not the source root before it
+# opens their Git identity, ref, or family.
+home=$(make_home d-unrelated-projects)
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
+printf '%s\n' '- synthesis-backup [local-only] - second complete family (added 2026-09-20)' >> "$home/data/projects.md"
+printf '%s\n' '- master-only-work [local-only] - no refs/heads/main (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+cp -R "$repo" "$home/projects/synthesis-backup"
+master="$home/projects/master-only-work"
+mkdir -p "$master"; git -C "$master" init -q -b master
+printf 'unrelated\n' > "$master/README.md"
+git -C "$master" add .
+git -C "$master" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m unrelated
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto delivery-d-unrelated) \
+  || fail "unrelated registered projects blocked the lawful same-root D bind: $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .project')" = 'ADMITTED synthesis-work' ] \
+  || fail "the census did not admit the sealed source root owner: $out"
+[ "$(jq -r '.artifacts | length' "$(printf '%s' "$out" | jq -r '.path')")" = 7 ] \
+  || fail "the admitted same-root candidate is not the complete family"
+pass "unrelated registered projects do not block the same-root owner census"
+
 # A D successor admission seals its same-root source independently of the
 # programme's canonical artifact root. The shared resolver must consume that
 # sealed identity rather than substitute its one ambient/global root.

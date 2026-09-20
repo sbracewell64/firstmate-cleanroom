@@ -20,6 +20,10 @@ source-root identity: `canonical_artifact_root` admits only a source root
 outside this home's registered project tree, `owner_project_root` admits only
 the delivery owner project's own root as an authorized same-root delivery.
 Neither names an operator-local path, so the pin stays publication-safe.
+Under `owner_project_root` the owner census admits only the project that is that
+exact source root and skips every other registered project before probing its
+Git identity, ref, or family; a root that is no complete family owner's root is
+SOURCE_IDENTITY_MISMATCH, while an absent owner or family stays OWNER_MISSING.
 `bind` derives every candidate and byte identity, validates all facts before
 publishing one mode-0600 manifest at
 FM_HOME/data/local-project-delivery/admissions/<delivery-id>.json, and refuses a
@@ -620,6 +624,13 @@ def build_candidate(
         repo_real.relative_to(projects_real)
     except (OSError, ValueError):
         cno("PROJECT_UNAVAILABLE", f"project {project} is unavailable under this home")
+    if source_identity_for(programme, step) == "owner_project_root":
+        if root != repo_real:
+            if not enforce_pinned_owner:
+                raise NotOwner(f"project {project} is not the source root of this same-root delivery")
+            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
+    elif root.is_relative_to(projects_real):
+        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
     session = AdmissionSession(home, root, repo_real, registry_data or b"", registry_sha256)
     if session_holder is not None:
         session_holder.append(session)
@@ -643,13 +654,6 @@ def build_candidate(
 
     if not family_is_present(head, policy["artifacts"], repo_fd=destination_root_fd):
         raise NotOwner(f"project {project} does not contain the governed artifact family")
-
-    identity = source_identity_for(programme, step)
-    if identity == "owner_project_root":
-        if root != repo_real:
-            refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the authorized {project} owner root {repo_real}")
-    elif root.is_relative_to(projects_real):
-        refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is inside this home's registered project tree, not the canonical artifact source")
 
     artifacts: list[dict[str, Any]] = []
     for row in policy["artifacts"]:
@@ -888,6 +892,24 @@ def owner_candidates(
     return candidates, registry_sha256
 
 
+def family_owner_exists(home: Path, policy: dict[str, Any], ref: str) -> bool:
+    registered, _, _ = registered_projects(home)
+    for project in registered:
+        try:
+            repo_fd = open_directory((home / "projects" / project).resolve(strict=True))
+        except (OSError, ValueError):
+            continue
+        try:
+            head = git_fd(repo_fd, "rev-parse", f"{ref}^{{commit}}")
+            if family_is_present(head, policy["artifacts"], repo_fd=repo_fd):
+                return True
+        except Verdict:
+            continue
+        finally:
+            os.close(repo_fd)
+    return False
+
+
 def reject_symlink_chain(root: Path, relative_parts: tuple[str, ...], label: str) -> None:
     current = root
     for part in relative_parts:
@@ -1027,6 +1049,8 @@ def main() -> int:
             route=route,
         )
         if not candidates:
+            if source_identity_for(programme, step) == "owner_project_root" and family_owner_exists(home, policy, args.ref):
+                refuse("SOURCE_IDENTITY_MISMATCH", f"source root {root} is not the root of the registered owner of the complete {step} family")
             cno("OWNER_MISSING", f"no registered local-only project owns the complete {step} family")
         if len(candidates) != 1:
             for _, _, session in candidates:

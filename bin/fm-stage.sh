@@ -1740,10 +1740,11 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   esac
 }
 
-# 0 when the PR at <url> is still an open, unmerged PR for <branch>, 1 when it
-# is provably not, and 2 when that identity cannot be evaluated. A merged or
-# closed PR means the branch it was opened for is finished, whatever its refs
-# still say.
+# 0 when the PR at <url> is still an open, unmerged PR for <branch>. 1 when it
+# proves the branch finished: merged, or opened for some other branch. 3 when the
+# provider contradicts the branch's own history: the row is not the PR that was
+# asked for, or the PR was closed without merging while its retained head/ref
+# still name the branch. 2 when that identity cannot be evaluated at all.
 pr_open_for_branch() { # <url> <branch>
   local row number state merged head branch url pipeline block64
   row=$(gh_axi_pr_row "$1") || return 2
@@ -1752,26 +1753,42 @@ $row
 EOF
   [ -n "$number" ] && [ -n "$state" ] && [ -n "$merged" ] || return 2
   fm_pr_url_parse "$1" >/dev/null 2>&1 || return 2
-  [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 1
+  [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 3
+  [ "$merged" != true ] || return 1
   [ "$branch" = "$2" ] || return 1
-  [ "$state" = open ] && [ "$merged" = false ]
+  case "$state:$merged" in
+    open:false) return 0 ;;
+    closed:false) return 3 ;;
+    *) return 2 ;;
+  esac
 }
 
 # 0 when this record's own minted branch can still carry another attempt: the
 # worker holds custody, the branch is clean and synchronized with nothing the
 # pipeline has yet to land, and the PR its last run opened is still open and
 # unmerged. 1 when the branch is FINISHED - it is not the branch this record
-# minted, or the PR it was opened for has been merged or closed - so further
-# work needs a fresh task identity. 2, with MINTED_REUSE_DETAIL naming what
+# minted, or the PR it was opened for has been merged - so further work needs a
+# fresh task identity. 3 when the PR contradicts the branch (closed without
+# merging, or not the PR asked for). 2, with MINTED_REUSE_DETAIL naming what
 # disagrees, when reuse simply cannot be proven yet: an unreadable proof, or
 # heads that do not agree, which is what a red run that committed a fix leaves
 # behind and is cleared by pushing rather than by abandoning the task.
+# The PR's own terminal state is read FIRST: a finished or contradicted branch
+# is that whatever its synchronization happens to look like, and a merge that
+# deleted the remote head would otherwise hide behind an unreadable sync.
 minted_branch_reusable() { # <bound-status> <pr-url>
   local output=$1 pr=$2 proof facet local_head remote_head current_head pushed_head value rc=0
   MINTED_REUSE_DETAIL='reuse could not be evaluated'
   [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
   [ -n "$(meta stage_successor_branch)" ] || return 1
   [ "$BRANCH" = "$(meta stage_successor_branch)" ] || return 1
+  pr_open_for_branch "$pr" "$BRANCH" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) MINTED_REUSE_DETAIL="PR $pr is merged or no longer opened for $BRANCH"; return 1 ;;
+    3) MINTED_REUSE_DETAIL="PR $pr was closed without merging, or the provider row is not that PR"; return 3 ;;
+    *) MINTED_REUSE_DETAIL="the PR identity $pr could not be read"; return 2 ;;
+  esac
   if [ "$(fm_nm_branch_sync_state "$output")" = pipeline_owned ]; then
     MINTED_REUSE_DETAIL='the pipeline still holds custody of the branch'; return 2
   fi
@@ -1781,6 +1798,8 @@ minted_branch_reusable() { # <bound-status> <pr-url>
   proof=$(NM_HOME="$(obs nm_home)" fm_nm_run_checked "$WT" 10 axi sync --check) || {
     MINTED_REUSE_DETAIL='the synchronization proof could not be read'; return 2
   }
+  value=$(fm_nm_sync_scalar "$proof" local branch) || return 2
+  [ "$value" = "$BRANCH" ] || return 1
   value=$(fm_nm_sync_scalar "$proof" '' state) || return 2
   if [ "$value" != synchronized ]; then
     MINTED_REUSE_DETAIL="branch synchronization reads $value, not synchronized"; return 2
@@ -1789,8 +1808,6 @@ minted_branch_reusable() { # <bound-status> <pr-url>
   if [ "$value" != equal ]; then
     MINTED_REUSE_DETAIL="the branch relation reads $value, not equal"; return 2
   fi
-  value=$(fm_nm_sync_scalar "$proof" local branch) || return 2
-  [ "$value" = "$BRANCH" ] || return 1
   value=$(fm_nm_sync_scalar "$proof" local clean raw) || return 2
   if [ "$value" != true ]; then
     MINTED_REUSE_DETAIL='the branch owner does not report a clean worktree'; return 2
@@ -1804,9 +1821,6 @@ minted_branch_reusable() { # <bound-status> <pr-url>
     MINTED_REUSE_DETAIL="the ${facet%%:*} head $(short "${facet#*:}") is not the candidate head $(short "$HEAD")"
     return 2
   done
-  pr_open_for_branch "$pr" "$BRANCH" || rc=$?
-  [ "$rc" -ne 2 ] || MINTED_REUSE_DETAIL='the PR identity the branch was opened for could not be read'
-  return "$rc"
 }
 
 # 0 when the current attempt and run are the ones this record's own successor
@@ -1873,6 +1887,7 @@ do_committed() {
           case "$reuse_rc" in
             0) ;;
             2) refuse committed SUCCESSOR_CNO "the minted validation branch $(dash "$(meta stage_successor_branch)") could not be proven reusable: $MINTED_REUSE_DETAIL" ;;
+            3) refuse committed SUCCESSOR_CONTRADICTION "the minted validation branch $(dash "$(meta stage_successor_branch)") is contradicted by its PR: $MINTED_REUSE_DETAIL" ;;
             *)
               [ -z "$(meta stage_successor_id)" ] \
                 || refuse committed SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"

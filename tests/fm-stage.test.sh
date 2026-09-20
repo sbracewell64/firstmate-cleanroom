@@ -1269,11 +1269,36 @@ test_terminal_branch_requires_one_minted_successor() {
   # here can answer it yet, and an unprovable answer is unevaluable rather than
   # an assumed verdict in either direction.
   FM_FAKE_SYNC=''
-  export FM_FAKE_SYNC
+  FM_FAKE_PR_NUMBER=10 FM_FAKE_PR_URL=https://github.com/o/r/pull/10
+  FM_FAKE_PR_BRANCH=fm/terminal-branch-successor FM_FAKE_PR_HEAD=$head
+  FM_FAKE_PR_STATE=open FM_FAKE_PR_MERGED=false
+  export FM_FAKE_SYNC FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
   out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
   expect_code 1 "$rc" "an unprovable branch state must refuse a further attempt: $out"
   assert_contains "$out" 'SUCCESSOR_CNO' 'an unprovable minted-branch reuse was not typed as unevaluable'
   assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'an unprovable reuse was answered by requiring another successor'
+
+  # A PR's own terminal state is read before synchronization, so a merge that
+  # deleted the remote head - leaving no synchronization proof to read - is still
+  # the finished branch it is, and says so; it never hides as unevaluable.
+  before=$(cat "$STATE/terminal-branch.meta")
+  FM_FAKE_PR_STATE=closed FM_FAKE_PR_MERGED=true
+  export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
+  out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "a merged minted branch without a readable sync proof must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a merged PR behind an unreadable sync was not typed as exhausted'
+  assert_not_contains "$out" 'SUCCESSOR_CNO' 'a merged PR was hidden behind an unreadable synchronization proof'
+  [ "$(cat "$STATE/terminal-branch.meta")" = "$before" ] || fail 'a refused merged-branch retry mutated the record'
+  # A PR closed without merging keeps its head and ref but finished nothing: it
+  # contradicts the branch rather than spending it, whatever sync says.
+  FM_FAKE_PR_STATE=closed FM_FAKE_PR_MERGED=false
+  export FM_FAKE_PR_STATE FM_FAKE_PR_MERGED
+  out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
+  expect_code 1 "$rc" "an abandoned minted-branch PR must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a closed-unmerged PR was not typed as contradictory'
+  assert_not_contains "$out" 'SUCCESSOR_CNO' 'a closed-unmerged PR was hidden behind an unreadable synchronization proof'
+  [ "$(cat "$STATE/terminal-branch.meta")" = "$before" ] || fail 'a refused abandoned-branch retry mutated the record'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$head" ] || fail 'a refused retry moved the branch'
 
   reuse_proof="branch_sync:
   state: synchronized

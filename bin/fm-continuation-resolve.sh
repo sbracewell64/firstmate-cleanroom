@@ -827,27 +827,24 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   local_owner_result ACCEPTED '' ''
 }
 
-# Validate both admitted and legacy privacy-preserving qualified-local-delivery
+# Project admitted and legacy privacy-preserving qualified-local-delivery
 # records. V2 is the governed pre-effect admission route. V1 remains readable
 # for already-produced PR #64 fixtures and records but cannot manufacture V2.
 validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
   case "$(printf '%s' "$1" | jq -r '.verifier.tool // ""')" in
     fm-local-project-delivery/v2) validate_local_project_delivery_v2 "$@" ;;
     fm-local-project-delivery/v1)
-      validate_local_project_delivery_v1 "$@"
+      project_local_delivery_v1_projection "$@"
       ;;
     *) local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery evidence names an unsupported validator" ;;
   esac
 }
 
-# Validate the legacy privacy-preserving qualified-local-delivery owner record.
+# Project the legacy privacy-preserving qualified-local-delivery owner record.
 # The programme record contains identities and digests only. Its private
 # receipt lives under this home's data/, names one local project under
 # projects/, and binds immutable candidate, independent checker, manifest, and
-# read-back facts. The resolver re-reads the git ref, every candidate blob,
-# every destination, and the checker receipt; prose and self-certification have
-# no field that can satisfy this owner kind.
-validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
+project_local_delivery_v1_projection() {  # <record-json> <step-index> <step-id>
   local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode repo_token root_token repo_path_token root_path_token repo_fd root_fd repo_handle root_handle
@@ -991,99 +988,29 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
     return 0
   }
   case "$project_mode" in local-only\ *) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "project $project is not governed by the registered local-only owner"; return 0 ;; esac
-  repo="$FM_HOME/projects/$project"
-  [ -d "$repo" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project is unavailable"; return 0; }
-  projects_real=$(CDPATH='' cd -- "$FM_HOME/projects" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local project registry root is unavailable"; return 0; }
-  repo_real=$(CDPATH='' cd -- "$repo" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project cannot be resolved"; return 0; }
-  case "$repo_real/" in "$projects_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "local owner project resolves outside this home's projects root"; return 0 ;; esac
-  root_real=$(CDPATH='' cd -- "$ROOT" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root is unavailable for delivery read-back"; return 0; }
-  exec {repo_fd}<"$repo_real" || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project identity is unavailable"; return 0; }
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then repo_handle="/dev/fd/$repo_fd"; else repo_handle="/proc/${BASHPID:-$$}/fd/$repo_fd"; fi
-  exec {root_fd}<"$root_real" 2>/dev/null || { exec {repo_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root identity is unavailable"; return 0; }
-  if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then root_handle="/dev/fd/$root_fd"; else root_handle="/proc/${BASHPID:-$$}/fd/$root_fd"; fi
-  top=$(git -C "$repo_handle" rev-parse --show-toplevel 2>/dev/null) || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project $project is not readable as git"; return 0; }
-  top=$(CDPATH='' cd -- "$top" 2>/dev/null && pwd -P) || true
-  [ "$top" = "$repo_real" ] || { local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "local owner project path is not its repository root"; return 0; }
-  current_head=$(git -C "$repo_handle" rev-parse --verify "${ref}^{commit}" 2>/dev/null) || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate ref $ref is unavailable"; return 0; }
-  current_tree=$(git -C "$repo_handle" rev-parse --verify "${current_head}^{tree}" 2>/dev/null) || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate tree cannot be read"; return 0; }
-  [ "$current_head" = "$head" ] && [ "$current_tree" = "$tree" ] || {
-    local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "local owner ref no longer resolves to the bound candidate head/tree"
-    return 0
-  }
-
   manifest=$(printf '%s' "$receipt" | jq -c '.manifest')
   [ "$(printf '%s' "$manifest" | jq -r '[.[].destination] | unique | length')" = "$(printf '%s' "$manifest" | jq -r 'length')" ] || {
     local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest destination identities must be unique"
     return 0
   }
-  repo_token=$(local_owner_fd_token "$repo_handle") || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project identity is unavailable"; return 0; }
-  root_token=$(local_owner_fd_token "$root_handle") || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root identity is unavailable"; return 0; }
-  repo_path_token=$(local_owner_directory_token "$repo_real") || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "local owner project identity is unavailable"; return 0; }
-  root_path_token=$(local_owner_directory_token "$root_real") || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "programme root identity is unavailable"; return 0; }
-  family=$(local_owner_deliverable_prefix "$sid") || { local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "local delivery is governed only for A, B, and D steps"; return 0; }
-  n=$(printf '%s' "$manifest" | jq -r 'length'); j=0
-  while [ "$j" -lt "$n" ]; do
-    row=$(printf '%s' "$manifest" | jq -c ".[$j]"); j=$((j + 1))
-    if ! printf '%s' "$row" | jq -e 'type=="object" and ([keys[]]-["destination","sha256","source"]|length)==0 and
-        (.source|type)=="string" and (.destination|type)=="string" and (.sha256|type)=="string"' >/dev/null; then
-      local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest entry $j is not an exact source/destination/sha256 object"; return 0
-    fi
-    source=$(printf '%s' "$row" | jq -r '.source'); destination=$(printf '%s' "$row" | jq -r '.destination'); expected=$(printf '%s' "$row" | jq -r '.sha256')
-    if ! local_owner_relative_path "$source" content || ! local_owner_relative_path "$destination" content || ! local_owner_sha256 "$expected" \
-      || [[ "$source" != "$family"* ]] || [[ "$destination" != "$family"* ]]; then
-      local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery manifest entry $j contains an unsafe path or non-digest identity"
-      return 0
-    fi
-    source_type=$(git -C "$repo_handle" cat-file -t "$head:$source" 2>/dev/null || true)
-    [ -n "$source_type" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source is not readable at the bound head"; return 0; }
-    [ "$source_type" = blob ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a regular-file object"; return 0; }
-    source_sha=$(git -C "$repo_handle" show "$head:$source" 2>/dev/null | sha256_stream) || source_sha=''
-    [ -n "$source_sha" ] || { local_owner_result CNO OWNER_EVIDENCE_SOURCE_UNREADABLE "candidate source $source cannot be hashed at the bound head"; return 0; }
-    [ "$source_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source does not match the delivered digest"; return 0; }
-    source_mode=$(git -C "$repo_handle" ls-tree "$head" -- "$source" | awk 'NF {print $1}')
-    source_type=$(git -C "$repo_handle" ls-tree "$head" -- "$source" | awk 'NF {print $2}')
-    case "$source_mode:$source_type" in 100644:blob|100755:blob) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "candidate source $source is not a governed regular-file object"; return 0 ;; esac
-    destination_file="$ROOT/$destination"
-    local_owner_path_has_no_symlink_parents "$ROOT" "$destination" || { local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination traverses a symlink"; return 0; }
-    destination_parent=$(CDPATH='' cd -- "$(dirname "$destination_file")" 2>/dev/null && pwd -P) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination parent for $destination is unavailable"; return 0; }
-    case "$destination_parent/" in "$root_real/"*) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "delivery destination $destination resolves outside the programme root"; return 0 ;; esac
-    if [ ! -e "$destination_file" ] && [ ! -L "$destination_file" ]; then
-      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination is unavailable for independent read-back"
-      return 0
-    fi
-    [ ! -L "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is a symlink object"; return 0; }
-    [ -f "$destination_file" ] || { local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a regular-file object"; return 0; }
-    destination_index_oid=$(git -C "$root_handle" ls-files --stage -- "$destination" | awk 'NF {print $2}')
-    destination_mode=$(git -C "$root_handle" ls-files --stage -- "$destination" | awk 'NF {print $1}')
-    case "$destination_mode" in 100644|100755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not a governed regular-file object"; return 0 ;; esac
-    if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
-      destination_fs_mode=$(stat -f %Lp "$destination_file" 2>/dev/null) || destination_fs_mode=''
-    else
-      destination_fs_mode=$(stat -c %a "$destination_file" 2>/dev/null) || destination_fs_mode=''
-    fi
-    case "$destination_mode:$destination_fs_mode" in 100644:644|100755:755) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination mode differs from the tracked candidate"; return 0 ;; esac
-    source_oid=$(git -C "$repo_handle" rev-parse "$head:$source" 2>/dev/null) || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "candidate source $source object identity is unavailable"; return 0; }
-    destination_oid=$(git -C "$root_handle" hash-object -- "$destination_file" 2>/dev/null) || { exec {repo_fd}<&-; exec {root_fd}<&-; local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination object identity is unavailable"; return 0; }
-    [ "$source_mode" = "$destination_mode" ] && [ "$destination_index_oid" = "$destination_oid" ] && [ "$destination_oid" = "$source_oid" ] || {
-      local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "delivery destination $destination is not the exact tracked candidate object and mode"
-      return 0
-    }
-    if ! destination_sha=$(sha256_file "$destination_file"); then
-      local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "delivery destination $destination cannot be read back or hashed"; return 0
-    fi
-    [ "$destination_sha" = "$expected" ] || { local_owner_result REFUSED OWNER_EVIDENCE_READBACK_MISMATCH "delivery destination $destination does not match the exact candidate bytes"; return 0; }
-  done
+  legacy_result=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-local-project-delivery.py" legacy-verify \
+    --programme "$PROGRAMME" --root "$ROOT" --step "$sid" --project "$project" \
+    --ref "$ref" --head "$head" --tree "$tree" --manifest "$manifest" 2>/dev/null) || {
+    status=$(printf '%s' "$legacy_result" | jq -r '.status // "CNO"')
+    reason=$(printf '%s' "$legacy_result" | jq -r '.reason_code // "OWNER_EVIDENCE_READBACK_UNAVAILABLE"')
+    detail=$(printf '%s' "$legacy_result" | jq -r '.detail // "legacy owner validation failed"')
+    case "$status:$reason" in
+      CNO:*) local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "$reason: $detail" ;;
+      REFUSED:PATH_UNSAFE) local_owner_result REFUSED OWNER_EVIDENCE_PRIVACY_EXPOSURE "$reason: $detail" ;;
+      *) local_owner_result REFUSED OWNER_EVIDENCE_CANDIDATE_MISMATCH "$reason: $detail" ;;
+    esac
+    return 0
+  }
   [ "$(printf '%s' "$receipt" | jq -r '.read_back.status')" = MATCH ] && [ "$(printf '%s' "$receipt" | jq -r '.read_back.observer')" = "$checker" ] || {
     local_owner_result REFUSED OWNER_EVIDENCE_READBACK_MISMATCH "delivery receipt lacks checker-attributed MATCH read-back"; return 0
   }
   [ "$generation" = "$(printf '%s' "$receipt" | jq -r '.generation')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_GENERATION_MISMATCH "delivery receipt generation differs from its owner record"; return 0; }
   [ "$sid" = "$(printf '%s' "$doc" | jq -r '.step')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_STEP_MISMATCH "delivery record step changed during validation"; return 0; }
-  [ "$(local_owner_fd_token "$repo_handle")" = "$repo_token" ] && [ "$(local_owner_fd_token "$root_handle")" = "$root_token" ] \
-    && [ "$(local_owner_directory_token "$repo_real")" = "$repo_path_token" ] \
-    && [ "$(local_owner_directory_token "$root_real")" = "$root_path_token" ] || {
-    exec {repo_fd}<&-; exec {root_fd}<&-
-    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "project or programme root changed during historical validation"; return 0
-  }
   if ! jq -e --arg programme "$(jq -r '.programme_id' "$PROGRAMME")" --arg step "$sid" --arg owner "$pin_ref" \
       --arg evidence "$pin_sha" --argjson generation "$pin_gen" --arg receipt "$receipt_actual" \
       --argjson index "$i" '
@@ -1099,8 +1026,6 @@ validate_local_project_delivery_v1() {  # <record-json> <step-index> <step-id>
     local_owner_result CNO LEGACY_REQUALIFICATION_REQUIRED "V1 delivery evidence lacks an existing canonical finalized programme binding"
     return 0
   fi
-  exec {repo_fd}<&-
-  exec {root_fd}<&-
   local_owner_result ACCEPTED '' ''
 }
 

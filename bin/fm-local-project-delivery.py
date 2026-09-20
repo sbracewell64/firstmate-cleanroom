@@ -393,6 +393,93 @@ def parse_index_entry(repo: Path, path: str, expected_mode: str, expected_oid: s
         refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} differs from the admitted tree entry")
 
 
+def index_entry(repo: Path, path: str, *, repo_fd: int | None = None) -> tuple[str, str]:
+    raw = run(["git", "-C", (f"/proc/self/fd/{repo_fd}" if repo_fd is not None and Path("/proc/self/fd").exists() else f"/dev/fd/{repo_fd}" if repo_fd is not None else str(repo)), "ls-files", "--stage", "-z", "--", path], pass_fds=(repo_fd,) if repo_fd is not None else ())
+    rows = [row for row in raw.split(b"\0") if row]
+    if len(rows) != 1:
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index does not have one stage-0 entry at {path}")
+    try:
+        meta, found = rows[0].split(b"\t", 1)
+        mode, oid, stage = meta.decode().split(" ")
+        found_path = found.decode()
+    except (ValueError, UnicodeDecodeError):
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} is unreadable")
+    if found_path != path or stage != "0":
+        refuse("DESTINATION_INDEX_MISMATCH", f"destination index entry at {path} is not stage zero")
+    return mode, oid
+
+
+def git_blob_oid(data: bytes, repo_fd: int) -> str:
+    return run(["git", "-C", f"/proc/self/fd/{repo_fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{repo_fd}", "hash-object", "--stdin"], input_bytes=data, pass_fds=(repo_fd,)).decode().strip()
+
+
+def verify_legacy_delivery(
+    *, home: Path, root: Path, step: str, project: str, ref: str,
+    head: str, tree: str, manifest: list[Any], script_dir: Path,
+) -> None:
+    require_slug(project, "project")
+    require_oid(head, "head")
+    require_oid(tree, "tree")
+    if not ref.startswith("refs/heads/") or not SLUG.fullmatch(ref.removeprefix("refs/heads/")):
+        refuse("IDENTITY_MALFORMED", "ref must name one exact local branch")
+    _, registry_sha256, registry_data = registered_projects(home)
+    project_mode(script_dir, home, project, registry_data=registry_data)
+    projects_root = (home / "projects").resolve(strict=True)
+    repo = (home / "projects" / project).resolve(strict=True)
+    try:
+        repo.relative_to(projects_root)
+    except ValueError:
+        refuse("OWNER_PROJECT_MISMATCH", "local owner project resolves outside this home's projects root")
+    session = AdmissionSession(home, root, repo, registry_data, registry_sha256)
+    try:
+        if Path(git_fd(session.destination_fd, "rev-parse", "--show-toplevel")).resolve(strict=True) != repo:
+            refuse("OWNER_PROJECT_MISMATCH", "local owner project path is not its repository root")
+        current_head = git_fd(session.destination_fd, "rev-parse", f"{ref}^{{commit}}")
+        current_tree = git_fd(session.destination_fd, "rev-parse", f"{current_head}^{{tree}}")
+        if current_head != head or current_tree != tree:
+            refuse("CANDIDATE_CHANGED", "local owner ref no longer resolves to the bound candidate head/tree")
+        session.ref = ref
+        session.head = head
+        session.tree = tree
+        family = "exchange/" if step in {"slice-a", "slice-b"} else "artifacts/synthesis/" if step == "slice-d" else None
+        if family is None:
+            refuse("ACTION_MISMATCH", f"local delivery is unsupported for step {step}")
+        if not isinstance(manifest, list) or not manifest:
+            refuse("FAMILY_INCOMPLETE", "legacy delivery manifest is not a non-empty array")
+        for index, row in enumerate(manifest):
+            if not isinstance(row, dict) or set(row) != {"source", "destination", "sha256"}:
+                refuse("SCHEMA_UNSUPPORTED", f"legacy manifest entry {index} is not an exact source/destination/sha256 object")
+            source = safe_relative(row["source"], f"manifest {index} source")
+            destination = safe_relative(row["destination"], f"manifest {index} destination")
+            expected = row["sha256"]
+            if not isinstance(expected, str) or not HEX.fullmatch(expected) or len(expected) != 64:
+                refuse("IDENTITY_MALFORMED", f"manifest {index} sha256 is not exact")
+            if not source.startswith(family) or not destination.startswith(family):
+                refuse("PATH_UNSAFE", f"manifest {index} is outside the governed family")
+            source_mode, source_type, source_oid = parse_tree_entry(repo, head, source, repo_fd=session.destination_fd)
+            if source_type != "blob" or source_mode not in ("100644", "100755"):
+                refuse("CANDIDATE_MISMATCH", f"candidate source {source} is not a governed regular-file object")
+            source_bytes = run(["git", "-C", f"/proc/self/fd/{session.destination_fd}" if Path("/proc/self/fd").exists() else f"/dev/fd/{session.destination_fd}", "show", f"{head}:{source}"], pass_fds=(session.destination_fd,))
+            if hashlib.sha256(source_bytes).hexdigest() != expected:
+                refuse("CANDIDATE_MISMATCH", f"candidate source {source} does not match the delivered digest")
+            destination_path = under(root, destination)
+            destination_bytes, destination_sha, destination_mode_fs = capture(destination_path, anchor_fd=session.source_fd, anchor_path=root)
+            if destination_sha != expected or destination_bytes != source_bytes:
+                refuse("READBACK_MISMATCH", f"delivery destination {destination} does not match the exact candidate bytes")
+            index_mode, index_oid = index_entry(root, destination, repo_fd=session.source_fd)
+            if index_mode not in ("100644", "100755") or index_mode != source_mode:
+                refuse("CANDIDATE_MISMATCH", f"delivery destination {destination} has the wrong tracked mode")
+            expected_fs = 0o755 if index_mode == "100755" else 0o644
+            if destination_mode_fs != expected_fs:
+                refuse("CANDIDATE_MISMATCH", f"delivery destination {destination} has the wrong filesystem mode")
+            destination_oid = git_blob_oid(destination_bytes, session.source_fd)
+            if index_oid != destination_oid or destination_oid != source_oid:
+                refuse("CANDIDATE_MISMATCH", f"delivery destination {destination} is not the exact tracked candidate object")
+        session.revalidate()
+    finally:
+        session.close()
+
+
 def policy_for(programme: dict[str, Any], step: str) -> dict[str, Any]:
     steps = programme.get("steps")
     if not isinstance(steps, list):
@@ -802,6 +889,15 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--programme", required=True)
     verify.add_argument("--root", required=True)
     verify.add_argument("--step", required=True)
+    legacy = sub.add_parser("legacy-verify")
+    legacy.add_argument("--programme", required=True)
+    legacy.add_argument("--root", required=True)
+    legacy.add_argument("--step", required=True)
+    legacy.add_argument("--project", required=True)
+    legacy.add_argument("--ref", required=True)
+    legacy.add_argument("--head", required=True)
+    legacy.add_argument("--tree", required=True)
+    legacy.add_argument("--manifest", required=True)
     return ap
 
 
@@ -816,6 +912,19 @@ def main() -> int:
     root = Path(args.root).resolve(strict=True)
     programme, _, _ = load_json(programme_path)
     step = require_slug(args.step, "step")
+
+    if args.command == "legacy-verify":
+        require_slug(args.project, "project")
+        try:
+            manifest = json.loads(args.manifest, object_pairs_hook=object_pairs)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            refuse("IDENTITY_UNREADABLE", f"legacy manifest is not unambiguous JSON: {exc}")
+        verify_legacy_delivery(
+            home=home, root=root, step=step, project=args.project, ref=args.ref,
+            head=args.head, tree=args.tree, manifest=manifest, script_dir=script_dir,
+        )
+        print(json.dumps({"status": "ACCEPTED", "reason_code": None}, sort_keys=True))
+        return 0
 
     policy = policy_for(programme, step)
     if args.command == "bind":

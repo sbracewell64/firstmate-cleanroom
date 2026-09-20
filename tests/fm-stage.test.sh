@@ -921,7 +921,7 @@ test_isolated_pipeline_successor
 # the CI monitoring state. The stage owner must advance through one typed
 # successor receipt instead of requiring the admitted head to be an ancestor.
 test_synchronized_rebased_successor_transition() {
-  local wt submitted head tree out rc proof attempt receipt before saved_meta saved_obs saved_status mutation case_meta case_obs case_status
+  local wt submitted head tree out rc proof attempt receipt before saved_meta saved_obs saved_status mutation case_meta case_obs case_status descendant
   local base foreign_parent foreign_head submitted_patch foreign_patch incident_run incident_branch incident_pr
   # Immutable incident bindings: submitted 2677ca88605e3ae4ff4c8706a2992008c2694476,
   # pipeline-rebased 9f63fdec964c98e8c0088186686d0c43c86bb54c,
@@ -1111,11 +1111,29 @@ test_synchronized_rebased_successor_transition() {
   expect_code 1 "$rc" "a mutated immutable predecessor must refuse replay: $out"
   assert_contains "$out" 'SUCCESSOR_COLLISION' 'mutated predecessor refusal was not typed'
   mv "$STATE/synchronized-successor.meta.valid" "$STATE/synchronized-successor.meta"
+  # One immutable successor identity covers the head it bound AND any monotonic
+  # descendant the same bound run pushes onto it - a red check followed by one
+  # fix commit must not wedge the branch - while the record itself never moves.
   before=$(cat "$STATE/synchronized-successor.meta")
-  git -C "$wt" commit -q --allow-empty -m 'second distinct successor'
+  git -C "$wt" commit -q --allow-empty -m 'pipeline fix on the published successor'
+  descendant=$(git -C "$wt" rev-parse HEAD)
+  FM_FAKE_AXI_STATUS=$(run_toon "$incident_run" "$incident_branch" ci "$descendant" '' "$incident_pr")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
+  expect_code 0 "$rc" "a monotonic descendant of the published successor must stay admissible: $out"
+  assert_contains "$out" 'candidate-successor:' 'the descendant advance did not replay the immutable successor receipt'
+  [ "$(cat "$STATE/synchronized-successor.meta")" = "$before" ] || fail 'a descendant advance rewrote the immutable successor record'
+  [ "$(grep -c '^candidate-successor:' "$STATE/synchronized-successor.status")" = 1 ] || fail 'a descendant advance appended a second successor receipt'
+  git -C "$wt" reset -q --hard "$head"
+  FM_FAKE_AXI_STATUS=$(run_toon "$incident_run" "$incident_branch" ci "$head" '' "$incident_pr")
+  export FM_FAKE_AXI_STATUS
+  # A head that is not a descendant is a SECOND distinct successor. The record
+  # cannot carry it and no command can mint it, so the refusal says so.
+  before=$(cat "$STATE/synchronized-successor.meta")
+  git -C "$wt" reset -q --hard "$foreign_head"
   out=$("$STAGE" synchronized-successor ci-ready --pr "$incident_pr" 2>&1); rc=$?
   expect_code 1 "$rc" "a second distinct synchronized successor must refuse: $out"
-  assert_contains "$out" 'SUCCESSOR_COLLISION' 'second distinct successor refusal was not typed'
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'second distinct successor refusal was not typed'
   [ "$(cat "$STATE/synchronized-successor.meta")" = "$before" ] || fail 'second distinct successor rewrote immutable lineage'
   git -C "$wt" reset -q --hard "$head"
   FM_FAKE_SYNC='' FM_FAKE_CI_LOGS='' FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_HEAD='' FM_FAKE_PR_BRANCH='' FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BODY=''
@@ -1190,10 +1208,13 @@ test_terminal_branch_requires_one_minted_successor() {
   FM_FAKE_AXI_STATUS=$(run_toon 01TERMINALBRANCHNEXT fm/terminal-branch-successor completed "$head" passed https://github.com/o/r/pull/10)
   out=$("$STAGE" terminal-branch committed --retry 2>&1); rc=$?
   expect_code 1 "$rc" "the minted branch cannot be reused after its own terminal publication: $out"
-  assert_contains "$out" 'SUCCESSOR_REQUIRED' 'second terminal publication did not require a successor'
+  # The two commands must agree: a spent successor is never answered by naming a
+  # command that will itself refuse.
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a spent successor was not typed as exhausted'
+  assert_not_contains "$out" 'SUCCESSOR_REQUIRED' 'a spent successor was answered by requiring another one'
   out=$("$STAGE" terminal-branch successor 2>&1); rc=$?
   expect_code 1 "$rc" "a second distinct minted successor must refuse: $out"
-  assert_contains "$out" 'SUCCESSOR_COLLISION' 'second minted successor refusal was not typed'
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'second minted successor refusal was not typed'
   pass 'terminal validation branch requires one explicit crash-safe successor and refuses name collisions'
 }
 test_terminal_branch_requires_one_minted_successor
@@ -1394,7 +1415,14 @@ EOF
   saved_obs=$(cat "$STATE/terminal.nm-observe")
   out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
   expect_code 0 "$rc" "verified completed same-run rebase admits: $out"
-  [ "$(meta_get terminal stage_head)" = "$submitted" ] || fail 'admission replaced original candidate'
+  # The rewritten head is adopted through the one typed owner, so the record
+  # names the candidate that actually exists and keeps the admitted predecessor
+  # beside it rather than reporting the submitted head as current.
+  assert_contains "$out" 'candidate-successor:' 'the verified terminal rebase was admitted without a typed successor'
+  [ "$(meta_get terminal stage_head)" = "$head" ] || fail 'the typed owner did not adopt the verified rebased candidate'
+  [ "$(meta_get terminal stage_predecessor_head)" = "$submitted" ] || fail 'admission replaced the original candidate instead of preserving it'
+  [ "$(meta_get terminal stage_successor_action)" = verified-terminal-successor ] || fail 'the terminal rebase was not typed by its own action'
+  [ "$(meta_get terminal stage_successor_head)" = "$head" ] || fail 'the typed successor head was not bound'
   [ "$(obs_get terminal candidate_head)" = "$submitted" ] || fail 'admission replaced observer candidate'
   [ "$(meta_get terminal stage_run)" = 01TERMINAL00000000000000001 ] || fail 'admission replaced bound run'
   for mutation in absent false scalar-successor scalar-pipeline scalar-local scalar-target scalar-remote inline-object inline-array quoted-boolean padded-run padded-head padded-ref duplicate duplicate-root scalar-duplicate-root foreign-sibling indent-three indent-one indent-five indent-six indent-tab indent-mixed malformed-digest foreign-run foreign-submission foreign-head foreign-branch foreign-target stale-generation stale-attempt failed-read dirty manual-rewrite missing-anchor symbolic-anchor wrong-evidence; do
@@ -1451,7 +1479,15 @@ branch_sync: false" ;;
     esac
     out=$("$STAGE" terminal ci-ready --pr https://github.com/o/r/pull/9 2>&1); rc=$?
     expect_code 1 "$rc" "terminal successor refuses $mutation: $out"
-    [ "$(meta_get terminal stage)" = validation-running ] || fail "$mutation admitted a stage"
+    # wrong-evidence corrupts the engineering evidence, not the successor
+    # identity: the typed successor is legitimately published and the separate
+    # evidence gate is what withholds ci-ready.
+    if [ "$mutation" = wrong-evidence ]; then
+      [ "$(meta_get terminal stage)" = candidate-successor ] || fail "$mutation did not refuse at the evidence gate"
+      assert_contains "$out" 'ENGINEERING_EVIDENCE' "$mutation was not refused by the evidence gate"
+    else
+      [ "$(meta_get terminal stage)" = validation-running ] || fail "$mutation admitted a stage"
+    fi
     if [ "$mutation" = scalar-duplicate-root ] || [ "$mutation" = foreign-sibling ] || [[ "$mutation" = indent-* || "$mutation" = padded-* ]]; then
       [ "$(cat "$STATE/terminal.meta")" = "$saved_meta" ] || fail "$mutation changed stage identity"
       [ "$(cat "$STATE/terminal.nm-observe")" = "$saved_obs" ] || fail "$mutation changed observer identity"

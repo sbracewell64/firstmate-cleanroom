@@ -448,14 +448,41 @@ stage_bound_duty() {
   printf '%s' "$duty"
 }
 
+# The receipt log is this task's independently persisted history: lines are
+# appended and never rewritten, and each carries the allocation that was live
+# when the transition was issued beside the attempt, run, branch and head it was
+# issued for. A record that predates stage_alloc reads its admitted allocation
+# from the receipt that admitted this exact predecessor - never from whatever
+# allocation the worker happens to carry now, which is the thing the caller is
+# comparing that evidence against. Two receipts disagreeing, or none at all, is
+# an absence of proof rather than a licence to assume one.
+admitted_alloc_receipt() { # <attempt> <run> <branch> <head>
+  local line value found=
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] || return 1
+  [ -f "$STATUS" ] || return 1
+  while IFS= read -r line; do
+    case "$(status_line_stage "$line" 2>/dev/null || true)" in validation-admitted|validation-running) ;; *) continue ;; esac
+    [ "$(status_stage_field "$line" attempt)" = "$1" ] || continue
+    [ "$(status_stage_field "$line" run)" = "$2" ] || continue
+    [ "$(status_stage_field "$line" branch)" = "$3" ] || continue
+    [ "$(status_stage_field "$line" head)" = "$(short "$4")" ] || continue
+    value=$(status_stage_field "$line" alloc)
+    [ -n "$value" ] && [ "$value" != '-' ] || return 1
+    [ -z "$found" ] || [ "$found" = "$value" ] || return 1
+    found=$value
+  done < "$STATUS"
+  [ -n "$found" ] || return 1
+  printf '%s' "$found"
+}
+
 stage_bound_alloc() {
   local alloc
   alloc=$(meta stage_predecessor_alloc); [ -n "$alloc" ] || alloc=$(meta stage_alloc)
   if [ -z "$alloc" ]; then
-    [ -n "$(meta harness)" ] && [ -n "$(meta model)" ] && [ -n "$(meta effort)" ] || return 1
-    [ -n "$(fm_backend_of_meta "$META")" ] || return 1
-    alloc=$(alloc_identity)
+    alloc=$(admitted_alloc_receipt "$(stage_predecessor_attempt)" "$(stage_predecessor_run)" \
+      "$(stage_predecessor_branch)" "$(stage_predecessor_head)") || return 1
   fi
+  [ -n "$alloc" ] || return 1
   printf '%s' "$alloc"
 }
 
@@ -595,8 +622,11 @@ gh_axi_pr_row() { # <canonical GitHub PR URL>
   printf '%s' "$encoded" | jq -r . 2>/dev/null
 }
 
-# <state-policy> is `open` (the default) when only a live open PR may attest, or
-# `any` when a merged or closed PR still names the head it carried.
+# <state-policy> is `open` (the default) when only a live open PR may attest,
+# `terminal` when a PR that has already landed may attest too but an abandoned
+# one may not, or `any` when any PR still naming the head it carried will do.
+# A closed-unmerged PR keeps its head.sha and head.ref, so the retained identity
+# is never on its own evidence that the branch is still going anywhere.
 successor_pr_attestation() { # <url> <branch> <head> [state-policy]; sets SUCCESSOR_ATTESTED_HEAD
   local row number state merged head branch url pipeline block64 block
   row=$(gh_axi_pr_row "$1") || return 2
@@ -606,7 +636,12 @@ EOF
   [ -n "$number" ] && [ -n "$pipeline" ] || return 2
   fm_pr_url_parse "$1" >/dev/null 2>&1 || return 2
   [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 1
-  [ "${4:-open}" = any ] || { [ "$state" = open ] && [ "$merged" = false ]; } || return 1
+  case "${4:-open}" in
+    any) ;;
+    terminal) { [ "$state" = open ] && [ "$merged" = false ]; } \
+      || { [ "$state" = closed ] && [ "$merged" = true ]; } || return 1 ;;
+    *) [ "$state" = open ] && [ "$merged" = false ] || return 1 ;;
+  esac
   [ "$head" = "$3" ] && [ "$branch" = "$2" ] || return 1
   [ "$pipeline" = true ] || return 1
   [ -n "$block64" ] || return 1
@@ -1407,7 +1442,7 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       refuse ci-ready SUCCESSOR_CONTRADICTION 'the bound run does not name this exact PR identity'
     fi
     proof_rc=0
-    successor_pr_attestation "$pr" "$(meta stage_branch)" "$expected_head" any || proof_rc=$?
+    successor_pr_attestation "$pr" "$(meta stage_branch)" "$expected_head" terminal || proof_rc=$?
     case "$proof_rc" in
       0) ;;
       2) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'the live PR identity or attestation could not be evaluated' ;;

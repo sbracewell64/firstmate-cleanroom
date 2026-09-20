@@ -146,13 +146,26 @@ make_home() { # <name>
   printf '%s\n' "$home"
 }
 
-bind() { # <home> <step> [extra args...]
-  local home=$1 step=$2 repo="$1/projects/exchange-work"
-  shift 2
-  (cd "$repo" && FM_HOME="$home" "$DELIVERY" bind \
+bind_as() { # <cwd> <home> <step> <project> <ref> <delivery-id> <maker> <checker> [extra args...]
+  local cwd=$1 home=$2 step=$3 project=$4 ref=$5 delivery_id=$6 maker=$7 checker=$8
+  shift 8
+  (cd "$cwd" && FM_HOME="$home" "$DELIVERY" bind \
     --programme "$home/programme/programme.json" --root "$home/source" --step "$step" \
-    --project exchange-work --ref refs/heads/main --delivery-id "delivery-${step}" \
-    --maker maker-one --checker checker-one --route independent-checker "$@")
+    --project "$project" --ref "$ref" --delivery-id "$delivery_id" \
+    --maker "$maker" --checker "$checker" --route independent-checker "$@")
+}
+
+verify_as() { # <cwd> <home> <admission> <step>
+  local cwd=$1 home=$2 admission=$3 step=$4
+  (cd "$cwd" && FM_HOME="$home" "$DELIVERY" verify --admission "$admission" \
+    --programme "$home/programme/programme.json" --root "$home/source" --step "$step")
+}
+
+bind() { # <home> <step> [extra args...]
+  local home=$1 step=$2
+  shift 2
+  bind_as "$home/projects/exchange-work" "$home" "$step" exchange-work refs/heads/main \
+    "delivery-${step}" maker-one checker-one "$@"
 }
 
 expect_rejected_without_publication() { # <label> <home> <expected> <command...>
@@ -279,20 +292,24 @@ other=$(make_home wrong-home-target)
 mkdir -p "$other/data/local-project-delivery/admissions"
 cp "$admission" "$other/data/local-project-delivery/admissions/$(basename "$admission")"
 expect_rejected_without_publication "wrong home" "$other" 'HOME_MISMATCH' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" verify --admission "$1/data/local-project-delivery/admissions/$(basename "$3")" --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity' _ "$other" "$DELIVERY" "$admission"
+  verify_as "$other/projects/exchange-work" "$other" \
+  "$other/data/local-project-delivery/admissions/$(basename "$admission")" slice-a-s1-publication-integrity
 
 home=$(make_home wrong-project)
 expect_rejected_without_publication "wrong project" "$home" 'OWNER_PROJECT_MISMATCH' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project other-owner --ref refs/heads/main --delivery-id wrong-project --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+  bind_as "$home/projects/exchange-work" "$home" slice-a-s1-publication-integrity \
+  other-owner refs/heads/main wrong-project maker-one checker-one
 
 home=$(make_home missing-registered-row)
 printf '%s\n' '- ghost-work [local-only] - unavailable registered owner (added 2026-09-18)' >> "$home/data/projects.md"
 expect_rejected_without_publication "missing registered project" "$home" 'PROJECT_UNAVAILABLE' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main --delivery-id missing-registered-row --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+  bind_as "$home/projects/exchange-work" "$home" slice-a-s1-publication-integrity \
+  exchange-work refs/heads/main missing-registered-row maker-one checker-one
 
 home=$(make_home missing-requested-ref)
 expect_rejected_without_publication "missing requested ref" "$home" 'IDENTITY_UNREADABLE' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/missing --delivery-id missing-requested-ref --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+  bind_as "$home/projects/exchange-work" "$home" slice-a-s1-publication-integrity \
+  exchange-work refs/heads/missing missing-requested-ref maker-one checker-one
 
 home=$(make_home contradictory-registry-mode)
 sed -i 's/\[local-only\]/[local-only direct-PR]/' "$home/data/projects.md"
@@ -301,22 +318,62 @@ expect_rejected_without_publication "contradictory registry mode" "$home" 'OWNER
 
 home=$(make_home collapsed)
 expect_rejected_without_publication "maker/checker collapse" "$home" 'MAKER_CHECKER_COLLAPSE' \
-  bash -c 'cd "$1/projects/exchange-work" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-a-s1-publication-integrity --project exchange-work --ref refs/heads/main --delivery-id collapsed --maker same --checker same --route independent-checker' _ "$home" "$DELIVERY"
+  bind_as "$home/projects/exchange-work" "$home" slice-a-s1-publication-integrity \
+  exchange-work refs/heads/main collapsed same same
 
 # Missing/incomplete D ownership is CNO and does not invent or register an owner.
 home=$(make_home missing-owner)
 expect_rejected_without_publication "missing D owner" "$home" 'OWNER_MISSING' \
-  bash -c 'cd "$1" && FM_HOME="$1" "$2" bind --programme "$1/programme/programme.json" --root "$1/source" --step slice-d-s4-synthesis-integrity --project auto --ref refs/heads/main --delivery-id d-missing --maker maker-one --checker checker-one --route independent-checker' _ "$home" "$DELIVERY"
+  bind_as "$home" "$home" slice-d-s4-synthesis-integrity \
+  auto refs/heads/main d-missing maker-one checker-one
 [ "$(grep -c '^-' "$home/data/projects.md")" = 1 ] || fail "missing-owner CNO changed the registry"
 
 # Verification is the public negative surface for independently load-bearing
 # source, destination, mode, programme, family, and manifest identities.
-mutate_case() { # <name> <expected> <mutation command>
+# Each mutation is a function taking the fixture home and its admission path.
+mutate_append_source() { # <home> <admission>
+  printf changed >> "$1/source/exchange/bin/render-manifest.py"
+}
+
+mutate_remove_source() { # <home> <admission>
+  rm "$1/source/exchange/bin/render-manifest.py"
+}
+
+mutate_append_destination() { # <home> <admission>
+  printf changed >> "$1/projects/exchange-work/exchange/bin/render-manifest.py"
+}
+
+mutate_destination_mode() { # <home> <admission>
+  chmod 644 "$1/projects/exchange-work/exchange/bin/render-manifest.py"
+}
+
+mutate_advance_destination_head() { # <home> <admission>
+  local repo="$1/projects/exchange-work"
+  printf advance > "$repo/advance"
+  git -C "$repo" add advance
+  git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m advance
+}
+
+mutate_admission_json() { # <home> <admission> <jq filter>
+  local admission=$2 filter=$3 tmp="$2.tmp"
+  jq "$filter" "$admission" > "$tmp"
+  mv "$tmp" "$admission"
+  chmod 600 "$admission"
+}
+
+mutate_programme_json() { # <home> <admission> <jq filter>
+  local programme="$1/programme/programme.json" filter=$3 tmp="$1/programme/programme.json.tmp"
+  jq "$filter" "$programme" > "$tmp"
+  mv "$tmp" "$programme"
+}
+
+mutate_case() { # <name> <expected> <mutation function> [mutation args...]
   local name=$1 expected=$2 mutation=$3 h a out rc post_mutation after
+  shift 3
   h=$(make_home "$name")
   out=$(bind "$h" slice-a-s1-publication-integrity) || fail "$name setup bind failed: $out"
   a=$(printf '%s' "$out" | jq -r '.path')
-  bash -c "$mutation" _ "$h" "$a"
+  "$mutation" "$h" "$a" "$@"
   post_mutation=$(sha256_file "$a")
   out=$(FM_HOME="$h" "$DELIVERY" verify --admission "$a" --programme "$h/programme/programme.json" \
     --root "$h/source" --step slice-a-s1-publication-integrity 2>&1); rc=$?
@@ -328,16 +385,21 @@ mutate_case() { # <name> <expected> <mutation command>
   pass "$name cannot qualify through verify"
 }
 
-mutate_case source-mismatch SOURCE_DESTINATION_MISMATCH 'printf changed >> "$1/source/exchange/bin/render-manifest.py"'
-mutate_case destination-mismatch DESTINATION_READBACK_MISMATCH 'printf changed >> "$1/projects/exchange-work/exchange/bin/render-manifest.py"'
-mutate_case wrong-object-mode DESTINATION_MODE_MISMATCH 'chmod 644 "$1/projects/exchange-work/exchange/bin/render-manifest.py"'
-mutate_case stale-head CANDIDATE_HEAD_MISMATCH 'printf advance > "$1/projects/exchange-work/advance"; git -C "$1/projects/exchange-work" add advance; git -C "$1/projects/exchange-work" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m advance'
-mutate_case stale-tree CANDIDATE_TREE_MISMATCH 'tmp="$2.tmp"; jq ".destination.tree=\"1111111111111111111111111111111111111111\"" "$2" > "$tmp"; mv "$tmp" "$2"; chmod 600 "$2"'
-mutate_case stale-programme PROGRAMME_POLICY_MISMATCH 'tmp="$1/programme/programme.json.tmp"; jq "(.steps[] | select(.id==\"slice-a-s1-publication-integrity\") | .terminal_predicate.local_delivery.qualification_routes) |= reverse" "$1/programme/programme.json" > "$tmp"; mv "$tmp" "$1/programme/programme.json"'
-mutate_case stale-manifest MANIFEST_DIGEST_MISMATCH 'tmp="$2.tmp"; jq ".manifest_sha256=\"0000000000000000000000000000000000000000000000000000000000000000\"" "$2" > "$tmp"; mv "$tmp" "$2"; chmod 600 "$2"'
-mutate_case source-destination-mismatch FAMILY_MISMATCH 'tmp="$2.tmp"; jq ".artifacts[0].destination=\"exchange/bin/other.py\"" "$2" > "$tmp"; mv "$tmp" "$2"; chmod 600 "$2"'
-mutate_case wrong-family ACTION_MISMATCH 'tmp="$2.tmp"; jq ".action.step=\"slice-b-s2-reference-catalog\"" "$2" > "$tmp"; mv "$tmp" "$2"; chmod 600 "$2"'
-mutate_case unreadable-identity SOURCE_UNREADABLE 'rm "$1/source/exchange/bin/render-manifest.py"'
+mutate_case source-mismatch SOURCE_DESTINATION_MISMATCH mutate_append_source
+mutate_case destination-mismatch DESTINATION_READBACK_MISMATCH mutate_append_destination
+mutate_case wrong-object-mode DESTINATION_MODE_MISMATCH mutate_destination_mode
+mutate_case stale-head CANDIDATE_HEAD_MISMATCH mutate_advance_destination_head
+mutate_case stale-tree CANDIDATE_TREE_MISMATCH mutate_admission_json \
+  '.destination.tree="1111111111111111111111111111111111111111"'
+mutate_case stale-programme PROGRAMME_POLICY_MISMATCH mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate.local_delivery.qualification_routes) |= reverse'
+mutate_case stale-manifest MANIFEST_DIGEST_MISMATCH mutate_admission_json \
+  '.manifest_sha256="0000000000000000000000000000000000000000000000000000000000000000"'
+mutate_case source-destination-mismatch FAMILY_MISMATCH mutate_admission_json \
+  '.artifacts[0].destination="exchange/bin/other.py"'
+mutate_case wrong-family ACTION_MISMATCH mutate_admission_json \
+  '.action.step="slice-b-s2-reference-catalog"'
+mutate_case unreadable-identity SOURCE_UNREADABLE mutate_remove_source
 
 # A complete D owner is accepted only when one registered local-only project
 # tracks the entire seven-member family, including the registry-named plan.

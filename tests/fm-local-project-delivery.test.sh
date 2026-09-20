@@ -499,9 +499,11 @@ pass "the census separates a forbidden source root from genuinely absent ownersh
 # opens their Git identity, ref, or family.
 home=$(make_home d-unrelated-projects)
 repo="$home/projects/synthesis-work"
-printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
-printf '%s\n' '- synthesis-backup [local-only] - second complete family (added 2026-09-20)' >> "$home/data/projects.md"
-printf '%s\n' '- master-only-work [local-only] - no refs/heads/main (added 2026-09-20)' >> "$home/data/projects.md"
+{
+  printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)'
+  printf '%s\n' '- synthesis-backup [local-only] - second complete family (added 2026-09-20)'
+  printf '%s\n' '- master-only-work [local-only] - no refs/heads/main (added 2026-09-20)'
+} >> "$home/data/projects.md"
 mkdir -p "$repo"; git -C "$repo" init -q -b main
 cp -R "$home/source/artifacts" "$repo/"
 chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"

@@ -46,8 +46,7 @@ report_ack_required() {  # <sequence> <generation>
   if fm_wake_ack_packet_requested; then
     fm_wake_ack_packet_emit required "$1" "$2"
   else
-    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-      "$1" "$2" >&2
+    fm_wake_ack_format_required "$1" "$2" >&2
   fi
 }
 

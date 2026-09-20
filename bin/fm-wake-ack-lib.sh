@@ -15,8 +15,8 @@
 # Direct drain callers do not opt into the packet and continue to receive the
 # drain-owned instruction on stderr.
 #
-# This file is sourced, never executed.
-set -u
+# This file is sourced, never executed, so it never changes a caller's shell
+# options: every reference below is guarded for nounset on its own.
 
 FM_WAKE_ACK_PACKET_SCHEMA=fm-wake-ack-v1
 FM_WAKE_ACK_PACKET_MODE=
@@ -86,8 +86,15 @@ EOF
   FM_WAKE_ACK_PACKET_GENERATION=$generation
 }
 
+# The one owner of the operator-facing acknowledgement command. Both the
+# drain's direct-caller stderr path and every packet-aware wrapper render
+# through here, so the wording and flag names can never drift apart.
+fm_wake_ack_format_required() {  # <sequence> <generation>
+  printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
+    "$1" "$2"
+}
+
 fm_wake_ack_render_required() {
   [ "$FM_WAKE_ACK_PACKET_MODE" = required ] || return 1
-  printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-    "$FM_WAKE_ACK_PACKET_SEQUENCE" "$FM_WAKE_ACK_PACKET_GENERATION"
+  fm_wake_ack_format_required "$FM_WAKE_ACK_PACKET_SEQUENCE" "$FM_WAKE_ACK_PACKET_GENERATION"
 }

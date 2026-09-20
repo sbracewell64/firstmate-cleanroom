@@ -296,24 +296,48 @@ fm_watcher_supervision_verdict() {
 
 FM_LOCK_KNOWN_FILES='pid fm-home pid-identity term-sent-identity role watcher-path'
 
-# Every entry a lock directory is allowed to carry. The fixed names above, plus
-# the retirement marker's own mktemp staging: that marker is published through
-# a mktemp file INSIDE the lock, and a crash between mktemp and its rename
-# strands exactly one of those names. Only that exact shape - this prefix plus
-# mktemp's six template characters, a regular file, never a symlink - counts as
-# classifiable; anything else makes the lock uncensusable.
+# Every entry a lock directory is allowed to carry: the fixed names above, plus
+# the two crash residues this repo can strand inside a directory-shaped lock.
+# The retirement marker is published through a mktemp file INSIDE the lock, and
+# a crash between mktemp and its rename strands exactly one of those names.
+# Only that exact shape - this prefix plus mktemp's six template characters, a
+# regular file, never a symlink - counts as classifiable.
+fm_lock_stranded_marker_temp_is_own() {  # <entry-path>
+  local entry=$1 name=${1##*/}
+  case "$name" in
+    .term-sent-identity.tmp.??????) [ -f "$entry" ] && [ ! -L "$entry" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# The second residue shape: fm_lock_try_create publishes its claim with
+# `ln -s "$ownerdir" "$lockdir"`, and when a directory-shaped lock appears at
+# that path between the existence check and the link, ln creates
+# "$lockdir/$(basename "$ownerdir")" instead. fm_lock_remove_stray_owner_link
+# sweeps that on the normal path; a process killed in between leaves it.
+# Classifiable only when it is a symlink whose name is this lock's own owner
+# template AND whose target is exactly the owner directory this lock would
+# have minted, so it can only ever be this lock's own crash residue. Nothing
+# reads it, so it carries no ownership authority to preserve.
+fm_lock_stray_owner_link_is_own() {  # <lockdir> <entry-path>
+  local lockdir=$1 entry=$2 name=${2##*/} lock_abs target
+  [ -L "$entry" ] || return 1
+  case "$name" in
+    "${lockdir##*/}".owner.??????) ;;
+    *) return 1 ;;
+  esac
+  lock_abs=$(fm_lock_abs_path "$lockdir") || return 1
+  target=$(readlink "$entry" 2>/dev/null) || return 1
+  [ "$target" = "$lock_abs.owner.${name##*.}" ]
+}
+
 fm_lock_entry_is_known() {  # <lockdir> <entry-path>
-  local entry=$2 name=${2##*/} known
+  local lockdir=$1 entry=$2 name=${2##*/} known
   for known in $FM_LOCK_KNOWN_FILES; do
     [ "$name" != "$known" ] || return 0
   done
-  case "$name" in
-    .term-sent-identity.tmp.??????)
-      [ -f "$entry" ] && [ ! -L "$entry" ]
-      return
-      ;;
-  esac
-  return 1
+  fm_lock_stranded_marker_temp_is_own "$entry" && return 0
+  fm_lock_stray_owner_link_is_own "$lockdir" "$entry"
 }
 
 # Refuse the census unless EVERY entry is classifiable. fm_lock_remove_path
@@ -331,13 +355,16 @@ fm_lock_entries_all_known() {  # <lockdir>
 }
 
 fm_lock_clean_known_files() {
-  local lockdir=$1 stranded known
+  local lockdir=$1 known entry
   for known in $FM_LOCK_KNOWN_FILES; do
     rm -f "$lockdir/$known" 2>/dev/null || true
   done
-  for stranded in "$lockdir"/.term-sent-identity.tmp.??????; do
-    [ -f "$stranded" ] && [ ! -L "$stranded" ] || continue
-    rm -f -- "$stranded" 2>/dev/null || true
+  for entry in "$lockdir"/* "$lockdir"/.[!.]* "$lockdir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    fm_lock_stranded_marker_temp_is_own "$entry" \
+      || fm_lock_stray_owner_link_is_own "$lockdir" "$entry" \
+      || continue
+    rm -f -- "$entry" 2>/dev/null || true
   done
   return 0
 }
@@ -1382,7 +1409,7 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 # because the recorded owner is gone or was never provably this process, and
 # keeps the documented bounded upgrade-window residual instead of a deadlock.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp i
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp
   local term_marker term_record retire_tmp confirm
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
@@ -1432,14 +1459,11 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       fm_lock_release "$steal"
       return 1
     fi
-    i=0
-    while [ "$i" -lt 20 ] && fm_pid_alive "$lock_pid"; do
-      sleep 0.05
-      i=$((i + 1))
-    done
-    # The stop attempt and later collection are separate authority mutations.
-    # Retain the exact lock on this pass even when the owner exited promptly;
-    # only a fresh invocation that observes it gone may collect it.
+    # The stop attempt and later collection are separate authority mutations,
+    # so this pass never inspects whether the signal has landed yet: the
+    # outcome is the same either way and waiting for an exit would only delay
+    # the Stop hook while holding the steal mutex. Retain the exact lock; only
+    # a fresh invocation that observes the owner gone may collect it.
     fm_lock_release "$steal"
     return 1
   fi

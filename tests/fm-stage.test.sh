@@ -1425,30 +1425,56 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the activation fixture confirmed nothing'
   readback=$(meta_get landed-mint stage_reason)
   [ -n "$readback" ] || fail 'the activation fixture recorded no read-back evidence'
+  # A landing is where the branch stops being a candidate. Minting over it would
+  # rewrite a finished record back into one that still owes work, so both landed
+  # stages refuse before any effect and the terminal evidence survives intact.
   FM_FAKE_AXI_STATUS=$(run_toon 01LANDEDMINT fm/landed-mint completed "$submitted" passed https://github.com/o/r/pull/12)
   export FM_FAKE_AXI_STATUS
+  before=$(cat "$STATE/landed-mint.meta")
   out=$("$STAGE" landed-mint successor 2>&1); rc=$?
-  expect_code 0 "$rc" "a landed branch must mint its successor: $out"
-  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the mint erased the immutable landing capture'
-  [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the mint erased the landing provenance'
-  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the mint took back a confirmed landed head'
-  [ "$(meta_get landed-mint stage_reason)" = "$readback" ] || fail 'the mint erased the recorded read-back evidence'
-  [ "$(grep -c '^stage_landed_head=' "$STATE/landed-mint.meta")" = 1 ] || fail 'the mint shadowed the landing capture instead of carrying it'
+  expect_code 1 "$rc" "a landed branch must not be minted over: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a landed branch mint was not typed as exhausted'
+  assert_contains "$out" 'fresh task identity' 'the landed-branch refusal did not name the supported way forward'
+  [ "$(cat "$STATE/landed-mint.meta")" = "$before" ] || fail 'a refused landed-branch mint mutated the terminal record'
+  [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/landed-mint-successor 2>/dev/null || true)" ] \
+    || fail 'a refused landed-branch mint created its successor branch anyway'
+  assert_absent "$STATE/.landed-mint.stage-successor-branch" 'a refused landed-branch mint left a recovery journal'
+  [ "$(git -C "$wt" branch --show-current)" = fm/landed-mint ] || fail 'a refused landed-branch mint moved the worker off its branch'
+  [ "$(meta_get landed-mint stage)" = activated ] || fail 'a refused landed-branch mint reopened the terminal stage'
+  # The capture the landing made and the activation confirmed is still what the
+  # record reports.
+  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the refusal disturbed the immutable landing capture'
+  [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the refusal disturbed the landing provenance'
+  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the refusal took back a confirmed landed head'
+  [ "$(meta_get landed-mint stage_reason)" = "$readback" ] || fail 'the refusal disturbed the recorded read-back evidence'
   out=$("$STAGE" landed-mint show 2>&1)
-  assert_contains "$out" "landed_head=${submitted:0:12}" 'the minted record no longer reports the head that landed'
+  assert_contains "$out" "landed_head=${submitted:0:12}" 'the record no longer reports the head that landed'
 
-  # The capture is a fact of the record, so the very next admission the mint
-  # points the worker at carries it too - a re-admitted task still knows what
-  # landed, and a later landing cannot treat its own read as the first capture.
-  out=$("$STAGE" landed-mint committed --retry 2>&1); rc=$?
-  expect_code 0 "$rc" "the minted landed branch must admit a fresh attempt: $out"
-  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the fresh admission erased the immutable landing capture'
-  [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the fresh admission erased the landing provenance'
-  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the fresh admission took back a confirmed landed head'
-  [ "$(meta_get landed-mint stage_reason)" = "$readback" ] || fail 'the fresh admission erased the recorded read-back evidence'
-  [ "$(grep -c '^stage_landed_head_source=' "$STATE/landed-mint.meta")" = 1 ] || fail 'the fresh admission shadowed the landing provenance'
-  out=$("$STAGE" landed-mint show 2>&1)
-  assert_contains "$out" "landed_head=${submitted:0:12}" 'the re-admitted record no longer reports the head that landed'
+  # The same holds one stage earlier: a branch that has landed but is not yet
+  # activated is equally final for this purpose.
+  make_task landing-mint no-mistakes "$wt"
+  git -C "$wt" checkout -q fm/landed-mint
+  FM_FAKE_AXI_STATUS=''
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" landing-mint committed 2>&1); rc=$?
+  expect_code 0 "$rc" "landing-mint fixture admission: $out"
+  submitted=$(meta_get landing-mint stage_head)
+  FM_FAKE_AXI_STATUS=$(run_toon 01LANDINGMINT fm/landed-mint reviewing "$submitted")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" landing-mint running --run 01LANDINGMINT 2>&1); rc=$?
+  expect_code 0 "$rc" "landing-mint fixture binding: $out"
+  printf 'pr_head=%s\n' "$submitted" >> "$STATE/landing-mint.meta"
+  out=$("$STAGE" landing-mint landing --pr https://github.com/o/r/pull/13 2>&1); rc=$?
+  expect_code 0 "$rc" "landing-mint landing: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01LANDINGMINT fm/landed-mint completed "$submitted" passed https://github.com/o/r/pull/13)
+  export FM_FAKE_AXI_STATUS
+  before=$(cat "$STATE/landing-mint.meta")
+  out=$("$STAGE" landing-mint successor 2>&1); rc=$?
+  expect_code 1 "$rc" "a branch at landing must not be minted over: $out"
+  assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a landing-stage mint was not typed as exhausted'
+  [ "$(cat "$STATE/landing-mint.meta")" = "$before" ] || fail 'a refused landing-stage mint mutated the record'
+  [ "$(meta_get landing-mint stage)" = landing ] || fail 'a refused landing-stage mint reopened the stage'
+
   FM_FAKE_AXI_STATUS=''
   FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BRANCH='' FM_FAKE_PR_HEAD='' FM_FAKE_PR_BODY=''
   export FM_FAKE_AXI_STATUS FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
@@ -1791,6 +1817,17 @@ test_minted_branch_advances_through_the_owner() {
   [ "$(grep -c '^candidate-successor:' "$STATE/minted-advance.status")" = 3 ] || fail 'the recovered advancement did not append its own receipt'
   attempt3=$(meta_get minted-advance stage_successor_advance_attempt)
   [ -n "$attempt3" ] || fail 'the recovered advancement recorded no advancing attempt'
+
+  # Standing on exactly the head the recorded advance already covers is not a
+  # spent advance: only the PR identity disagrees, so the refusal names that
+  # rather than demanding a re-admission that would fix nothing.
+  before=$(cat "$STATE/minted-advance.meta")
+  out=$("$STAGE" minted-advance ci-ready --pr https://github.com/o/r/pull/34 2>&1); rc=$?
+  expect_code 1 "$rc" "a PR the recorded advance does not name must refuse: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'a disagreeing PR identity was not typed as contradictory'
+  assert_not_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a PR disagreement was reported as a spent advance'
+  assert_contains "$out" "$pr2" 'the refusal did not name the PR the advance recorded'
+  [ "$(cat "$STATE/minted-advance.meta")" = "$before" ] || fail 'a refused PR disagreement mutated the record'
 
   # A record whose current head later moved is not a corrupt record: the
   # advancement's immutable lineage stands on its own, so the refusal names what

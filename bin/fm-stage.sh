@@ -39,7 +39,8 @@
 # an authenticated successor issued by this owner), SUCCESSOR_REQUIRED,
 # SUCCESSOR_CNO (an identity could not be evaluated), SUCCESSOR_CONTRADICTION,
 # SUCCESSOR_COLLISION, SUCCESSOR_EXHAUSTED (this task's one successor is already
-# spent; a further distinct successor needs a fresh task identity),
+# spent, or its validation already landed; either way a further distinct
+# successor needs a fresh task identity),
 # NOT_ADMITTED, RUN_ACTIVE, HOLD_APPEARED, MISSING_BINDING, DAEMON_RESET,
 # RUN_BOUND, NOT_CI_READY, BAD_PR, NO_READBACK, ENGINEERING_CONTEXT,
 # ENGINEERING_EVIDENCE, CONFLICTING_RECORD (the task record holds more than one
@@ -1554,6 +1555,15 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       fm_lock_release "$lock"
       if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
           && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
+        # Standing on exactly the head the recorded advance already covers is
+        # not a spent advance - there is nothing left to advance to. Only the
+        # identity the worker named disagrees, so say which one.
+        if [ -z "$replay_pr" ]; then
+          refuse ci-ready SUCCESSOR_CNO "the advance recorded on $(dash "$(meta stage_successor_branch)") names no PR identity to compare against $pr"
+        fi
+        if [ "$replay_pr" != "$pr" ]; then
+          refuse ci-ready SUCCESSOR_CONTRADICTION "the advance recorded on $(dash "$(meta stage_successor_branch)") names PR $replay_pr, not $pr"
+        fi
         refuse ci-ready SUCCESSOR_EXHAUSTED "$(dash "$(meta stage_successor_branch)") was already advanced to $(short "$(meta stage_successor_advance_head)") by attempt $(dash "$(meta stage_successor_advance_attempt)"); a further advance needs a fresh \`$SELF_CMD committed --retry\` admission and its own run"
       fi
       refuse ci-ready SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a distinct successor needs a fresh task identity"
@@ -1873,7 +1883,17 @@ do_successor() {
   read_candidate
   ! worktree_dirty || refuse successor UNCOMMITTED 'the worktree must be clean before minting a validation successor'
   current=$(meta stage)
-  case "$current" in validation-running|ci-ready|landing|activated|candidate-successor) ;; *) refuse successor NOT_ADMITTED "stage=${current:-none} has no admitted validation predecessor" ;; esac
+  # A landing is where a validation branch stops being a candidate: its landed
+  # head, provenance and read-back are final facts, and minting over them would
+  # rewrite a finished record back into a branch that still owes work. The
+  # branches that may still be succeeded are the ones the pipeline has not
+  # landed yet.
+  case "$current" in
+    landing|activated)
+      refuse successor SUCCESSOR_EXHAUSTED "stage=$current already landed $(dash "$(meta stage_branch)"); that evidence is final and further validation work needs a fresh task identity" ;;
+    validation-running|ci-ready|candidate-successor) ;;
+    *) refuse successor NOT_ADMITTED "stage=${current:-none} has no admitted validation predecessor" ;;
+  esac
   if [ -n "$(meta stage_successor_id)" ]; then
     if [ "$(meta stage_successor_action)" != mint-validation-branch ] || [ "$current" != candidate-successor ]; then
       refuse successor SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a further validation branch needs a fresh task identity"

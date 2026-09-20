@@ -411,6 +411,16 @@ mutate_case source-destination-mismatch FAMILY_MISMATCH mutate_admission_json \
 mutate_case wrong-family ACTION_MISMATCH mutate_admission_json \
   '.action.step="slice-b-s2-reference-catalog"'
 mutate_case unreadable-identity SOURCE_UNREADABLE mutate_remove_source
+mutate_case missing-source-identity REQUIRED_BINDING_MISSING mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate) |= del(.local_delivery_source)'
+mutate_case non-object-source-identity REQUIRED_BINDING_MISSING mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate.local_delivery_source) = "canonical_artifact_root"'
+mutate_case extra-source-identity-member SCHEMA_UNSUPPORTED mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate.local_delivery_source.note) = "unsupported"'
+mutate_case blank-source-identity POLICY_UNSUPPORTED mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate.local_delivery_source.identity) = " "'
+mutate_case unknown-source-identity POLICY_UNSUPPORTED mutate_programme_json \
+  '(.steps[] | select(.id=="slice-a-s1-publication-integrity") | .terminal_predicate.local_delivery_source.identity) = "ambient_root"'
 
 # A complete D owner is accepted only when one registered local-only project
 # tracks the entire seven-member family, including the registry-named plan.
@@ -638,6 +648,48 @@ out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto
 [ "$(printf '%s' "$out" | jq -r '.status + " " + .reason_code')" = 'CNO OWNER_MISSING' ] \
   || fail "a non-local-only complete family was not reported as absent lawful ownership: $out"
 pass "a complete family registered outside local-only stays CNO OWNER_MISSING"
+
+# The declared source identity is the machine input that decides the bind: the
+# same invocation admits under the step's own identity, refuses under the other
+# one, and refuses each malformed declaration with its own typed axis.
+home=$(make_home d-source-identity-boundary)
+repo="$home/projects/synthesis-work"
+printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-20)' >> "$home/data/projects.md"
+mkdir -p "$repo"; git -C "$repo" init -q -b main
+cp -R "$home/source/artifacts" "$repo/"
+chmod 755 "$repo/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$repo" add .
+git -C "$repo" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m synthesis
+declare_source_identity() { # <home> <jq value>
+  mutate_programme_json "$1" "" "(.steps[] | select(.id==\"slice-d-s4-synthesis-integrity\") | .terminal_predicate.local_delivery_source) = $2"
+}
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-declared) \
+  || fail "the declared owner_project_root identity did not admit: $out"
+[ "$(printf '%s' "$out" | jq -r '.status')" = ADMITTED ] || fail "the same-root identity did not admit its own owner: $out"
+declare_source_identity "$home" 'null'
+expect_rejected_without_publication "absent source identity" "$home" 'REQUIRED_BINDING_MISSING' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-absent
+declare_source_identity "$home" '"owner_project_root"'
+expect_rejected_without_publication "non-object source identity" "$home" 'REQUIRED_BINDING_MISSING' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-scalar
+declare_source_identity "$home" '{identity:"owner_project_root",note:"unsupported"}'
+expect_rejected_without_publication "extra source identity member" "$home" 'SCHEMA_UNSUPPORTED' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-extra
+declare_source_identity "$home" '{identity:" "}'
+expect_rejected_without_publication "blank source identity" "$home" 'POLICY_UNSUPPORTED' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-blank
+declare_source_identity "$home" '{identity:"ambient_root"}'
+expect_rejected_without_publication "unknown source identity" "$home" 'POLICY_UNSUPPORTED' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-unknown
+declare_source_identity "$home" '{identity:"canonical_artifact_root"}'
+expect_rejected_without_publication "other supported source identity" "$home" 'SOURCE_IDENTITY_MISMATCH' \
+  bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-canonical
+declare_source_identity "$home" '{identity:"owner_project_root"}'
+out=$(bind_with_root "$repo" "$home" "$repo" slice-d-s4-synthesis-integrity auto d-identity-restored) \
+  || fail "restoring the step's own identity did not admit the same input: $out"
+[ "$(printf '%s' "$out" | jq -r '.status + " " + .project')" = 'ADMITTED synthesis-work' ] \
+  || fail "the restored identity did not admit its owner: $out"
+pass "every local_delivery_source declaration decides the bind through its own typed axis"
 
 # A D successor admission seals its same-root source independently of the
 # programme's canonical artifact root. The shared resolver must consume that

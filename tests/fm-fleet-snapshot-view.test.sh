@@ -1030,9 +1030,12 @@ test_interrupted_programme_capture_leaves_no_staging_file() {
   ready="$home/resolver-ready"
   block="$home/resolver-block"
   mkfifo "$ready" "$block"
+  # $$ rather than $BASHPID: this file is also a stock macOS Bash 3.2 consumer,
+  # which has no BASHPID, and the resolver is an exec'd script whose $$ is its
+  # own pid either way.
   cat > "$root/bin/fm-continuation-resolve.sh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$BASHPID" > "$FM_TEST_RESOLVER_PID"
+printf '%s\n' "$$" > "$FM_TEST_RESOLVER_PID"
 printf 'ready\n' > "$FM_TEST_READY_FIFO"
 IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
 printf '{}\n'
@@ -1058,7 +1061,12 @@ SH
     || fail "the capture staged no diagnostics file; this regression's premise is stale"
   fm_term_capture_ancestry "$resolver_pid" "$snapshot_pid" \
     || fail "the capture no longer runs in a subshell; this regression's premise is stale"
-  kill -TERM "$snapshot_pid" 2>/dev/null || true
+  # The staging owner is a grandchild this shell cannot wait on, and the
+  # snapshot's own shell traps nothing, so signalling it would kill it before
+  # that grandchild finished and leave this assertion racing the cleanup.
+  # Waiting instead orders them: the snapshot's capture substitution only ends
+  # when its last writer - the staging owner, after its cleanup - closes the
+  # pipe, so the snapshot cannot exit before the staging file is gone.
   wait "$snapshot_pid" 2>/dev/null || true
 
   if find "$home" -maxdepth 1 -type f -name 'fm-fleet-snapshot.*' -print -quit | grep -q .; then

@@ -96,6 +96,15 @@ with_home() {  # <home> <command...>
     FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-05 "$@"
 }
 
+# Replace this process with <command...>. A caller that backgrounds
+# `with_home <home> exec_here <command...>` then finds the command's own pid in
+# $! on every bash release: without it, a backgrounded shell function is a
+# wrapper subshell wherever bash does not fold that fork away, and a signal
+# aimed at $! reaches the wrapper instead of the process under test.
+exec_here() {  # <command...>
+  exec "$@"
+}
+
 run_project() {  # <home> [args...]
   local home=$1
   shift
@@ -503,7 +512,8 @@ SH
   chmod +x "$bin/fm-continuation-resolve.sh"
   export FM_TEST_READY_FIFO="$ready" FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$home/resolver.pid"
   exec 9<> "$ready"
-  TMPDIR="$home" with_home "$home" "$bin/fm-programme-projection.sh" project >"$home/interrupted.out" 2>"$home/interrupted.err" &
+  TMPDIR="$home" with_home "$home" exec_here "$bin/fm-programme-projection.sh" project \
+    >"$home/interrupted.out" 2>"$home/interrupted.err" &
   projection_pid=$!
   if ! IFS= read -r -t 10 _ready <&9; then
     kill -TERM "$projection_pid" 2>/dev/null || true

@@ -320,6 +320,7 @@ Harness identity is read from the executable path and `argv[0]` as well as the c
 `tests/fm-watch-arm.test.sh` runs real watcher and arm cycles against durable on-disk state to verify that a delivered reason survives until post-handling acknowledgement and stops replaying after acknowledgement, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 The same suite ingests a keyed remote-secondmate parent reply through the real adapter, establishes the incremental OPEN DECISIONS cursor, interrupts supervision, and proves re-arm replays every unacknowledged queue row plus the still-open decision through the ordinary drain path.
 It also covers decision-only recovery, interrupted handling, handling-window generation reuse, non-fatal moved-generation acknowledgement with sequence-bounded consumption, and a persistent successor remaining live after recovery is acknowledged.
+`tests/fm-watcher-lock.test.sh` additionally exercises repeated stop delivery through a trapped close path, bounded child-stop outcomes and lifecycle fields, the unconfirmed restart boundary, and marker-lock contention during watcher shutdown, including recovery by the next watcher.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
 

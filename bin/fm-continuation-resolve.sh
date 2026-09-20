@@ -729,6 +729,7 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   fi
   receipt_file="$FM_HOME/$receipt_rel"
   [ -e "$receipt_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt $receipt_rel is unavailable"; return 0; }
+  local_owner_private_file "$receipt_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the bound local delivery receipt $receipt_rel is not a private same-user single-link mode-0600 file"; return 0; }
   snapshot=$(local_owner_private_snapshot "$receipt_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the bound local delivery receipt cannot be read as one private snapshot"; return 0; }
   snapshot_digest=${snapshot%%$'\t'*}; snapshot_data=${snapshot#*$'\t'}
   receipt_actual=$snapshot_digest
@@ -808,6 +809,7 @@ validate_local_project_delivery_v2() {  # <record-json> <step-index> <step-id>
   if ! local_owner_relative_path "$check_rel" data || ! local_owner_sha256 "$check_sha"; then local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "checker receipt locator or sha256 is invalid"; return 0; fi
   check_file="$FM_HOME/$check_rel"
   [ -e "$check_file" ] || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the checker receipt $check_rel is unavailable"; return 0; }
+  local_owner_private_file "$check_file" || { local_owner_result REFUSED OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "the checker receipt $check_rel is not a private same-user single-link mode-0600 file"; return 0; }
   snapshot=$(local_owner_private_snapshot "$check_file" 2>/dev/null) || { local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the checker receipt cannot be read as one private snapshot"; return 0; }
   snapshot_digest=${snapshot%%$'\t'*}; snapshot_data=${snapshot#*$'\t'}
   check_actual=$snapshot_digest
@@ -845,7 +847,7 @@ validate_local_project_delivery() {  # <record-json> <step-index> <step-id>
 # receipt lives under this home's data/, names one local project under
 # projects/, and binds immutable candidate, independent checker, manifest, and
 project_local_delivery_v1_projection() {  # <record-json> <step-index> <step-id>
-  local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id
+  local doc=$1 i=$2 sid=$3 receipt_rel receipt_sha receipt_file receipt generation evidence_id legacy_result status reason detail
   local candidate head tree delivery_id project ref maker checker maker_commit privacy qualification
   local check_rel check_sha check_file check_doc repo repo_real projects_real top current_head current_tree project_mode repo_token root_token repo_path_token root_path_token repo_fd root_fd repo_handle root_handle
   local manifest n j row source destination expected source_sha destination_file destination_sha root_real destination_parent family source_oid destination_oid source_mode source_type destination_mode destination_index_oid destination_fs_mode receipt_actual check_actual
@@ -983,11 +985,6 @@ project_local_delivery_v1_projection() {  # <record-json> <step-index> <step-id>
   fi
 
   [ "$project" = "$(printf '%s' "$doc" | jq -r '.owner.ref')" ] || { local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "candidate owner project differs from the evidence owner"; return 0; }
-  project_mode=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-project-mode.sh" --require-registered --raw "$project" 2>/dev/null) || {
-    local_owner_result CNO OWNER_EVIDENCE_READBACK_UNAVAILABLE "the registered delivery posture for local owner project $project is unreadable"
-    return 0
-  }
-  case "$project_mode" in local-only\ *) ;; *) local_owner_result REFUSED OWNER_EVIDENCE_OWNER_MISMATCH "project $project is not governed by the registered local-only owner"; return 0 ;; esac
   manifest=$(printf '%s' "$receipt" | jq -c '.manifest')
   [ "$(printf '%s' "$manifest" | jq -r '[.[].destination] | unique | length')" = "$(printf '%s' "$manifest" | jq -r 'length')" ] || {
     local_owner_result REFUSED OWNER_EVIDENCE_MALFORMED "delivery manifest destination identities must be unique"

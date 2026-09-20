@@ -310,6 +310,14 @@ mutate_case unreadable-identity SOURCE_UNREADABLE 'rm "$1/source/exchange/bin/re
 # A complete D owner is accepted only when one registered local-only project
 # tracks the entire seven-member family, including the registry-named plan.
 home=$(make_home d-complete)
+partial="$home/projects/docs-work"
+printf '%s\n' '- docs-work [local-only] - partial synthesis fixture (added 2026-09-18)' >> "$home/data/projects.md"
+mkdir -p "$partial/artifacts/synthesis/bin"
+cp "$home/source/artifacts/synthesis/bin/synthesis-integrity.py" "$partial/artifacts/synthesis/bin/"
+chmod 755 "$partial/artifacts/synthesis/bin/synthesis-integrity.py"
+git -C "$partial" init -q -b main
+git -C "$partial" add .
+git -C "$partial" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m partial
 repo="$home/projects/synthesis-work"
 printf '%s\n' '- synthesis-work [local-only] - synthesis fixture (added 2026-09-18)' >> "$home/data/projects.md"
 mkdir -p "$repo"; git -C "$repo" init -q -b main

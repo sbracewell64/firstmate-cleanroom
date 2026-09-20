@@ -1348,7 +1348,7 @@ repin_local_delivery() {  # <home> <step> <evidence-file>
 }
 
 test_af_private_local_delivery_owner() {
-  local home out projection proof_sha receipt check dest tmp fakebin old_path
+  local home out projection proof_sha receipt check dest tmp
   home=$(make_af_home af-local-delivery)
   write_proof_b_adverse "$home"
   proof_sha=$(sha_of "$home/cleanroom/artifacts/proofs/proof-b/attempt-3/disposition.json")
@@ -1417,23 +1417,17 @@ test_af_private_local_delivery_owner() {
   out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "forged checker receipt"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
-  fakebin="$home/fake-bin"; mkdir -p "$fakebin"
-  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/af/evidence/slice-a.json*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
-  chmod 755 "$fakebin/shasum"
-  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
-  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_UNREADABLE "unhashable owner record"
+  chmod 644 "$receipt"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "non-private delivery receipt"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
-  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *cleanroom/exchange/bin/slice-a.py*) exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
-  chmod 755 "$fakebin/shasum"
-  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
-  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unhashable delivery destination"
+  chmod 644 "$check"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_RECEIPT_AUTHENTICITY "non-private checker receipt"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
-  printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in "-a 256") exit 1;; esac' 'exec /usr/bin/shasum "$@"' > "$fakebin/shasum"
-  chmod 755 "$fakebin/shasum"
-  old_path=$PATH; PATH="$fakebin:$PATH"; out=$(run_resolve "$home" resolve); PATH=$old_path
-  expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_SOURCE_UNREADABLE "unhashable candidate source"
+  chmod 000 "$dest"
+  out=$(run_resolve "$home" resolve); expect_cno_refusal "$out" slice-a OWNER_EVIDENCE_READBACK_UNAVAILABLE "unreadable delivery destination"
+  chmod 644 "$dest"
   write_local_delivery_evidence "$home" slice-a exchange/bin/slice-a.py exchange/bin/slice-a.py slice-a.json
 
   tmp="$receipt.tmp"; jq '.manifest[0].source="exchange/bin"' "$receipt" > "$tmp" && mv "$tmp" "$receipt"; chmod 600 "$receipt"; repin_local_delivery "$home" slice-a slice-a.json

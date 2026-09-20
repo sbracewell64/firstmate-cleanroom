@@ -1202,7 +1202,7 @@ test_terminal_branch_requires_one_minted_successor
 # did not. The admitted predecessor and the landing capture are immutable facts
 # of the record and survive the transition untouched.
 test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
-  local wt submitted advanced out rc
+  local wt submitted advanced local_only readback out rc
 
   wt="$TMP_ROOT/wt-advanced"
   make_worktree "$wt" fm/advanced
@@ -1218,20 +1218,44 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   advanced=$(git -C "$wt" rev-parse HEAD)
   [ "$advanced" != "$submitted" ] || fail 'the fixture must advance the predecessor branch'
   FM_FAKE_AXI_STATUS=$(run_toon 01ADVANCED fm/advanced completed "$advanced" passed https://github.com/o/r/pull/11)
-  export FM_FAKE_AXI_STATUS
+  FM_FAKE_PR_NUMBER=11 FM_FAKE_PR_URL=https://github.com/o/r/pull/11
+  FM_FAKE_PR_BRANCH=fm/advanced FM_FAKE_PR_HEAD=$advanced
+  FM_FAKE_PR_BODY=$(printf 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"%s"} -->' "$advanced")
+  export FM_FAKE_AXI_STATUS FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
   out=$("$STAGE" advanced committed --retry 2>&1); rc=$?
   expect_code 1 "$rc" "an advanced terminal branch must still require a successor: $out"
   assert_contains "$out" 'reason=SUCCESSOR_REQUIRED' 'advanced terminal refusal was not typed'
 
-  # A head the bound run never validated is refused without any branch effect,
-  # so SUCCESSOR_REQUIRED and the mint never point at each other.
+  # Neither an ancestor nor a clean local descendant the pipeline never carried
+  # may be minted from: descent proves only that the worker built on the
+  # predecessor. Both refuse without any branch effect, so SUCCESSOR_REQUIRED
+  # and the mint never point at each other.
   git -C "$wt" reset -q --hard "$submitted^"
   out=$("$STAGE" advanced successor 2>&1); rc=$?
-  expect_code 1 "$rc" "a head the bound run never validated must refuse the mint: $out"
+  expect_code 1 "$rc" "a head the bound run never carried must refuse the mint: $out"
   assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'unvalidated mint refusal was not typed'
   [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/advanced-successor 2>/dev/null || true)" ] \
     || fail 'a refused mint created its successor branch anyway'
+
   git -C "$wt" reset -q --hard "$advanced"
+  git -C "$wt" commit -q --allow-empty -m 'worker-only commit the pipeline never saw'
+  local_only=$(git -C "$wt" rev-parse HEAD)
+  [ "$local_only" != "$advanced" ] || fail 'the fixture must add a local-only descendant'
+  git -C "$wt" merge-base --is-ancestor "$advanced" "$local_only" \
+    || fail 'the local-only fixture must descend from the validated head'
+  out=$("$STAGE" advanced successor 2>&1); rc=$?
+  expect_code 1 "$rc" "a clean local descendant the run never carried must refuse the mint: $out"
+  assert_contains "$out" 'SUCCESSOR_CONTRADICTION' 'unvalidated descendant refusal was not typed'
+  [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/advanced-successor 2>/dev/null || true)" ] \
+    || fail 'a refused descendant mint created its successor branch anyway'
+  git -C "$wt" reset -q --hard "$advanced"
+
+  # An unreadable PR identity is unevaluable, never a disagreement.
+  out=$(FM_FAKE_GH_AXI_RAW_LIMIT=32 "$STAGE" advanced successor 2>&1); rc=$?
+  expect_code 1 "$rc" "an unreadable PR identity must refuse the mint: $out"
+  assert_contains "$out" 'SUCCESSOR_CNO' 'unevaluable mint refusal was not typed as unevaluable'
+  [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/advanced-successor 2>/dev/null || true)" ] \
+    || fail 'an unevaluable mint created its successor branch anyway'
 
   out=$("$STAGE" advanced successor 2>&1); rc=$?
   expect_code 0 "$rc" "the mint must adopt the validated descendant the pipeline advanced to: $out"
@@ -1245,6 +1269,8 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   out=$("$STAGE" advanced committed --retry 2>&1); rc=$?
   expect_code 0 "$rc" "the minted descendant branch must admit a fresh attempt: $out"
   assert_contains "$out" 'STAGE: validation-admitted:' 'the minted descendant was not admitted'
+  [ -z "$(meta_get advanced stage_landed_head_source)" ] \
+    || fail 'a task that never landed acquired a landing capture'
 
   wt="$TMP_ROOT/wt-landed-mint"
   make_worktree "$wt" fm/landed-mint
@@ -1260,19 +1286,40 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
   out=$("$STAGE" landed-mint landing --pr https://github.com/o/r/pull/12 2>&1); rc=$?
   expect_code 0 "$rc" "landed-mint landing: $out"
   [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the landing fixture captured no landed head'
+  land_on_integration "$wt" "$submitted"
+  out=$("$STAGE" landed-mint activated 2>&1); rc=$?
+  expect_code 0 "$rc" "landed-mint activation: $out"
+  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the activation fixture confirmed nothing'
+  readback=$(meta_get landed-mint stage_reason)
+  [ -n "$readback" ] || fail 'the activation fixture recorded no read-back evidence'
   FM_FAKE_AXI_STATUS=$(run_toon 01LANDEDMINT fm/landed-mint completed "$submitted" passed https://github.com/o/r/pull/12)
   export FM_FAKE_AXI_STATUS
   out=$("$STAGE" landed-mint successor 2>&1); rc=$?
   expect_code 0 "$rc" "a landed branch must mint its successor: $out"
   [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the mint erased the immutable landing capture'
   [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the mint erased the landing provenance'
-  [ "$(meta_get landed-mint stage_reason)" = 'landed-head:pr-head' ] || fail 'the mint erased the recorded landing narration'
+  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the mint took back a confirmed landed head'
+  [ "$(meta_get landed-mint stage_reason)" = "$readback" ] || fail 'the mint erased the recorded read-back evidence'
   [ "$(grep -c '^stage_landed_head=' "$STATE/landed-mint.meta")" = 1 ] || fail 'the mint shadowed the landing capture instead of carrying it'
   out=$("$STAGE" landed-mint show 2>&1)
   assert_contains "$out" "landed_head=${submitted:0:12}" 'the minted record no longer reports the head that landed'
+
+  # The capture is a fact of the record, so the very next admission the mint
+  # points the worker at carries it too - a re-admitted task still knows what
+  # landed, and a later landing cannot treat its own read as the first capture.
+  out=$("$STAGE" landed-mint committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "the minted landed branch must admit a fresh attempt: $out"
+  [ "$(meta_get landed-mint stage_landed_head)" = "$submitted" ] || fail 'the fresh admission erased the immutable landing capture'
+  [ "$(meta_get landed-mint stage_landed_head_source)" = pr-head ] || fail 'the fresh admission erased the landing provenance'
+  [ "$(meta_get landed-mint stage_landed_head_confirmed)" = confirmed ] || fail 'the fresh admission took back a confirmed landed head'
+  [ "$(meta_get landed-mint stage_reason)" = "$readback" ] || fail 'the fresh admission erased the recorded read-back evidence'
+  [ "$(grep -c '^stage_landed_head_source=' "$STATE/landed-mint.meta")" = 1 ] || fail 'the fresh admission shadowed the landing provenance'
+  out=$("$STAGE" landed-mint show 2>&1)
+  assert_contains "$out" "landed_head=${submitted:0:12}" 'the re-admitted record no longer reports the head that landed'
   FM_FAKE_AXI_STATUS=''
-  export FM_FAKE_AXI_STATUS
-  pass 'the successor mint adopts only the validated candidate and preserves predecessor and landing evidence'
+  FM_FAKE_PR_NUMBER=9 FM_FAKE_PR_URL=https://github.com/o/r/pull/9 FM_FAKE_PR_BRANCH='' FM_FAKE_PR_HEAD='' FM_FAKE_PR_BODY=''
+  export FM_FAKE_AXI_STATUS FM_FAKE_PR_NUMBER FM_FAKE_PR_URL FM_FAKE_PR_BRANCH FM_FAKE_PR_HEAD FM_FAKE_PR_BODY
+  pass 'the successor mint adopts only the identified descendant and preserves predecessor and landing evidence'
 }
 test_successor_mints_the_validated_candidate_and_keeps_the_capture
 

@@ -454,6 +454,24 @@ candidate_current() {  # <recorded-head> <head> [ci-ready]
   fi
 }
 
+# 0 when the advanced live head is exactly the clean descendant this terminal
+# bound run carried and its own PR attests, 1 for a readable disagreement, and 2
+# when that identity cannot be evaluated. Descent alone never qualifies: it
+# proves the worker built on the predecessor, not that the pipeline ever saw it.
+identified_terminal_descendant() { # <bound-run-toon> <branch> <predecessor-head> <head>
+  local output=$1 branch=$2 predecessor=$3 head=$4 run_head pr rc
+  git -C "$WT" merge-base --is-ancestor "$predecessor" "$head" 2>/dev/null || return 1
+  run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$output" head)")
+  [[ "$run_head" =~ ^[0-9a-f]{40}$ ]] || return 2
+  [ "$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null)" = "$head" ] || return 1
+  pr=$(fm_nm_strip_quotes "$(fm_nm_field "$output" pr)")
+  [ -n "$pr" ] || return 2
+  fm_pr_url_parse "$pr" >/dev/null 2>&1 || return 2
+  rc=0
+  successor_pr_attestation "$pr" "$branch" "$head" any || rc=$?
+  return "$rc"
+}
+
 bound_run_uses_predecessor() {
   [ "$(meta stage_successor_action)" = authenticated-synchronized-successor ] \
     || { [ "$(meta stage_successor_action)" = mint-validation-branch ] && [ "$(meta stage)" = candidate-successor ]; }
@@ -547,7 +565,9 @@ gh_axi_pr_row() { # <canonical GitHub PR URL>
   printf '%s' "$encoded" | jq -r . 2>/dev/null
 }
 
-successor_pr_attestation() { # <url> <branch> <head>; sets SUCCESSOR_ATTESTED_HEAD
+# <state-policy> is `open` (the default) when only a live open PR may attest, or
+# `any` when a merged or closed PR still names the head it carried.
+successor_pr_attestation() { # <url> <branch> <head> [state-policy]; sets SUCCESSOR_ATTESTED_HEAD
   local row number state merged head branch url pipeline block64 block
   row=$(gh_axi_pr_row "$1") || return 2
   IFS=$(printf '\t') read -r number state merged head branch url pipeline block64 <<EOF
@@ -556,7 +576,7 @@ EOF
   [ -n "$number" ] && [ -n "$pipeline" ] || return 2
   fm_pr_url_parse "$1" >/dev/null 2>&1 || return 2
   [ "$number" = "$FM_PR_NUMBER" ] && [ "$url" = "$1" ] || return 1
-  [ "$state" = open ] && [ "$merged" = false ] || return 1
+  [ "${4:-open}" = any ] || { [ "$state" = open ] && [ "$merged" = false ]; } || return 1
   [ "$head" = "$3" ] && [ "$branch" = "$2" ] || return 1
   [ "$pipeline" = true ] || return 1
   [ -n "$block64" ] || return 1
@@ -772,11 +792,21 @@ receipt_line() {  # <stage> <owner> <reason> <branch> <head> <tree>
     "$(enc "${FM_DISCIPLINE_PROOF_OUTCOME:-}")" "$(enc "$residuals")"
 }
 
+# Once a landing has captured a head, the capture, its provenance, its
+# confirmation and the rendering that names it are facts of the record rather
+# than of the transition that wrote them, so every later record writer carries
+# them. Absent a recorded source there is no capture to carry, and stage_reason
+# belongs to whichever transition is speaking.
+captured_stage_lines() {
+  [ -n "$(meta stage_landed_head_source)" ] || return 0
+  grep -E '^stage_(landed_head(_source|_confirmed)?|reason)=' "$META" 2>/dev/null || true
+}
+
 # Append the receipt, then publish the record. A crash between the two leaves a
 # receipt without its record, and the next run appends it again: a bounded
 # duplicate, never a lost transition.
 issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...]
-  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv lineage
+  local stage=$1 owner=$2 reason=$3 branch=$4 head=$5 tree=$6 line tmp lock kv lineage carried
   shift 6
   line=$(receipt_line "$stage" "$owner" "$reason" "$branch" "$head" "$tree")
   printf '%s\n' "$line" >> "$STATUS"
@@ -789,6 +819,11 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     exit 2
   fi
   lineage=$(grep -E '^stage_(predecessor|successor)_' "$META" 2>/dev/null || true)
+  carried=$(captured_stage_lines)
+  for kv in "$@"; do
+    [ -n "$carried" ] || break
+    carried=$(printf '%s\n' "$carried" | grep -v -e "^${kv%%=*}=" || true)
+  done
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
     printf 'stage=%s\n' "$stage"
@@ -802,6 +837,7 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     printf 'stage_alloc=%s\n' "$(alloc_identity)"
     [ "$MODE" != no-mistakes ] || printf 'stage_duty=validation\n'
     [ -z "$lineage" ] || printf '%s\n' "$lineage"
+    [ -z "$carried" ] || printf '%s\n' "$carried"
     if [ "$stage" = candidate-committed ]; then
       printf 'stage_evidence=\n'
     else
@@ -1101,10 +1137,7 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
   if ! fm_backlog_record_present "$META" "task record" "$STATE"; then
     return 2
   fi
-  # The landing capture and its provenance are immutable once recorded, so a
-  # successor transition carries them forward rather than re-emitting a record
-  # that says nothing landed.
-  captured=$(grep -E '^stage_(landed_head(_source|_confirmed)?|reason)=' "$META" 2>/dev/null || true)
+  captured=$(captured_stage_lines)
   tmp="$STATE/.$ID.meta.successor.${BASHPID:-$$}"
   grep -v -e '^stage=' -e '^stage_' "$META" > "$tmp" || true
   {
@@ -1329,7 +1362,7 @@ do_committed() {
 }
 
 do_successor() {
-  local current output lock journal new_branch old_branch old_head base_head existing publish_rc
+  local current output lock journal new_branch old_branch old_head base_head existing publish_rc adopt_rc
   require_ship successor
   [ "$MODE" = no-mistakes ] || refuse successor NOT_ADMITTED "mode=$MODE has no validation successor"
   require_worktree successor
@@ -1370,13 +1403,18 @@ do_successor() {
   new_branch="${old_branch}-successor"
   journal="$STATE/.$ID.stage-successor-branch"
   # The pipeline's own fix commits routinely advance the predecessor branch past
-  # the admitted head, so the mint bases on whatever the lifecycle's currentness
-  # owner already accepts as this bound run's candidate - never on a foreign or
-  # unproven head, and never in place of the immutable admitted predecessor.
+  # the admitted head, so the mint may base on that advance - but only on the
+  # one head this terminal run carried and its PR attests, and never in place of
+  # the immutable admitted predecessor.
   base_head=$old_head
   if [ "$BRANCH" = "$old_branch" ] && [ "$HEAD" != "$old_head" ]; then
-    candidate_current "$old_head" "$HEAD" ci-ready \
-      || refuse successor SUCCESSOR_CONTRADICTION 'the live branch or head moved from the recorded predecessor'
+    adopt_rc=0
+    identified_terminal_descendant "$output" "$old_branch" "$old_head" "$HEAD" || adopt_rc=$?
+    case "$adopt_rc" in
+      0) ;;
+      2) refuse successor SUCCESSOR_CNO 'the bound run or live PR identity for the advanced head could not be evaluated' ;;
+      *) refuse successor SUCCESSOR_CONTRADICTION 'the live head is not the descendant this bound run carried and its PR attests' ;;
+    esac
     base_head=$HEAD
   fi
   if [ "$BRANCH" != "$old_branch" ] || [ "$HEAD" != "$base_head" ]; then

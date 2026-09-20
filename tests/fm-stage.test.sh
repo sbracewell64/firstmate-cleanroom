@@ -1404,6 +1404,86 @@ test_successor_mints_the_validated_candidate_and_keeps_the_capture() {
 }
 test_successor_mints_the_validated_candidate_and_keeps_the_capture
 
+# The allocation and duty a successor record makes immutable are the ones the
+# attempt was ADMITTED under. They are captured once, at admission, and carried
+# byte-for-byte after that, so a worker relaunched onto a different model
+# mid-attempt cannot have the new allocation recorded as the admitted one.
+test_admitted_allocation_is_captured_once() {
+  local wt head out rc admitted
+  wt="$TMP_ROOT/wt-admitted-alloc"
+  make_worktree "$wt" fm/admitted-alloc
+  make_task admitted-alloc no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=''
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" admitted-alloc committed 2>&1); rc=$?
+  expect_code 0 "$rc" "admitted-alloc fixture admission: $out"
+  head=$(meta_get admitted-alloc stage_head)
+  admitted=$(meta_get admitted-alloc stage_alloc)
+  [ "$admitted" = echo/default/low/tmux ] || fail "admission did not capture the allocation (got '$admitted')"
+  [ "$(meta_get admitted-alloc stage_duty)" = validation ] || fail 'admission did not capture the duty'
+  # The admitting receipt is the durable second copy of the same fact, and it is
+  # the only receipt a record that predates the field may migrate from.
+  [ "$(status_stage_field "$(grep '^validation-admitted:' "$STATE/admitted-alloc.status" | tail -1)" alloc)" = "$admitted" ] \
+    || fail 'the admitting receipt does not name the admitted allocation'
+
+  # A relaunch rewrites the record's own allocation facets while carrying every
+  # stage binding forward. Later transitions must carry the admitted value, not
+  # silently adopt whatever the worker now runs under.
+  sed 's/^model=.*/model=relaunched/' "$STATE/admitted-alloc.meta" > "$STATE/.admitted-alloc.rewrite"
+  mv "$STATE/.admitted-alloc.rewrite" "$STATE/admitted-alloc.meta"
+  FM_FAKE_AXI_STATUS=$(run_toon 01ADMITTEDALLOC fm/admitted-alloc reviewing "$head")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" admitted-alloc running --run 01ADMITTEDALLOC 2>&1); rc=$?
+  expect_code 0 "$rc" "admitted-alloc run binding: $out"
+  [ "$(meta_get admitted-alloc stage_alloc)" = "$admitted" ] \
+    || fail "binding a run replaced the admitted allocation with the live one (got '$(meta_get admitted-alloc stage_alloc)')"
+  [ "$(meta_get admitted-alloc stage_duty)" = validation ] || fail 'binding a run dropped the admitted duty'
+  [ "$(grep -c '^stage_alloc=' "$STATE/admitted-alloc.meta")" = 1 ] || fail 'the carried allocation was shadowed rather than carried'
+
+  # A fresh admission is a fresh binding: the next attempt records what IT runs
+  # under, so the capture is per-admission rather than frozen forever.
+  FM_FAKE_AXI_STATUS=$(run_toon 01ADMITTEDALLOC fm/admitted-alloc completed "$head" passed)
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" admitted-alloc committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "a fresh attempt must be admissible: $out"
+  [ "$(meta_get admitted-alloc stage_alloc)" = echo/relaunched/low/tmux ] \
+    || fail "a fresh admission did not capture the allocation it runs under (got '$(meta_get admitted-alloc stage_alloc)')"
+
+  # Both bindings are proven before any journal or branch effect, so a record
+  # whose allocation no durable receipt establishes refuses typed and mints
+  # nothing at all.
+  wt="$TMP_ROOT/wt-unprovable-alloc"
+  make_worktree "$wt" fm/unprovable
+  make_task unprovable no-mistakes "$wt"
+  FM_FAKE_AXI_STATUS=''
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" unprovable committed 2>&1); rc=$?
+  expect_code 0 "$rc" "unprovable fixture admission: $out"
+  head=$(meta_get unprovable stage_head)
+  FM_FAKE_AXI_STATUS=$(run_toon 01UNPROVABLE fm/unprovable reviewing "$head")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" unprovable running --run 01UNPROVABLE 2>&1); rc=$?
+  expect_code 0 "$rc" "unprovable fixture binding: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon 01UNPROVABLE fm/unprovable completed "$head" passed https://github.com/o/r/pull/22)
+  export FM_FAKE_AXI_STATUS
+  grep -v '^stage_alloc=' "$STATE/unprovable.meta" > "$STATE/.unprovable.rewrite"
+  mv "$STATE/.unprovable.rewrite" "$STATE/unprovable.meta"
+  grep -v '^validation-admitted:' "$STATE/unprovable.status" > "$STATE/.unprovable.rewrite"
+  mv "$STATE/.unprovable.rewrite" "$STATE/unprovable.status"
+  out=$("$STAGE" unprovable successor 2>&1); rc=$?
+  expect_code 1 "$rc" "an allocation no durable receipt establishes must refuse the mint: $out"
+  assert_contains "$out" 'SUCCESSOR_CNO' 'an unprovable allocation was not typed as unevaluable identity'
+  [ -z "$(git -C "$wt" rev-parse --verify --quiet refs/heads/fm/unprovable-successor 2>/dev/null || true)" ] \
+    || fail 'a refused mint created its successor branch anyway'
+  assert_absent "$STATE/.unprovable.stage-successor-branch" 'a refused mint left a recovery journal behind'
+  [ "$(meta_get unprovable stage)" = validation-running ] || fail 'a refused mint advanced the record'
+  [ "$(git -C "$wt" branch --show-current)" = fm/unprovable ] || fail 'a refused mint moved the worker off its branch'
+  FM_FAKE_AXI_STATUS=''
+  export FM_FAKE_AXI_STATUS
+  pass 'the admitted allocation and duty are captured once and carried, and the mint proves both before any effect'
+}
+test_admitted_allocation_is_captured_once
+
 # Terminal successors need the producer's explicit verified readback, not the
 # active-only exemption or ordinary synchronized equality.
 test_completed_successor_stage() {

@@ -450,22 +450,24 @@ stage_bound_duty() {
 
 # The receipt log is this task's independently persisted history: lines are
 # appended and never rewritten, and each carries the allocation that was live
-# when the transition was issued beside the attempt, run, branch and head it was
+# when the transition was issued beside the attempt, branch and head it was
 # issued for. A record that predates stage_alloc reads its admitted allocation
-# from the receipt that admitted this exact predecessor - never from whatever
-# allocation the worker happens to carry now, which is the thing the caller is
-# comparing that evidence against. Two receipts disagreeing, or none at all, is
-# an absence of proof rather than a licence to assume one.
-admitted_alloc_receipt() { # <attempt> <run> <branch> <head>
+# from the one receipt that ADMITTED this exact predecessor - not from a later
+# transition of the same attempt, which would name whatever the worker carried
+# by then, and not from the current record, which is the thing the caller is
+# comparing that evidence against. An admitting receipt names no run, because
+# no run exists until the attempt binds one; its identity is the attempt and
+# the candidate it admitted. Two receipts disagreeing, or none at all, is an
+# absence of proof rather than a licence to assume one.
+admitted_alloc_receipt() { # <attempt> <branch> <head>
   local line value found=
-  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] || return 1
+  [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || return 1
   [ -f "$STATUS" ] || return 1
   while IFS= read -r line; do
-    case "$(status_line_stage "$line" 2>/dev/null || true)" in validation-admitted|validation-running) ;; *) continue ;; esac
+    [ "$(status_line_stage "$line" 2>/dev/null || true)" = validation-admitted ] || continue
     [ "$(status_stage_field "$line" attempt)" = "$1" ] || continue
-    [ "$(status_stage_field "$line" run)" = "$2" ] || continue
-    [ "$(status_stage_field "$line" branch)" = "$3" ] || continue
-    [ "$(status_stage_field "$line" head)" = "$(short "$4")" ] || continue
+    [ "$(status_stage_field "$line" branch)" = "$2" ] || continue
+    [ "$(status_stage_field "$line" head)" = "$(short "$3")" ] || continue
     value=$(status_stage_field "$line" alloc)
     [ -n "$value" ] && [ "$value" != '-' ] || return 1
     [ -z "$found" ] || [ "$found" = "$value" ] || return 1
@@ -479,7 +481,7 @@ stage_bound_alloc() {
   local alloc
   alloc=$(meta stage_predecessor_alloc); [ -n "$alloc" ] || alloc=$(meta stage_alloc)
   if [ -z "$alloc" ]; then
-    alloc=$(admitted_alloc_receipt "$(stage_predecessor_attempt)" "$(stage_predecessor_run)" \
+    alloc=$(admitted_alloc_receipt "$(stage_predecessor_attempt)" \
       "$(stage_predecessor_branch)" "$(stage_predecessor_head)") || return 1
   fi
   [ -n "$alloc" ] || return 1
@@ -899,8 +901,18 @@ issue() {  # <stage> <owner> <reason> <branch> <head> <tree> [extra key=value...
     printf 'stage_gen=%s\n' "$GEN"
     printf 'stage_context=%s\n' "$FM_WC_ENGINEERING_DIGEST"
     printf 'stage_discipline=%s\n' "$(discipline_identity)"
-    printf 'stage_alloc=%s\n' "$(alloc_identity)"
-    [ "$MODE" != no-mistakes ] || printf 'stage_duty=validation\n'
+    # Admission is where the allocation and duty this attempt runs under are
+    # decided, so admission is where they are captured. Every later transition
+    # carries them byte-for-byte: a record that recomputed them would report
+    # whatever the worker happens to carry now under a label that claims to
+    # name what was admitted.
+    if [ "$stage" = validation-admitted ]; then
+      printf 'stage_alloc=%s\n' "$(alloc_identity)"
+      [ "$MODE" != no-mistakes ] || printf 'stage_duty=validation\n'
+    else
+      [ -z "$(meta stage_alloc)" ] || printf 'stage_alloc=%s\n' "$(meta stage_alloc)"
+      [ -z "$(meta stage_duty)" ] || printf 'stage_duty=%s\n' "$(meta stage_duty)"
+    fi
     [ -z "$lineage" ] || printf '%s\n' "$lineage"
     [ -z "$carried" ] || printf '%s\n' "$carried"
     if [ "$stage" = candidate-committed ]; then
@@ -1597,6 +1609,10 @@ do_successor() {
   fi
   output=$(bound_run_status) || refuse successor SUCCESSOR_CNO 'the exact predecessor run could not be read'
   terminal_successor_required "$output" || refuse successor RUN_ACTIVE 'the predecessor run is still active; continue it instead of minting another branch'
+  stage_bound_duty >/dev/null \
+    || refuse successor SUCCESSOR_CNO 'the admitted validation duty is not recorded and no durable evidence establishes it'
+  stage_bound_alloc >/dev/null \
+    || refuse successor SUCCESSOR_CNO 'the admitted allocation identity is not recorded and no durable evidence establishes it'
   old_branch=$(meta stage_branch); old_head=$(meta stage_head)
   new_branch="${old_branch}-successor"
   journal="$STATE/.$ID.stage-successor-branch"

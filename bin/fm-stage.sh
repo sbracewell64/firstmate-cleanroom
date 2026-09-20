@@ -1329,7 +1329,7 @@ successor_advance_valid() {
 successor_replay_locked() {
   local line bound_head bound_tree bound_run bound_attempt
   SUCCESSOR_REPLAY_CAUSE=distinct
-  successor_record_valid || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
+  successor_record_valid || { SUCCESSOR_REPLAY_CAUSE='invalid-record'; return 1; }
   read_candidate
   [ "$BRANCH" = "$SI_BRANCH" ] || { SUCCESSOR_REPLAY_CAUSE=branch; return 1; }
   ! worktree_dirty || { SUCCESSOR_REPLAY_CAUSE=dirty; return 1; }
@@ -1337,7 +1337,7 @@ successor_replay_locked() {
   bound_run=${SA_RUN:-$SI_RUN}; bound_attempt=${SA_ATTEMPT:-$SI_ATTEMPT}
   SUCCESSOR_REPLAY_HEAD=$bound_head
   if [ "$HEAD" = "$bound_head" ]; then
-    [ "$TREE" = "$bound_tree" ] || { SUCCESSOR_REPLAY_CAUSE=invalid-record; return 1; }
+    [ "$TREE" = "$bound_tree" ] || { SUCCESSOR_REPLAY_CAUSE='invalid-record'; return 1; }
   else
     if git -C "$WT" merge-base --is-ancestor "$HEAD" "$bound_head" 2>/dev/null; then
       SUCCESSOR_REPLAY_CAUSE=stale; return 1

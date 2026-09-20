@@ -300,6 +300,7 @@ fm_lock_clean_known_files() {
     "$lockdir/pid" \
     "$lockdir/fm-home" \
     "$lockdir/pid-identity" \
+    "$lockdir/term-sent-identity" \
     "$lockdir/role" \
     "$lockdir/watcher-path" \
     2>/dev/null || true
@@ -1269,9 +1270,11 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
     ''|*[!0-9]*) return 1 ;;
   esac
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  if [ -n "$recorded" ] && current=$(fm_pid_identity "$pid" 2>/dev/null) \
-    && [ -n "$current" ] && [ "$current" != "$recorded" ]; then
-    return 0
+  if fm_pid_alive "$pid"; then
+    [ -n "$recorded" ] || return 1
+    current=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
+    [ -n "$current" ] || return 1
+    [ "$current" = "$recorded" ] || return 0
   fi
   owner=$(_fm_autoarm_epoch_field "$epoch" owner_pid) || return 1
   [ "$owner" = "$pid" ] || return 1
@@ -1296,20 +1299,20 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 #
 # Old-build code cannot re-check generations, so a LIVE proven-abandoned
 # legacy owner whose recorded identity is verified to match its pid is retired
-# with TERM before the lock is removed: once the TERM is successfully queued
-# the process can never resume normal execution (delivery precedes any further
-# user code when it continues), so a short bounded wait for observed exit is a
-# courtesy, not a requirement. A pid is never signalled without a verified
-# matching identity; when the kill itself fails or the identity stops matching
-# mid-procedure (pid reuse), the reclaim refuses. Missing identity evidence
-# never blocks the reclaim of a proven-abandoned claim - it only disables the
-# TERM and the ledger graft below, keeping the documented bounded
-# upgrade-window residual instead of the deadlock.
+# with one TERM and this invocation defers without removing its lock.
+# A later invocation may collect only after liveness reads the exact owner as
+# gone; a queued signal or a process that exits during this invocation is never
+# itself lock-reclamation authority.
+# A pid is never signalled without a verified matching identity, and a failed
+# signal or changed identity likewise defers.
+# Missing identity evidence disables both signalling and live-owner collection.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp i
+  local term_marker term_record retire_tmp confirm
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"
+  term_marker="$lock/term-sent-identity"
   fm_autoarm_claim_abandoned "$state" "$grace" || return 1
   fm_lock_try_acquire "$steal" || return 1
   if ! fm_autoarm_claim_abandoned "$state" "$grace"; then
@@ -1318,16 +1321,42 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || true)
   recorded=$(cat "$lock/pid-identity" 2>/dev/null || true)
-  if [ -n "$recorded" ] && fm_pid_alive "$lock_pid" \
-    && current=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
-    && [ -n "$current" ] && [ "$current" = "$recorded" ]; then
+  current=
+  if fm_pid_alive "$lock_pid"; then
+    [ -n "$recorded" ] || { fm_lock_release "$steal"; return 1; }
+    current=$(fm_pid_identity "$lock_pid" 2>/dev/null) || { fm_lock_release "$steal"; return 1; }
+    [ -n "$current" ] || { fm_lock_release "$steal"; return 1; }
+  fi
+  if [ -n "$recorded" ] && [ "$current" = "$recorded" ]; then
     # A live pid still answering to the recorded identity IS the genuine
-    # legacy owner (proven stuck or blocked after a terminal write): retire it
-    # before removing its lock, because old-build code cannot re-check
-    # generations. A pid the recorded identity does NOT verify - reused,
-    # unverifiable, or never recorded - is NEVER signalled; those shapes are
-    # reclaimed as-is, which is safe exactly because the recorded owner is
-    # gone or was never provably this process.
+    # legacy owner (proven stuck or blocked after a terminal write).
+    # Record the one permitted retirement attempt inside that exact owner's
+    # retained lock before signalling, so a later firing cannot deliver TERM
+    # again while waiting to observe death.
+    if [ -e "$term_marker" ]; then
+      [ -f "$term_marker" ] && [ ! -L "$term_marker" ] \
+        || { fm_lock_release "$steal"; return 1; }
+      term_record=$(cat "$term_marker" 2>/dev/null) \
+        || { fm_lock_release "$steal"; return 1; }
+      [ "$term_record" = "$recorded" ] \
+        || { fm_lock_release "$steal"; return 1; }
+      fm_lock_release "$steal"
+      return 1
+    fi
+    retire_tmp=$(mktemp "$lock/.term-sent-identity.tmp.XXXXXX") \
+      || { fm_lock_release "$steal"; return 1; }
+    if ! printf '%s\n' "$recorded" > "$retire_tmp" \
+      || ! chmod 0600 "$retire_tmp" \
+      || ! mv -f -- "$retire_tmp" "$term_marker"; then
+      rm -f -- "$retire_tmp"
+      fm_lock_release "$steal"
+      return 1
+    fi
+    # Re-check immediately after publishing the attempt and before signalling
+    # to narrow the pid-reuse window. Failure preserves the lock and marker.
+    confirm=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
+      || { fm_lock_release "$steal"; return 1; }
+    [ "$confirm" = "$recorded" ] || { fm_lock_release "$steal"; return 1; }
     if ! kill -TERM "$lock_pid" 2>/dev/null; then
       fm_lock_release "$steal"
       return 1
@@ -1337,6 +1366,11 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       sleep 0.05
       i=$((i + 1))
     done
+    # The stop attempt and later collection are separate authority mutations.
+    # Retain the exact lock on this pass even when the owner exited promptly;
+    # only a fresh invocation that observes it gone may collect it.
+    fm_lock_release "$steal"
+    return 1
   fi
   # Preserve the legacy lock's identity evidence in the ledger before the lock
   # disappears, keeping the ledger's original mtime so the stuck proof's age
@@ -1354,6 +1388,12 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       :
     fi
     rm -f "$tmp" 2>/dev/null || true
+  fi
+  if [ -e "$term_marker" ] || [ -L "$term_marker" ]; then
+    if [ ! -f "$term_marker" ] || [ -L "$term_marker" ] || ! rm -f -- "$term_marker"; then
+      fm_lock_release "$steal"
+      return 1
+    fi
   fi
   fm_lock_remove_path "$lock" || true
   fm_lock_release "$steal"

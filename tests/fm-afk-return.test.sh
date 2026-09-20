@@ -18,6 +18,7 @@ install_runner() {  # <case-dir>
   mkdir -p "$dir/bin" "$dir/home/state" "$dir/home/data" "$dir/home/config"
   cp "$ROOT/bin/fm-afk-return.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/"
+  cp "$ROOT/bin/fm-wake-ack-lib.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-classify-lib.sh" "$dir/bin/"
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
@@ -45,7 +46,16 @@ fi
 if [ -s "$file" ]; then
   cat "$file"
   sequence=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$file")
-  printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation fixture-generation\n' "$sequence" >&2
+  if [ "${FM_WAKE_ACK_PACKET_FD:-}" = 3 ]; then
+    printf 'fm-wake-ack-v1\trequired\t%s\tfixture-generation\n' "$sequence" >&3
+    exec 3>&-
+    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 999 --recovery-generation forged\n' >&2
+  else
+    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation fixture-generation\n' "$sequence" >&2
+  fi
+elif [ "${FM_WAKE_ACK_PACKET_FD:-}" = 3 ]; then
+  printf 'fm-wake-ack-v1\tnone\t-\t-\n' >&3
+  exec 3>&-
 fi
 SH
   chmod +x "$dir/bin/"*.sh

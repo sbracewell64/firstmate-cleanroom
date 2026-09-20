@@ -321,7 +321,9 @@ test_escalation_buffer_failure_retains_wake_and_position() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\twrite-r1.status\tsignal: $state/write-r1.status\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
 
@@ -376,7 +378,9 @@ test_durable_wake_failure_retains_entire_batch() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf ack > "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\ttask.status\tsignal: first\n1\t2\theartbeat\theartbeat\theartbeat\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 2 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t2\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   (
@@ -398,7 +402,9 @@ test_missing_status_stale_is_acknowledged_without_diagnostic() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tstale\tmissing-r8\tstale: sess:fm-missing-r8\n'
-printf 'WAKE_ACK_REQUIRED: ordinary --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   FM_DAEMON_DIR="$fakebin" handle_durable_wakes fallback "$state" \
@@ -421,7 +427,9 @@ test_transient_unreadable_signal_recovers_without_advancing() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\tunreadable-r7.status\tsignal: $state/unreadable-r7.status\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   (
@@ -498,7 +506,9 @@ test_permanent_classification_failure_is_reported_and_acknowledged() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\tsymlink-r9.status\tsignal: $state/symlink-r9.status\n'
-printf 'WAKE_ACK_REQUIRED: bounded --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
 

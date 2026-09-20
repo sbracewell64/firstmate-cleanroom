@@ -655,7 +655,7 @@ test_grok_adapter_forces_one_resume_when_unhealthy() {
 } >> "$log"
 EOF
   chmod +x "$fakebin/grok"
-  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "grok adapter must fail open after queuing a forced resume"
   [ -z "$out" ] || fail "grok adapter printed output: $out"
   assert_contains "$(cat "$log")" 'active=1' "grok adapter must mark its forced resume as loop-guarded"
@@ -678,7 +678,7 @@ test_grok_adapter_loop_guard_skips_resume() {
 printf 'called\n' >> "$log"
 EOF
   chmod +x "$fakebin/grok"
-  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" GROK_TURNEND_GUARD_ACTIVE=1 bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" GROK_TURNEND_GUARD_ACTIVE=1 bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "grok adapter must allow its own forced resume turn to end"
   [ -z "$out" ] || fail "grok adapter printed output while loop-guarded: $out"
   [ ! -e "$log" ] || fail "grok adapter spawned another resume while loop-guarded: $(cat "$log")"
@@ -693,7 +693,7 @@ test_grok_adapter_native_false_blocks_without_resume() {
   log="$TMP_ROOT/grok-native-false.log"
   printf '#!/usr/bin/env bash\nprintf called >> %q\n' "$log" > "$fakebin/grok"
   chmod +x "$fakebin/grok"
-  out=$(printf '%s' '{"sessionId":"native","stopHookActive":false}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"native","stopHookActive":false}' | PATH="$fakebin:$PATH" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 2 "$status" "native stopHookActive=false must return the shared blocking status"
   assert_contains "$out" 'TURN WOULD END BLIND' "native block must pass shared guard feedback to Grok"
   [ ! -e "$log" ] || fail "native path started grok --resume"
@@ -708,7 +708,7 @@ test_grok_adapter_native_true_allows_without_resume() {
   log="$TMP_ROOT/grok-native-true.log"
   printf '#!/usr/bin/env bash\nprintf called >> %q\n' "$log" > "$fakebin/grok"
   chmod +x "$fakebin/grok"
-  out=$(printf '%s' '{"sessionId":"native","stopHookActive":true}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"native","stopHookActive":true}' | PATH="$fakebin:$PATH" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "native stopHookActive=true must allow the bounded continuation to stop"
   [ -z "$out" ] || fail "native true produced output: $out"
   [ ! -e "$log" ] || fail "native true started grok --resume"
@@ -719,12 +719,12 @@ test_grok_adapter_snake_case_native_and_camel_precedence() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/grok-native-spellings")
   : > "$dir/state/task1.meta"
-  out=$(printf '%s' '{"sessionId":"native","stop_hook_active":false}' | GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"native","stop_hook_active":false}' | FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 2 "$status" "typed snake_case false must select native blocking"
   assert_contains "$out" 'TURN WOULD END BLIND' "snake_case native block lost feedback"
-  out=$(printf '%s' '{"sessionId":"native","stopHookActive":true,"stop_hook_active":false}' | GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"native","stopHookActive":true,"stop_hook_active":false}' | FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "camelCase true must win over snake_case false"
-  out=$(printf '%s' '{"sessionId":"native","stopHookActive":false,"stop_hook_active":true}' | GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"native","stopHookActive":false,"stop_hook_active":true}' | FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 2 "$status" "camelCase false must win over snake_case true"
   pass "fm-turnend-guard-grok: both spellings are typed and camelCase has deterministic precedence"
 }
@@ -748,7 +748,7 @@ test_grok_adapter_invalid_inputs_start_neither_path() {
     '{"sessionId":"x","stop_hook_active":false,"stop_hook_active":false}' \
     '{"sessionId":"x","sessionId":"y"}'
   do
-    out=$(printf '%s' "$payload" | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+    out=$(printf '%s' "$payload" | PATH="$fakebin:$PATH" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
     expect_code 0 "$status" "invalid Grok payload must conservatively allow without choosing a path"
     [ -z "$out" ] || fail "invalid Grok payload produced output: $out"
   done
@@ -772,13 +772,13 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
   done
   printf '#!/usr/bin/env bash\nprintf called >> %q\n' "$log" > "$fakebin/grok"
   chmod +x "$fakebin/grok"
-  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | PATH="$fakebin" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | PATH="$fakebin" FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "missing jq must conservatively allow"
   [ -z "$out" ] || fail "missing jq produced output: $out"
   [ ! -e "$log" ] || fail "missing jq started a resume process"
 
   dir=$(make_primary_dir "$TMP_ROOT/grok-native-no-work")
-  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  out=$(printf '%s' '{"sessionId":"x","stopHookActive":false}' | FM_HOME="$dir" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "healthy no-supervision-needed native stop must allow"
   [ -z "$out" ] || fail "no-supervision-needed native stop produced output: $out"
   pass "fm-turnend-guard-grok: missing jq and no-supervision-needed stops stay silent and bounded"
@@ -1300,12 +1300,10 @@ test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
   pass "fm-turnend-guard --claude: fresh rewake epoch prevents a duplicate continuation for the same event"
 }
 
-# The 2026-08-14 lapse: a cycle armed, delivered one rewake, exited, and left its
-# owner lock behind holding a live pid. Both Stop participants read that lock as
-# "recovery is already under way", so with work in flight and a beacon 40 minutes
-# cold every turn ended blind and nothing re-armed. A stale ledger outcome for
-# the lock's own pid is the proof that no decision is in flight any more.
-test_hook_claude_mode_blocks_on_abandoned_autoarm_claim() {
+# A live legacy owner whose identity cannot be verified is not collectible.
+# The guard defers to that exact retained lock; a later firing can reconcile it
+# only after liveness or positive identity supplies a safe next mutation.
+test_hook_claude_mode_defers_to_identityless_live_autoarm_claim() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-claim")
   : > "$dir/state/task1.meta"
@@ -1318,10 +1316,10 @@ test_hook_claude_mode_blocks_on_abandoned_autoarm_claim() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 2 "$status" "an owner lock left behind by a finished claim must not pass for recovery under way"
-  assert_contains "$out" "TURN WOULD END BLIND" "abandoned-claim block must carry the blind-turn banner"
-  assert_contains "$out" "2 task(s) in flight" "abandoned-claim block must name the unsupervised work"
-  pass "fm-turnend-guard --claude: an abandoned auto-arm claim no longer allows a blind stop (incident regression)"
+  expect_code 0 "$status" "an identityless live legacy owner must defer guard reconciliation"
+  [ -z "$out" ] || fail "identityless live-owner deferral produced output: $out"
+  assert_present "$dir/state/.claude-autoarm.lock" "guard reconciliation collected an identityless live owner"
+  pass "fm-turnend-guard --claude: an identityless live legacy owner defers reconciliation"
 }
 
 # The ledger-blind variant of the same lapse: a session teardown killed the claim's
@@ -1424,10 +1422,10 @@ test_hook_claude_mode_blocks_on_stuck_generation_claim() {
   pass "fm-turnend-guard --claude: a stuck generation claim no longer allows a blind stop"
 }
 
-# The same abandoned claim on the terminal path: stepping aside for it allowed the
-# stop silently AND spent no attended alarm, so a genuinely broken automatic
-# mechanism stayed invisible. The guard must clear the claim and finish instead.
-test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
+# The same identityless live legacy owner on the terminal path remains
+# uncollectible. The guard defers without spending an attended alarm or removing
+# the lock; a later invocation must freshly prove death before collection.
+test_hook_claude_mode_terminal_fail_open_defers_to_identityless_live_claim() {
   local dir out status pid
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-terminal")
   : > "$dir/state/task1.meta"
@@ -1441,12 +1439,12 @@ test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "the verified attended fail-open still ends the turn once it is spent"
-  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "an abandoned claim suppressed the episode's attended alarm"
-  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "abandoned-claim terminal path did not consume the one-time alarm"
-  assert_absent "$dir/state/.claude-autoarm.lock" "abandoned-claim terminal path left the stale claim in place"
-  assert_absent "$dir/state/.claude-autoarm.lock.steal" "abandoned-claim reclaim left its serialization mutex behind"
-  pass "fm-turnend-guard --claude: the terminal path clears an abandoned claim instead of stepping aside silently"
+  expect_code 0 "$status" "the terminal guard must defer to an identityless live legacy owner"
+  [ -z "$out" ] || fail "identityless terminal live-owner deferral produced output: $out"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "identityless live-owner deferral spent the attended alarm"
+  assert_present "$dir/state/.claude-autoarm.lock" "identityless terminal live-owner deferral collected the owner lock"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "identityless terminal live-owner deferral left its serialization mutex behind"
+  pass "fm-turnend-guard --claude: the terminal path defers to an identityless live legacy owner"
 }
 
 test_hook_claude_mode_preserves_fresh_failed_progression() {
@@ -1803,12 +1801,12 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
-test_hook_claude_mode_blocks_on_abandoned_autoarm_claim
+test_hook_claude_mode_defers_to_identityless_live_autoarm_claim
 test_hook_claude_mode_blocks_on_pid_reused_arming_claim
 test_hook_claude_mode_blocks_on_stuck_arming_claim
 test_hook_claude_mode_allows_on_open_generation_claim
 test_hook_claude_mode_blocks_on_stuck_generation_claim
-test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim
+test_hook_claude_mode_terminal_fail_open_defers_to_identityless_live_claim
 test_hook_claude_mode_preserves_fresh_failed_progression
 test_hook_claude_mode_integrated_monotonic_fail_open
 test_hook_claude_mode_recovery_contention_is_not_ordinary_allow

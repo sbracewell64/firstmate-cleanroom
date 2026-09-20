@@ -170,6 +170,10 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"  # presented-identity read for the programme row
+trap fm_programme_resolver_cleanup EXIT
+trap 'fm_programme_resolver_cleanup; exit 129' HUP
+trap 'fm_programme_resolver_cleanup; exit 130' INT
+trap 'fm_programme_resolver_cleanup; exit 143' TERM
 
 usage() {
   cat <<'EOF'
@@ -1467,8 +1471,17 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # recap unchanged state as progress. The binding member is the resolver's own;
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
 programme_continuation_json() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>&1) || rc=$?
+  local out diag rc=0 identity verdict
+  if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" resolve fm-fleet-snapshot; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    rc=125
+  fi
+  fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)
       identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')
@@ -1476,7 +1489,7 @@ programme_continuation_json() {
       printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
         '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
     3) jq -n '{configured:false}' ;;
-    *) jq -n --arg err "$out" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
+    *) jq -n --arg err "${diag:-$out}" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
   esac
 }
 

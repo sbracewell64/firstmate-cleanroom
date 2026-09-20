@@ -412,6 +412,31 @@ Observed output, before and after the model correction, then with the recorded P
 ●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
 ```
 
+### Packet-bound acknowledgement and legacy-owner collection (2026-09-20)
+
+The successor built from exact main `1b8e2149f64520cb67fea02b365dd7ad67669c56` was locally verified with the pinned ShellCheck 0.11.0, actionlint 1.7.12, and no-mistakes 1.61.0 build `7fbba0dbbf89bd57e6a000d60e5cc4dbb86a94de`.
+The deterministic packet cases prove session start, AFK return, and the away supervisor derive acknowledgement authority only from the drain's strict private packet; an empty recovery episode keeps sequence zero and its exact generation, forged stdout/stderr/resolver text is data or diagnostics, a malformed multi-record packet is refused, and partial output from a failed drain is withheld.
+The resolver cases prove typed stdout and diagnostic stderr remain separate, sourcing the shared capture owner preserves caller traps, and deterministic TERM interruption leaves no staging file.
+The legacy auto-arm cases prove an unreadable or absent live-owner identity preserves the exact lock, an identity-matched stuck owner receives TERM without same-invocation collection, and only a later invocation that freshly observes it dead may collect and re-arm.
+
+```sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+bin/fm-enforcement-caller-check.sh
+bin/fm-test-run.sh --check-coverage
+bin/fm-test-run.sh tests/fm-session-start.test.sh tests/fm-afk-return.test.sh tests/fm-daemon.test.sh
+bin/fm-test-run.sh tests/fm-programme-projection.test.sh tests/fm-fleet-snapshot-view.test.sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-turnend-guard.test.sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
+```
+
+The focused groups reported zero failures, and the isolated real-Herdr lane reported `total=12 failed=0 skipped_gate=0` after the lab helper verified the default session was unchanged.
+Portable parallel lanes 1 and 2 and clean serial shard 3 also reported zero failures.
+Serial shards 1, 2, and 4 exposed nine environment- or fixture-dependent failures which reproduced with the same assertion on pristine exact base and therefore are not attributed to this candidate: concurrent remote sequence allocation, extension binding, orphan reaping, a Herdr focus fixture, a tmux smoke fixture, bootstrap tool masking, installed-Pi stock rendering, tmux process-name liveness, and Chrome-backed Calm rendering.
+Those nine cases remain CNO for local candidate qualification and require clean hosted lanes; none was weakened, skipped, lengthened, or repaired in unrelated production code.
+The initial Grok no-work fixture also failed twice on candidate and twice on pristine base because ambient `FM_HOME` selected the active fleet rather than the isolated fixture; binding every Grok fixture invocation to its own home removed that masking condition and the complete candidate suite then passed twice.
+Live Claude, Codex, OpenCode, Pi, Grok, Kimi, Cursor, Muse, Zellij, Orca, and cmux lifecycle evidence was not refreshed in this run; their portable adapter and backend consequences were inspected, while the applicable real-Herdr lane above is the only refreshed live runtime evidence.
+
 The broader relevant regression pass was rerun on 2026-08-02 without live-home or daemon mutation.
 
 ```sh

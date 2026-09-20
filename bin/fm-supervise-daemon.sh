@@ -187,6 +187,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$FM_DAEMON_DIR/fm-programme-presentation-lib.sh"
+# shellcheck source=bin/fm-wake-ack-lib.sh
+. "$FM_DAEMON_DIR/fm-wake-ack-lib.sh"
 
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
@@ -699,8 +701,17 @@ escalate_add() {  # <state> <distilled-item>
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
 programme_digest_token() {  # [<state>]
-  local out rc=0 state=${1:-} token presented pending
-  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
+  local out diag rc=0 state=${1:-} token presented pending
+  if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    rc=125
+  fi
+  fm_programme_relay_diagnostic "$diag" >&2
   case "$rc" in
     0)
       if [ -n "$state" ]; then
@@ -713,7 +724,7 @@ programme_digest_token() {  # [<state>]
       fi
       printf ' | %s' "$(_collapse_newlines "$out")" ;;
     3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
+    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "${diag:-$out}")" ;;
   esac
 }
 
@@ -1466,13 +1477,15 @@ handle_wake() {  # <reason> <state>
 }
 
 handle_durable_wakes() {  # <watcher-reason> <state>
-  local fallback_reason=$1 state=$2 out err tab epoch sequence kind key payload rest
-  local handled=0 failed=0 ack_through ack_generation
+  local fallback_reason=$1 state=$2 out err packet tab epoch sequence kind key payload rest
+  local handled=0 failed=0 drain_rc=0 ack_through ack_generation
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
-  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
-    cat "$err" >&2
-    rm -f "$out" "$err"
+  packet=$(mktemp "$state/.subsuper-wake-packet.XXXXXX") || { rm -f "$out" "$err"; return 1; }
+  FM_WAKE_ACK_PACKET_FD=3 "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err" 3> "$packet" || drain_rc=$?
+  if [ "$drain_rc" -ne 0 ] || ! fm_wake_ack_packet_parse "$packet"; then
+    sed 's/^/wake drain diagnostic: /' "$err" >&2 || true
+    rm -f "$out" "$err" "$packet"
     return 1
   fi
 
@@ -1486,16 +1499,16 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   done < "$out"
   if [ "$handled" -eq 0 ]; then handle_wake "$fallback_reason" "$state" || failed=1; fi
 
-  ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err" | tail -1)
-  ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err" | tail -1)
-  grep -v '^WAKE_ACK_REQUIRED:' "$err" >&2 || true
-  rm -f "$out" "$err"
+  ack_through=$FM_WAKE_ACK_PACKET_SEQUENCE
+  ack_generation=$FM_WAKE_ACK_PACKET_GENERATION
+  sed 's/^/wake drain diagnostic: /' "$err" >&2 || true
+  rm -f "$out" "$err" "$packet"
   if [ "$failed" -ne 0 ]; then
     log "wake classification failed; retaining durable wakes"
     return 1
   fi
-  if [ -z "$ack_through" ] || [ -z "$ack_generation" ]; then
-    log "wake drain omitted its generation-bound acknowledgement; retaining durable wakes"
+  if [ "$FM_WAKE_ACK_PACKET_MODE" != required ]; then
+    log "wake drain omitted its generation-bound acknowledgement packet; retaining durable wakes"
     return 1
   fi
   "$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \
@@ -1639,6 +1652,7 @@ fm_super_main() {
   local WATCHER_PID="" CUR_TMP=""
   cleanup() {
     trap - TERM INT
+    fm_programme_resolver_cleanup
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then

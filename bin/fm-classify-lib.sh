@@ -1779,11 +1779,16 @@ crew_is_paused() {  # <id>
 # The declaration covers the whole run through to the CI-ready boundary: no
 # further receipt is written until the worker stops there, and `ci-ready` is a
 # terminal stage that must surface for the merge authority rather than wait.
+# `candidate-successor` is inside that span, not past it: the worker parks there
+# when the stage owner binds a successor before the run's own qualification
+# lands, and it is still waiting on the same bound run. Whether that run is
+# still active is decided by the proof half below, never by this declaration.
 crew_pipeline_wait_declared() {  # <id> <state>
   local id=$1 state=$2 stage
   [ -n "$id" ] || return 1
   stage=$(fm_classify_meta_value "$state/$id.meta" stage || true)
-  [ "$stage" = validation-running ]
+  case "$stage" in validation-running|candidate-successor) return 0 ;; esac
+  return 1
 }
 
 # How long ago <id>'s attributed run last showed pipeline activity, read from

@@ -913,26 +913,47 @@ crew_state() {
 # engineering hash survives every transition; deleting/changing an admitted
 # declaration cannot downgrade its obligations. Only a supported new attempt
 # may accept a changed context, after custody returns to the worker.
-engineering_context() { # <transition>
-  local transition=$1 pin recorded_head recorded_tree actual_tree recorded_branch actual_branch observed_head expected_observer
-  local recorded_discipline current_discipline observer_candidate output successor=0
-  fm_work_context_engineering "$DATA" "$ID" all all || refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+# 0 when the live engineering declaration still matches the admitted pin, 1 when
+# the declaration changed, and 2 when it cannot be evaluated at all. Sets the
+# FM_WC_* globals the halves below read.
+engineering_pin_current() {
+  local pin
+  fm_work_context_engineering "$DATA" "$ID" all all || return 2
   pin=$(meta stage_context)
-  if [ -n "$pin" ] && [ "$pin" != "$FM_WC_ENGINEERING_DIGEST" ]; then
-    if [ "$transition" != committed ] || [ "$RETRY" -ne 1 ]; then
-      refuse "$transition" ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt'
-    fi
-  fi
-  current_discipline=$(discipline_identity)
+  [ -z "$pin" ] || [ "$pin" = "$FM_WC_ENGINEERING_DIGEST" ]
+}
+
+# The half that judges the admitted CONTRACT: the declaration must be readable,
+# still the one that was admitted, and carry the same immutable discipline.
+# It reads nothing that a transition advances, so it is the gate that runs
+# before any transition takes effect.
+engineering_context_pin() { # <transition>
+  local transition=$1 pin rc=0
+  engineering_pin_current || rc=$?
+  case "$rc" in
+    0) ;;
+    2) refuse "$transition" ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL" ;;
+    *) [ "$transition" = committed ] && [ "$RETRY" -eq 1 ] \
+         || refuse "$transition" ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt' ;;
+  esac
+  pin=$(meta stage_context)
   if [ -n "$pin" ]; then
-    recorded_discipline=$(meta stage_discipline)
-    [ "$recorded_discipline" = "$current_discipline" ] || \
+    [ "$(meta stage_discipline)" = "$(discipline_identity)" ] || \
       refuse "$transition" DISCIPLINE_IDENTITY 'the selected discipline is immutable across resume and retry'
   fi
+}
+
+# The half that judges the live CANDIDATE against the admitted discipline. It
+# reads stage_head/stage_tree and the successor lineage, so it runs after a
+# transition has advanced them, never before.
+engineering_context_discipline() { # <transition>
+  local transition=$1 pin recorded_head recorded_tree actual_tree recorded_branch actual_branch observed_head expected_observer
+  local observer_candidate output successor=0
   # A selected discipline rides the existing stage identity rather than a
   # second receipt store. Once admitted, independently re-read every available
   # facet before work resumes: the selected context, original branch/head/tree,
   # and observer candidate must still describe one candidate.
+  pin=$(meta stage_context)
   if [ -n "$pin" ] && [ -n "$FM_DISCIPLINE_RECEIPT" ]; then
     recorded_head=$(meta stage_head)
     recorded_tree=$(meta stage_tree)
@@ -960,6 +981,11 @@ engineering_context() { # <transition>
         refuse "$transition" DISCIPLINE_IDENTITY 'live task worktree must remain at the admitted candidate or a verified custody-returned successor'
     fi
   fi
+}
+
+engineering_context() { # <transition>
+  engineering_context_pin "$1"
+  engineering_context_discipline "$1"
 }
 
 engineering_result() {
@@ -1202,7 +1228,7 @@ publish_successor_locked() { # <action> <branch> <head> <tree> <ref> <pr> <attes
 }
 
 authenticated_successor_transition() { # <pr-url>; caller has read candidate
-  local pr=$1 lock verdict proof_rc publish_rc run submitted duty expected_head expected_tree expected_branch final_sync sync_rc status_rc
+  local pr=$1 lock verdict proof_rc publish_rc run submitted duty expected_head expected_tree expected_branch final_sync sync_rc status_rc ctx_rc
   lock=$(fm_meta_lock_path "$META") || exit 2
   fm_lock_acquire_wait "$lock"
   read_candidate
@@ -1287,6 +1313,13 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     2) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CNO 'final local, remote, and pipeline read-back could not be evaluated' ;;
     *) fm_lock_release "$lock"; refuse ci-ready SUCCESSOR_CONTRADICTION 'final local, remote, and pipeline read-back moved before publication' ;;
   esac
+  ctx_rc=0
+  engineering_pin_current || ctx_rc=$?
+  if [ "$ctx_rc" -ne 0 ]; then
+    fm_lock_release "$lock"
+    [ "$ctx_rc" -ne 2 ] || refuse ci-ready ENGINEERING_CONTEXT "$FM_WORK_CONTEXT_DETAIL"
+    refuse ci-ready ENGINEERING_CONTEXT 'stale engineering context; retain the admitted contract or settle custody and admit a new attempt'
+  fi
   SUCCESSOR_SYNC=$final_sync
   SUCCESSOR_CHECKED_HEAD=$expected_head
   publish_rc=0
@@ -1591,6 +1624,7 @@ do_ci_ready() {
     validation-running|candidate-successor|ci-ready) ;;
     *) refuse ci-ready NOT_ADMITTED "stage=${current:-none}; validation must be admitted and running first" ;;
   esac
+  engineering_context_pin ci-ready
   if [ "$(meta stage_successor_action)" = authenticated-synchronized-successor ]; then
     authenticated_successor_transition "$PR_ARG"
     current=$(meta stage)
@@ -1598,7 +1632,7 @@ do_ci_ready() {
     authenticated_successor_transition "$PR_ARG"
     current=$(meta stage)
   fi
-  engineering_context ci-ready
+  engineering_context_discipline ci-ready
   verdict=$(crew_state)
   case "$verdict" in
     "state: done"*"source: run-step"*) ;;

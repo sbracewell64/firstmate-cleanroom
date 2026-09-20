@@ -999,7 +999,7 @@ test_synchronized_rebased_successor_transition() {
   saved_meta=$(cat "$STATE/synchronized-successor.meta")
   saved_obs=$(cat "$STATE/synchronized-successor.nm-observe")
   saved_status=$(cat "$STATE/synchronized-successor.status")
-  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head truncated-pr-read; do
+  for mutation in wrong-run wrong-branch wrong-status-head wrong-attempt wrong-duty wrong-allocation predecessor-mutation local-disagreement remote-moved pipeline-disagreement dirty-worktree missing-qualification red-qualification missing-attestation wrong-pr-head closed-pr merged-pr branch-name-only pr-only narration-only green-only patch-equivalent-foreign stale-expected-head truncated-pr-read stale-engineering-context; do
     printf '%s\n' "$saved_meta" > "$STATE/synchronized-successor.meta"
     printf '%s\n' "$saved_obs" > "$STATE/synchronized-successor.nm-observe"
     printf '%s\n' "$saved_status" > "$STATE/synchronized-successor.status"
@@ -1036,6 +1036,7 @@ test_synchronized_rebased_successor_transition() {
       patch-equivalent-foreign) git -C "$wt" reset -q --hard "$foreign_head" ;;
       stale-expected-head) git -C "$wt" commit -q --allow-empty -m 'moved after proof' ;;
       truncated-pr-read) FM_FAKE_GH_AXI_RAW_LIMIT=32 ;;
+      stale-engineering-context) sed 's/^stage_context=.*/stage_context=changed-since-admission/' "$STATE/synchronized-successor.meta" > "$STATE/.meta" && mv "$STATE/.meta" "$STATE/synchronized-successor.meta" ;;
     esac
     export FM_FAKE_AXI_STATUS FM_FAKE_SYNC FM_FAKE_SYNC_RC FM_FAKE_CI_LOGS FM_FAKE_PR_STATE FM_FAKE_PR_MERGED FM_FAKE_PR_HEAD FM_FAKE_PR_BODY FM_FAKE_GH_AXI_RAW_LIMIT
     case_meta=$(cat "$STATE/synchronized-successor.meta")
@@ -1045,6 +1046,7 @@ test_synchronized_rebased_successor_transition() {
     expect_code 1 "$rc" "synchronized successor must refuse $mutation: $out"
     case "$mutation" in
       branch-name-only|pr-only|green-only|truncated-pr-read) assert_contains "$out" 'SUCCESSOR_CNO' "$mutation was not typed as unevaluable identity" ;;
+      stale-engineering-context) assert_contains "$out" 'ENGINEERING_CONTEXT' "$mutation was not typed as a stale admitted contract" ;;
       *) assert_contains "$out" 'SUCCESSOR_CONTRADICTION' "$mutation was not typed as contradictory identity" ;;
     esac
     [ "$(cat "$STATE/synchronized-successor.meta")" = "$case_meta" ] || fail "$mutation mutated stage authority"

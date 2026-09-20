@@ -1524,7 +1524,7 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
     # replay's cause taxonomy belongs to the classes whose successor is final.
     if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
         && [ "$BRANCH" = "$(meta stage_successor_branch)" ] \
-        && [ "$HEAD" != "$(meta stage_successor_advance_head)" ] \
+        && [ "$HEAD" != "$(meta stage_head)" ] \
         && ! advance_owns_current_attempt; then
       advancing=1
     fi
@@ -1554,7 +1554,7 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
       fm_lock_release "$lock"
       if [ "$(meta stage_successor_action)" = mint-validation-branch ] \
           && [ "$BRANCH" = "$(meta stage_successor_branch)" ]; then
-        refuse ci-ready SUCCESSOR_EXHAUSTED "attempt $(dash "$(meta stage_attempt)") already advanced $(dash "$(meta stage_successor_branch)") to $(short "$(meta stage_successor_advance_head)"); a further advance needs a fresh \`$SELF_CMD committed --retry\` admission and its own run"
+        refuse ci-ready SUCCESSOR_EXHAUSTED "$(dash "$(meta stage_successor_branch)") was already advanced to $(short "$(meta stage_successor_advance_head)") by attempt $(dash "$(meta stage_successor_advance_attempt)"); a further advance needs a fresh \`$SELF_CMD committed --retry\` admission and its own run"
       fi
       refuse ci-ready SUCCESSOR_EXHAUSTED "this task already spent its one successor on $(dash "$(meta stage_successor_id)"); a distinct successor needs a fresh task identity"
     fi
@@ -1730,10 +1730,6 @@ authenticated_successor_transition() { # <pr-url>; caller has read candidate
   esac
 }
 
-# 0 when the current attempt and run are the ones this record's own successor
-# owner last bound - the mint itself, or the advancement that mint's branch last
-# took. Either is a point this owner issued, so the next attempt admits from it
-# instead of being told the successor is spent.
 # 0 when the PR at <url> is still an open, unmerged PR for <branch>, 1 when it
 # is provably not, and 2 when that identity cannot be evaluated. A merged or
 # closed PR means the branch it was opened for is finished, whatever its refs
@@ -1785,6 +1781,10 @@ minted_branch_reusable() { # <bound-status> <pr-url>
   return "$rc"
 }
 
+# 0 when the current attempt and run are the ones this record's own successor
+# owner last bound - the mint itself, or the advancement that mint's branch last
+# took. Either is a point this owner issued, so the next attempt admits from it
+# instead of being told the successor is spent.
 retry_follows_own_successor() {
   [ "$(meta stage_successor_action)" = mint-validation-branch ] || return 1
   if [ "$(meta stage)" = candidate-successor ] \
@@ -2105,7 +2105,15 @@ do_ci_ready() {
       authenticated_successor_transition "$PR_ARG"
       current=$(meta stage) ;;
     *)
-      if [ -n "$(meta stage_successor_advance_id)" ] || ! candidate_current "$(meta stage_head)" "$HEAD"; then
+      # An advanced record still routes through the owner so its attempt can
+      # replay the receipt, and so a head that moved past the record's own
+      # current head is carried forward there. An attempt sitting at exactly the
+      # head it was admitted at has advanced nothing, and takes the ordinary
+      # currentness path rather than being asked to prove a move that never
+      # happened.
+      if { [ -n "$(meta stage_successor_advance_id)" ] \
+             && { advance_owns_current_attempt || [ "$HEAD" != "$(meta stage_head)" ]; }; } \
+          || ! candidate_current "$(meta stage_head)" "$HEAD"; then
         authenticated_successor_transition "$PR_ARG"
         current=$(meta stage)
       fi ;;

@@ -1541,10 +1541,10 @@ test_admitted_allocation_is_captured_once
 # attempt admitted on that branch may carry the current head forward through the
 # same owner on the same exact synchronized proof. Anything else stays exhausted.
 test_minted_branch_advances_through_the_owner() {
-  local wt base admitted head2 tree2 out rc proof before branch minted run1 run2 run3 pr1 pr2 mint_id head3 tree3
+  local wt base admitted head2 tree2 out rc proof before branch minted run1 run2 run3 run4 pr1 pr2 mint_id head3 tree3 head4 attempt3
   branch=fm/minted-advance
   minted=fm/minted-advance-successor
-  run1=01MINTEDADVANCEONE; run2=01MINTEDADVANCETWO; run3=01MINTEDADVANCETHREE
+  run1=01MINTEDADVANCEONE; run2=01MINTEDADVANCETWO; run3=01MINTEDADVANCETHREE; run4=01MINTEDADVANCEFOUR
   pr1=https://github.com/o/r/pull/31
   pr2=https://github.com/o/r/pull/32
   wt="$TMP_ROOT/wt-minted-advance"
@@ -1684,6 +1684,9 @@ test_minted_branch_advances_through_the_owner() {
   expect_code 1 "$rc" "a second advance under the same attempt must refuse: $out"
   assert_contains "$out" 'SUCCESSOR_EXHAUSTED' 'a spent per-attempt advance was not typed as exhausted'
   assert_contains "$out" 'committed --retry' 'the spent-advance refusal did not name the supported way forward'
+  # The refusal reports the attempt that actually recorded the advance.
+  assert_contains "$out" "by attempt $(meta_get minted-advance stage_successor_advance_attempt)" \
+    'the spent-advance refusal did not name the attempt that recorded the advance'
   [ "$(cat "$STATE/minted-advance.meta")" = "$before" ] || fail 'a refused second advance under the same attempt mutated the record'
 
   # That way forward is real: the advanced branch admits a fresh attempt at the
@@ -1786,6 +1789,8 @@ test_minted_branch_advances_through_the_owner() {
   [ "$(meta_get minted-advance stage_successor_id)" = "$mint_id" ] || fail 'a further advancement replaced the minted successor identity'
   [ "$(meta_get minted-advance stage_tree)" = "$tree3" ] || fail 'the second advancement did not carry the current tree forward'
   [ "$(grep -c '^candidate-successor:' "$STATE/minted-advance.status")" = 3 ] || fail 'the recovered advancement did not append its own receipt'
+  attempt3=$(meta_get minted-advance stage_successor_advance_attempt)
+  [ -n "$attempt3" ] || fail 'the recovered advancement recorded no advancing attempt'
 
   # A record whose current head later moved is not a corrupt record: the
   # advancement's immutable lineage stands on its own, so the refusal names what
@@ -1798,6 +1803,32 @@ test_minted_branch_advances_through_the_owner() {
   assert_not_contains "$out" 'SUCCESSOR_COLLISION' 'a moved current head was reported as a corrupt successor lineage'
   assert_contains "$out" 'candidate-successor:' 'the advancement did not replay against the head it recorded'
   printf '%s\n' "$before" > "$STATE/minted-advance.meta"
+
+  # The ordinary red-CI loop: the finished run left a fix commit behind, the
+  # worker re-admits on it, and the NEXT run pushes that head without moving it
+  # again. Nothing advanced, so nothing is asked to prove an advance - the
+  # attempt continues on the ordinary currentness path.
+  git -C "$wt" commit -q --allow-empty -m 'fix commit the red run left behind'
+  head4=$(git -C "$wt" rev-parse HEAD)
+  FM_FAKE_AXI_STATUS=$(run_toon "$run3" "$minted" completed "$head3" passed "$pr2")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" minted-advance committed --retry 2>&1); rc=$?
+  expect_code 0 "$rc" "the advanced branch must admit an attempt on the fix commit: $out"
+  [ "$(meta_get minted-advance stage_head)" = "$head4" ] || fail 'the fix-commit attempt was not admitted at its own head'
+  FM_FAKE_AXI_STATUS=$(run_toon "$run4" "$minted" reviewing "$head4")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" minted-advance running --run "$run4" 2>&1); rc=$?
+  expect_code 0 "$rc" "the fix-commit attempt must bind its own run: $out"
+  FM_FAKE_AXI_STATUS=$(run_toon "$run4" "$minted" ci "$head4" '' "$pr2")
+  export FM_FAKE_AXI_STATUS
+  out=$("$STAGE" minted-advance ci-ready --pr "$pr2" 2>&1); rc=$?
+  expect_code 0 "$rc" "an attempt sitting at the head it was admitted at must reach CI-ready: $out"
+  assert_contains "$out" 'STAGE: ci-ready:' 'the equal-head attempt was not issued CI-ready'
+  [ "$(meta_get minted-advance stage_head)" = "$head4" ] || fail 'the equal-head attempt moved the current head'
+  # No advancement was invented for an attempt that advanced nothing.
+  [ "$(meta_get minted-advance stage_successor_advance_head)" = "$head3" ] || fail 'the equal-head attempt rewrote the recorded advancement'
+  [ "$(meta_get minted-advance stage_successor_advance_attempt)" = "$attempt3" ] || fail 'the equal-head attempt claimed the recorded advancement'
+  [ "$(grep -c '^candidate-successor:' "$STATE/minted-advance.status")" = 3 ] || fail 'the equal-head attempt appended a successor receipt'
 
   # Exhaustion is reserved for a true replacement: another branch entirely.
   before=$(cat "$STATE/minted-advance.meta")

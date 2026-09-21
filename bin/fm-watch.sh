@@ -1203,7 +1203,7 @@ run_check_capture() {
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
   pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
-  trap 'exit 1' HUP INT TERM
+  trap 'trap "" HUP INT TERM; exit 1' HUP INT TERM
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_check_output_cleanup
@@ -1448,6 +1448,7 @@ fi
 # re-derives current state from the owning home anyway, while beacon freshness
 # is what the whole supervision chain rests on.
 HOME_SUMMARY_PID=
+WATCHER_CLEANUP_ESCAPED=0
 home_summary_refresh_detached() {
   if [ -n "$HOME_SUMMARY_PID" ]; then
     if kill -0 "$HOME_SUMMARY_PID" 2>/dev/null; then
@@ -1462,26 +1463,66 @@ home_summary_refresh_detached() {
 }
 
 watcher_cleanup() {
-  local cleanup_status=0 owns_lock=0 transition=release-lock
+  local cleanup_status=0 owns_lock=0 transition=release-lock-held downtime_lock
+  [ "$WATCHER_CLEANUP_ESCAPED" -eq 1 ] && return 0
+  # The close path below is what makes this watcher's stop READABLE: it releases
+  # the singleton lock and publishes the downtime episode the next drain presents
+  # and retires. A stop signal arriving while it runs would re-enter the `exit 1`
+  # handler and abandon the rest of it, leaving a watcher that is gone with no
+  # record that it ever stopped - so stop signals are ignored for its duration.
+  # More than one stop reaching a dying watcher is ordinary, not exotic: a
+  # supervisor signals the process group and the pid, and a confirmed stop
+  # re-delivers to a target that showed no sign of stopping.
+  trap '' HUP INT TERM
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
     owns_lock=1
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
-      transition=release-lock-existing
+      transition=release-lock-existing-held
     fi
   fi
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
-  if [ "$owns_lock" -eq 1 ] \
-    && ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
-    echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
-    cleanup_status=1
+  # arch-escape-hatch-ordering: a guard drawn wider than the invariant it protects
+  # swallows the escape hatch with it. What must not be torn is the marker
+  # mutation; the WAIT for the marker lock is not part of that invariant and has
+  # no deadline of its own, so a holder that never releases would spin here with
+  # every stop ignored - an UNKILLABLE watcher. Supervision that cannot be
+  # recovered is worse than a torn close, and the broad kill that would be the
+  # only way out is forbidden in this home.
+  #
+  # So the marker lock is TAKEN here and HELD across the transition, which is why
+  # the transition is the already-held variant and performs no acquire of its
+  # own. The single attempt below is that acquire, not a question about it: on
+  # success the lock is kept, so no peer can take it between deciding and acting,
+  # and an uncontended close never leaves the guard at all. Only the retry loop a
+  # contended close falls into runs stoppable, and the disposition in force there
+  # releases the marker lock before exiting, so that lock is never left held by
+  # this dead pid. It covers that one path and nothing further: a stop landing
+  # inside the acquire itself can leave a residue it does not own - the steal
+  # mutex, or a lock link whose owner pid was never written - which the lock
+  # library's ordinary stale-owner steal reclaims rather than this trap. Nothing
+  # is written before this point, so such a stop leaves an unpublished downtime
+  # and a singleton lock still recorded to this watcher, which the next
+  # watcher's stale-lock steal publishes on its behalf.
+  if [ "$owns_lock" -eq 1 ]; then
+    downtime_lock="$WATCHER_DOWNTIME_MARKER.lock"
+    if ! fm_lock_try_acquire "$downtime_lock"; then
+      trap 'WATCHER_CLEANUP_ESCAPED=1; fm_lock_release "$downtime_lock"; exit 1' HUP INT TERM
+      fm_lock_acquire_wait "$downtime_lock"
+      trap '' HUP INT TERM
+    fi
+    if ! fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" "$transition" "$WATCH_LOCK" downtime; then
+      echo "watcher: recovery state could not be persisted; retaining stale lock evidence" >&2
+      cleanup_status=1
+    fi
+    fm_lock_release "$downtime_lock"
   fi
   return "$cleanup_status"
 }
 trap watcher_cleanup EXIT
-trap 'exit 1' HUP INT TERM
+trap 'trap "" HUP INT TERM; exit 1' HUP INT TERM
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.

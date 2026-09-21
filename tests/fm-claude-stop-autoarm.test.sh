@@ -950,6 +950,79 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   pass "auto-arm: a SIGSTOPped legacy owner is reclaimed with TERM pending and dies on continue"
 }
 
+# Retirement is a CONFIRMED stop, so the window it spends must outlast the
+# interval between deliveries - otherwise the owner is signalled once and the
+# reclaim removes its lock on the strength of a single signal the bash the whole
+# branch is built around can consume without running the handler. This drives the
+# real hook against a live identity-matched legacy owner that RECORDS every stop
+# it receives and acts on none, with the re-delivery interval raised to equal the
+# retire default: the natural "make the two match" configuration, and the shape
+# in which an unfloored window delivers exactly once.
+write_stop_recording_owner() {  # <dir>
+  local dir=$1
+  cat > "$dir/bin/legacy-owner.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+OWNER_LOG=${OWNER_LOG:?}
+OWNER_READY=${OWNER_READY:?}
+: > "$OWNER_LOG"
+record_stop() { printf '%s\n' "$1" >> "$OWNER_LOG"; }
+trap 'record_stop TERM' TERM
+trap 'record_stop HUP' HUP
+trap 'record_stop INT' INT
+: > "$OWNER_READY"
+owner_i=0
+while [ "$owner_i" -lt 600 ]; do
+  sleep 0.1
+  owner_i=$((owner_i + 1))
+done
+SH
+  chmod +x "$dir/bin/legacy-owner.sh"
+}
+
+test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence() {
+  local dir out status pid log ready delivered i
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-retire-cadence")
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  write_stop_recording_owner "$dir"
+  log="$dir/state/legacy-owner-signals.log"
+  ready="$dir/state/legacy-owner.ready"
+
+  OWNER_LOG="$log" OWNER_READY="$ready" "$dir/bin/legacy-owner.sh" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] \
+    || { kill -KILL "$pid" 2>/dev/null || true; fail "the stop-recording legacy owner never installed its traps"; }
+
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" \
+    || { kill -KILL "$pid" 2>/dev/null || true; fail "could not record a claim pid-identity"; }
+  record_autoarm_epoch "$dir" 466 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+
+  export FM_STOP_REDELIVER_POLLS=30
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  unset FM_STOP_REDELIVER_POLLS
+  delivered=$(grep -c . "$log" 2>/dev/null || echo 0)
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  expect_code 2 "$status" "a legacy owner that outlives its bounded retirement must still be reclaimed"
+  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm past the stop-ignoring owner"
+  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the stop-ignoring owner's lock behind"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
+  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  [ "$delivered" -ge 2 ] \
+    || fail "retirement delivered $delivered stop(s) with a re-delivery interval equal to its own window, so a consumed first stop would never be re-sent"
+  unset -f write_stop_recording_owner
+  pass "auto-arm: legacy retirement keeps a window wide enough to re-deliver before it retires the lock"
+}
+
 # --- generation claims: optimistic single-flight and supersession --------------
 # The current claim is the two-line ledger entry itself (line 1 the classic
 # epoch record, line 2 the owner's MANDATORY pid-identity); no lock is held
@@ -1179,6 +1252,7 @@ test_identity_matched_arming_claim_is_never_reclaimed
 test_terminal_check_claim_is_never_reclaimed
 test_stuck_live_legacy_owner_is_retired_and_reclaimed
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
+test_legacy_owner_retirement_outlasts_a_slow_redelivery_cadence
 test_open_generation_claim_defers_without_any_lock
 test_stuck_generation_claim_is_superseded_and_rearms
 test_identityless_ledger_never_defers

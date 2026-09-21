@@ -81,8 +81,11 @@
 # Old logs may explain history but cannot replace missing current evidence, and
 # every negative/refusal path returns working or unknown here, never done.
 #
-# Read-only and side-effect free. Always exits 0 on a successful read regardless
-# of state; exit 2 only on a usage error (no id).
+# Read-only and side-effect free. FM_CREW_STATE_EXPECT_RUN optionally pins the
+# exact already-attributed run a lifecycle owner is qualifying; a different or
+# unreadable run then yields no run-step verdict rather than borrowing another
+# same-branch run. Always exits 0 on a successful read regardless of state;
+# exit 2 only on a usage error (no id).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,6 +110,12 @@ ID=${1:-}
 META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
+EXPECTED_RUN=${FM_CREW_STATE_EXPECT_RUN:-}
+EXPECTED_RUN_INVALID=0
+case "$EXPECTED_RUN" in
+  '') ;;
+  *[!A-Za-z0-9_-]*) EXPECTED_RUN=; EXPECTED_RUN_INVALID=1 ;;
+esac
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
 # (nm_runs_status_for_branch, below) scans. Generous enough to still find a
@@ -501,6 +510,9 @@ NM_QUERY_FAILED=0
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
+  if [ "$EXPECTED_RUN_INVALID" = 1 ]; then
+    NM_QUERY_FAILED=1
+  else
   # CHECKED read: this is the primary run-attribution source, and its output can
   # certify a terminal done/checks-green (outcome: passed/checks-passed) below.
   # A FAILED `axi status` call may still emit partial TOON on stdout; swallowing
@@ -508,7 +520,9 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   # false terminal verdict. On a nonzero exit discard the bytes and fall through
   # to the pane/status-log fallback rather than attribute a run from a failed
   # read. An empty-but-successful read still means "no run" as before.
-  if ! RUN_OUT=$(nm_run_checked axi status); then
+  if [ -n "$EXPECTED_RUN" ]; then
+    if ! RUN_OUT=$(nm_run_checked axi status --run "$EXPECTED_RUN"); then RUN_OUT=""; NM_QUERY_FAILED=1; fi
+  elif ! RUN_OUT=$(nm_run_checked axi status); then
     RUN_OUT=""
     NM_QUERY_FAILED=1
   fi
@@ -519,12 +533,13 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
     # authoritative and the lane head need not be a git object here
     # (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
+      && { [ -z "$EXPECTED_RUN" ] || [ "$(strip_quotes "$(nm_field id)")" = "$EXPECTED_RUN" ]; } \
       && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
       HAVE_RUN=1
-    else
+    elif [ -z "$EXPECTED_RUN" ]; then
       # The active-or-most-recent run is for another branch, or its same-branch
       # attribution failed (the CLI is alive and answered) - try the coarse
-      # fallback.
+      # fallback. An exact-run caller never falls back to a different row.
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
@@ -535,6 +550,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
         RUN_SOURCE=coarse
       fi
     fi
+  fi
   fi
 fi
 

@@ -508,6 +508,10 @@ test_crew_pipeline_wait_classifier() {
   ! crew_pipeline_wait_declared ciready "$state" || fail "a terminal ci-ready stage declared a wait instead of surfacing"
   printf 'window=x\nkind=ship\nstage=validation-running\n' > "$state/running.meta"
   crew_pipeline_wait_declared running "$state" || fail "a bound, running validation did not declare a wait"
+  # A worker parked on a bound successor is still waiting on the same run: the
+  # stage owner binds the successor before the run's own qualification lands.
+  printf 'window=x\nkind=ship\nstage=candidate-successor\n' > "$state/successor.meta"
+  crew_pipeline_wait_declared successor "$state" || fail "a bound candidate successor did not declare a wait"
   ! crew_pipeline_wait_declared "" "$state" || fail "an empty id declared a wait"
 
   # The proof half: the age comes only from an authoritative working run-step.
@@ -536,6 +540,16 @@ test_crew_pipeline_wait_classifier() {
     && fail "a pipeline silent past its bound still held the declared wait"
   FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds nostage "$state" >/dev/null \
     && fail "an active pipeline held a wait that was never declared"
+  # The successor declaration buys quiet ONLY while its own bound run is still
+  # progressing; the moment that run stops, the ordinary schedule returns.
+  [ "$(FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds successor "$state")" = 120 ] \
+    || fail "a candidate successor whose bound run is still active did not hold the declared wait"
+  FM_FAKE_CREW_STATE='state: done · source: run-step · activity: 5s · checks green'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=1800 crew_pipeline_wait_holds successor "$state" >/dev/null \
+    && fail "a candidate successor whose bound run finished still held the declared wait"
+  FM_FAKE_CREW_STATE='state: working · source: run-step · activity: 120s · ci running'
+  FM_PIPELINE_ACTIVITY_MAX_SECS=60 crew_pipeline_wait_holds successor "$state" >/dev/null \
+    && fail "a candidate successor whose pipeline went silent past its bound still held the wait"
   # A quiet-marked age inside the bound is still the pipeline tracking its step:
   # the 26-minute CI monitor this deferral exists for goes quiet between step log
   # lines, and rejecting that rendering would wedge-escalate a healthy run.

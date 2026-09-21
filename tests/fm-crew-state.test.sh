@@ -868,6 +868,26 @@ test_terminal_failed() {
   pass "terminal failed run is authoritative"
 }
 
+test_expected_run_never_borrows_another_run() {
+  reset_fakes
+  local d out; d=$(new_case expected-run)
+  make_repo_on_branch "$d/wt" fm/expected-run
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/expected-run.meta" "window=fm:fm-expected-run" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS_RUN="$(run_passed fm/expected-run)"
+  FM_FAKE_RUNS_LIST="completed  fm/expected-run  ${FM_FAKE_RUN_HEAD:0:8}  now"
+  out=$(FM_CREW_STATE_EXPECT_RUN=01FOREIGN run_crew_state "$d" expected-run)
+  assert_not_contains "$out" 'source: run-step' 'an exact-run read borrowed a different explicit or coarse run'
+  assert_not_contains "$out" 'state: done' 'a different run supplied completion to the exact-run caller'
+  out=$(FM_CREW_STATE_EXPECT_RUN='bad run identity' run_crew_state "$d" expected-run)
+  assert_not_contains "$out" 'source: run-step' 'a malformed exact-run identity borrowed another run'
+  assert_not_contains "$out" 'state: done' 'a malformed exact-run identity supplied terminal authority'
+  out=$(FM_CREW_STATE_EXPECT_RUN=01RUN run_crew_state "$d" expected-run)
+  assert_contains "$out" 'state: done' 'the exact expected run did not qualify'
+  assert_contains "$out" 'source: run-step' 'the exact expected run lost run-step attribution'
+  pass 'an exact-run lifecycle read never borrows another same-branch run'
+}
+
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
@@ -1939,6 +1959,7 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_expected_run_never_borrows_another_run
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_running_run_does_not_certify_stale_ci_ready

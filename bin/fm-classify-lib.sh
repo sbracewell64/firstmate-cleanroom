@@ -157,6 +157,7 @@ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 # are percent-encoded (bin/fm-stage.sh owns the field inventory), and
 # status_stage_field reads one field back.
 #   candidate-committed  progress  the candidate branch, head, and tree are recorded
+#   candidate-successor  progress  the owner advanced to one authenticated or newly minted successor
 #   validation-pending   wait      validation is not admitted (a hold or capacity is
 #                                  missing); the worker waits and firstmate acts
 #   validation-admitted  progress  the lifecycle admitted validation on that candidate
@@ -170,12 +171,12 @@ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 # classifies exactly like `done:`. The table decides, never the receipt text, so a
 # FM_CAPTAIN_RE override does not change how a stage line reads.
 # shellcheck disable=SC2034 # Read by consumers that enumerate the vocabulary, not this lib.
-FM_CLASSIFY_STAGE_VERBS='candidate-committed validation-pending validation-admitted validation-running ci-ready landing activated'
+FM_CLASSIFY_STAGE_VERBS='candidate-committed candidate-successor validation-pending validation-admitted validation-running ci-ready landing activated'
 
 # Print progress|wait|terminal for a stage verb; 1 (nothing printed) otherwise.
 status_stage_class() {  # <verb>
   case "$1" in
-    candidate-committed|validation-admitted|validation-running|landing) printf 'progress' ;;
+    candidate-committed|candidate-successor|validation-admitted|validation-running|landing) printf 'progress' ;;
     validation-pending) printf 'wait' ;;
     ci-ready|activated) printf 'terminal' ;;
     *) return 1 ;;
@@ -1778,11 +1779,16 @@ crew_is_paused() {  # <id>
 # The declaration covers the whole run through to the CI-ready boundary: no
 # further receipt is written until the worker stops there, and `ci-ready` is a
 # terminal stage that must surface for the merge authority rather than wait.
+# `candidate-successor` is inside that span, not past it: the worker parks there
+# when the stage owner binds a successor before the run's own qualification
+# lands, and it is still waiting on the same bound run. Whether that run is
+# still active is decided by the proof half below, never by this declaration.
 crew_pipeline_wait_declared() {  # <id> <state>
   local id=$1 state=$2 stage
   [ -n "$id" ] || return 1
   stage=$(fm_classify_meta_value "$state/$id.meta" stage || true)
-  [ "$stage" = validation-running ]
+  case "$stage" in validation-running|candidate-successor) return 0 ;; esac
+  return 1
 }
 
 # How long ago <id>'s attributed run last showed pipeline activity, read from

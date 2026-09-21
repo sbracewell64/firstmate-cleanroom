@@ -364,7 +364,62 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
   pass "routine working/done lines still print nothing on an empty-queue drain"
 }
 
+# The drain presents inside a ( ) subshell, which is where the interrupted
+# programme staging leak was originally found. A subshell resets its inherited
+# trapped dispositions and its FM_PROGRAMME_RESOLVER_ERRFILE never reaches the
+# parent, so only that subshell can remove its own fm-programme-present.XXXXXX
+# file when a TERM reaches it.
+test_interrupted_presentation_capture_leaves_no_staging_file() {
+  local dir state root ready block drain_pid resolver_pid
+  dir=$(make_case interrupted-presentation-capture)
+  state="$dir/state"
+  root="$dir/root"
+  mkdir -p "$root" "$dir/config"
+  cp -a "$ROOT/bin" "$root/bin"
+  printf 'programme=%s\nroot=%s\n' "$dir/programme.json" "$dir" > "$dir/config/programme"
+
+  ready="$dir/resolver-ready"
+  block="$dir/resolver-block"
+  mkfifo "$ready" "$block"
+  cat > "$root/bin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$BASHPID" > "$FM_TEST_RESOLVER_PID"
+printf 'ready\n' > "$FM_TEST_READY_FIFO"
+IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
+printf 'PROGRAMME: nothing to do\n'
+SH
+  chmod +x "$root/bin/fm-continuation-resolve.sh"
+
+  export FM_TEST_READY_FIFO="$ready" FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$dir/resolver.pid"
+  exec 9<> "$ready"
+  TMPDIR="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$root/bin/fm-wake-drain.sh" \
+    >"$dir/interrupted.out" 2>"$dir/interrupted.err" &
+  drain_pid=$!
+  if ! IFS= read -r -t 30 _ready <&9; then
+    exec 9>&-
+    kill -TERM "$drain_pid" 2>/dev/null || true
+    wait "$drain_pid" 2>/dev/null || true
+    unset FM_TEST_READY_FIFO FM_TEST_BLOCK_FIFO FM_TEST_RESOLVER_PID
+    fail "the presentation resolver never reached the deterministic interruption barrier"
+  fi
+  exec 9>&-
+  resolver_pid=$(cat "$dir/resolver.pid")
+  unset FM_TEST_READY_FIFO FM_TEST_BLOCK_FIFO FM_TEST_RESOLVER_PID
+  find "$dir" -maxdepth 1 -type f -name 'fm-programme-present.*' -print -quit | grep -q . \
+    || fail "the presentation staged no diagnostics file; this regression's premise is stale"
+  fm_term_capture_ancestry "$resolver_pid" "$drain_pid" \
+    || fail "the presentation no longer captures in a subshell; this regression's premise is stale"
+  kill -TERM "$drain_pid" 2>/dev/null || true
+  wait "$drain_pid" 2>/dev/null || true
+
+  if find "$dir" -maxdepth 1 -type f -name 'fm-programme-present.*' -print -quit | grep -q .; then
+    fail "an interrupted presentation left resolver staging files: $(find "$dir" -maxdepth 1 -type f -name 'fm-programme-present.*')"
+  fi
+  pass "an interrupted drain presentation cleans its staging in the subshell that owns it"
+}
+
 test_incident_note_answer_buried_under_routine_note_surfaces_both
+test_interrupted_presentation_capture_leaves_no_staging_file
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
 test_signal_annotation_surfaces_every_unread_note_not_only_the_newest

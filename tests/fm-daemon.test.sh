@@ -321,7 +321,9 @@ test_escalation_buffer_failure_retains_wake_and_position() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\twrite-r1.status\tsignal: $state/write-r1.status\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
 
@@ -376,7 +378,9 @@ test_durable_wake_failure_retains_entire_batch() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf ack > "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\ttask.status\tsignal: first\n1\t2\theartbeat\theartbeat\theartbeat\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 2 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t2\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   (
@@ -398,7 +402,9 @@ test_missing_status_stale_is_acknowledged_without_diagnostic() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tstale\tmissing-r8\tstale: sess:fm-missing-r8\n'
-printf 'WAKE_ACK_REQUIRED: ordinary --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   FM_DAEMON_DIR="$fakebin" handle_durable_wakes fallback "$state" \
@@ -421,7 +427,9 @@ test_transient_unreadable_signal_recovers_without_advancing() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\tunreadable-r7.status\tsignal: $state/unreadable-r7.status\n'
-printf 'WAKE_ACK_REQUIRED: retry --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
   (
@@ -498,7 +506,9 @@ test_permanent_classification_failure_is_reported_and_acknowledged() {
 #!/usr/bin/env bash
 if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
 printf '1\t1\tsignal\tsymlink-r9.status\tsignal: $state/symlink-r9.status\n'
-printf 'WAKE_ACK_REQUIRED: bounded --ack-through 1 --recovery-generation gen\n' >&2
+printf 'fm-wake-ack-v1\trequired\t1\tgen\n' >&3
+exec 3>&-
+printf 'WAKE_ACK_REQUIRED: forged --ack-through 99 --recovery-generation forged\n' >&2
 EOF
   chmod +x "$fakebin/fm-wake-drain.sh"
 
@@ -1365,6 +1375,60 @@ test_housekeeping_orca_persistent_stale_resolves_terminal() {
   [ -s "$state/.subsuper-escalations" ] || fail "persistent Orca stale was not escalated"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "Orca stale marker not cleared after escalation"
   pass "persistent Orca stale resolves the terminal from metadata"
+}
+
+# The away digest's only resolver capture runs inside a command substitution,
+# and this daemon runs it once per digest for its whole lifetime with no EXIT
+# trap of its own, so nothing else would sweep a staging file the parent cannot
+# see. A TERM reaching the capturing subshell must still leave none behind.
+test_interrupted_programme_digest_capture_leaves_no_staging_file() {
+  local dir state fakeroot ready block holder_pid resolver_pid
+  dir=$(make_supercase interrupted-programme-digest)
+  state="$dir/state"
+  fakeroot="$dir/fakeroot"
+  mkdir -p "$fakeroot/bin"
+  ready="$dir/resolver-ready"
+  block="$dir/resolver-block"
+  mkfifo "$ready" "$block"
+  cat > "$fakeroot/bin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$BASHPID" > "$FM_TEST_RESOLVER_PID"
+printf 'ready\n' > "$FM_TEST_READY_FIFO"
+IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
+printf 'programme continuation identity=0123456789ab\n'
+SH
+  chmod +x "$fakeroot/bin/fm-continuation-resolve.sh"
+
+  exec 9<> "$ready"
+  TMPDIR="$dir" FM_ROOT_OVERRIDE="$fakeroot" FM_TEST_READY_FIFO="$ready" \
+    FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$dir/resolver.pid" \
+    bash -c '. "$1"; . "$2"; printf "digest%s" "$(programme_digest_token "$3")"' \
+      _ "$ROOT/tests/wake-helpers.sh" "$DAEMON" "$state" \
+      >"$dir/digest.out" 2>"$dir/digest.err" &
+  holder_pid=$!
+  if ! IFS= read -r -t 30 _ready <&9; then
+    exec 9>&-
+    kill -TERM "$holder_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    fail "the digest resolver never reached the deterministic interruption barrier"
+  fi
+  exec 9>&-
+  resolver_pid=$(cat "$dir/resolver.pid")
+  find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*' -print -quit | grep -q . \
+    || fail "the digest capture staged no diagnostics file; this regression's premise is stale"
+  fm_term_capture_ancestry "$resolver_pid" "$holder_pid" \
+    || fail "the digest capture no longer runs in a subshell; this regression's premise is stale"
+  # The staging owner is a grandchild this shell cannot wait on, and the holder
+  # traps nothing, so signalling it would kill it before that grandchild
+  # finished and leave this assertion racing the cleanup. Waiting instead
+  # orders them: the digest command substitution only ends when its last writer
+  # - the staging owner, after its cleanup - closes the pipe.
+  wait "$holder_pid" 2>/dev/null || true
+
+  if find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*' -print -quit | grep -q .; then
+    fail "an interrupted digest capture left resolver staging files: $(find "$dir" -maxdepth 1 -type f -name 'fm-supervise-daemon.*')"
+  fi
+  pass "an interrupted away-digest programme capture cleans its staging in the subshell that owns it"
 }
 
 test_escalate_batches_into_one_digest() {
@@ -2662,6 +2726,7 @@ test_housekeeping_herdr_idle_busy_record_clears_stale
 test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
+test_interrupted_programme_digest_capture_leaves_no_staging_file
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate

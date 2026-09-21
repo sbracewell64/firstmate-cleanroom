@@ -6,6 +6,11 @@
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
+# Direct presentation prints the generation-bound handling instruction on
+# stderr.
+# Packet-aware wrappers set FM_WAKE_ACK_PACKET_FD=3 and receive exactly one
+# private packet instead; stdout and stderr retain only presentation and
+# diagnostic authority.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-lease-lib.sh"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
+# shellcheck source=bin/fm-wake-ack-lib.sh
+. "$SCRIPT_DIR/fm-wake-ack-lib.sh"
 
 DRAIN_TMP=
 DRAIN_VIEW_TMP=
@@ -34,6 +41,19 @@ ACK_THROUGH=
 ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
+
+report_ack_required() {  # <sequence> <generation>
+  if fm_wake_ack_packet_requested; then
+    fm_wake_ack_packet_emit required "$1" "$2"
+  else
+    fm_wake_ack_format_required "$1" "$2" >&2
+  fi
+}
+
+report_ack_none() {
+  fm_wake_ack_packet_requested || return 0
+  fm_wake_ack_packet_emit none
+}
 
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
 # main (FM_SUPERVISION_ACTOR unset or "main", via fm-lease-lib.sh's fm_lease_actor
@@ -393,6 +413,18 @@ print_status_presentation() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
   return "$rc"
 }
 
+# The presentation runs in its own ( ) subshell so a presentation failure never
+# changes the drain's exit status. A subshell resets this shell's trapped
+# dispositions, and the resolver staging the presentation allocates belongs to
+# that process, so its signal cleanup has to be installed there - cleanup()
+# below never sees the child's FM_PROGRAMME_RESOLVER_ERRFILE.
+present_status() {  # [<deduped-raw-rows>] [<programme-ack-mode>]
+  (
+    fm_programme_resolver_own_staging
+    print_status_presentation "$@"
+  ) || true
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
@@ -414,6 +446,7 @@ reclaim_stale_branch_grant_locked || exit 1
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
 
 if [ -n "$ACK_THROUGH" ]; then
+  fm_wake_ack_packet_close
   if [ "$ACTOR" = main ]; then
     # Preserve main's original whole-cutoff acknowledgement contract: rows may
     # arrive after presentation but before the printed ack runs, and a direct
@@ -531,10 +564,11 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
-    (print_status_presentation '' pending) || true
-    printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
+    report_ack_required 0 "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
+    present_status '' pending
   else
-    (print_status_presentation '' commit) || true
+    report_ack_none || exit 1
+    present_status '' commit
   fi
   assert_watcher_liveness
   exit 0
@@ -548,7 +582,8 @@ if [ "$ACTOR" = main ]; then
   if [ ! -s "$MAIN_ROWS_FILE" ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     DRAIN_LOCK_HELD=false
-    (print_status_presentation) || true
+    report_ack_none || exit 1
+    present_status
     assert_watcher_liveness
     exit 0
   fi
@@ -607,9 +642,8 @@ case "$RECOVERY_MARKER_TOKEN" in
 esac
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
-printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
-  "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
+report_ack_required "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" || exit 1
 
-(print_status_presentation "$RAW_ROWS" pending) || true
+present_status "$RAW_ROWS" pending
 assert_watcher_liveness
 exit 0

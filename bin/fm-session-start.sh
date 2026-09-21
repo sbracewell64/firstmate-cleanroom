@@ -12,8 +12,10 @@
 # belong in a script, not in N agent turns.
 #
 # COMPOSITION, NOT DUPLICATION: this script calls fm-lock.sh, fm-bootstrap.sh,
-# fm-wake-drain.sh, and fm-startup-network.sh as real subprocesses and prints
-# their real output. It never re-implements their logic; all
+# fm-wake-drain.sh, and fm-startup-network.sh as real subprocesses and presents
+# their results. It never re-implements their logic; the wake drain's channels
+# are staged so failed partial output can be withheld and only its strict
+# private packet can produce an acknowledgement instruction. All other
 # sequencing/formatting logic added here stays local to this file. Those four
 # scripts remain fully working
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
@@ -347,6 +349,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
+# shellcheck source=bin/fm-wake-ack-lib.sh
+. "$SCRIPT_DIR/fm-wake-ack-lib.sh"
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 
@@ -446,10 +450,20 @@ print_memory_refused() {  # <reason>: the whole set is withheld
 }
 
 MEMORY_SNAPSHOT=''
+DRAIN_OUTFILE=''
+DRAIN_ERRFILE=''
+DRAIN_ACKFILE=''
 
 memory_snapshot_discard() {
   [ -z "$MEMORY_SNAPSHOT" ] || rm -rf "$MEMORY_SNAPSHOT" 2>/dev/null || true
   MEMORY_SNAPSHOT=''
+  fm_programme_resolver_cleanup
+  [ -z "$DRAIN_OUTFILE" ] || rm -f -- "$DRAIN_OUTFILE" 2>/dev/null || true
+  [ -z "$DRAIN_ERRFILE" ] || rm -f -- "$DRAIN_ERRFILE" 2>/dev/null || true
+  [ -z "$DRAIN_ACKFILE" ] || rm -f -- "$DRAIN_ACKFILE" 2>/dev/null || true
+  DRAIN_OUTFILE=''
+  DRAIN_ERRFILE=''
+  DRAIN_ACKFILE=''
 }
 trap memory_snapshot_discard EXIT
 trap 'memory_snapshot_discard; exit 129' HUP
@@ -675,12 +689,21 @@ print_backlog_compact() {
 # binding is printed by the renderer as REQUIRED_BINDING_MISSING, never as an
 # optional N/A.
 print_programme_continuation() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" render 2>&1) || rc=$?
+  local out diag rc=0 identity verdict
+  if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" render fm-session-start; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    rc=125
+  fi
+  fm_programme_relay_resolver_stderr "$rc" "$diag"
   [ "$rc" -ne 3 ] || return 0
   subsection "Programme continuation (typed owner: bin/fm-continuation-resolve.sh)"
   if [ "$rc" -eq 0 ]; then
-    printf '%s\n' "$out"
+    printf '%s\n' "$out" | fm_programme_render_non_actionable
     identity=$(fm_programme_identity_from_render "$out")
     verdict=$(fm_programme_presentation_state "$STATE" "$identity")
     case "$verdict" in
@@ -690,7 +713,8 @@ print_programme_continuation() {
     esac
     printf 'Consume this typed result; a captain gate exists for a programme step only when its classification is CAPTAIN.\n'
   else
-    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n%s\n' "$rc" "$out"
+    printf 'resolver failed (exit %s); continuation authority is unproven this session, not captain-gated:\n' "$rc"
+    fm_programme_relay_diagnostic "${diag:-$out}"
   fi
 }
 
@@ -921,12 +945,50 @@ else
       printf '%s\n' "$BRANCH_REPLAY_OUT"
     fi
   fi
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
-  if [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
+  # The drain owns acknowledgement authority through one private packet on fd
+  # 3. Stdout is presentation data and stderr is diagnostic data; neither can
+  # manufacture the generation-bound command this session hands to its handling
+  # turn. All three channels are staged before any bytes are presented, so a
+  # partial failed drain is never mistaken for a usable queue snapshot.
+  DRAIN_RC=0
+  DRAIN_PACKET_VALID=0
+  DRAIN_OUTFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-out.XXXXXX" 2>/dev/null) || DRAIN_OUTFILE=
+  DRAIN_ERRFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-err.XXXXXX" 2>/dev/null) || DRAIN_ERRFILE=
+  DRAIN_ACKFILE=$(mktemp "${TMPDIR:-/tmp}/fm-session-start-drain-ack.XXXXXX" 2>/dev/null) || DRAIN_ACKFILE=
+  if [ -n "$DRAIN_OUTFILE" ] && [ -n "$DRAIN_ERRFILE" ] && [ -n "$DRAIN_ACKFILE" ]; then
+    FM_WAKE_ACK_PACKET_FD=3 "$SCRIPT_DIR/fm-wake-drain.sh" \
+      >"$DRAIN_OUTFILE" 2>"$DRAIN_ERRFILE" 3>"$DRAIN_ACKFILE" || DRAIN_RC=$?
+    if fm_wake_ack_packet_parse "$DRAIN_ACKFILE"; then DRAIN_PACKET_VALID=1; fi
+    DRAIN_OUT=$(cat "$DRAIN_OUTFILE" 2>/dev/null) || DRAIN_RC=125
+    DRAIN_ERR=$(cat "$DRAIN_ERRFILE" 2>/dev/null) || DRAIN_RC=125
   else
-    printf '(no queued wakes)\n'
+    DRAIN_RC=125
+    DRAIN_OUT=
+    DRAIN_ERR='wake drain was not run because its private presentation channels could not be staged'
   fi
+  if [ "$DRAIN_RC" -ne 0 ]; then
+    printf 'wake drain failed (exit %s); partial output was withheld and is not a usable wake-queue verdict.\n' "$DRAIN_RC"
+  elif [ "$DRAIN_PACKET_VALID" -ne 1 ]; then
+    printf 'wake drain returned no valid acknowledgement packet; its output was withheld and is not a usable wake-queue verdict.\n'
+  else
+    if [ -n "$DRAIN_OUT" ]; then
+      printf '%s\n' "$DRAIN_OUT" | sed 's/^WAKE_ACK_REQUIRED:/wake drain data: WAKE_ACK_REQUIRED:/'
+    elif [ "$FM_WAKE_ACK_PACKET_MODE" = required ]; then
+      printf 'no wake rows to present; the acknowledgement instruction below is still outstanding.\n'
+    else
+      printf '(no queued wakes)\n'
+    fi
+    if [ "$FM_WAKE_ACK_PACKET_MODE" = required ]; then
+      fm_wake_ack_render_required
+    fi
+  fi
+  if [ -n "$DRAIN_ERR" ]; then
+    printf '%s\n' "$DRAIN_ERR" | sed 's/^/wake drain diagnostic: /' >&2
+  fi
+  rm -f -- "$DRAIN_OUTFILE" "$DRAIN_ERRFILE" "$DRAIN_ACKFILE" 2>/dev/null || true
+  DRAIN_OUTFILE=''
+  DRAIN_ERRFILE=''
+  DRAIN_ACKFILE=''
 fi
 
 # --- 4. supervision operating instructions ----------------------------------

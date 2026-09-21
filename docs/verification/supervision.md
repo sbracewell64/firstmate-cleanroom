@@ -412,6 +412,37 @@ Observed output, before and after the model correction, then with the recorded P
 ●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
 ```
 
+### Packet-bound acknowledgement and legacy-owner collection (2026-09-20)
+
+The successor was produced from exact accepted main `1b8e2149f64520cb67fea02b365dd7ad67669c56` (tree `2f934b074cfc1b4dbece6b1aa5e7cf865f5059eb`), which is also the pristine base every attribution below was taken on; `ee6da58d2ef7e4759bc204567ed914bfb36ffcd0` (tree `441bc383efd0d23821e18b7a84a5501c5c185c6c`, #67) landed on main meanwhile, so the candidate's final ancestry is that later main, not the initial base.
+Exactly one commit on that ancestry is the admitted candidate - `9f63fdec964c98e8c0088186686d0c43c86bb54c`, the change itself.
+Every commit after it is an immutable pipeline repair pass recorded on top rather than folded into the candidate, so each repair stays reviewable against what it repaired; that history is append-only and its length is whatever the pipeline needed, so this record names the candidate rather than a commit count.
+It was locally verified with the pinned ShellCheck 0.11.0, actionlint 1.7.12, and no-mistakes 1.61.0 build `7fbba0dbbf89bd57e6a000d60e5cc4dbb86a94de`.
+The deterministic packet cases prove session start, AFK return, and the away supervisor derive acknowledgement authority only from the drain's strict private packet; an empty recovery episode keeps sequence zero and its exact generation, forged stdout/stderr/resolver text is data or diagnostics, a malformed multi-record packet is refused, and partial output from a failed drain is withheld.
+The resolver cases prove typed stdout and diagnostic stderr remain separate, sourcing the shared capture owner preserves caller traps, an unconfigured home stays silent on both streams, and deterministic TERM interruption leaves no staging file for a consumer that captures in its main shell and for each of the three subshell consumers - the wake drain's presentation, the fleet snapshot, and the away-supervisor digest.
+The lock cases prove a directory carrying an entry outside the known-file census is refused before any owner evidence is deleted, so the claim stays classifiable and collectible once that entry is gone, and that classifiable evidence is put back when removal still fails after the census passed.
+A delivered TERM marker is owner evidence under that same contract: a collection that fails retains it, so the one recorded attempt is never spent on a lock that survives and no later invocation signals that owner twice.
+Both crash residues this repo can strand inside a directory-shaped lock are recovered rather than refused - the retirement marker's mktemp staging and the owner link `ln -s` drops inside an existing directory - while an owner-shaped link pointing anywhere other than the owner directory that exact lock would have minted is not its residue, still refuses, and is never deleted.
+The legacy auto-arm cases prove an unreadable or absent live-owner identity is never signal authority yet never blocks the reclaim of a proven-abandoned claim, an identity-matched stuck owner receives one recorded TERM without same-invocation collection, a TERM that is not delivered withdraws that one-shot allowance instead of stalling the owner, and only a later invocation that freshly observes it dead may collect and re-arm.
+
+```sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+bin/fm-enforcement-caller-check.sh
+bin/fm-test-run.sh --check-coverage
+bin/fm-test-run.sh tests/fm-session-start.test.sh tests/fm-afk-return.test.sh tests/fm-daemon.test.sh
+bin/fm-test-run.sh tests/fm-programme-projection.test.sh tests/fm-fleet-snapshot-view.test.sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-turnend-guard.test.sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
+```
+
+The focused groups reported zero failures, and the isolated real-Herdr lane reported `total=12 failed=0 skipped_gate=0` after the lab helper verified the default session was unchanged.
+Portable parallel lanes 1 and 2 and clean serial shard 3 also reported zero failures.
+Serial shards 1, 2, and 4 exposed nine environment- or fixture-dependent failures which reproduced with the same assertion on the pristine exact base `1b8e2149f64520cb67fea02b365dd7ad67669c56` and therefore are not attributed to this candidate: concurrent remote sequence allocation, extension binding, orphan reaping, a Herdr focus fixture, a tmux smoke fixture, bootstrap tool masking, installed-Pi stock rendering, tmux process-name liveness, and Chrome-backed Calm rendering.
+Those nine cases remain CNO for local candidate qualification and require clean hosted lanes; none was weakened, skipped, lengthened, or repaired in unrelated production code.
+The initial Grok no-work fixture also failed twice on candidate and twice on that same pristine base because ambient `FM_HOME` selected the active fleet rather than the isolated fixture; binding every Grok fixture invocation to its own home removed that masking condition and the complete candidate suite then passed twice.
+Live Claude, Codex, OpenCode, Pi, Grok, Kimi, Cursor, Muse, Zellij, Orca, and cmux lifecycle evidence was not refreshed in this run; their portable adapter and backend consequences were inspected, while the applicable real-Herdr lane above is the only refreshed live runtime evidence.
+
 The broader relevant regression pass was rerun on 2026-08-02 without live-home or daemon mutation.
 
 ```sh

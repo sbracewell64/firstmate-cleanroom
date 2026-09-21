@@ -48,7 +48,11 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 ## Recovery episode acknowledgement
 
 A recovery episode is one generation of `state/.watcher-down`, and it is retired only by the generation-bound acknowledgement the drain prints as `WAKE_ACK_REQUIRED`.
-An unacknowledged downtime generation is announced at most once: the first recovery marks that generation announced, and later arms wait until a new down stretch mints a new generation.
+`bin/fm-wake-ack-lib.sh` owns the private packet by which session start, AFK return, and the away supervisor receive the drain-owned sequence and generation.
+The drain closes that descriptor before programme resolution or another presentation subprocess can run, and those wrappers reconstruct the command only from a strict complete packet, so stdout, stderr, resolver output, copied commands, and arbitrary text carry no acknowledgement authority.
+Direct drain callers still receive the human-facing instruction on stderr.
+A failed drain grants no packet authority and its partial stdout is withheld by session start.
+An unacknowledged downtime generation is announced at most once: the first recovery marks that generation announced, and later arms wait until a new down stretch mints a fresh generation.
 A non-successor watcher start after an announced-but-unacked episode is a new down stretch and mints a fresh generation so buried decisions still resurface once.
 Every watcher close and every durable queue append publishes downtime, so a downtime republication of any pending episode reuses its generation instead of minting a new one, and an already-announced generation stays announced.
 That reuse keeps a watcher close inside the handling window from orphaning the acknowledgement already presented and trapping later arms in repeated recovery presentation.
@@ -105,7 +109,8 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination, and a bounded reap that collects a watcher which swallowed its stop signal rather than waiting on it forever.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
-It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.
+It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim.
+For that shim it covers the one recorded TERM attempt and its withdrawal when the signal provably was not delivered, the retained lock and the deferred collection that only a later fresh dead-owner observation allows, the second live observation that signals nothing, and an absent or unreadable identity that is never signalled yet never withholds a reclaim the ledger already proves abandoned; [`turnend-guard.md`](turnend-guard.md) owns those contracts and the surrounding guard behavior.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset; [`turnend-guard.md`](turnend-guard.md#regression-coverage) lists that suite's full generation and legacy claim coverage.
 

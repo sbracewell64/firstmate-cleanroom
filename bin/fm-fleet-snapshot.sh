@@ -1466,18 +1466,35 @@ secondmate_landed_from_current_json() {  # <secondmate-current-json>
 # the typed row is already presented, pending acknowledgement, or new, and never
 # recap unchanged state as progress. The binding member is the resolver's own;
 # a missing binding is carried as REQUIRED_BINDING_MISSING for the view.
+# This member is only ever built inside a command substitution, so the capture
+# it stages lives and dies in that subshell: it owns the staging cleanup itself
+# (bin/fm-programme-presentation-lib.sh "RESOLVER CAPTURE"). This script
+# installs no traps at all, so that subshell's own cleanup is the ONLY thing on
+# any path that can remove the staging file.
 programme_continuation_json() {
-  local out rc=0 identity verdict
-  out=$("$SCRIPT_DIR/fm-continuation-resolve.sh" resolve 2>&1) || rc=$?
-  case "$rc" in
-    0)
-      identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')
-      verdict=$(fm_programme_presentation_state "$STATE" "$identity")
-      printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
-        '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
-    3) jq -n '{configured:false}' ;;
-    *) jq -n --arg err "$out" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
-  esac
+  (
+    fm_programme_resolver_own_staging
+    local out diag rc=0 identity verdict
+    if fm_programme_resolver_capture "$SCRIPT_DIR/fm-continuation-resolve.sh" resolve fm-fleet-snapshot; then
+      out=$FM_PROGRAMME_RESOLVER_OUT
+      diag=$FM_PROGRAMME_RESOLVER_DIAG
+      rc=$FM_PROGRAMME_RESOLVER_RC
+    else
+      out=
+      diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+      rc=125
+    fi
+    fm_programme_relay_resolver_stderr "$rc" "$diag"
+    case "$rc" in
+      0)
+        identity=$(printf '%s' "$out" | jq -r '.material_identity // ""')
+        verdict=$(fm_programme_presentation_state "$STATE" "$identity")
+        printf '%s' "$out" | jq -c --arg verdict "$verdict" --arg presented "$(fm_programme_presented_identity "$STATE")" \
+          '. + {configured:true, presentation:{state:$verdict, presented_identity:(if $presented == "" then null else $presented end)}}' ;;
+      3) jq -n '{configured:false}' ;;
+      *) jq -n --arg err "${diag:-$out}" --argjson rc "$rc" '{configured:true, error:$err, exit_code:$rc}' ;;
+    esac
+  )
 }
 
 scout_report_lines() {

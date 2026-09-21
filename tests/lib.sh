@@ -264,6 +264,31 @@ fm_write_meta() {
   done
 }
 
+# fm_term_capture_ancestry <inner-pid> <consumer-pid>: TERM every process
+# strictly between <inner-pid> and <consumer-pid>, outermost first. A resolver
+# capture is staged by one of those intermediate shells, and which one depends
+# on how bash chose to fork a given substitution, so signalling the exact
+# ancestor chain models the process-group stop without matching on process
+# names. Outermost first matters: signalling an inner shell first lets the
+# staging owner complete its own normal cleanup and prove nothing. The walk is
+# bounded at 8 hops.
+fm_term_capture_ancestry() {  # <inner-pid> <consumer-pid>
+  local inner=$1 consumer=$2 pid hops=0 i
+  local -a chain=()
+  pid=$(ps -o ppid= -p "$inner" 2>/dev/null | tr -d ' ')
+  while [ -n "$pid" ] && [ "$pid" != "$consumer" ] && [ "$pid" != 1 ] && [ "$hops" -lt 8 ]; do
+    chain+=("$pid")
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    hops=$((hops + 1))
+  done
+  [ "${#chain[@]}" -gt 0 ] || return 1
+  for (( i=${#chain[@]}-1; i>=0; i-- )); do
+    kill -TERM "${chain[$i]}" 2>/dev/null || true
+  done
+  kill -TERM "$inner" 2>/dev/null || true
+  return 0
+}
+
 # fm_write_bodied_backlog <file> <rows> <body-lines> [<line-chars>]: write a
 # tasks-axi backlog whose rows split evenly between Queued and Done and each
 # carry <body-lines> indented body lines of <line-chars> characters (default

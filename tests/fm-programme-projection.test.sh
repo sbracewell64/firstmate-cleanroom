@@ -96,6 +96,15 @@ with_home() {  # <home> <command...>
     FM_CONFIG_OVERRIDE="$home/config" FM_CONTINUATION_TODAY=2026-09-05 "$@"
 }
 
+# Replace this process with <command...>. A caller that backgrounds
+# `with_home <home> exec_here <command...>` then finds the command's own pid in
+# $! on every bash release: without it, a backgrounded shell function is a
+# wrapper subshell wherever bash does not fold that fork away, and a signal
+# aimed at $! reaches the wrapper instead of the process under test.
+exec_here() {  # <command...>
+  exec "$@"
+}
+
 run_project() {  # <home> [args...]
   local home=$1
   shift
@@ -441,13 +450,87 @@ test_not_configured_and_summary() {
   pass "the substrate refuses --materialize because it holds no hold-creating authority"
 
   rm "$home/config/programme"
-  out=$(run_project "$home" project 2>/dev/null); rc=$?
+  out=$(run_project "$home" project 2>"$home/unconfigured.err"); rc=$?
   expect_code 3 "$rc" "no programme configured"
   [ -z "$out" ] || fail "exit 3 must print nothing on stdout: $out"
-  out=$(run_project "$home" summary 2>/dev/null); rc=$?
+  [ ! -s "$home/unconfigured.err" ] \
+    || fail "exit 3 relayed the resolver's own silent verdict as a diagnostic: $(cat "$home/unconfigured.err")"
+  out=$(run_project "$home" summary 2>"$home/unconfigured-summary.err"); rc=$?
   expect_code 3 "$rc" "summary with no programme"
   [ -z "$out" ] || fail "summary exit 3 must print nothing on stdout"
-  pass "with no programme configured the substrate exits 3 silently, mirroring the resolver"
+  [ ! -s "$home/unconfigured-summary.err" ] \
+    || fail "summary exit 3 relayed a diagnostic: $(cat "$home/unconfigured-summary.err")"
+  pass "with no programme configured the substrate exits 3 silently on both streams, mirroring the resolver"
+}
+
+# --- resolver stream ownership and signal cleanup -----------------------------
+
+test_resolver_capture_is_separate_signal_safe_and_trap_neutral() {
+  local home bin out err ready block projection_pid resolver_pid before after
+  home=$(make_home resolver-capture)
+  disposition "$home" proof-a 1 PROVED
+  bin="$TMP_ROOT/resolver-capture-bin"
+  mkdir -p "$bin"
+  cp "$PROJECT" "$bin/fm-programme-projection.sh"
+  cp "$ROOT/bin/fm-programme-presentation-lib.sh" "$bin/fm-programme-presentation-lib.sh"
+
+  cat > "$bin/fm-continuation-resolve.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' 'bin/fm-wake-lib.sh: trap: unexpected EOF' >&2
+exec '$RESOLVE' "\$@"
+SH
+  chmod +x "$bin/"*.sh
+  out=$(with_home "$home" "$bin/fm-programme-projection.sh" project 2>"$home/noisy.err") \
+    || fail "resolver diagnostics refused a valid typed result"
+  [ "$(field "$out" '.schema')" = fm-programme-projection/v1 ] || fail "noisy resolver changed the typed schema"
+  err=$(cat "$home/noisy.err")
+  assert_contains "$err" 'resolver diagnostic: bin/fm-wake-lib.sh: trap: unexpected EOF' \
+    "resolver diagnostics were not relayed separately"
+  assert_not_contains "$out" 'unexpected EOF' "resolver diagnostics entered the typed result"
+
+  before="$home/caller-trap.before"
+  after="$home/caller-trap.after"
+  bash -c '
+    trap "printf preserved > \"$1\"" EXIT
+    trap -p EXIT > "$2"
+    . "$3"
+    trap -p EXIT > "$4"
+  ' _ "$home/caller-trap.ran" "$before" "$bin/fm-programme-presentation-lib.sh" "$after"
+  cmp -s "$before" "$after" || fail "sourcing the capture owner replaced its caller's EXIT trap"
+  [ "$(cat "$home/caller-trap.ran")" = preserved ] || fail "the caller's EXIT trap did not run"
+
+  ready="$home/resolver-ready"
+  block="$home/resolver-block"
+  mkfifo "$ready" "$block"
+  cat > "$bin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$BASHPID" > "$FM_TEST_RESOLVER_PID"
+printf 'ready\n' > "$FM_TEST_READY_FIFO"
+IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
+printf '{}\n'
+SH
+  chmod +x "$bin/fm-continuation-resolve.sh"
+  export FM_TEST_READY_FIFO="$ready" FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$home/resolver.pid"
+  exec 9<> "$ready"
+  TMPDIR="$home" with_home "$home" exec_here "$bin/fm-programme-projection.sh" project \
+    >"$home/interrupted.out" 2>"$home/interrupted.err" &
+  projection_pid=$!
+  if ! IFS= read -r -t 10 _ready <&9; then
+    kill -TERM "$projection_pid" 2>/dev/null || true
+    wait "$projection_pid" 2>/dev/null || true
+    exec 9>&-
+    fail "the resolver did not reach the deterministic interruption barrier"
+  fi
+  exec 9>&-
+  resolver_pid=$(cat "$home/resolver.pid")
+  unset FM_TEST_READY_FIFO FM_TEST_BLOCK_FIFO FM_TEST_RESOLVER_PID
+  kill -TERM "$projection_pid" 2>/dev/null || true
+  kill -TERM "$resolver_pid" 2>/dev/null || true
+  wait "$projection_pid" 2>/dev/null || true
+  if find "$home" -maxdepth 1 -type f -name 'fm-programme-projection.*' -print -quit | grep -q .; then
+    fail "interrupted projection left resolver staging files"
+  fi
+  pass "resolver stdout stays typed, diagnostics stay visible, and shared signal cleanup preserves caller traps"
 }
 
 # --- owner-evidence steps compose unchanged -----------------------------------------
@@ -533,6 +616,7 @@ timed test_uncomposable_records_refused
 timed test_deterministic_and_side_effect_free
 timed test_delegation_bounds
 timed test_not_configured_and_summary
+timed test_resolver_capture_is_separate_signal_safe_and_trap_neutral
 timed test_owner_evidence_programme_composes
 
 echo "# fm-programme-projection.test.sh: all assertions passed"

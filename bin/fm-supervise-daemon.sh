@@ -187,6 +187,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$FM_DAEMON_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-programme-presentation-lib.sh
 . "$FM_DAEMON_DIR/fm-programme-presentation-lib.sh"
+# shellcheck source=bin/fm-wake-ack-lib.sh
+. "$FM_DAEMON_DIR/fm-wake-ack-lib.sh"
 
 # --- tunables ---------------------------------------------------------------
 # Supervisor backends this daemon knows how to inject into today. zellij, orca,
@@ -698,23 +700,40 @@ escalate_add() {  # <state> <distilled-item>
 # the identity the wake drain already presented (the summary carries the
 # identity's 12-character prefix, compared against the presented record by
 # bin/fm-programme-presentation-lib.sh); unchanged state is not re-announced.
+# The token is only ever built inside a command substitution, so the capture it
+# stages lives and dies in that subshell: it owns the staging cleanup itself
+# (bin/fm-programme-presentation-lib.sh "RESOLVER CAPTURE"). This daemon runs
+# the capture once per digest for its whole lifetime and its cleanup() runs in
+# a process that never sees the staging file, so nothing else would sweep it.
 programme_digest_token() {  # [<state>]
-  local out rc=0 state=${1:-} token presented pending
-  out=$("$FM_ROOT/bin/fm-continuation-resolve.sh" summary 2>&1) || rc=$?
-  case "$rc" in
-    0)
-      if [ -n "$state" ]; then
-        token=$(printf '%s' "$out" | sed -n 's/.* identity=\([0-9a-f]*\).*/\1/p' | head -1)
-        presented=$(fm_programme_presented_identity "$state")
-        pending=$(fm_programme_pending_identity "$state")
-        if [ -n "$token" ] && { [ "${presented:0:12}" = "$token" ] || [ "${pending:0:12}" = "$token" ]; }; then
-          return 0
+  (
+    fm_programme_resolver_own_staging
+    local out diag rc=0 state=${1:-} token presented pending
+    if fm_programme_resolver_capture "$FM_ROOT/bin/fm-continuation-resolve.sh" summary fm-supervise-daemon; then
+      out=$FM_PROGRAMME_RESOLVER_OUT
+      diag=$FM_PROGRAMME_RESOLVER_DIAG
+      rc=$FM_PROGRAMME_RESOLVER_RC
+    else
+      out=
+      diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+      rc=125
+    fi
+    fm_programme_relay_resolver_stderr "$rc" "$diag"
+    case "$rc" in
+      0)
+        if [ -n "$state" ]; then
+          token=$(printf '%s' "$out" | sed -n 's/.* identity=\([0-9a-f]*\).*/\1/p' | head -1)
+          presented=$(fm_programme_presented_identity "$state")
+          pending=$(fm_programme_pending_identity "$state")
+          if [ -n "$token" ] && { [ "${presented:0:12}" = "$token" ] || [ "${pending:0:12}" = "$token" ]; }; then
+            exit 0
+          fi
         fi
-      fi
-      printf ' | %s' "$(_collapse_newlines "$out")" ;;
-    3) : ;;
-    *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "$out")" ;;
-  esac
+        printf ' | %s' "$(_collapse_newlines "$out")" ;;
+      3) : ;;
+      *) printf ' | programme continuation resolver failed (exit %s): %s' "$rc" "$(_collapse_newlines "${diag:-$out}")" ;;
+    esac
+  )
 }
 
 # Flush the escalation buffer as ONE batched, single-line digest to the
@@ -1466,13 +1485,15 @@ handle_wake() {  # <reason> <state>
 }
 
 handle_durable_wakes() {  # <watcher-reason> <state>
-  local fallback_reason=$1 state=$2 out err tab epoch sequence kind key payload rest
-  local handled=0 failed=0 ack_through ack_generation
+  local fallback_reason=$1 state=$2 out err packet tab epoch sequence kind key payload rest
+  local handled=0 failed=0 drain_rc=0 ack_through ack_generation
   out=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || return 1
   err=$(mktemp "$state/.subsuper-wake-drain.XXXXXX") || { rm -f "$out"; return 1; }
-  if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then
-    cat "$err" >&2
-    rm -f "$out" "$err"
+  packet=$(mktemp "$state/.subsuper-wake-packet.XXXXXX") || { rm -f "$out" "$err"; return 1; }
+  FM_WAKE_ACK_PACKET_FD=3 "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err" 3> "$packet" || drain_rc=$?
+  if [ "$drain_rc" -ne 0 ] || ! fm_wake_ack_packet_parse "$packet"; then
+    sed 's/^/wake drain diagnostic: /' "$err" >&2 || true
+    rm -f "$out" "$err" "$packet"
     return 1
   fi
 
@@ -1486,16 +1507,16 @@ handle_durable_wakes() {  # <watcher-reason> <state>
   done < "$out"
   if [ "$handled" -eq 0 ]; then handle_wake "$fallback_reason" "$state" || failed=1; fi
 
-  ack_through=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$err" | tail -1)
-  ack_generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err" | tail -1)
-  grep -v '^WAKE_ACK_REQUIRED:' "$err" >&2 || true
-  rm -f "$out" "$err"
+  ack_through=$FM_WAKE_ACK_PACKET_SEQUENCE
+  ack_generation=$FM_WAKE_ACK_PACKET_GENERATION
+  sed 's/^/wake drain diagnostic: /' "$err" >&2 || true
+  rm -f "$out" "$err" "$packet"
   if [ "$failed" -ne 0 ]; then
     log "wake classification failed; retaining durable wakes"
     return 1
   fi
-  if [ -z "$ack_through" ] || [ -z "$ack_generation" ]; then
-    log "wake drain omitted its generation-bound acknowledgement; retaining durable wakes"
+  if [ "$FM_WAKE_ACK_PACKET_MODE" != required ]; then
+    log "wake drain omitted its generation-bound acknowledgement packet; retaining durable wakes"
     return 1
   fi
   "$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \

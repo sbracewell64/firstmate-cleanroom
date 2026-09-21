@@ -657,11 +657,12 @@ test_single_flight_admits_exactly_one_owner() {
 # an abandoned claim from one still deciding.
 #
 # These fixtures fabricate the LOCK-HOLDING claim shape a pre-generation build
-# leaves behind, so this section pins the legacy shim: a live legacy owner
-# still defers the gate, and an abandoned one is reclaimed once so the home
-# re-arms - with an identity-verified live owner retired via TERM first, and
-# an identityless one reclaimed without any signalling. The generation-claim
-# section below pins the current contract.
+# leaves behind, so this section pins the legacy shim: a proven-abandoned claim
+# is always reclaimed once so the home re-arms, an identity-verified live owner
+# is retired by exactly one delivered TERM and collected only by a later
+# invocation that freshly observes it gone, and an owner whose identity is
+# absent or unreadable is reclaimed without any signalling. The
+# generation-claim section below pins the current contract.
 
 # Fabricate a held owner lock: <dir> <pid> <role>. Plain-dir shape on purpose -
 # the hook must reclaim whatever a crashed or blocked owner left behind.
@@ -720,6 +721,237 @@ test_abandoned_owner_claim_is_reclaimed_and_rearms() {
   assert_absent "$dir/state/.claude-autoarm.lock" "reclaimed cycle left an owner lock behind"
   assert_absent "$dir/state/.claude-autoarm.lock.steal" "reclaim left its serialization mutex behind"
   pass "auto-arm: an abandoned owner claim is reclaimed so a lapsed cycle re-arms"
+}
+
+# A live owner whose recorded identity cannot be re-read is never signal
+# authority - but that missing evidence is not a veto either: the ledger's own
+# terminal proof still collects the claim, exactly as it does for the
+# identityless legacy lock shape above.
+test_unreadable_live_owner_identity_is_reclaimed_without_signalling() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/unreadable-live-owner-identity")
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record the live owner's identity"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  # A proc root that answers for the owner but yields no cmdline makes the
+  # identity re-read fail deterministically without depending on a real /proc.
+  mkdir -p "$dir/proc/$pid"
+  printf '%s (fixture) S 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23\n' "$pid" > "$dir/proc/$pid/stat"
+  : > "$dir/proc/$pid/cmdline"
+  export FM_PROC_ROOT_OVERRIDE="$dir/proc"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  unset FM_PROC_ROOT_OVERRIDE
+  # The only evidence that distinguishes "never signalled" here: the marker is
+  # always stripped on the collect path, so its absence afterwards would prove
+  # nothing about whether an attempt was ever recorded.
+  kill -0 "$pid" 2>/dev/null || fail "an unverifiable owner must be reclaimed without being signalled"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "an unreadable identity must not withhold a ledger-proven reclaim"
+  [ -e "$dir/state/arm-ran" ] || fail "identity-read failure left the home unarmed with work in flight"
+  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  assert_absent "$dir/state/.claude-autoarm.lock" "identity-read failure left the reclaimed owner lock behind"
+  pass "auto-arm: an unreadable live owner identity is reclaimed without any signalling"
+}
+
+# The retirement marker is published through a mktemp file INSIDE the owner
+# lock. A crash between mktemp and its rename strands that temporary, and an
+# unknown entry keeps rmdir failing, which would make the legacy lock
+# permanently uncollectible and leave the home unable to re-arm.
+test_stranded_retirement_temporary_never_blocks_collection() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/stranded-retirement-temp")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  : > "$dir/state/.claude-autoarm.lock/.term-sent-identity.tmp.Ab3x9Z"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a crash-stranded retirement temporary must not make the legacy lock uncollectible"
+  [ -e "$dir/state/arm-ran" ] || fail "the stranded temporary left the home unarmed with work in flight"
+  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  assert_absent "$dir/state/.claude-autoarm.lock" "the stranded retirement temporary blocked the lock's removal"
+  pass "auto-arm: a crash-stranded retirement temporary never makes a legacy lock uncollectible"
+}
+
+# The counterfactual that keeps the sweep exact rather than a blanket wipe: a
+# name that is not precisely this prefix plus mktemp's six template characters
+# is an unknown entry, and an unknown entry still refuses collection instead of
+# being deleted out from under whoever wrote it. The refusal has to happen
+# BEFORE any owner evidence is deleted, or the surviving directory becomes a
+# claim nothing can classify: no role file means no later invocation can even
+# recognise it as an auto-arm claim, so the home could never collect or re-arm.
+test_unknown_lock_entry_refuses_with_its_claim_intact() {
+  local dir out status pid lock
+  dir=$(make_primary_dir "$TMP_ROOT/unknown-lock-entry")
+  lock="$dir/state/.claude-autoarm.lock"
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  : > "$lock/.term-sent-identity.tmp.TOOLONG7"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" "an unknown lock entry must refuse collection rather than be swept"
+  [ -z "$out" ] || fail "the refused collection produced output: $out"
+  assert_absent "$dir/state/arm-ran" "the refused collection armed a competing watcher"
+  assert_present "$lock/.term-sent-identity.tmp.TOOLONG7" \
+    "an entry outside the exact retirement-temporary shape was deleted"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "the refused collection left its serialization mutex behind"
+  [ "$(cat "$lock/pid" 2>/dev/null)" = "$pid" ] \
+    || fail "the refused collection destroyed the owner pid it could not remove"
+  [ "$(cat "$lock/role" 2>/dev/null)" = autoarm ] \
+    || fail "the refused collection destroyed the role file, leaving an unclassifiable claim"
+
+  # Once the unclassifiable entry is gone the very same claim must collect, so
+  # the refusal is a deferral rather than a permanent wedge.
+  rm -f "$lock/.term-sent-identity.tmp.TOOLONG7"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "the preserved claim did not collect once its unknown entry was gone"
+  [ -e "$dir/state/arm-ran" ] || fail "the preserved claim never re-armed the home"
+  assert_absent "$lock" "the preserved claim was not collected after its unknown entry was gone"
+  pass "auto-arm: an unknown lock entry refuses collection with its claim intact and collectible"
+}
+
+# The independent mutation for the other half of the boundary: the census
+# passes, so evidence IS deleted, and removal still fails (an unwritable
+# parent). The classifiable evidence has to come back rather than leave an
+# anonymous husk behind.
+test_failed_lock_removal_restores_classifiable_evidence() {
+  local dir state lock status identity pid
+  dir=$(make_primary_dir "$TMP_ROOT/failed-lock-removal")
+  state="$dir/state"
+  lock="$state/.claude-autoarm.lock"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record the owner identity"
+  identity=$(cat "$lock/pid-identity")
+  chmod a-w "$state" || fail "could not make the lock's parent unwritable"
+  status=0
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_lock_remove_path "$2"' \
+    _ "$dir/bin/fm-wake-lib.sh" "$lock" || status=$?
+  chmod u+w "$state" || fail "could not restore the lock parent's mode"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 1 "$status" "a removal that could not finish must report failure"
+  assert_present "$lock" "the fixture did not reproduce a removal failure"
+  [ "$(cat "$lock/pid" 2>/dev/null)" = "$pid" ] \
+    || fail "a failed removal left the surviving lock without its owner pid"
+  [ "$(cat "$lock/role" 2>/dev/null)" = autoarm ] \
+    || fail "a failed removal left the surviving lock without its role"
+  [ "$(cat "$lock/pid-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed removal destroyed the owner's identity evidence"
+  pass "fm-lock: a removal that fails after the census puts its classifiable evidence back"
+}
+
+# The one recorded TERM allowance is owner evidence too: a collection attempt
+# that ends up failing must leave the marker exactly where it was, or the next
+# invocation sees no record and signals the very same owner a second time.
+# An unclassifiable entry makes the census refuse, which is the documented way
+# collection fails after the marker was already delivered.
+test_failed_collection_retains_the_delivered_term_marker() {
+  local dir state lock status identity pid
+  dir=$(make_primary_dir "$TMP_ROOT/failed-collection-term-marker")
+  state="$dir/state"
+  lock="$state/.claude-autoarm.lock"
+  # A dead recorded owner skips the identity branch, so this exercises the
+  # collect path that reaches the marker rather than the retirement path.
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record the owner identity"
+  identity=$(cat "$lock/pid-identity")
+  printf '%s\n' "$identity" > "$lock/term-sent-identity"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  : > "$lock/held-by-an-unclassifiable-entry"
+  status=0
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_autoarm_release_abandoned "$2" 300' \
+    _ "$dir/bin/fm-wake-lib.sh" "$state" || status=$?
+  expect_code 1 "$status" "a collection that could not finish must report failure"
+  assert_present "$lock" "the fixture did not reproduce a failed collection"
+  [ "$(cat "$lock/term-sent-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed collection spent the owner's one recorded TERM allowance"
+  [ "$(cat "$lock/pid-identity" 2>/dev/null)" = "$identity" ] \
+    || fail "a failed collection destroyed the owner's identity evidence"
+  assert_absent "$state/.claude-autoarm.lock.steal" "the failed collection left its serialization mutex behind"
+  pass "auto-arm: a failed collection retains the delivered TERM marker"
+}
+
+# fm_lock_try_create publishes with `ln -s "$ownerdir" "$lockdir"`. When a
+# directory-shaped lock exists at that path, ln instead drops the link INSIDE
+# it, and a process killed before fm_lock_remove_stray_owner_link runs strands
+# it. Nothing reads that entry, so it must not make the lock uncollectible.
+test_stray_owner_link_crash_residue_never_blocks_collection() {
+  local dir out status pid lock stray
+  dir=$(make_primary_dir "$TMP_ROOT/stray-owner-link")
+  lock="$dir/state/.claude-autoarm.lock"
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  # Reproduce the crash residue exactly as ln -s would leave it: an owner
+  # directory this lock would have minted, linked from inside the lock.
+  stray="$lock.owner.Kq7w2X"
+  mkdir -p "$stray"
+  ln -s "$stray" "$lock/" || fail "could not reproduce the stray owner link"
+  [ -L "$lock/$(basename "$stray")" ] || fail "the fixture did not strand a link inside the lock"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a stray owner link must not make a proven-abandoned claim uncollectible"
+  [ -e "$dir/state/arm-ran" ] || fail "the stray owner link left the home unarmed with work in flight"
+  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
+  assert_absent "$lock" "the stray owner link blocked the lock's removal"
+  pass "auto-arm: a stray owner-link crash residue never makes a legacy lock uncollectible"
+}
+
+# The negative control that keeps the owner-link recovery exact: a symlink of
+# the same NAME shape whose target is not the owner directory this lock would
+# have minted is not this lock's residue, so it still refuses collection and
+# is never deleted.
+test_foreign_owner_shaped_link_still_refuses_collection() {
+  local dir out status pid lock foreign name
+  dir=$(make_primary_dir "$TMP_ROOT/foreign-owner-link")
+  lock="$dir/state/.claude-autoarm.lock"
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_epoch "$dir" 464 "$pid" rewake
+  foreign="$dir/state/somewhere-else"
+  mkdir -p "$foreign"
+  name="$(basename "$lock").owner.Kq7w2X"
+  ln -s "$foreign" "$lock/$name" || fail "could not plant the foreign owner-shaped link"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "a link that is not this lock's own residue must refuse collection"
+  [ -z "$out" ] || fail "the refused collection produced output: $out"
+  assert_absent "$dir/state/arm-ran" "the refused collection armed a competing watcher"
+  [ -L "$lock/$name" ] || fail "a link outside this lock's own owner target was deleted"
+  [ "$(cat "$lock/role" 2>/dev/null)" = autoarm ] \
+    || fail "the refused collection destroyed the role file, leaving an unclassifiable claim"
+  pass "auto-arm: an owner-shaped link pointing elsewhere refuses collection and survives"
 }
 
 test_arming_claim_with_fresh_beacon_is_never_reclaimed() {
@@ -898,8 +1130,8 @@ test_terminal_check_claim_is_never_reclaimed() {
 # A proven-stuck legacy owner that is still ALIVE and identity-verified is
 # retired with TERM before its lock is removed, because old-build code cannot
 # re-check generations and would otherwise resume and act after supersession.
-test_stuck_live_legacy_owner_is_retired_and_reclaimed() {
-  local dir out status pid
+test_stuck_live_legacy_owner_is_retired_and_deferred() {
+  local dir out status pid term_status
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -910,21 +1142,27 @@ test_stuck_live_legacy_owner_is_retired_and_reclaimed() {
   record_autoarm_epoch "$dir" 464 "$pid" arming
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "a proven-stuck identity-verified live legacy owner must be retired and reclaimed"
-  kill -0 "$pid" 2>/dev/null && fail "the stuck legacy owner was reclaimed without being retired"
-  wait "$pid" 2>/dev/null || true
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm"
-  assert_contains "$out" "firstmate watcher wake" "the reclaimed cycle must still translate its wake"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the legacy owner lock behind"
-  pass "auto-arm: a stuck live legacy owner is retired via TERM and its lock reclaimed"
+  expect_code 0 "$status" "a proven-stuck identity-verified live legacy owner must defer reconciliation"
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the stuck legacy owner was not retired by TERM (wait reported $term_status)"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the deferred home re-armed before a fresh dead-owner observation"
+  assert_present "$dir/state/.claude-autoarm.lock" "deferred reconciliation lost the legacy owner lock"
+
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "a later firing did not collect the now-dead exact owner"
+  [ -e "$dir/state/arm-ran" ] || fail "the later dead-owner reconciliation did not re-arm"
+  assert_contains "$out" "firstmate watcher wake" "the later cycle did not translate its wake"
+  assert_absent "$dir/state/.claude-autoarm.lock" "dead-owner collection left the legacy lock behind"
+  pass "auto-arm: a live exact legacy owner defers collection until a fresh dead-owner observation"
 }
 
 # The SIGSTOP counterfactual: a stopped legacy owner survives the bounded
-# retirement wait with TERM queued, and the reclaim must proceed anyway - a
-# pending TERM on the verified owner is retirement-safe because delivery
-# precedes any further user code when the process continues.
+# retirement wait with TERM queued. The one delivered attempt is spent, so no
+# later firing signals it again, and its lock is held until an invocation
+# freshly observes it gone - the queued TERM itself is never collection proof.
 test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
-  local dir out status pid i
+  local dir out status pid term_status
   dir=$(make_primary_dir "$TMP_ROOT/legacy-term-stopped")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
@@ -936,18 +1174,67 @@ test_stopped_legacy_owner_is_reclaimed_with_term_pending() {
   touch -t 202001010000 "$dir/state/.last-watcher-beat"
   kill -STOP "$pid" 2>/dev/null || fail "could not stop the legacy owner fixture"
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "a stopped legacy owner with TERM queued must not block the reclaim forever"
-  [ -e "$dir/state/arm-ran" ] || fail "the reclaimed home did not re-arm past the stopped owner"
-  assert_absent "$dir/state/.claude-autoarm.lock" "reclaim left the stopped owner's lock behind"
+  expect_code 0 "$status" "a stopped legacy owner with TERM queued must defer collection"
+  [ ! -e "$dir/state/arm-ran" ] || fail "the stopped owner was reclaimed before termination was observed"
+  assert_present "$dir/state/.claude-autoarm.lock" "deferred stopped-owner reconciliation lost its lock"
+  [ "$(cat "$dir/state/.claude-autoarm.lock/term-sent-identity")" = "$(cat "$dir/state/.claude-autoarm.lock/pid-identity")" ] \
+    || fail "the exact retirement attempt was not bound inside the retained owner lock"
+
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" "a later firing must defer while the signalled exact owner is still live"
+  [ -z "$out" ] || fail "repeated stopped-owner deferral produced output: $out"
+  [ ! -e "$dir/state/arm-ran" ] || fail "a later firing re-armed before observing owner death"
+  assert_present "$dir/state/.claude-autoarm.lock" "a later firing collected the still-live signalled owner"
+  [ "$(find "$dir/state/.claude-autoarm.lock" -maxdepth 1 -type f -name 'term-sent-identity' | wc -l | tr -d ' ')" = 1 ] \
+    || fail "a later firing published more than one retirement marker"
   kill -CONT "$pid" 2>/dev/null || true
-  i=0
-  while [ "$i" -lt 40 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  kill -0 "$pid" 2>/dev/null && fail "the queued TERM did not retire the owner on continue"
-  wait "$pid" 2>/dev/null || true
-  pass "auto-arm: a SIGSTOPped legacy owner is reclaimed with TERM pending and dies on continue"
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the queued TERM did not retire the owner on continue (wait reported $term_status)"
+  pass "auto-arm: a SIGSTOPped legacy owner retains its lock until TERM is delivered and death is observed"
+}
+
+# The retirement allowance is spent by DELIVERY, not by the intent to signal.
+# A kill that positively did not happen must withdraw the recorded attempt,
+# because a retained marker would short-circuit every later firing and strand
+# the exact owner's lock forever.
+test_undelivered_term_withdraws_the_retirement_allowance() {
+  local dir pid status marker term_status
+  dir=$(make_primary_dir "$TMP_ROOT/legacy-term-undelivered")
+  : > "$dir/state/task1.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  record_autoarm_owner_identity "$dir" "$pid" || fail "could not record a claim pid-identity"
+  record_autoarm_epoch "$dir" 464 "$pid" arming
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  marker="$dir/state/.claude-autoarm.lock/term-sent-identity"
+
+  status=0
+  FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    kill() { case "$1" in -0) command kill "$@" ;; *) return 1 ;; esac; }
+    fm_autoarm_release_abandoned "$2" 300
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  expect_code 1 "$status" "an undelivered TERM must not report a collection"
+  kill -0 "$pid" 2>/dev/null || fail "the owner died though delivery was refused"
+  assert_present "$dir/state/.claude-autoarm.lock" "an undelivered TERM removed the exact owner lock"
+  assert_absent "$marker" "an undelivered TERM kept its unspent retirement allowance"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "the refused retirement left its serialization mutex behind"
+
+  status=0
+  FM_STATE_OVERRIDE="$dir/state" bash -c '
+    . "$1"
+    fm_autoarm_release_abandoned "$2" 300
+  ' _ "$dir/bin/fm-wake-lib.sh" "$dir/state" || status=$?
+  expect_code 1 "$status" "the retry still defers collection to a later dead-owner observation"
+  [ "$(cat "$marker" 2>/dev/null)" = "$(cat "$dir/state/.claude-autoarm.lock/pid-identity")" ] \
+    || fail "the withdrawn allowance was not available to a later retirement attempt"
+  wait "$pid"; term_status=$?
+  [ "$term_status" -eq 143 ] \
+    || fail "the retried TERM did not retire the exact owner (wait reported $term_status)"
+  pass "auto-arm: a TERM that was never delivered withdraws its one-shot retirement allowance"
 }
 
 # --- generation claims: optimistic single-flight and supersession --------------
@@ -1170,6 +1457,13 @@ test_owner_mutex_contention_preserves_failure_episode_reset
 test_arms_for_x_mode_poll_need_without_inflight
 test_single_flight_admits_exactly_one_owner
 test_abandoned_owner_claim_is_reclaimed_and_rearms
+test_unreadable_live_owner_identity_is_reclaimed_without_signalling
+test_stray_owner_link_crash_residue_never_blocks_collection
+test_foreign_owner_shaped_link_still_refuses_collection
+test_stranded_retirement_temporary_never_blocks_collection
+test_unknown_lock_entry_refuses_with_its_claim_intact
+test_failed_lock_removal_restores_classifiable_evidence
+test_failed_collection_retains_the_delivered_term_marker
 test_arming_claim_with_fresh_beacon_is_never_reclaimed
 test_fresh_arming_claim_with_stale_beacon_is_never_reclaimed
 test_claim_not_named_by_the_ledger_is_never_reclaimed
@@ -1177,8 +1471,9 @@ test_pid_reused_arming_claim_is_reclaimed_and_rearms
 test_pid_reused_claim_with_no_ledger_is_reclaimed_and_rearms
 test_identity_matched_arming_claim_is_never_reclaimed
 test_terminal_check_claim_is_never_reclaimed
-test_stuck_live_legacy_owner_is_retired_and_reclaimed
+test_stuck_live_legacy_owner_is_retired_and_deferred
 test_stopped_legacy_owner_is_reclaimed_with_term_pending
+test_undelivered_term_withdraws_the_retirement_allowance
 test_open_generation_claim_defers_without_any_lock
 test_stuck_generation_claim_is_superseded_and_rearms
 test_identityless_ledger_never_defers

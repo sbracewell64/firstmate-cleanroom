@@ -127,6 +127,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 RESOLVER="$SCRIPT_DIR/fm-continuation-resolve.sh"
+# shellcheck source=bin/fm-programme-presentation-lib.sh
+. "$SCRIPT_DIR/fm-programme-presentation-lib.sh"
+trap fm_programme_resolver_cleanup EXIT
+trap 'fm_programme_resolver_cleanup; exit 129' HUP
+trap 'fm_programme_resolver_cleanup; exit 130' INT
+trap 'fm_programme_resolver_cleanup; exit 143' TERM
 
 PROJECTION_SCHEMA='fm-programme-projection/v1'
 # The measured concurrency ladder and its hard maximum. This script reports a
@@ -185,20 +191,37 @@ parse_common() {
 }
 
 # --- the resolver's typed result -----------------------------------------------
+#
+# Typed stdout and diagnostic stderr are separate protocol channels.
+# The observed hosted schema-failure shape was consistent with diagnostic bytes
+# entering the typed document, but no emitting process was identified; that
+# incident origin remains CNO.
+# The retained noisy-resolver regression proves this boundary without claiming
+# the unattributed occurrence as its cause.
 
 RESOLUTION=''
 read_resolution() {
-  local out rc=0
+  local out diag rc=0
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   [ -x "$RESOLVER" ] || fail "resolver not found: $RESOLVER"
-  out=$("$RESOLVER" resolve ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} 2>&1) || rc=$?
+  if fm_programme_resolver_capture "$RESOLVER" resolve fm-programme-projection \
+      ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"}; then
+    out=$FM_PROGRAMME_RESOLVER_OUT
+    diag=$FM_PROGRAMME_RESOLVER_DIAG
+    rc=$FM_PROGRAMME_RESOLVER_RC
+  else
+    out=
+    diag=${FM_PROGRAMME_RESOLVER_DIAG:-'resolver diagnostics: staging was unavailable'}
+    rc=125
+  fi
+  fm_programme_relay_resolver_stderr "$rc" "$diag"
   case "$rc" in
     0) ;;
-    3) printf '%s\n' "$out" >&2; exit 3 ;;
-    *) fail "resolver failed (exit $rc): $out" ;;
+    3) exit 3 ;;
+    *) fail "resolver failed (exit $rc)" ;;
   esac
   printf '%s' "$out" | jq -e '.schema == "fm-continuation-resolution/v1"' >/dev/null 2>&1 \
-    || fail "resolver printed an unrecognized result schema"
+    || { printf '%s\n' "$out" | fm_programme_render_non_actionable >&2; fail "resolver printed an unrecognized result schema on stdout"; }
   RESOLUTION=$(printf '%s' "$out" | jq -c '.')
 }
 

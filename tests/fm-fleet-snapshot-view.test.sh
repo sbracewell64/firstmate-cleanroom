@@ -1015,7 +1015,68 @@ SH
   pass "a schema-rejected sampled summary is replaced by {} and never shifts the record bindings"
 }
 
+# The snapshot's only resolver capture runs inside a command substitution, so
+# the staging file it allocates never exists in the process whose top-level
+# traps would remove it. A TERM that reaches the capturing subshell - the
+# ordinary process-group stop - must still leave no staging file behind.
+test_interrupted_programme_capture_leaves_no_staging_file() {
+  local home root ready block snapshot_pid resolver_pid
+  home=$(make_home interrupted-programme-capture)
+  root="$TMP_ROOT/interrupted-programme-capture-root"
+  mkdir -p "$root"
+  cp -a "$ROOT/bin" "$root/bin"
+  printf 'programme=%s\nroot=%s\n' "$home/programme.json" "$home" > "$home/config/programme"
+
+  ready="$home/resolver-ready"
+  block="$home/resolver-block"
+  mkfifo "$ready" "$block"
+  # $$ rather than $BASHPID: this file is also a stock macOS Bash 3.2 consumer,
+  # which has no BASHPID, and the resolver is an exec'd script whose $$ is its
+  # own pid either way.
+  cat > "$root/bin/fm-continuation-resolve.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FM_TEST_RESOLVER_PID"
+printf 'ready\n' > "$FM_TEST_READY_FIFO"
+IFS= read -r _release < "$FM_TEST_BLOCK_FIFO"
+printf '{}\n'
+SH
+  chmod +x "$root/bin/fm-continuation-resolve.sh"
+
+  export FM_TEST_READY_FIFO="$ready" FM_TEST_BLOCK_FIFO="$block" FM_TEST_RESOLVER_PID="$home/resolver.pid"
+  exec 9<> "$ready"
+  TMPDIR="$home" FM_HOME="$home" "$root/bin/fm-fleet-snapshot.sh" --json \
+    >"$home/interrupted.out" 2>"$home/interrupted.err" &
+  snapshot_pid=$!
+  if ! IFS= read -r -t 30 _ready <&9; then
+    exec 9>&-
+    kill -TERM "$snapshot_pid" 2>/dev/null || true
+    wait "$snapshot_pid" 2>/dev/null || true
+    unset FM_TEST_READY_FIFO FM_TEST_BLOCK_FIFO FM_TEST_RESOLVER_PID
+    fail "the resolver never reached the deterministic interruption barrier"
+  fi
+  exec 9>&-
+  resolver_pid=$(cat "$home/resolver.pid")
+  unset FM_TEST_READY_FIFO FM_TEST_BLOCK_FIFO FM_TEST_RESOLVER_PID
+  find "$home" -maxdepth 1 -type f -name 'fm-fleet-snapshot.*' -print -quit | grep -q . \
+    || fail "the capture staged no diagnostics file; this regression's premise is stale"
+  fm_term_capture_ancestry "$resolver_pid" "$snapshot_pid" \
+    || fail "the capture no longer runs in a subshell; this regression's premise is stale"
+  # The staging owner is a grandchild this shell cannot wait on, and the
+  # snapshot's own shell traps nothing, so signalling it would kill it before
+  # that grandchild finished and leave this assertion racing the cleanup.
+  # Waiting instead orders them: the snapshot's capture substitution only ends
+  # when its last writer - the staging owner, after its cleanup - closes the
+  # pipe, so the snapshot cannot exit before the staging file is gone.
+  wait "$snapshot_pid" 2>/dev/null || true
+
+  if find "$home" -maxdepth 1 -type f -name 'fm-fleet-snapshot.*' -print -quit | grep -q .; then
+    fail "an interrupted snapshot capture left resolver staging files: $(find "$home" -maxdepth 1 -type f -name 'fm-fleet-snapshot.*')"
+  fi
+  pass "an interrupted fleet-snapshot programme capture cleans its staging in the subshell that owns it"
+}
+
 test_empty_fleet_json
+test_interrupted_programme_capture_leaves_no_staging_file
 test_fixture_snapshot_json
 test_large_backlog_streams_past_argv_limit
 test_sampled_summary_multi_document_stdout_is_rejected_whole

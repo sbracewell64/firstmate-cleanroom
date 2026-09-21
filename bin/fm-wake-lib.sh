@@ -294,15 +294,79 @@ fm_watcher_supervision_verdict() {
   return 0
 }
 
+FM_LOCK_KNOWN_FILES='pid fm-home pid-identity term-sent-identity role watcher-path'
+
+# Every entry a lock directory is allowed to carry: the fixed names above, plus
+# the two crash residues this repo can strand inside a directory-shaped lock.
+# The retirement marker is published through a mktemp file INSIDE the lock, and
+# a crash between mktemp and its rename strands exactly one of those names.
+# Only that exact shape - this prefix plus mktemp's six template characters, a
+# regular file, never a symlink - counts as classifiable.
+fm_lock_stranded_marker_temp_is_own() {  # <entry-path>
+  local entry=$1 name=${1##*/}
+  case "$name" in
+    .term-sent-identity.tmp.??????) [ -f "$entry" ] && [ ! -L "$entry" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# The second residue shape: fm_lock_try_create publishes its claim with
+# `ln -s "$ownerdir" "$lockdir"`, and when a directory-shaped lock appears at
+# that path between the existence check and the link, ln creates
+# "$lockdir/$(basename "$ownerdir")" instead. fm_lock_remove_stray_owner_link
+# sweeps that on the normal path; a process killed in between leaves it.
+# Classifiable only when it is a symlink whose name is this lock's own owner
+# template AND whose target is exactly the owner directory this lock would
+# have minted, so it can only ever be this lock's own crash residue. Nothing
+# reads it, so it carries no ownership authority to preserve.
+fm_lock_stray_owner_link_is_own() {  # <lockdir> <entry-path>
+  local lockdir=$1 entry=$2 name=${2##*/} lock_abs target
+  [ -L "$entry" ] || return 1
+  case "$name" in
+    "${lockdir##*/}".owner.??????) ;;
+    *) return 1 ;;
+  esac
+  lock_abs=$(fm_lock_abs_path "$lockdir") || return 1
+  target=$(readlink "$entry" 2>/dev/null) || return 1
+  [ "$target" = "$lock_abs.owner.${name##*.}" ]
+}
+
+fm_lock_entry_is_known() {  # <lockdir> <entry-path>
+  local lockdir=$1 entry=$2 name=${2##*/} known
+  for known in $FM_LOCK_KNOWN_FILES; do
+    [ "$name" != "$known" ] || return 0
+  done
+  fm_lock_stranded_marker_temp_is_own "$entry" && return 0
+  fm_lock_stray_owner_link_is_own "$lockdir" "$entry"
+}
+
+# Refuse the census unless EVERY entry is classifiable. fm_lock_remove_path
+# asks this BEFORE it deletes anything, because clearing a lock's pid, role and
+# pid-identity and only then discovering rmdir cannot finish would leave a
+# directory that no later claim can classify, signal, collect or re-arm - the
+# owner evidence would be gone while the lock itself survived forever.
+fm_lock_entries_all_known() {  # <lockdir>
+  local lockdir=$1 entry
+  for entry in "$lockdir"/* "$lockdir"/.[!.]* "$lockdir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    fm_lock_entry_is_known "$lockdir" "$entry" || return 1
+  done
+  return 0
+}
+
 fm_lock_clean_known_files() {
-  local lockdir=$1
-  rm -f \
-    "$lockdir/pid" \
-    "$lockdir/fm-home" \
-    "$lockdir/pid-identity" \
-    "$lockdir/role" \
-    "$lockdir/watcher-path" \
-    2>/dev/null || true
+  local lockdir=$1 known entry
+  for known in $FM_LOCK_KNOWN_FILES; do
+    rm -f "$lockdir/$known" 2>/dev/null || true
+  done
+  for entry in "$lockdir"/* "$lockdir"/.[!.]* "$lockdir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    fm_lock_stranded_marker_temp_is_own "$entry" \
+      || fm_lock_stray_owner_link_is_own "$lockdir" "$entry" \
+      || continue
+    rm -f -- "$entry" 2>/dev/null || true
+  done
+  return 0
 }
 
 fm_lock_set_role() {
@@ -440,15 +504,30 @@ fm_lock_try_create() {
 }
 
 fm_lock_remove_path() {
-  local lockdir=$1 ownerdir
+  local lockdir=$1 ownerdir known value i
+  local -a saved_names=() saved_values=()
   if [ -L "$lockdir" ]; then
     ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
     rm -f "$lockdir" 2>/dev/null || return 1
     [ -n "$ownerdir" ] && fm_lock_discard_owner "$ownerdir"
     return 0
   fi
+  fm_lock_entries_all_known "$lockdir" || return 1
+  for known in $FM_LOCK_KNOWN_FILES; do
+    [ -f "$lockdir/$known" ] && [ ! -L "$lockdir/$known" ] || continue
+    value=$(cat "$lockdir/$known" 2>/dev/null) || return 1
+    saved_names+=("$known")
+    saved_values+=("$value")
+  done
   fm_lock_clean_known_files "$lockdir"
-  rmdir "$lockdir" 2>/dev/null
+  rmdir "$lockdir" 2>/dev/null && return 0
+  # The census passed but removal still failed (a racing writer, an unwritable
+  # parent). Put the classifiable evidence back so the surviving lock stays a
+  # claim a later invocation can classify rather than an anonymous husk.
+  for (( i = 0; i < ${#saved_names[@]}; i++ )); do
+    printf '%s\n' "${saved_values[$i]}" > "$lockdir/${saved_names[$i]}" 2>/dev/null || true
+  done
+  return 1
 }
 
 fm_lock_mid_acquire_is_fresh() {
@@ -1061,9 +1140,22 @@ fm_failure_episode_reset() {
 # lock carries a role file only in that legacy shape, and in the guard's own
 # short terminal-check hold): a live legacy owner still defers per the legacy
 # proof, and a proven-abandoned one is reclaimed once through the steal mutex
-# - with an identity-verified live owner retired via TERM first, because old
-# code cannot re-check generations - so an upgrade mid-session can neither
-# double-arm nor deadlock behind a hung legacy hook.
+# - an identity-verified live owner is first retired by the one recorded TERM
+# this shim ever delivers to it, because old code cannot re-check generations,
+# and is collected only by a later invocation that freshly observes it gone,
+# while an owner whose identity is absent or unreadable is never signalled and
+# is reclaimed as-is - so an upgrade mid-session can never double-arm.
+#
+# The deferral is NOT deadlock-free, and that is the accepted trade. An
+# identity-verified live owner that survives its one TERM keeps its exact lock
+# on every later pass, so fm_autoarm_release_abandoned keeps returning 1,
+# bin/fm-turnend-guard.sh's terminal_fail_open returns 1, and the guard blocks
+# every turn end instead of spending its one attended fail-open alarm. That is
+# the SAFE direction - an unsupervised blind stop is never allowed, and the
+# operator sees a persistent block rather than silence - but a hung old-build
+# hook that ignores TERM does hold the home in that blocked state until it is
+# killed. Collecting it on evidence weaker than a fresh dead-owner observation
+# is what the packet contract forbids, so the block stands.
 _fm_autoarm_epoch_field() {  # <epoch-file> <field>
   local file=$1 field=$2 tok
   local -a toks=()
@@ -1254,6 +1346,13 @@ fm_autoarm_reset_owned() {  # <state-dir> <gen>
 #      and either is not "arming", or is "arming" while both the ledger entry
 #      and the watcher beacon are older than the guard grace (the same stuck
 #      proof as fm_autoarm_claim_open).
+#
+# Absent or unreadable identity evidence is never authority in either
+# direction: it cannot prove abandonment on its own (step 3 needs a readable
+# mismatch), and it cannot withhold the ledger proof of steps 1, 2 and 4 -
+# a legacy lock carries no identity at all, so treating that shape as
+# undecidable would make it permanently uncollectible and put every Stop
+# participant back behind the 2026-08-14 blind-turn lapse.
 fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} epoch lock role pid owner outcome recorded current
   lock="$state/.claude-autoarm.lock"
@@ -1296,20 +1395,29 @@ fm_autoarm_claim_abandoned() {  # <state-dir> [grace]
 #
 # Old-build code cannot re-check generations, so a LIVE proven-abandoned
 # legacy owner whose recorded identity is verified to match its pid is retired
-# with TERM before the lock is removed: once the TERM is successfully queued
-# the process can never resume normal execution (delivery precedes any further
-# user code when it continues), so a short bounded wait for observed exit is a
-# courtesy, not a requirement. A pid is never signalled without a verified
-# matching identity; when the kill itself fails or the identity stops matching
-# mid-procedure (pid reuse), the reclaim refuses. Missing identity evidence
-# never blocks the reclaim of a proven-abandoned claim - it only disables the
-# TERM and the ledger graft below, keeping the documented bounded
-# upgrade-window residual instead of the deadlock.
+# with one TERM and this invocation defers without removing its lock.
+# A later invocation may collect only after liveness reads the exact owner as
+# gone; a queued signal or a process that exits during this invocation is never
+# itself lock-reclamation authority.
+# A pid is never signalled without a verified matching identity, and an
+# identity that changes mid-procedure - between publishing the attempt and the
+# kill - withdraws that attempt and defers. The one permitted attempt is an
+# allowance only once the signal is actually delivered: the marker is published
+# before the kill so a crash in between can never yield a second TERM, and a
+# kill that positively did not happen withdraws it again rather than stalling
+# the owner forever.
+# An identity that is absent, unreadable, or no longer matched by its live pid
+# is never signal authority, and it never blocks collection either: such an
+# owner is reclaimed as-is, which is safe exactly because the recorded owner is
+# gone or was never provably this process, and keeps the documented bounded
+# upgrade-window residual instead of a deadlock.
 fm_autoarm_release_abandoned() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp i
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock steal epoch lock_pid recorded current owner line1 tmp
+  local term_marker term_record retire_tmp confirm
   lock="$state/.claude-autoarm.lock"
   steal="$lock.steal"
   epoch="$state/.claude-autoarm-epoch"
+  term_marker="$lock/term-sent-identity"
   fm_autoarm_claim_abandoned "$state" "$grace" || return 1
   fm_lock_try_acquire "$steal" || return 1
   if ! fm_autoarm_claim_abandoned "$state" "$grace"; then
@@ -1322,21 +1430,45 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
     && current=$(fm_pid_identity "$lock_pid" 2>/dev/null) \
     && [ -n "$current" ] && [ "$current" = "$recorded" ]; then
     # A live pid still answering to the recorded identity IS the genuine
-    # legacy owner (proven stuck or blocked after a terminal write): retire it
-    # before removing its lock, because old-build code cannot re-check
-    # generations. A pid the recorded identity does NOT verify - reused,
-    # unverifiable, or never recorded - is NEVER signalled; those shapes are
-    # reclaimed as-is, which is safe exactly because the recorded owner is
-    # gone or was never provably this process.
-    if ! kill -TERM "$lock_pid" 2>/dev/null; then
+    # legacy owner (proven stuck or blocked after a terminal write).
+    # Record the one permitted retirement attempt inside that exact owner's
+    # retained lock before signalling, so a later firing cannot deliver TERM
+    # again while waiting to observe death.
+    if [ -e "$term_marker" ]; then
+      [ -f "$term_marker" ] && [ ! -L "$term_marker" ] \
+        || { fm_lock_release "$steal"; return 1; }
+      term_record=$(cat "$term_marker" 2>/dev/null) \
+        || { fm_lock_release "$steal"; return 1; }
+      [ "$term_record" = "$recorded" ] \
+        || { fm_lock_release "$steal"; return 1; }
       fm_lock_release "$steal"
       return 1
     fi
-    i=0
-    while [ "$i" -lt 20 ] && fm_pid_alive "$lock_pid"; do
-      sleep 0.05
-      i=$((i + 1))
-    done
+    retire_tmp=$(mktemp "$lock/.term-sent-identity.tmp.XXXXXX") \
+      || { fm_lock_release "$steal"; return 1; }
+    if ! printf '%s\n' "$recorded" > "$retire_tmp" \
+      || ! chmod 0600 "$retire_tmp" \
+      || ! mv -f -- "$retire_tmp" "$term_marker"; then
+      rm -f -- "$retire_tmp"
+      fm_lock_release "$steal"
+      return 1
+    fi
+    # Re-check immediately after publishing the attempt and before signalling
+    # to narrow the pid-reuse window. An attempt that provably delivered no
+    # signal is withdrawn again so the exact owner stays retirable.
+    confirm=$(fm_pid_identity "$lock_pid" 2>/dev/null) || confirm=
+    if [ "$confirm" != "$recorded" ] || ! kill -TERM "$lock_pid" 2>/dev/null; then
+      rm -f -- "$term_marker" 2>/dev/null || true
+      fm_lock_release "$steal"
+      return 1
+    fi
+    # The stop attempt and later collection are separate authority mutations,
+    # so this pass never inspects whether the signal has landed yet: the
+    # outcome is the same either way and waiting for an exit would only delay
+    # the Stop hook while holding the steal mutex. Retain the exact lock; only
+    # a fresh invocation that observes the owner gone may collect it.
+    fm_lock_release "$steal"
+    return 1
   fi
   # Preserve the legacy lock's identity evidence in the ledger before the lock
   # disappears, keeping the ledger's original mtime so the stuck proof's age
@@ -1354,6 +1486,17 @@ fm_autoarm_release_abandoned() {  # <state-dir> [grace]
       :
     fi
     rm -f "$tmp" 2>/dev/null || true
+  fi
+  # Validate the marker's shape but never delete it here: it is one of
+  # FM_LOCK_KNOWN_FILES, so fm_lock_remove_path saves it before the census and
+  # restores it when removal fails. Removing it first would spend the owner's
+  # one recorded TERM allowance on a lock that then survives, and the next
+  # invocation would signal that same owner a second time.
+  if [ -e "$term_marker" ] || [ -L "$term_marker" ]; then
+    if [ ! -f "$term_marker" ] || [ -L "$term_marker" ]; then
+      fm_lock_release "$steal"
+      return 1
+    fi
   fi
   fm_lock_remove_path "$lock" || true
   fm_lock_release "$steal"
